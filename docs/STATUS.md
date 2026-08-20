@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - P0 PROD BUILD-CONTEXT DRIFT REMEDIATION: PROD_BUILD_PROVENANCE_CERTIFIED (runbook PR #385,
+  main `35b1f09`).** `/home/ubuntu/guvfx-prod/backend` had drifted from the canonical git source -- missing
+  `execution/snapshot_transport.py` (the #378 per-tenant isolation firewall), stale `breakeven.py`, plus junk
+  and a stray `.env`. Forensic (read-only): no compose `build:` context, NO running container mounts the tree,
+  cron uses `docker compose exec` -> classification B (documented build context only, not runtime-required).
+  Fix: the path is now a SYMLINK to `/home/ubuntu/guvfx-app/backend` (canonical git working tree); the stale
+  tree was archived to a tarball rollback anchor and removed. Negative proof: `readlink -f` = canonical,
+  resolved `snapshot_transport.py` is the same inode as canonical, 0 junk. Zero runtime change (all containers
+  RestartCount=0, image unchanged, CZ byte-identical control; support@/beta differ only by +3 newly-closed
+  live trades each). Runbook updated to build from the canonical checkout. CI green (one unrelated flaky
+  notifications test cleared on re-run; flagged separately).
+
 - **2026-08-19 - P1 CASH-FLOW-AWARE BALANCE BASELINE: PASS (main `ba5ee87`, PR #383). GREEN.** The Trade
   History balance chart derived opening as `current_balance - total_trade_pnl` -- correct for a single
   initial deposit (never counts a deposit as trading P&L) but it back-dated any MID-PERIOD deposit/withdrawal
