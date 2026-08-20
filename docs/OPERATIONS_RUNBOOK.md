@@ -77,8 +77,13 @@ docker compose restart guvfx-mt5-trade-ingest-worker
 # Force recreate (picks up env changes)
 docker compose up -d --force-recreate guvfx-backend
 
-# Full rebuild (picks up code changes)
-docker build -t guvfx-prod-guvfx-backend /home/ubuntu/guvfx-prod/backend/
+# Full rebuild (picks up code changes).
+# Build ONLY from the canonical Git checkout. /home/ubuntu/guvfx-prod/backend is a SYMLINK
+# to /home/ubuntu/guvfx-app/backend (the git working tree) — there is no separate mutable
+# backend copy. Never rsync into it or build from an ad-hoc directory: a stale copy once
+# shipped an image missing the per-tenant snapshot isolation firewall (execution/snapshot_transport.py).
+git -C /home/ubuntu/guvfx-app checkout main && git -C /home/ubuntu/guvfx-app pull --ff-only
+docker build -t guvfx-prod-guvfx-backend /home/ubuntu/guvfx-app/backend/
 docker compose up -d --force-recreate guvfx-backend
 ```
 
