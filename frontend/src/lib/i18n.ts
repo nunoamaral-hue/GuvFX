@@ -1380,6 +1380,14 @@ const dictionary: Dictionary = {
     en: "Try adjusting your search or category filter.",
     ja: "検索条件やカテゴリーフィルターを変更してみてください。",
   },
+  "marketplace.featured": {
+    en: "Featured",
+    ja: "注目",
+  },
+  "marketplace.moreComingSoon": {
+    en: "More strategies coming soon.",
+    ja: "さらに戦略を追加予定です。",
+  },
 
   // -----------------------------------------------------------------------------
   // Create Strategy

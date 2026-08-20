@@ -69,16 +69,15 @@ describe("marketplace — Get Strategy acquisition", () => {
     expect(armOrAuth()).toBe(false);
   });
 
-  it("Get on a generic card assigns via marketplace/assign then routes to Configure (no execution)", async () => {
+  it("generic/prototype template cards are WITHHELD from the beta catalogue (no card, no acquisition path)", async () => {
+    // Beta curation: only strategies with a proven customer path are shown. A research template like
+    // "London Session Box Breakout" (mp-001) must not appear and must not be acquirable via marketplace/assign.
     render(<Marketplace />);
+    await waitFor(() => expect(screen.getByText("Wayond WIM Strategy")).toBeInTheDocument());
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "London Session" } });
-    const getBtn = await screen.findByRole("button", { name: "Get Strategy" });
-    await waitFor(() => expect((getBtn as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(getBtn);
-    await waitFor(() =>
-      expect(apiFetch.mock.calls.some((c) => String(c[0]).includes("/marketplace/assign"))).toBe(true));
-    expect(push).toHaveBeenCalledWith("/strategies/configure?mp=mp-001&account=5");
-    expect(armOrAuth()).toBe(false);
+    await waitFor(() => expect(screen.queryByText(/London Session/i)).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Get Strategy" })).toBeNull();
+    expect(apiFetch.mock.calls.some((c) => String(c[0]).includes("/marketplace/assign"))).toBe(false);
   });
 
   it("an already-owned signal-copy card offers Configure (routes to Configure, never re-acquires)", async () => {
