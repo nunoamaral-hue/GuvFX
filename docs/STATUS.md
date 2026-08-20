@@ -14,6 +14,16 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - BETA MARKETPLACE CURATION: BETA_MARKETPLACE_CURATED (main `a269ceb`, PR #386). MERGED, NOT
+  DEPLOYED.** Wayond WIM Strategy (the only strategy with a working customer path) appeared last in the
+  Marketplace behind non-executing research templates (one, mp-003, with no backend template). Fix
+  (frontend/presentation only, fail-closed): explicit `featured` + `betaAvailable` seed fields — only
+  strategies explicitly marked available are shown (prototypes/broken/unproven withheld by default), Wayond
+  pinned first via a featured-first sort (never PK/date/alpha) with a Featured badge + a truthful "more coming
+  soon" note; EN/JA added. No backend/execution/routing/sizing/assignment change; seed defs kept; 0 non-Wayond
+  owners so nothing orphaned. 12 marketplace tests; verified desktop + 390px EN/JA. Returned for Programme
+  deployment coordination (a frontend deploy would also bundle in-flight i18n on main).
+
 - **2026-08-20 - P0 PROD BUILD-CONTEXT DRIFT REMEDIATION: PROD_BUILD_PROVENANCE_CERTIFIED (runbook PR #385,
   main `35b1f09`).** `/home/ubuntu/guvfx-prod/backend` had drifted from the canonical git source -- missing
   `execution/snapshot_transport.py` (the #378 per-tenant isolation firewall), stale `breakeven.py`, plus junk
