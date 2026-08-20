@@ -14,6 +14,22 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - ONBOARDING "DETECTING YOUR ACCOUNT" RECOVERY: HUMAN_LOGIN_REQUIRED (host-only, no code change).**
+  Recreated beta user33/acct29(1302575)/ws16 stuck at "Detecting your account" because an MT5 LiveUpdate forked
+  the tenant terminal: the bridge (:8800, MT5_TERMINAL_PATH=portable) observed a login-less portable terminal
+  doing a LiveUpdate, while the customer's 1302575 login lived on a second NON-PORTABLE/roaming instance ->
+  account_info hung, no observation ever landed. Fix: froze the acct29 bridge/watchdog (prevent race-launch),
+  invoked the governed AJ#6.4 relaunch primitive (resolve_host_executor(29).relaunch_terminal) which contained
+  LiveUpdate (deny-write staging) + closed BOTH terminals + relaunched exactly ONE /portable, then thawed the
+  bridge. Result: contained:true/closed:true/relaunched:true/ok:true; exactly ONE portable terminal (pid 8564),
+  0 updaters, :8800 back up, sacred (:8788/:8789/:8790, CZ/support@ terminals) intact, ws16 UNCHANGED (no
+  fabrication). The recovered portable terminal has NO saved login (customer's login was on the killed roaming
+  instance) -> Sponsor must re-login 1302575 via RemoteApp; run_hosted_observations cron (1/min) then progresses
+  it naturally. NOTES: capability_recovery.py only targets CONNECTED+trade_allowed=False (not WAITING_FOR_LOGIN),
+  so an onboarding-phase fork needs the relaunch primitive invoked directly; HOSTED_CAPABILITY_RECOVERY_ENABLED
+  already True. Empty MT5_EXPECTED_LOGIN in tenant bridge.env is BY DESIGN (per-job pin authoritative; env
+  ignored under MT5_REQUIRE_IDENTITY_PIN=1) -> no code change. No mutation to DB/execution/identity guarantees.
+
 - **2026-08-20 - PRE-BETA POPULATION CLEANUP: BETA_USER_POPULATION_CERTIFIED (DB+host, no repo change).**
   Authorised destructive cleanup after the population audit. Verified pg_dump backup
   (`_prebeta_cleanup_backup_20260820.sql.gz`, sha `d7950e99`). PURGED beta.guvfx01 (user 32/acct28/1302575):
