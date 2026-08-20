@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - PROACTIVE MT5 LIVEUPDATE CONTAINMENT: BETA_UNATTENDED_ONBOARDING_READY (PR #389, main `c1beb52`,
+  backend image `76ea3f4e788a`, DEPLOYED + ARMED).** The final documentation customer exposed a fresh-onboarding
+  liveness defect: on a fresh tenant's first MT5 launch, LiveUpdate forked a non-portable sibling terminal that
+  carried the broker login while the bridge stayed pinned to the login-less /portable -> account_info hung ->
+  onboarding stalled at "Detecting your account..." (failed closed, but needed operator repair). Fix: apply the
+  CERTIFIED Variant-A containment PROACTIVELY during provisioning, before first launch. New required, fail-closed
+  host step `apply_liveupdate_containment` in `prepare_hosted_slot` (after populate_runtime), behind
+  `HOSTED_LIVEUPDATE_CONTAINMENT_ENABLED`: the host ensures the tenant profile exists (userenv `CreateProfile` -
+  no interactive session, no MT5 launch) then applies the tenant-scoped Deny-write on the roaming LiveUpdate
+  staging (`%APPDATA%\MetaQuotes\WebInstall` + per-hash liveupdate), read-back verified. Unverifiable
+  profile/containment -> slot stays NON-READY (preparing/retry UX). Reuses the certified body byte-identically
+  (divergence-guarded vs `Relaunch-GuvfxTerminal.ps1`); RemoteApp/first-launch semantics unchanged; CZ refused
+  four ways. 18 new tests; CI all green on `96a051d`. New host primitive `Contain-GuvfxLiveUpdate.ps1`
+  ParseFile-validated + staged to the executor scripts_dir; host executor modules (protocol/dispatch/runner)
+  updated + `GuvFXHostedExecutor` restarted (ports 8788-8791 up, sacred terminals alive). CERTIFIED on the real
+  host: (a) throwaway-identity preflight `guvfx_u_999999` proved profile-absent -> CreateProfile -> containment ->
+  read-back -> idempotency (Deny count exactly 1) -> cross-SID isolation (control slot ACL byte-identical) ->
+  full cleanup + negative existence, no ProfSvc lock; (b) end-to-end signed dry-run through the :8790 daemon for
+  the (deleted) throwaway returned the primitive's own `tenant_resolution_failed` JSON, proving the full armed
+  chain executes and fails closed. Golden AFTER: CZ acct1 BYTE-IDENTICAL (523 trades); support@ acct25 +3 new
+  autonomous trades only (jobs SUCCESS); Node-2 max=12/occ=1/free=11 unchanged; population 4 unchanged; 0 stuck
+  jobs; 0 workspaces at PROVISIONING (armed stage acts only on genuinely-new tenants). Rollback anchors: backend
+  image `guvfx-prod-guvfx-backend:rollback-preLUCONTAIN` (512544fbee46), host `C:\GuvFX\hosted\_rollback_lu`,
+  `beta.env.bak-preLUCONTAIN`. STOP: do not invite/create customers - Programme Director owns the launch decision.
+
 - **2026-08-20 - FINAL DOCUMENTATION-BETA PURGE: DOCUMENTATION_BETA_PURGED_PRELAUNCH_READY (prod ops, no code change).**
   Removed the recreated disposable documentation customer `beta.guvfx01@gmail.com` (rediscovered: User33 /
   TradingAccount29 / MT5 1302575 / HostedMt5Workspace16 / AccountProvisioning22 / HostedExecutionEndpoint5 :8800 /
