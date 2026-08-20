@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 
 from django.conf import settings
@@ -11,7 +12,11 @@ from rest_framework.views import APIView
 
 from .models import CustomerNotificationPreference
 from .services import (
+    InvalidConnectionToken,
+    InvalidTelegramIdentity,
+    TelegramChatAlreadyBound,
     TelegramConnectionError,
+    TelegramUnavailable,
     create_connection_token,
     customer_telegram_available,
     disconnect_telegram,
@@ -22,6 +27,15 @@ from .services import (
     telegram_settings_for,
     workspace_readiness_settings_for,
 )
+
+logger = logging.getLogger("guvfx.customer_notifications")
+
+# Deterministic customer/input rejections a retry can NEVER fix. Telegram delivers webhook updates strictly
+# in order and re-delivers any non-2xx, so returning 4xx for one of these pins it at the head of the queue and
+# blocks every later /start — a deadlock that made fresh connections impossible (the incident this fixes). The
+# webhook ACKNOWLEDGES these with 200 (bind nothing, notify nothing, drop the update); only genuinely TRANSIENT
+# failures return non-2xx so Telegram may usefully retry.
+_PERMANENT_REDEEM_REJECTIONS = (InvalidConnectionToken, InvalidTelegramIdentity, TelegramChatAlreadyBound)
 
 
 class CustomerTelegramWebhookThrottle(SimpleRateThrottle):
@@ -143,25 +157,32 @@ class TelegramWebhookView(APIView):
         if not expected or not secrets.compare_digest(supplied, expected):
             return Response({"detail": "forbidden"}, status=403)
 
+        # From here on, a deterministic customer/input rejection is ACKNOWLEDGED with 200 (nothing bound, nothing
+        # notified, update dropped) so it cannot pin the in-order webhook queue and block later valid /start
+        # attempts. NEVER log a chat id, token, or secret — only the sanitised reason code.
+        def _ack(reason: str):
+            logger.info("customer_telegram_webhook: acknowledged non-actionable update reason=%s", reason)
+            return Response({"ok": True, "ignored": True})
+
         update = request.data if isinstance(request.data, dict) else {}
         message = update.get("message")
         if not isinstance(message, dict):
-            return Response({"ok": True, "ignored": True})
+            return _ack("no_message")
         chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
         sender = message.get("from") if isinstance(message.get("from"), dict) else {}
         if chat.get("type") != "private":
-            return Response({"detail": "private_chat_required"}, status=400)
+            return _ack("private_chat_required")
         try:
             chat_id = int(chat["id"])
             telegram_user_id = int(sender["id"])
         except (KeyError, TypeError, ValueError):
-            return Response({"detail": "invalid_private_chat"}, status=400)
+            return _ack("invalid_private_chat")
         if chat_id != telegram_user_id:
-            return Response({"detail": "invalid_private_chat"}, status=400)
+            return _ack("invalid_private_chat")
 
         text = message.get("text")
         if not isinstance(text, str) or not text.startswith("/start "):
-            return Response({"ok": True, "ignored": True})
+            return _ack("unsupported_command")
         parts = text.split(" ", 1)
         raw_token = parts[1].strip() if len(parts) == 2 else ""
         try:
@@ -169,8 +190,15 @@ class TelegramWebhookView(APIView):
                 raw_token, chat_id=chat_id, telegram_user_id=telegram_user_id,
                 username=sender.get("username", ""), first_name=sender.get("first_name", ""),
             )
-        except TelegramConnectionError as exc:
-            return Response({"detail": exc.code}, status=400)
+        except _PERMANENT_REDEEM_REJECTIONS as exc:
+            # Permanent: expired/invalid/consumed token, bad identity, or chat already owned by ANOTHER user
+            # (ownership unchanged — cross-user rejection is preserved). Ack so Telegram drops it.
+            return _ack(exc.code)
+        except TelegramUnavailable as exc:
+            # TRANSIENT: the customer-notification subsystem is temporarily unavailable — a retry can succeed,
+            # so return a retryable non-2xx (never mistake this for a customer rejection).
+            logger.warning("customer_telegram_webhook: transient unavailable reason=%s", exc.code)
+            return Response({"detail": exc.code}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response({"ok": True})
 
 

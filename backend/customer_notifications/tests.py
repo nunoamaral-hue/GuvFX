@@ -212,27 +212,33 @@ class ConnectionIsolationTests(CustomerTelegramTestBase):
     def test_one_private_chat_cannot_bind_two_users(self):
         self.bind(self.user_a, 111)
         raw_b = self.token_for(self.user_b)
-        self.assertEqual(self.webhook(raw_b, 111).status_code, 400)
+        # ACK (200) so Telegram drops the update — but the cross-user rejection is UNCHANGED: no binding for B,
+        # B's token not consumed, chat still owned by A. (Returning 4xx here deadlocked the webhook queue.)
+        self.assertEqual(self.webhook(raw_b, 111).status_code, 200)
         self.assertIsNone(TelegramConnectionToken.objects.get(user=self.user_b).consumed_at)
         self.assertEqual(CustomerTelegramBinding.objects.get(telegram_chat_id=111).user_id, self.user_a.id)
+        self.assertFalse(CustomerTelegramBinding.objects.filter(user=self.user_b).exists())
 
     def test_expired_token_is_rejected(self):
+        # Expired token is a PERMANENT rejection -> ACK (200) so the update is dropped, never bound, and cannot
+        # pin the in-order queue (the deadlock this fixes). Token expiry itself is still enforced (no binding).
         raw = self.token_for(self.user_a)
         TelegramConnectionToken.objects.filter(user=self.user_a).update(expires_at=timezone.now() - timedelta(seconds=1))
-        self.assertEqual(self.webhook(raw, 111).status_code, 400)
+        self.assertEqual(self.webhook(raw, 111).status_code, 200)
         self.assertFalse(CustomerTelegramBinding.objects.exists())
 
     def test_reused_token_is_rejected(self):
         raw = self.token_for(self.user_a)
         self.assertEqual(self.webhook(raw, 111).status_code, 200)
-        self.assertEqual(self.webhook(raw, 111).status_code, 400)
+        # Replay of a now-consumed token: ACK (200), single-use still enforced (no second binding below).
+        self.assertEqual(self.webhook(raw, 111).status_code, 200)
 
     def test_duplicate_webhook_delivery_cannot_create_a_second_binding(self):
         raw = self.token_for(self.user_a)
         first = self.webhook(raw, 111)
         duplicate = self.webhook(raw, 111)
         self.assertEqual(first.status_code, 200)
-        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.status_code, 200)   # ACK the replay; single-use enforced by the count below
         self.assertEqual(CustomerTelegramBinding.objects.filter(user=self.user_a).count(), 1)
 
     def test_changed_username_is_display_only_and_does_not_change_authoritative_identity(self):
@@ -248,11 +254,13 @@ class ConnectionIsolationTests(CustomerTelegramTestBase):
 
     def test_out_of_range_private_chat_id_is_rejected_before_persistence(self):
         raw = self.token_for(self.user_a)
-        self.assertEqual(self.webhook(raw, 2 ** 63).status_code, 400)
+        # Invalid identity -> ACK (200), never persisted (identity validation unchanged).
+        self.assertEqual(self.webhook(raw, 2 ** 63).status_code, 200)
         self.assertFalse(CustomerTelegramBinding.objects.exists())
 
     def test_malformed_token_is_rejected(self):
-        self.assertEqual(self.webhook("user=1@example.test", 111).status_code, 400)
+        # Malformed token -> ACK (200) so a garbage update can never deadlock the queue; nothing is bound.
+        self.assertEqual(self.webhook("user=1@example.test", 111).status_code, 200)
         self.assertFalse(CustomerTelegramBinding.objects.exists())
 
     def test_arbitrary_chat_id_in_connect_request_cannot_bind(self):
@@ -267,13 +275,43 @@ class ConnectionIsolationTests(CustomerTelegramTestBase):
 
     def test_group_start_is_rejected(self):
         raw = self.token_for(self.user_a)
-        self.assertEqual(self.webhook(raw, -100123, chat_type="supergroup").status_code, 400)
+        # Non-private chat -> ACK (200) so Telegram drops it; private-chat requirement still enforced (no bind).
+        self.assertEqual(self.webhook(raw, -100123, chat_type="supergroup").status_code, 200)
         self.assertFalse(CustomerTelegramBinding.objects.exists())
 
     def test_webhook_authentication_failure_is_rejected(self):
         raw = self.token_for(self.user_a)
         self.assertEqual(self.webhook(raw, 111, secret="wrong").status_code, 403)
         self.assertFalse(CustomerTelegramBinding.objects.exists())
+
+    def test_transient_failure_during_redeem_stays_retryable(self):
+        # A genuinely TRANSIENT failure must NOT be acked — Telegram should be allowed to retry (non-2xx).
+        from customer_notifications.services import TelegramUnavailable
+        raw = self.token_for(self.user_a)
+        with patch("customer_notifications.views.redeem_connection_token", side_effect=TelegramUnavailable()):
+            resp = self.webhook(raw, 111)
+        self.assertEqual(resp.status_code, 503)
+        self.assertFalse(CustomerTelegramBinding.objects.exists())
+
+    def test_stale_update_does_not_block_a_later_valid_update(self):
+        # THE DEADLOCK REGRESSION: a stale/expired update is dropped (200), and a subsequent VALID /start still
+        # redeems — proving a permanently-failing update at the head can no longer pin the in-order queue.
+        stale = self.token_for(self.user_a)
+        TelegramConnectionToken.objects.filter(user=self.user_a).update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.webhook(stale, 111).status_code, 200)   # dropped, NOT retried
+        self.assertFalse(CustomerTelegramBinding.objects.exists())
+        fresh = self.token_for(self.user_a)                            # a new, valid token
+        self.assertEqual(self.webhook(fresh, 111).status_code, 200)
+        self.assertEqual(CustomerTelegramBinding.objects.get(telegram_chat_id=111).user_id, self.user_a.id)
+
+    def test_permanent_reject_never_logs_token_or_chat_id(self):
+        raw = self.token_for(self.user_a)
+        with self.assertLogs("guvfx.customer_notifications", level="INFO") as cm:
+            self.webhook("badtokenzzz", 424242)   # malformed token + distinctive chat id
+        blob = "\n".join(cm.output)
+        self.assertIn("reason=", blob)
+        self.assertNotIn("424242", blob)
+        self.assertNotIn("badtokenzzz", blob)
 
     @override_settings(CUSTOMER_TELEGRAM_WORKER_ENABLED=False)
     def test_worker_disabled_makes_connect_and_webhook_unavailable(self):
