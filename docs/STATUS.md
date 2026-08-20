@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - CUSTOMER TELEGRAM PRODUCT POLICY: IMPLEMENTED, NOT DEPLOYED.** Branch
+  `feat/customer-telegram-policy-preferences` on main `5d8c534` removes the customer Trade observer/reconciler,
+  makes live-entry/raw/unknown events fail closed at enqueue and delivery, and adds winner ON, loser/breakeven
+  OFF, TP ON, system ON preferences. StrategyAssignment-scoped intent, readiness one-shot persistence,
+  EN/JA Settings/Configure/onboarding UX, localized customer result cards, and 390 px evidence are implemented.
+  Verification: 94 focused backend notification tests (26 policy cases), 4,460 full backend (1 skip), and 307
+  frontend tests; lint 0 errors / 18 existing warnings; parity, production build, secret scan and `make check`
+  green. Adversarial review is 0 HIGH / 0 MEDIUM; exact-head CI remains pending.
+  Production was read only and remains on the pre-policy pilot revision with both customer Telegram flags ON;
+  broader beta use is prohibited until this focused PR is merged and separately deployed. See
+  `docs/product/CUSTOMER_TELEGRAM_PRODUCT_POLICY.md`.
+
 - **2026-08-20 - BETA MARKETPLACE CURATION: BETA_MARKETPLACE_CURATED (main `a269ceb`, PR #386). MERGED, NOT
   DEPLOYED.** Wayond WIM Strategy (the only strategy with a working customer path) appeared last in the
   Marketplace behind non-executing research templates (one, mp-003, with no backend template). Fix

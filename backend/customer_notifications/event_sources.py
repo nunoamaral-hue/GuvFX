@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -11,7 +10,7 @@ from .models import (
     CustomerNotificationProjectionCursor,
     CustomerTelegramBinding,
 )
-from .services import enqueue_customer_notification
+from .services import enqueue_customer_notification, fulfill_pending_workspace_readiness
 
 
 def _account_payload(account) -> dict:
@@ -21,32 +20,50 @@ def _account_payload(account) -> dict:
     }
 
 
-def _trade_context(trade) -> dict:
-    """Read-only strategy/leg projection from durable plan + assignment state."""
+def _trade_context(trade, correlation_id: str = ""):
+    """Resolve the exact durable strategy assignment without projecting live-entry data.
+
+    Promoted legs retain the assignment on their execution jobs, so prefer that
+    historical attribution. Only use a source-aware active-assignment fallback for
+    legacy plans, and fail closed on ambiguity.
+    """
     strategy = "GuvFX"
-    stop_loss = ""
-    take_profit = ""
+    assignment = None
     try:
         from execution.models import SignalExecutionPlan
         from strategies.models import StrategyAssignment
         plan = None
-        if trade.correlation_id:
+        durable_correlation = str(correlation_id or trade.correlation_id or "")
+        if durable_correlation:
             plan = SignalExecutionPlan.objects.filter(
-                account_id=trade.account_id, correlation_id=trade.correlation_id,
+                account_id=trade.account_id, correlation_id=durable_correlation,
             ).order_by("id").first()
         if plan is not None:
-            stop_loss = str(plan.stop_loss or "")
-            assignment = StrategyAssignment.objects.filter(
-                account_id=trade.account_id, signal_source=plan.source,
-            ).select_related("strategy").order_by("-id").first()
+            assignment_ids = list(plan.legs.filter(
+                execution_job__assignment_id__isnull=False,
+            ).order_by().values_list("execution_job__assignment_id", flat=True).distinct()[:2])
+            if len(assignment_ids) == 1:
+                assignment = StrategyAssignment.objects.filter(
+                    pk=assignment_ids[0], account_id=trade.account_id,
+                ).select_related("strategy").first()
+            elif not assignment_ids:
+                base = StrategyAssignment.objects.filter(
+                    account_id=trade.account_id,
+                    is_active=True,
+                    stage=StrategyAssignment.STAGE_LIVE,
+                    execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+                ).select_related("strategy")
+                exact = list(base.filter(signal_source=plan.source).order_by("-id")[:2])
+                if len(exact) == 1:
+                    assignment = exact[0]
+                elif not exact:
+                    legacy = list(base.filter(signal_source="").order_by("-id")[:2])
+                    if len(legacy) == 1:
+                        assignment = legacy[0]
             strategy = assignment.strategy.name if assignment else plan.source.replace("_", " ").title()
-            match = re.search(r"L(\d+)$", str(trade.comment or ""))
-            if match:
-                leg = plan.legs.filter(leg_index=int(match.group(1))).first()
-                take_profit = str(getattr(leg, "take_profit", "") or "")
     except Exception:
         pass
-    return {"strategy": strategy, "stop_loss": stop_loss, "take_profit": take_profit}
+    return {"strategy": strategy}, assignment
 
 
 def _iso(value) -> str:
@@ -86,20 +103,15 @@ def _durable_leg_progress(outcome) -> dict:
 
 
 def enqueue_trade_opened(trade_id: int, *, raise_errors: bool = False):
+    """Audit a prohibited projection attempt without ever retaining or delivering live-entry data."""
     try:
         from trading.models import Trade
         trade = Trade.objects.select_related("account__user").get(pk=trade_id)
-        context = _trade_context(trade)
-        payload = {
-            **_account_payload(trade.account), **context,
-            "symbol": trade.symbol, "side": trade.side, "volume": trade.volume,
-            "entry": trade.open_price, "occurred_at": _iso(trade.open_time),
-        }
         return enqueue_customer_notification(
             user=trade.account.user, account=trade.account,
             event_type=CustomerNotification.EventType.TRADE_OPENED,
             source_object_type="trading.Trade", source_object_id=str(trade.pk),
-            dedupe_key=f"customer-trade-opened:{trade.pk}", payload=payload,
+            dedupe_key=f"customer-trade-opened-prohibited:{trade.pk}", payload={},
             occurred_at=trade.open_time,
         )
     except Exception:
@@ -116,10 +128,10 @@ def enqueue_trade_outcome(outcome_id: int, *, raise_errors: bool = False):
         progress = _durable_leg_progress(outcome)
         event_type = (
             CustomerNotification.EventType.TRADE_CLOSED
-            if not progress or progress["progress_final"]
+            if progress.get("progress_final")
             else CustomerNotification.EventType.TRADE_UPDATED
         )
-        context = _trade_context(trade)
+        context, assignment = _trade_context(trade, outcome.correlation_id)
         if progress.get("strategy"):
             context["strategy"] = progress["strategy"]
         result = progress.get("realised") or str(outcome.net_pnl)
@@ -133,7 +145,7 @@ def enqueue_trade_outcome(outcome_id: int, *, raise_errors: bool = False):
             )
         payload = {
             **_account_payload(trade.account), **context,
-            "symbol": trade.symbol, "side": trade.side,
+            "symbol": trade.symbol,
             "result": result,
             "currency": trade.profit_currency or trade.account.account_currency or "USD",
             "outcome": aggregate_outcome,
@@ -146,8 +158,11 @@ def enqueue_trade_outcome(outcome_id: int, *, raise_errors: bool = False):
                 progress.get("progress_label", "")
                 if outcome.outcome == TradeOutcomeRecord.Outcome.WIN else ""
             )
+        else:
+            payload["volume"] = str(trade.volume)
         return enqueue_customer_notification(
             user=trade.account.user, account=trade.account,
+            strategy_assignment=assignment,
             event_type=event_type,
             source_object_type="execution.TradeOutcomeRecord", source_object_id=str(outcome.pk),
             dedupe_key=f"customer-trade-outcome:{outcome.pk}", payload=payload,
@@ -194,7 +209,7 @@ def enqueue_strategy_change(audit_id, *, raise_errors: bool = False):
             ).select_related("strategy").order_by("-is_active", "-id").first()
         strategy = assignment.strategy.name if assignment else "GuvFX"
         return enqueue_customer_notification(
-            user=audit.user, account=account, event_type=event_type,
+            user=audit.user, account=account, strategy_assignment=assignment, event_type=event_type,
             source_object_type="core.AuditEvent", source_object_id=str(audit.pk),
             dedupe_key=f"customer-strategy-change:{audit.pk}",
             payload={**_account_payload(account), "strategy": strategy},
@@ -213,15 +228,11 @@ def enqueue_workspace_ready(transition_id: int, *, raise_errors: bool = False):
             "workspace__trading_account__user").get(pk=transition_id)
         if not transition.state_changed or transition.to_state != "EXECUTION_READY":
             return None
-        account = transition.workspace.trading_account
-        return enqueue_customer_notification(
-            user=account.user, account=account,
-            event_type=CustomerNotification.EventType.WORKSPACE_READY,
-            source_object_type="hosted_workspace.WorkspaceTransition",
-            source_object_id=str(transition.pk),
-            dedupe_key=f"customer-workspace-ready:{transition.pk}",
-            payload=_account_payload(account), occurred_at=transition.created_at,
-        )
+        fulfill_pending_workspace_readiness(workspace_id=transition.workspace_id)
+        return CustomerNotification.objects.filter(
+            source_object_type="customer_notifications.WorkspaceReadinessNotificationIntent",
+            account=transition.workspace.trading_account,
+        ).order_by("-id").first()
     except Exception:
         if raise_errors:
             raise
@@ -258,7 +269,7 @@ def enqueue_execution_problem(event_id: int, *, raise_errors: bool = False):
 
 def collect_customer_notification_events(*, limit: int = 1000) -> dict:
     """Backfill/reconcile durable facts independently from their originating services."""
-    counts = {"trade_opened": 0, "trade_updated": 0, "trade_closed": 0, "strategy_changed": 0,
+    counts = {"trade_updated": 0, "trade_closed": 0, "strategy_changed": 0,
               "execution_problem": 0, "workspace_ready": 0, "errors": 0}
     first_connected = CustomerTelegramBinding.objects.filter(is_active=True).order_by(
         "connected_at").values_list("connected_at", flat=True).first()
@@ -269,10 +280,8 @@ def collect_customer_notification_events(*, limit: int = 1000) -> dict:
     from execution.models import TradeOutcomeRecord
     from hosted_workspace.models import WorkspaceTransition
     from operational_events.models import OperationalEvent
-    from trading.models import Trade
 
     sources = [
-        ("trade_opened", Trade.objects.filter(created_at__gte=first_connected), enqueue_trade_opened),
         ("trade_outcomes", TradeOutcomeRecord.objects.filter(created_at__gte=first_connected), enqueue_trade_outcome),
         ("strategy_changed", AuditEvent.objects.filter(
             created_at__gte=first_connected,

@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Customer Telegram product policy — P0 implementation candidate; NO DEPLOYMENT (2026-08-20)
+
+Local release gates and adversarial review are green (0 HIGH / 0 MEDIUM) on
+`feat/customer-telegram-policy-preferences`. Open the focused draft PR, obtain exact-head CI, and merge only
+while those gates remain green. Production still runs the pre-policy pilot with both flags ON, so broader beta
+notification use is blocked. After merge, a separate explicit release packet must back up, migrate, deploy,
+and prove that direct/historical trade-open rows suppress before broadening access. Do not deploy, alter flags,
+restart the worker, replay history, or begin another workstream under this packet.
+
 ## ▶ Customer Telegram notifications — RECONCILED RC; DARK install gate (2026-08-19)
 Draft PR #371 is reconciled onto main `cd05c03f`, DARK/default-OFF, with no execution-plane file changes.
 Private numeric-chat binding, no WIMs/global fallback, durable TP/final-outcome messages, full owner MT5 account

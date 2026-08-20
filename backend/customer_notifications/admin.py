@@ -5,9 +5,11 @@ from .models import (
     CustomerNotificationAttempt,
     CustomerNotificationPreference,
     CustomerNotificationProjectionCursor,
+    CustomerStrategyNotificationPreference,
     CustomerNotificationWorkerState,
     CustomerTelegramBinding,
     TelegramConnectionToken,
+    WorkspaceReadinessNotificationIntent,
 )
 
 
@@ -34,7 +36,20 @@ class CustomerTelegramBindingAdmin(CustomerNotificationReadOnlyAdmin):
 
 @admin.register(CustomerNotificationPreference)
 class CustomerNotificationPreferenceAdmin(CustomerNotificationReadOnlyAdmin):
-    list_display = ("user", "telegram_enabled", "language", "updated_at")
+    list_display = (
+        "user", "winning_trades", "losing_trades", "tp_progress", "system_messages",
+        "language", "updated_at",
+    )
+
+
+@admin.register(CustomerStrategyNotificationPreference)
+class CustomerStrategyNotificationPreferenceAdmin(CustomerNotificationReadOnlyAdmin):
+    list_display = ("user", "assignment", "enabled", "pending_enable", "updated_at")
+
+
+@admin.register(WorkspaceReadinessNotificationIntent)
+class WorkspaceReadinessNotificationIntentAdmin(CustomerNotificationReadOnlyAdmin):
+    list_display = ("user", "workspace", "milestone", "fulfilled_at", "created_at")
 
 
 @admin.register(CustomerNotificationProjectionCursor)

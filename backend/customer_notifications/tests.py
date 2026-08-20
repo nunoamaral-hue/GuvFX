@@ -41,15 +41,18 @@ from .models import (
     CustomerNotificationAttempt,
     CustomerNotificationPreference,
     CustomerNotificationProjectionCursor,
+    CustomerStrategyNotificationPreference,
     CustomerNotificationWorkerState,
     CustomerTelegramBinding,
     TelegramConnectionToken,
+    WorkspaceReadinessNotificationIntent,
 )
 from .services import (
     create_connection_token,
     disconnect_telegram,
     enqueue_customer_notification,
     redeem_connection_token,
+    request_workspace_readiness_notification,
 )
 
 
@@ -117,7 +120,7 @@ class CustomerTelegramTestBase(TestCase):
             format="json", HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN=secret,
         )
 
-    def notification(self, user=None, account=None, event=CustomerNotification.EventType.TRADE_OPENED,
+    def notification(self, user=None, account=None, event=CustomerNotification.EventType.STRATEGY_ENABLED,
                      dedupe="n:1", payload=None):
         user = user or self.user_a
         account = account or self.account_a
@@ -126,9 +129,8 @@ class CustomerTelegramTestBase(TestCase):
             user=user, account=account, event_type=event,
             source_object_type="tests.Source", source_object_id="1", dedupe_key=dedupe,
             payload=payload or {
-                "strategy": "Wayond WIM", "symbol": "XAUUSD", "side": "SELL",
-                "volume": "0.01", "entry": "4343.44", "stop_loss": "4349.69",
-                "take_profit": "4341.07", "account_kind": "demo", "account_number": "10001",
+                "strategy": "Wayond WIM", "account_kind": "demo",
+                "account_number": str(account.account_number),
             },
         )
 
@@ -382,8 +384,8 @@ class PreferenceAndRoutingTests(CustomerTelegramTestBase):
 
     def test_event_preference_off_suppresses(self):
         pref = CustomerNotificationPreference.objects.get(user=self.user_a)
-        pref.trade_opened = False
-        pref.save(update_fields=["trade_opened", "updated_at"])
+        pref.system_messages = False
+        pref.save(update_fields=["system_messages", "updated_at"])
         row = self.notification(dedupe="pref-off")
         self.assertEqual(row.status, CustomerNotification.Status.SUPPRESSED)
 
@@ -416,8 +418,8 @@ class PreferenceAndRoutingTests(CustomerTelegramTestBase):
     def test_preference_changed_after_enqueue_suppresses_without_send(self):
         row = self.notification(dedupe="preference-changed-after-enqueue")
         pref = CustomerNotificationPreference.objects.get(user=self.user_a)
-        pref.trade_opened = False
-        pref.save(update_fields=["trade_opened", "updated_at"])
+        pref.system_messages = False
+        pref.save(update_fields=["system_messages", "updated_at"])
         client = FakeClient()
         self.assertEqual(dispatch_customer_notifications(client=client)["suppressed"], 1)
         row.refresh_from_db()
@@ -451,11 +453,11 @@ class PreferenceAndRoutingTests(CustomerTelegramTestBase):
         client.force_authenticate(self.user_a)
         response = client.patch(
             "/api/customer-notifications/telegram/preferences/",
-            {"trade_closed": False, "language": "ja"}, format="json",
+            {"winning_trades": False, "language": "ja"}, format="json",
         )
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(CustomerNotificationPreference.objects.get(user=self.user_a).trade_closed)
-        self.assertTrue(CustomerNotificationPreference.objects.get(user=self.user_b).trade_closed)
+        self.assertFalse(CustomerNotificationPreference.objects.get(user=self.user_a).winning_trades)
+        self.assertTrue(CustomerNotificationPreference.objects.get(user=self.user_b).winning_trades)
 
 
 class DeliverySafetyTests(CustomerTelegramTestBase):
@@ -591,15 +593,17 @@ class DeliverySafetyTests(CustomerTelegramTestBase):
         self.assertNotIn("test-only-token", rendered)
         self.assertNotIn("test-webhook-secret", rendered)
 
-    def test_observer_failure_cannot_roll_back_trade_transaction(self):
-        with patch("customer_notifications.signals.enqueue_trade_opened", side_effect=RuntimeError("boom")):
-            with self.captureOnCommitCallbacks(execute=True):
-                with transaction.atomic():
-                    trade = Trade.objects.create(
-                        account=self.account_a, ticket="safe1", symbol="XAUUSD", side="BUY",
-                        volume="0.01", open_time=timezone.now(), open_price="1.23456",
-                    )
+    def test_trade_creation_has_no_customer_notification_observer(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            with transaction.atomic():
+                trade = Trade.objects.create(
+                    account=self.account_a, ticket="safe1", symbol="XAUUSD", side="BUY",
+                    volume="0.01", open_time=timezone.now(), open_price="1.23456",
+                )
         self.assertTrue(Trade.objects.filter(pk=trade.pk).exists())
+        self.assertFalse(CustomerNotification.objects.filter(
+            source_object_type="trading.Trade", source_object_id=str(trade.pk),
+        ).exists())
 
     def test_unsupported_customer_command_cannot_mutate_execution(self):
         from execution.models import ExecutionJob
@@ -669,14 +673,14 @@ class LanguageCatalogueTests(CustomerTelegramTestBase):
         self.bind(self.user_a, 111, language="ja")
         row = self.notification(dedupe="ja")
         self.assertEqual(row.language, "ja")
-        self.assertIn("取引が開始", render_customer_message(row))
+        self.assertIn("ストラテジーを有効", render_customer_message(row))
         self.assertIn("デモ口座", render_customer_message(row))
 
     def test_english_user_receives_english_message(self):
         self.bind(self.user_a, 111, language="en")
         row = self.notification(dedupe="en")
         self.assertEqual(row.language, "en")
-        self.assertIn("trade opened", render_customer_message(row).lower())
+        self.assertIn("strategy enabled", render_customer_message(row).lower())
         self.assertIn("Demo account", render_customer_message(row))
 
 
@@ -748,6 +752,28 @@ class TelegramBotClientFailureTests(TestCase):
                 self.bot_client().send_message(111, "safe message")
         self.assertEqual(raised.exception.code, "telegram_response_ambiguous")
 
+    def test_photo_malformed_provider_contract_is_ambiguous_and_terminal(self):
+        with patch(
+            "customer_notifications.delivery.urllib.request.urlopen",
+            return_value=self.response({"error_code": 503}),
+        ):
+            with self.assertRaises(TelegramDeliveryError) as raised:
+                self.bot_client().send_photo(111, b"safe-png", "safe caption")
+        self.assertEqual(raised.exception.code, "telegram_response_ambiguous")
+        self.assertTrue(raised.exception.ambiguous)
+        self.assertFalse(raised.exception.retryable)
+
+    def test_photo_explicit_provider_rejection_can_retry(self):
+        with patch(
+            "customer_notifications.delivery.urllib.request.urlopen",
+            return_value=self.response({"ok": False, "error_code": 503}),
+        ):
+            with self.assertRaises(TelegramDeliveryError) as raised:
+                self.bot_client().send_photo(111, b"safe-png", "safe caption")
+        self.assertEqual(raised.exception.code, "telegram_rejected_503")
+        self.assertTrue(raised.exception.retryable)
+        self.assertFalse(raised.exception.ambiguous)
+
 
 class EventSourceMappingTests(CustomerTelegramTestBase):
     def setUp(self):
@@ -775,6 +801,14 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
     def test_workspace_ready_uses_authoritative_transition(self):
         from hosted_workspace.models import HostedMt5Workspace, WorkspaceTransition
         workspace = HostedMt5Workspace.objects.create(trading_account=self.account_a)
+        WorkspaceReadinessNotificationIntent.objects.create(
+            user=self.user_a, workspace=workspace,
+        )
+        self.account_a.workspace_confirmed_at = timezone.now()
+        self.account_a.save(update_fields=["workspace_confirmed_at"])
+        workspace.proj_account_match = True
+        workspace.canonical_state = "EXECUTION_READY"
+        workspace.save(update_fields=["proj_account_match", "canonical_state"])
         transition = WorkspaceTransition.objects.create(
             workspace=workspace, from_state="CONNECTED", to_state="EXECUTION_READY",
             observation_version=1, decision_version=1, state_changed=True,
@@ -805,19 +839,31 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         self.assertNotIn("node-2", text)
         self.assertNotIn("8788", text)
 
-    def test_trade_open_uses_authoritative_per_trade_volume(self):
+    def test_trade_open_is_audit_suppressed_without_live_payload(self):
         trade = Trade.objects.create(
             account=self.account_a, ticket="actual-volume", symbol="XAUUSD", side="SELL",
             volume="0.07", open_time=timezone.now(), open_price="4343.44",
         )
         row = enqueue_trade_opened(trade.pk)
-        self.assertEqual(row.payload["volume"], "0.07")
+        self.assertEqual(row.status, CustomerNotification.Status.SUPPRESSED)
+        self.assertEqual(row.last_error, "live_signal_prohibited")
+        self.assertEqual(row.payload, {})
 
     def test_durable_leg_outcome_emits_customer_safe_tp_progress_then_final_close(self):
-        from execution.models import ProposedOrderLeg, SignalExecutionPlan, TradeOutcomeRecord
+        from execution.models import ExecutionJob, ProposedOrderLeg, SignalExecutionPlan, TradeOutcomeRecord
         from signal_intake.models import PendingSignalApproval
+        from strategies.models import Strategy, StrategyAssignment
 
         now = timezone.now()
+        strategy = Strategy.objects.create(owner=self.user_a, name="Wayond WIM Strategy")
+        assignment = StrategyAssignment.objects.create(
+            strategy=strategy, account=self.account_a, is_active=True,
+            execution_mode=StrategyAssignment.ExecutionMode.AUTO_DEMO,
+            signal_source="ti_signals", stage=StrategyAssignment.STAGE_LIVE,
+        )
+        CustomerStrategyNotificationPreference.objects.create(
+            user=self.user_a, assignment=assignment, enabled=True,
+        )
         approval = PendingSignalApproval.objects.create(
             source="ti_signals", message_id="customer-progress", symbol="XAUUSD",
             direction="BUY", stop_loss="4300", take_profits=["4350", "4360", "4370"],
@@ -832,15 +878,26 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         )
         trades = []
         for index, target in enumerate(("4350", "4360", "4370"), start=1):
+            job = ExecutionJob.objects.create(
+                job_type=ExecutionJob.JobType.PLACE_ORDER,
+                account=self.account_a,
+                strategy=strategy,
+                assignment=assignment,
+                status=ExecutionJob.Status.SUCCESS,
+            )
             ProposedOrderLeg.objects.create(
                 plan=plan, leg_index=index, take_profit=target, stop_loss="4300",
                 lot_size=Decimal("0.40"), status=ProposedOrderLeg.Status.PROMOTED,
+                execution_job=job,
             )
             trades.append(Trade.objects.create(
                 account=self.account_a, ticket=f"progress-{index}", symbol="XAUUSD",
                 side="BUY", volume=Decimal("0.40"), open_time=now,
                 open_price=Decimal("4340"), comment=f"WAY{plan.id}L{index}",
             ))
+        self.assertEqual(set(plan.legs.values_list(
+            "execution_job__assignment_id", flat=True,
+        )), {assignment.id})
 
         first = trades[0]
         first.close_time = now
@@ -857,6 +914,8 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         self.assertEqual(update.payload["progress_label"], "TP1")
         self.assertEqual(update.payload["progress_closed"], 1)
         self.assertEqual(update.payload["progress_total"], 3)
+        self.assertEqual(update.strategy_assignment_id, assignment.id)
+        self.assertEqual(update.status, CustomerNotification.Status.PENDING)
         update_text = render_customer_message(update)
         self.assertIn("TP1 reached", update_text)
         self.assertIn("Demo account · 10001", update_text)
@@ -878,25 +937,20 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         self.assertEqual(closed.payload["result"], "120.00")
         self.assertIn("Final result: +120.00", render_customer_message(closed))
 
-    def test_reconciler_cursor_advances_across_bounded_batches_without_starvation(self):
+    def test_reconciler_does_not_project_trade_open_rows(self):
         trades = [Trade.objects.create(
             account=self.account_a, ticket=f"cursor-{index}", symbol="XAUUSD", side="BUY",
             volume="0.01", open_time=timezone.now(), open_price="4343.44",
         ) for index in range(3)]
-        first = collect_customer_notification_events(limit=2)
-        second = collect_customer_notification_events(limit=2)
-        self.assertEqual(first["trade_opened"], 2)
-        self.assertEqual(second["trade_opened"], 1)
+        result = collect_customer_notification_events(limit=2)
+        self.assertNotIn("trade_opened", result)
         self.assertEqual(CustomerNotification.objects.filter(
             event_type=CustomerNotification.EventType.TRADE_OPENED,
             source_object_id__in=[str(trade.pk) for trade in trades],
-        ).count(), 3)
-        self.assertEqual(
-            CustomerNotificationProjectionCursor.objects.get(source="trade_opened").last_object_id,
-            str(trades[-1].pk),
-        )
+        ).count(), 0)
+        self.assertFalse(CustomerNotificationProjectionCursor.objects.filter(source="trade_opened").exists())
 
-    def test_reconciler_projection_error_rolls_back_cursor_for_retry(self):
+    def test_reconciler_never_invokes_trade_open_projection(self):
         trade = Trade.objects.create(
             account=self.account_a, ticket="cursor-retry", symbol="XAUUSD", side="BUY",
             volume="0.01", open_time=timezone.now(), open_price="4343.44",
@@ -905,14 +959,12 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
             "customer_notifications.event_sources.enqueue_trade_opened",
             side_effect=RuntimeError("temporary projection failure"),
         ):
-            failed = collect_customer_notification_events(limit=1)
-        self.assertEqual(failed["errors"], 1)
+            result = collect_customer_notification_events(limit=1)
+        self.assertEqual(result["errors"], 0)
         self.assertFalse(CustomerNotificationProjectionCursor.objects.filter(
             source="trade_opened", last_object_id=str(trade.pk),
         ).exists())
-        recovered = collect_customer_notification_events(limit=1)
-        self.assertEqual(recovered["trade_opened"], 1)
-        self.assertTrue(CustomerNotification.objects.filter(
+        self.assertFalse(CustomerNotification.objects.filter(
             event_type=CustomerNotification.EventType.TRADE_OPENED,
             source_object_id=str(trade.pk),
         ).exists())

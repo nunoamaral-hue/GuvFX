@@ -18,12 +18,10 @@ import { t } from "@/lib/i18n";
 type BooleanPreference = Exclude<keyof TelegramPreferences, "language">;
 
 const preferenceRows: Array<{ field: BooleanPreference; label: string; detail: string }> = [
-  { field: "trade_opened", label: "telegram.pref.tradeOpened", detail: "telegram.pref.tradeOpenedDetail" },
-  { field: "trade_updated", label: "telegram.pref.tradeUpdated", detail: "telegram.pref.tradeUpdatedDetail" },
-  { field: "trade_closed", label: "telegram.pref.tradeClosed", detail: "telegram.pref.tradeClosedDetail" },
-  { field: "strategy_changed", label: "telegram.pref.strategy", detail: "telegram.pref.strategyDetail" },
-  { field: "execution_problem", label: "telegram.pref.problem", detail: "telegram.pref.problemDetail" },
-  { field: "workspace_ready", label: "telegram.pref.workspace", detail: "telegram.pref.workspaceDetail" },
+  { field: "winning_trades", label: "telegram.pref.winners", detail: "telegram.pref.winnersDetail" },
+  { field: "losing_trades", label: "telegram.pref.losers", detail: "telegram.pref.losersDetail" },
+  { field: "tp_progress", label: "telegram.pref.tpProgress", detail: "telegram.pref.tpProgressDetail" },
+  { field: "system_messages", label: "telegram.pref.system", detail: "telegram.pref.systemDetail" },
 ];
 
 function safeError(lang: "en" | "ja") {
@@ -36,6 +34,7 @@ export function TelegramNotificationsCard() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [error, setError] = useState("");
   const polls = useRef(0);
 
@@ -125,6 +124,7 @@ export function TelegramNotificationsCard() {
       : t(lang, "telegram.notConnected");
 
   return (
+    <div id="telegram-notifications">
     <Card
       title={t(lang, "telegram.title")}
       subtitle={t(lang, "telegram.subtitle")}
@@ -158,9 +158,14 @@ export function TelegramNotificationsCard() {
           </Button>
         )}
         {settings?.connected && (
-          <Button variant="secondary" onClick={disconnect} disabled={busy}>
-            {t(lang, "telegram.disconnect")}
-          </Button>
+          <div style={{ display: "flex", gap: "0.55rem", flexWrap: "wrap" }}>
+            <Button variant="secondary" onClick={() => setPreferencesOpen(true)} disabled={busy}>
+              {t(lang, "telegram.preferences")}
+            </Button>
+            <Button variant="secondary" onClick={disconnect} disabled={busy}>
+              {t(lang, "telegram.disconnect")}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -173,33 +178,60 @@ export function TelegramNotificationsCard() {
         <Alert type="info">{t(lang, "telegram.startPrompt")}</Alert>
       )}
 
-      {settings?.connected && (
-        <fieldset disabled={busy} style={{ border: 0, margin: "1.2rem 0 0", padding: 0, minWidth: 0 }}>
-          <legend style={{ color: "#e9f4ff", fontWeight: 700, fontSize: "0.92rem", marginBottom: "0.65rem" }}>
-            {t(lang, "telegram.preferences")}
-          </legend>
-          <PreferenceRow
-            label={t(lang, "telegram.master")}
-            detail={t(lang, "telegram.masterDetail")}
-            checked={settings.preferences.telegram_enabled}
-            onChange={(value) => update("telegram_enabled", value)}
-            strong
-          />
-          <div style={{ opacity: settings.preferences.telegram_enabled ? 1 : 0.55 }}>
+    </Card>
+    {settings?.connected && preferencesOpen && (
+      <div
+        role="presentation"
+        onMouseDown={(event) => { if (event.target === event.currentTarget) setPreferencesOpen(false); }}
+        style={{
+          position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center",
+          padding: "1rem", background: "rgba(2,6,18,0.76)", backdropFilter: "blur(5px)",
+        }}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="telegram-preferences-title"
+          style={{
+            width: "min(460px, calc(100vw - 2rem))", maxHeight: "calc(100vh - 2rem)", overflowY: "auto",
+            borderRadius: 16, border: "1px solid rgba(74,179,255,0.24)", background: "#09132b",
+            boxShadow: "0 24px 80px rgba(0,0,0,0.55)", padding: "1.15rem",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", gap: "1rem" }}>
+            <div>
+              <h2 id="telegram-preferences-title" style={{ margin: 0, fontSize: "1.05rem", color: "#e9f4ff" }}>
+                {t(lang, "telegram.preferences")}
+              </h2>
+              <p style={{ margin: "0.35rem 0 0", color: "#8fa0b7", fontSize: "0.8rem", lineHeight: 1.5 }}>
+                {t(lang, "telegram.preferencesDetail")}
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label={t(lang, "common.close")}
+              onClick={() => setPreferencesOpen(false)}
+              style={{ border: 0, background: "transparent", color: "#a8b7cc", fontSize: "1.35rem", cursor: "pointer" }}
+            >×</button>
+          </div>
+          <fieldset disabled={busy} style={{ border: 0, margin: "1rem 0 0", padding: 0, minWidth: 0 }}>
             {preferenceRows.map((row) => (
               <PreferenceRow
                 key={row.field}
                 label={t(lang, row.label)}
                 detail={t(lang, row.detail)}
                 checked={Boolean(settings.preferences[row.field])}
-                disabled={!settings.preferences.telegram_enabled}
                 onChange={(value) => update(row.field, value)}
               />
             ))}
+          </fieldset>
+          <div style={{ marginTop: "1rem", display: "flex", justifyContent: "flex-end" }}>
+            <Button variant="secondary" onClick={() => setPreferencesOpen(false)}>{t(lang, "common.done")}</Button>
           </div>
-        </fieldset>
-      )}
-    </Card>
+        </div>
+      </div>
+    )}
+    </div>
   );
 }
 

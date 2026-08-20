@@ -17,6 +17,11 @@ import { HostedMt5RemoteApp } from "@/components/hosted/HostedMt5RemoteApp";
 import { useLang } from "@/components/AppShell";
 import { t } from "@/lib/i18n";
 import {
+  getWorkspaceReadinessSettings,
+  requestWorkspaceReadinessNotification,
+  type WorkspaceReadinessSettings,
+} from "@/lib/customer-notifications";
+import {
   bindExpectedAccount, confirmAccount, describeJourney, fetchJourney, requestWorkspace, STEPS,
   type HostedJourney, type JourneyView,
 } from "@/lib/hosted-journey";
@@ -132,6 +137,64 @@ function WaitingPanel({ slow }: { slow: boolean }) {
       <p style={{ marginTop: 10, fontSize: "0.8rem", lineHeight: 1.5, color: MUTED }}>
         {t(lang, "hostedJourney.passwordLater")}
       </p>
+      <WorkspaceReadyNotifyControl />
+    </div>
+  );
+}
+
+export function WorkspaceReadyNotifyControl() {
+  const lang = useLang();
+  const [settings, setSettings] = useState<WorkspaceReadinessSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getWorkspaceReadinessSettings()
+      .then((value) => { if (!cancelled) setSettings(value); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!settings || !settings.has_workspace) return null;
+
+  const requestNotification = async () => {
+    setBusy(true);
+    setError(false);
+    try {
+      const result = await requestWorkspaceReadinessNotification(lang);
+      setSettings(result);
+      if (result.connect_url) {
+        const opened = window.open(result.connect_url, "_blank", "noopener,noreferrer");
+        if (!opened) window.location.assign(result.connect_url);
+      }
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid rgba(74,179,255,0.12)" }}>
+      {settings?.requested ? (
+        <p role="status" style={{ margin: 0, color: "#8ee6b3", fontSize: "0.82rem" }}>
+          {t(lang, settings.fulfilled ? "hostedJourney.notifyReadySent" : "hostedJourney.notifyReadyRequested")}
+        </p>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void requestNotification()}
+          disabled={busy}
+          style={{ border: 0, background: "transparent", color: ACCENT, padding: 0, fontSize: "0.84rem", fontWeight: 700, cursor: busy ? "default" : "pointer" }}
+        >
+          {busy ? t(lang, "hostedJourney.notifyReadySaving") : t(lang, "hostedJourney.notifyReady")}
+        </button>
+      )}
+      {settings?.requested && !settings.telegram_connected && (
+        <p style={{ margin: "0.4rem 0 0", color: BODY, fontSize: "0.78rem" }}>{t(lang, "hostedJourney.notifyReadyConnect")}</p>
+      )}
+      {error && <p role="alert" style={{ margin: "0.4rem 0 0", color: "#fca5a5", fontSize: "0.78rem" }}>{t(lang, "hostedJourney.notifyReadyError")}</p>}
     </div>
   );
 }
@@ -570,10 +633,13 @@ export function HostedWorkspaceJourney() {
   } else if (view.action === null && view.tone === "progress") {
     // Progress phases carry no action — show live motion so it never looks frozen, with one "remain" message.
     body = (
-      <div role="status" aria-live="polite"
-           style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
-        <Spinner />
-        <span>{t(lang, "hostedJourney.working")}</span>
+      <div>
+        <div role="status" aria-live="polite"
+             style={{ display: "flex", alignItems: "center", gap: 10, color: MUTED, fontSize: "0.85rem" }}>
+          <Spinner />
+          <span>{t(lang, "hostedJourney.working")}</span>
+        </div>
+        <WorkspaceReadyNotifyControl />
       </div>
     );
   } else if (view.action?.kind === "request") {
