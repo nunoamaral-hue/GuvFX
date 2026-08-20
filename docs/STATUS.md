@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - PRE-BETA POPULATION CLEANUP: BETA_USER_POPULATION_CERTIFIED (DB+host, no repo change).**
+  Authorised destructive cleanup after the population audit. Verified pg_dump backup
+  (`_prebeta_cleanup_backup_20260820.sql.gz`, sha `d7950e99`). PURGED beta.guvfx01 (user 32/acct28/1302575):
+  atomic txn deleted SignalExecutionPlan(16)+ProposedOrderLeg(48), AccountProvisioning, then User cascade
+  (2854 rows) — while PlanAuditEvent/PromotionAuditEvent/AuditEvent/CustomerNotification were SET_NULL
+  PRESERVED+anonymised (retention contract is schema-encoded). Host: killed acct28 terminal64/:8800 bridge,
+  removed tasks/RemoteApp/dirs/guvfx_u_28. DEACTIVATED dormant superuser a@a.com (is_active/staff/super=False,
+  unusable pw) rather than delete — it is created_by/actor on ~30 governance records (SET_NULL), so deletion
+  would strip audit authorship. Archived orphan accounts (285MB->_rollback), removed orphan acct27 tasks.
+  KEPT: port 8790 = hosted-executor daemon (operational, SYSTEM, Tailscale-bound); guvfx_b_slot1..4 (non-admin
+  warm-capacity pool, task-referenced). Sacred preserved: CZ+support@ series_sha byte-identical, endpoints
+  READY/healthy, 0 stuck jobs, terminals running. Final: 4 users (nuno super, system, support@, a@a.com
+  deactivated), accounts {1,25}, 0 Telegram bindings, node2 max=12 occ=1 free=11 (unchanged max). Zero DB/host
+  orphans. Rollback not required.
+
 - **2026-08-20 - CUSTOMER TELEGRAM PRODUCT POLICY: IMPLEMENTED, NOT DEPLOYED.** Branch
   `feat/customer-telegram-policy-preferences` on main `5d8c534` removes the customer Trade observer/reconciler,
   makes live-entry/raw/unknown events fail closed at enqueue and delivery, and adds winner ON, loser/breakeven
