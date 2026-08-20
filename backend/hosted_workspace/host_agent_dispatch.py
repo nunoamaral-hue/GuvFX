@@ -62,6 +62,10 @@ OP_PRIMITIVES = {
     "APPLY_WORKSPACE_ACL":      {"primitive": "apply_workspace_acl",      "params_allow": ()},
     "ROLLBACK_WORKSPACE_ACL":   {"primitive": "rollback_workspace_acl",   "params_allow": ()},
     "MATERIALISE_RUNTIME":      {"primitive": "materialise_runtime",      "params_allow": ()},
+    # P0 proactive LiveUpdate containment: ensure the tenant profile exists (CreateProfile — no session, no MT5
+    # launch) then apply the certified Variant-A deny-write on the tenant's OWN roaming LiveUpdate staging.
+    # Server-derived identity/paths only (username + accounts\<id>\terminal + account_id); Customer Zero refused.
+    "APPLY_LIVEUPDATE_CONTAINMENT": {"primitive": "apply_liveupdate_containment", "params_allow": ()},
     "APPLY_AUTOTRADING_CONFIG": {"primitive": "apply_autotrading_config", "params_allow": ()},
     "ENSURE_RDP_MEMBERSHIP":    {"primitive": "ensure_rdp_membership",    "params_allow": ()},
     "ENSURE_SINGLE_SESSION":    {"primitive": "ensure_single_session",    "params_allow": ()},
@@ -205,6 +209,12 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
             raise HostProtocolError("params_not_allowed")
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
                 "account_id": slot["account_id"], "port": port}
+    if op == "APPLY_LIVEUPDATE_CONTAINMENT":
+        # The host script confines to guvfx_u_<id> + accounts\<id>\terminal, refuses Customer Zero, ensures the
+        # tenant profile exists (CreateProfile) and deny-writes ONLY that tenant's roaming LiveUpdate staging.
+        # account_id is passed so the .ps1 re-asserts the CZ refusal + validates the identity as defence in depth.
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "account_id": slot["account_id"]}
     if op == "RELAUNCH_TERMINAL":
         # The host script confines to guvfx_u_<id> + accounts\<id>\terminal and closes/relaunches ONLY the
         # tenant's own terminal64; account_id is passed so the .ps1 can derive its per-account task names +

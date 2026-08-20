@@ -39,6 +39,7 @@
     "Set-GuvfxAppLockerTenant.ps1",
     "Activate-GuvfxOrderBridge.ps1",
     "Activate-GuvfxTenantBridge.ps1",
-    "Relaunch-GuvfxTerminal.ps1"
+    "Relaunch-GuvfxTerminal.ps1",
+    "Contain-GuvfxLiveUpdate.ps1"
   ]
 }

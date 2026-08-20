@@ -122,6 +122,17 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("APPLY_AUTOTRADING_CONFIG")
 
+    def apply_liveupdate_containment(self, username, runtime_root, rdp_host=None) -> dict:
+        """P0 proactive LiveUpdate containment (pre-first-launch). Server-derived confinement (identity +
+        runtime root); Customer Zero is refused by the reserved-id guard in ``_send``/``_confined``. The host
+        ensures the tenant profile exists (``CreateProfile`` — no interactive session, no MT5 launch) and applies
+        the certified Variant-A tenant-scoped Deny-write on the roaming LiveUpdate staging, read-back verified.
+        Sends NO params — every identity/path is re-derived host-side from ``account_id`` (like
+        ``relaunch_terminal``). Launches nothing, logs in nothing, changes no account, places no order."""
+        if not self._confined(username=username, runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("APPLY_LIVEUPDATE_CONTAINMENT")
+
     def relaunch_terminal(self, username, runtime_root, rdp_host=None) -> dict:
         """AJ#6.3 — graceful in-session close+relaunch of THIS tenant's own MT5 (post-login AutoTrading
         capability recovery). Server-derived confinement (identity + runtime root); Customer Zero is refused by

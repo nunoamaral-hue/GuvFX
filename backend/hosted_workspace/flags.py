@@ -292,3 +292,22 @@ def hosted_per_tenant_transport_enabled() -> bool:
     ``HOSTED_PERSISTENT_MT5_ENABLED``/``HOSTED_EXECUTION_PATH_GATE_ENABLED`` so the transport can be proven
     DARK without touching provisioning or execution-arming gates."""
     return _flag("HOSTED_PER_TENANT_TRANSPORT_ENABLED")
+
+
+def hosted_liveupdate_containment_enabled() -> bool:
+    """P0 pre-beta reliability gate (Sponsor 2026-08-20) — PROACTIVE MT5 LiveUpdate containment during
+    provisioning. DEFAULT OFF.
+
+    While OFF, ``prepare_hosted_slot`` behaves EXACTLY as before this stream: no containment step, no host
+    contact for it — byte-identical (the LiveUpdate first-launch terminal-fork is only ever caught reactively by
+    AJ#6.4 ``relaunch_terminal`` AFTER a customer is already stranded). While ON, the materialise pipeline treats
+    LiveUpdate containment as a REQUIRED, fail-closed host primitive (``apply_liveupdate_containment``) in the
+    same family as ``materialise_runtime`` / ``activate_order_bridge``: for every fresh tenant, BEFORE the
+    customer's first MT5 launch, the host ensures the tenant profile exists (``CreateProfile``, no interactive
+    session / no MT5 launch) and applies the certified Variant-A tenant-scoped Deny-write on the roaming
+    LiveUpdate staging (``%APPDATA%\\MetaQuotes\\WebInstall`` + per-hash ``Terminal\\<hash>\\liveupdate``),
+    read-back verified. If either step cannot be verified the slot stays NON-READY (never advances to
+    WAITING_FOR_LOGIN) — the customer sees the normal preparing/retry UX, never a known-fragmentable terminal.
+    RemoteApp / first-launch semantics are unchanged. Grants NO order authority; arms NO customer; performs no
+    broker login. Independent of every execution-arming gate so it can be proven DARK and armed on its own."""
+    return _flag("HOSTED_LIVEUPDATE_CONTAINMENT_ENABLED")
