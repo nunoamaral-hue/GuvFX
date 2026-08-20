@@ -44,6 +44,7 @@ PREP_EXECUTOR_INCOMPLETE = "host_executor_incomplete"   # executor lacks a requi
 PREP_IDENTITY_FAILED = "identity_materialise_failed"
 PREP_ACL_FAILED = "workspace_acl_failed"         # apply or read-back verification failed → rolled back
 PREP_POPULATE_FAILED = "runtime_populate_failed"
+PREP_CONTAINMENT_FAILED = "liveupdate_containment_failed"   # P0: proactive LiveUpdate containment not verified
 PREP_AUTOTRADING_FAILED = "autotrading_config_failed"
 PREP_RDP_FAILED = "rdp_grant_failed"
 PREP_SESSION_FAILED = "single_session_failed"
@@ -63,6 +64,7 @@ PREP_OK = "prepared"
 PREP_FAILURE_REASONS = frozenset({
     PREP_DARK, PREP_REFUSED_RESERVED, PREP_NOT_BOUND, PREP_NODE_UNCONFIGURED, PREP_NO_EXECUTOR,
     PREP_EXECUTOR_INCOMPLETE, PREP_IDENTITY_FAILED, PREP_ACL_FAILED, PREP_POPULATE_FAILED,
+    PREP_CONTAINMENT_FAILED,
     PREP_AUTOTRADING_FAILED, PREP_RDP_FAILED, PREP_SESSION_FAILED, PREP_REMOTEAPP_FAILED,
     PREP_APPLOCKER_FAILED, PREP_OBSERVER_FAILED, PREP_BRIDGE_FAILED, PREP_BRIDGE_ENDPOINT_CONFLICT,
     PREP_BRIDGE_FORBIDDEN_NODE, PREP_HOST_ERROR,
@@ -75,6 +77,7 @@ ST_MATERIALISE = "materialise_identity_and_folders"
 ST_ACL = "apply_workspace_acl"
 ST_MARK = "mark_materialised"
 ST_POPULATE = "populate_runtime"
+ST_CONTAINMENT = "apply_liveupdate_containment"
 ST_AUTOTRADING = "apply_autotrading_config"
 ST_RDP = "grant_rdp"
 ST_SESSION = "enforce_single_session"
@@ -269,6 +272,27 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     if not _ok(res):
         return SlotPreparationResult(False, PREP_POPULATE_FAILED, ST_POPULATE)
     record_stage_timing(ws, STAGE_RUNTIME_MATERIALISED)   # UX timing (fail-open)
+
+    # ---- Stage 5a: PROACTIVE LiveUpdate containment (P0 pre-beta reliability gate, Sponsor 2026-08-20) -------
+    #      BEFORE the customer's first MT5 launch, the host ensures the tenant profile exists (CreateProfile — NO
+    #      interactive session, NO MT5 launch) and applies the certified Variant-A tenant-scoped Deny-write on the
+    #      tenant's OWN roaming LiveUpdate staging (%APPDATA%\MetaQuotes\WebInstall + per-hash liveupdate),
+    #      read-back verified host-side. This proactively prevents the PROVEN first-launch LiveUpdate terminal-
+    #      fork (a login-less /portable terminal + a roaming/non-portable sibling that carries the broker login →
+    #      account_info hangs → onboarding stalls at "Detecting your account...") that previously required
+    #      per-customer operator repair. REQUIRED + FAIL-CLOSED while the flag is ON: an unverifiable profile or
+    #      containment leaves the slot NON-READY (the customer sees the normal preparing/retry UX), never a
+    #      known-fragmentable terminal. The runtime exists (Stage 5) and the tenant identity exists (Stage 2);
+    #      RemoteApp / first-launch semantics are UNCHANGED. While the flag is OFF this whole stage is skipped —
+    #      byte-identical to before this stream, so Customer Zero and every existing slot are untouched. It grants
+    #      NO order authority, arms NO customer, and performs no broker login. ------------------------------------
+    from hosted_workspace.flags import hosted_liveupdate_containment_enabled
+    if hosted_liveupdate_containment_enabled():
+        res = _call("apply_liveupdate_containment", ST_CONTAINMENT, username, runtime_root, rdp_host=rdp_host)
+        if res is None:
+            return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_CONTAINMENT)
+        if not _ok(res):
+            return SlotPreparationResult(False, PREP_CONTAINMENT_FAILED, ST_CONTAINMENT)
 
     # ---- Stage 5b: AutoTrading CAPABILITY config — write [Experts] AllowLiveTrading=1 Enabled=1 into the
     #      runtime's common.ini (the empirically certified minimum). This is CAPABILITY ONLY: it authorises no

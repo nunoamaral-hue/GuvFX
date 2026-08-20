@@ -34,6 +34,7 @@ HOSTED_OPERATIONS = (
     "APPLY_WORKSPACE_ACL",       # G5: exactly SYSTEM+Administrators+user, inheritance broken, read-back
     "ROLLBACK_WORKSPACE_ACL",    # restore the pre-apply DACL snapshot
     "MATERIALISE_RUNTIME",       # copy the golden clean portable MT5 into runtime_root\terminal
+    "APPLY_LIVEUPDATE_CONTAINMENT",  # P0 proactive: ensure profile (CreateProfile) + certified Variant-A deny-write on roaming LiveUpdate staging BEFORE first launch
     "APPLY_AUTOTRADING_CONFIG",  # write [Experts] AllowLiveTrading=1 Enabled=1 (CAPABILITY only) to common.ini
     "ENSURE_RDP_MEMBERSHIP",     # add guvfx_u_<id> to Remote Desktop Users (scoped)
     "ENSURE_SINGLE_SESSION",     # fSingleSessionPerUser=1 (host-global, idempotent)

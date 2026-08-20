@@ -88,6 +88,14 @@ CONTRACT = {
     "apply_autotrading_config": PrimitiveSpec(
         script="Set-GuvfxAutoTradingConfig.ps1",
         argmap={"terminal_root": "-TerminalRoot"}),
+    # P0 proactive LiveUpdate containment (pre-first-launch). The .ps1 confines to guvfx_u_<id> +
+    # accounts\<id>\terminal, refuses Customer Zero, ensures the tenant profile exists (CreateProfile — NO
+    # interactive session, NO MT5 launch), and applies the certified Variant-A tenant-scoped deny-write on the
+    # tenant's OWN roaming LiveUpdate staging (read-back verified). -AccountId is passed explicitly so the script
+    # re-derives/validates identity + re-asserts the CZ refusal. It NEVER launches, logs in, or places an order.
+    "apply_liveupdate_containment": PrimitiveSpec(
+        script="Contain-GuvfxLiveUpdate.ps1",
+        argmap={"username": "-Username", "terminal_root": "-TerminalRoot", "account_id": "-AccountId"}),
     # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own terminal64 (post-login capability
     # recovery). The .ps1 confines to guvfx_u_<id> + accounts\<id>\terminal, refuses Customer Zero, and only
     # ever closes/launches the tenant's OWN terminal. -AccountId is passed explicitly (not injected) so the
