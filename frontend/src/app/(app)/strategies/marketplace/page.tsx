@@ -35,6 +35,14 @@ type MarketplaceStrategy = {
   // Strategy" acquires it (non-executing), then Configure → Enable turns on automated trading. Generic cards
   // are research/templates and never auto-execute.
   signalCopy?: boolean;
+  // Beta catalogue curation (presentation only — never changes execution). `featured` pins a strategy to the
+  // front of the customer catalogue (Wayond, the primary beta journey). `betaAvailable` is an explicit,
+  // fail-closed OPT-IN: only strategies with a proven customer path are marked available and shown to beta
+  // customers. Anything unmarked (research templates, prototypes, entries with no functioning path, or new
+  // additions whose path is unproven) is withheld by default, so the Marketplace never implies a strategy is
+  // ready when it isn't. Seed definitions are kept (not deleted) — simply not surfaced to beta customers.
+  featured?: boolean;
+  betaAvailable?: boolean;
 };
 
 // Per-card owned/enabled state for signal-copy strategies (drives the "Get Strategy" vs "Configure" CTA and
@@ -137,6 +145,22 @@ const freeBadgeStyle: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
+// "Featured" badge for the primary beta strategy (Wayond). Uses the design-system accent tones; no
+// performance/marketing claims — it is a catalogue-prominence marker only.
+const featuredBadgeStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  padding: "0.15rem 0.55rem",
+  borderRadius: 999,
+  border: "1px solid rgba(250,204,21,0.45)",
+  background: "rgba(250,204,21,0.14)",
+  color: "#fde047",
+  fontSize: "0.72rem",
+  fontWeight: 700,
+  whiteSpace: "nowrap",
+};
+
 // ─────────────────────────────────────────────────────────────────────
 // Seeded Marketplace Strategies
 // ─────────────────────────────────────────────────────────────────────
@@ -225,6 +249,10 @@ const MARKETPLACE_SEED: MarketplaceStrategy[] = [
     pairs: ["XAUUSD"],
     tags: ["Signal copy", "Demo"],
     signalCopy: true,
+    // The primary — and, for now, only — customer-usable beta strategy: it has the proven
+    // Get → Configure → Enable → automated-execution path. Pinned first + shown to beta customers.
+    featured: true,
+    betaAvailable: true,
   },
 ];
 
@@ -353,7 +381,10 @@ export default function StrategyMarketplacePage() {
   // Filtered Strategies
   // ─────────────────────────────────────────────────────────────────────
   const filteredStrategies = useMemo(() => {
-    let result = MARKETPLACE_SEED;
+    // Beta catalogue: fail-closed — show ONLY strategies explicitly marked customer-available. Research
+    // templates / prototypes / entries with no functioning path are withheld so a customer is never led
+    // into a strategy that looks usable but has no working path. (Presentation only; nothing is deleted.)
+    let result = MARKETPLACE_SEED.filter((s) => s.betaAvailable);
 
     // Category filter
     if (activeFilter !== "All") {
@@ -371,7 +402,9 @@ export default function StrategyMarketplacePage() {
       );
     }
 
-    return result;
+    // Deterministic catalogue order: featured strategies first (Wayond), then stable seed order. Explicit —
+    // never relies on DB PK, creation date, alphabetical, or incidental queryset order.
+    return [...result].sort((a, b) => Number(b.featured ?? false) - Number(a.featured ?? false));
   }, [search, activeFilter, lang]);
 
   // ─────────────────────────────────────────────────────────────────────
@@ -665,7 +698,10 @@ export default function StrategyMarketplacePage() {
               <div style={{ marginBottom: "0.75rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.6rem" }}>
                   <span style={pillStyle(strategy.accent)}>{t(lang, `marketplace.filter${strategy.category}`)}</span>
-                  <div style={{ display: "flex", gap: "0.4rem" }}>
+                  <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {strategy.featured && (
+                      <span style={featuredBadgeStyle}>★ {t(lang, "marketplace.featured")}</span>
+                    )}
                     {strategy.tags?.map((tag) => (
                       <span key={tag} style={badgeStyle()}>
                         {t(lang, `marketplace.tag.${tag.toLowerCase().replaceAll(" ", "-")}`)}
@@ -842,6 +878,14 @@ export default function StrategyMarketplacePage() {
             );
           })}
         </div>
+
+        {/* Beta catalogue is intentionally curated to strategies with a working customer path. A truthful
+            roadmap note — no card, no promise, no fake availability. */}
+        {filteredStrategies.length > 0 && !search.trim() && activeFilter === "All" && (
+          <p style={{ textAlign: "center", padding: "1.75rem 1rem 0", color: "#64748b", fontSize: "0.85rem" }}>
+            {t(lang, "marketplace.moreComingSoon")}
+          </p>
+        )}
 
         {/* Empty State */}
         {filteredStrategies.length === 0 && (
