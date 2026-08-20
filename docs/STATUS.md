@@ -14,6 +14,23 @@
 
 ## Execution workstream log
 
+- **2026-08-20 - TELEGRAM WEBHOOK DEADLOCK: FIX DEPLOYED + QUEUE CLEARED -> HUMAN_TELEGRAM_START_REQUIRED
+  (backend PR #388, main `56a49af`, image `512544fbee46`).** The customer-bot webhook returned 400 for
+  deterministic rejections (expired/invalid/consumed token, non-private, id mismatch, chat-already-bound);
+  Telegram retries non-2xx in order, so a stale /start pinned the queue and blocked every later one (tokens
+  expire in ~10min -> self-reinforcing deadlock; pending stuck, repeated 400). Fix: webhook ACKS permanent
+  rejects with 200 (bind/notify nothing, drop); TelegramUnavailable->503, unexpected->500 (retryable); auth
+  stays 403; logs carry only a sanitized reason code. redeem_connection_token UNCHANGED (single-use, expiry,
+  private-chat, unique ownership, cross-user rejection all preserved). 97 tests (400->200 + transient-retryable
+  + stale-does-not-block + no-secret-logging); adversarial self-review 0/0. DEPLOY GOTCHA (caught+fixed): the
+  first `compose up` recreate DROPPED CUSTOMER_TELEGRAM_* because `customer-telegram.env` was not wired into
+  any compose file (only manually injected at the policy deploy) -> webhook 404'd -> restored by adding
+  `customer-telegram.env` to guvfx-backend in docker-compose.override.yml (recreates now safe). Phase F:
+  re-registered webhook (same url/secret/allowed_updates) with drop_pending_updates -> pending=0, last_error
+  cleared. Sacred: support@/CZ unbound, 0 bindings (no fabrication), execution/MT5/bridges/Wayond untouched.
+  Rollback anchors: image `rollback-preTGWEBHOOK`, `docker-compose.override.yml.bak-preTGWEBHOOK`. STOP: Sponsor
+  must Connect Telegram from beta user33 with a FRESH /start; observation resumes after.
+
 - **2026-08-20 - ONBOARDING "DETECTING YOUR ACCOUNT" RECOVERY: HUMAN_LOGIN_REQUIRED (host-only, no code change).**
   Recreated beta user33/acct29(1302575)/ws16 stuck at "Detecting your account" because an MT5 LiveUpdate forked
   the tenant terminal: the bridge (:8800, MT5_TERMINAL_PATH=portable) observed a login-less portable terminal
