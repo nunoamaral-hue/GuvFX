@@ -294,6 +294,20 @@ def hosted_per_tenant_transport_enabled() -> bool:
     return _flag("HOSTED_PER_TENANT_TRANSPORT_ENABLED")
 
 
+def hosted_golden_drift_gate_enabled() -> bool:
+    """P0 first-launch reliability (Sponsor 2026-08-24) — fail-closed golden-build/manifest consistency gate.
+    DEFAULT OFF.
+
+    While OFF, ``prepare_hosted_slot`` behaves EXACTLY as before: no build check, no host contact for it. While
+    ON, after the golden runtime is materialised the host reads the ACTUAL ``terminal64.exe`` ProductVersion and
+    compares it to the pinned golden manifest; a mismatch is ``PREP_GOLDEN_DRIFT`` -> the slot stays NON-READY and
+    the customer never launches a known-drifted runtime (the exact defect behind the customer-visible MT5 update/
+    UAC dead-end: a 5833 runtime under a 6036 manifest). MUST NOT be armed while the live golden is itself drifted
+    (manifest 6036 vs exe 5833) -- arming then would fail-closed EVERY provision; it arms only after the golden
+    and manifest are reconciled to the approved certified build. Additive; grants no authority; no broker login."""
+    return _flag("HOSTED_GOLDEN_DRIFT_GATE_ENABLED")
+
+
 def hosted_liveupdate_containment_enabled() -> bool:
     """P0 pre-beta reliability gate (Sponsor 2026-08-20) — PROACTIVE MT5 LiveUpdate containment during
     provisioning. DEFAULT OFF.

@@ -88,6 +88,11 @@ CONTRACT = {
     "apply_autotrading_config": PrimitiveSpec(
         script="Set-GuvfxAutoTradingConfig.ps1",
         argmap={"terminal_root": "-TerminalRoot"}),
+    # P0 golden-drift gate (read-only): report the runtime terminal64 ProductVersion vs the pinned golden
+    # manifest build. -TerminalRoot is server-derived; the script emits a JSON verdict and mutates nothing.
+    "verify_runtime_build": PrimitiveSpec(
+        script="Verify-GuvfxRuntimeBuild.ps1",
+        argmap={"terminal_root": "-TerminalRoot"}),
     # P0 proactive LiveUpdate containment (pre-first-launch). The .ps1 confines to guvfx_u_<id> +
     # accounts\<id>\terminal, refuses Customer Zero, ensures the tenant profile exists (CreateProfile — NO
     # interactive session, NO MT5 launch), and applies the certified Variant-A tenant-scoped deny-write on the

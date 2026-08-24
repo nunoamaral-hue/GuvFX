@@ -44,6 +44,7 @@ PREP_EXECUTOR_INCOMPLETE = "host_executor_incomplete"   # executor lacks a requi
 PREP_IDENTITY_FAILED = "identity_materialise_failed"
 PREP_ACL_FAILED = "workspace_acl_failed"         # apply or read-back verification failed → rolled back
 PREP_POPULATE_FAILED = "runtime_populate_failed"
+PREP_GOLDEN_DRIFT = "golden_build_drift"   # P0: runtime terminal64 build != pinned golden manifest (fail closed)
 PREP_CONTAINMENT_FAILED = "liveupdate_containment_failed"   # P0: proactive LiveUpdate containment not verified
 PREP_AUTOTRADING_FAILED = "autotrading_config_failed"
 PREP_RDP_FAILED = "rdp_grant_failed"
@@ -64,7 +65,7 @@ PREP_OK = "prepared"
 PREP_FAILURE_REASONS = frozenset({
     PREP_DARK, PREP_REFUSED_RESERVED, PREP_NOT_BOUND, PREP_NODE_UNCONFIGURED, PREP_NO_EXECUTOR,
     PREP_EXECUTOR_INCOMPLETE, PREP_IDENTITY_FAILED, PREP_ACL_FAILED, PREP_POPULATE_FAILED,
-    PREP_CONTAINMENT_FAILED,
+    PREP_GOLDEN_DRIFT, PREP_CONTAINMENT_FAILED,
     PREP_AUTOTRADING_FAILED, PREP_RDP_FAILED, PREP_SESSION_FAILED, PREP_REMOTEAPP_FAILED,
     PREP_APPLOCKER_FAILED, PREP_OBSERVER_FAILED, PREP_BRIDGE_FAILED, PREP_BRIDGE_ENDPOINT_CONFLICT,
     PREP_BRIDGE_FORBIDDEN_NODE, PREP_HOST_ERROR,
@@ -77,6 +78,7 @@ ST_MATERIALISE = "materialise_identity_and_folders"
 ST_ACL = "apply_workspace_acl"
 ST_MARK = "mark_materialised"
 ST_POPULATE = "populate_runtime"
+ST_GOLDEN_DRIFT = "verify_runtime_build"
 ST_CONTAINMENT = "apply_liveupdate_containment"
 ST_AUTOTRADING = "apply_autotrading_config"
 ST_RDP = "grant_rdp"
@@ -272,6 +274,25 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     if not _ok(res):
         return SlotPreparationResult(False, PREP_POPULATE_FAILED, ST_POPULATE)
     record_stage_timing(ws, STAGE_RUNTIME_MATERIALISED)   # UX timing (fail-open)
+
+    # ---- Stage 5-golden: fail-closed golden-build/manifest consistency gate (P0, Sponsor 2026-08-24) --------
+    #      The materialised runtime's ACTUAL terminal64.exe ProductVersion must equal the pinned golden manifest.
+    #      A mismatch (e.g. a 5833 runtime under a 6036 manifest) means the customer would be handed a KNOWN-
+    #      DRIFTED build that prompts a customer-visible MT5 update -> updater elevation -> non-admin UAC dead-end.
+    #      REQUIRED + FAIL-CLOSED while the flag is ON: drift -> PREP_GOLDEN_DRIFT, slot NON-READY, RemoteApp never
+    #      exposed as ready, clear operator reason. Deterministic; based on the host executable's own version, not
+    #      frontend metadata. While OFF this stage is skipped -- byte-identical to before. It MUST NOT be armed
+    #      until the live golden itself is reconciled to the approved certified build (else it fails every provision
+    #      by design). It grants no authority and performs no broker login. ---------------------------------------
+    from hosted_workspace.flags import hosted_golden_drift_gate_enabled
+    if hosted_golden_drift_gate_enabled():
+        res = _call("verify_runtime_build", ST_GOLDEN_DRIFT, runtime_root, rdp_host=rdp_host)
+        if res is None:
+            return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_GOLDEN_DRIFT)
+        if not _ok(res) or not bool(res.get("build_matches_manifest")):
+            return SlotPreparationResult(False, PREP_GOLDEN_DRIFT, ST_GOLDEN_DRIFT,
+                                         detail={"runtime_build": res.get("runtime_build") if res else None,
+                                                 "manifest_build": res.get("manifest_build") if res else None})
 
     # ---- Stage 5a: PROACTIVE LiveUpdate containment (P0 pre-beta reliability gate, Sponsor 2026-08-20) -------
     #      BEFORE the customer's first MT5 launch, the host ensures the tenant profile exists (CreateProfile — NO

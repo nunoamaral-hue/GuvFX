@@ -62,6 +62,9 @@ OP_PRIMITIVES = {
     "APPLY_WORKSPACE_ACL":      {"primitive": "apply_workspace_acl",      "params_allow": ()},
     "ROLLBACK_WORKSPACE_ACL":   {"primitive": "rollback_workspace_acl",   "params_allow": ()},
     "MATERIALISE_RUNTIME":      {"primitive": "materialise_runtime",      "params_allow": ()},
+    # P0 golden-drift gate: read the runtime terminal64 build vs the pinned golden manifest (read-only). Server-
+    # derived terminal_root + injected account_id; no caller params.
+    "VERIFY_RUNTIME_BUILD":     {"primitive": "verify_runtime_build",     "params_allow": ()},
     # P0 proactive LiveUpdate containment: ensure the tenant profile exists (CreateProfile — no session, no MT5
     # launch) then apply the certified Variant-A deny-write on the tenant's OWN roaming LiveUpdate staging.
     # Server-derived identity/paths only (username + accounts\<id>\terminal + account_id); Customer Zero refused.

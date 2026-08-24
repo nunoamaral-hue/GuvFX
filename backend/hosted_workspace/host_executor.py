@@ -122,6 +122,15 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("APPLY_AUTOTRADING_CONFIG")
 
+    def verify_runtime_build(self, runtime_root, rdp_host=None) -> dict:
+        """P0 golden-drift gate: ask the host to read the materialised runtime's terminal64.exe ProductVersion and
+        the pinned golden manifest build and report whether they match. Read-only on the host (no launch, no
+        login, no mutation). Confined on ``runtime_root``; Customer Zero refused in ``_send``. Sends NO params
+        (server-derived). Returns ``{"ok", "runtime_build", "manifest_build", "build_matches_manifest"}``."""
+        if not self._confined(runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("VERIFY_RUNTIME_BUILD")
+
     def apply_liveupdate_containment(self, username, runtime_root, rdp_host=None) -> dict:
         """P0 proactive LiveUpdate containment (pre-first-launch). Server-derived confinement (identity +
         runtime root); Customer Zero is refused by the reserved-id guard in ``_send``/``_confined``. The host
