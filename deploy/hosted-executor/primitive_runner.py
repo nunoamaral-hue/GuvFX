@@ -122,7 +122,9 @@ CONTRACT = {
         argmap={}, fixed={"-Mode": "Enforce"}),
     "ensure_remoteapp": PrimitiveSpec(
         script="Set-GuvfxRemoteApp.ps1",
-        argmap={"terminal_root": "-TerminalRoot", "alias": "-Alias"}, fixed={"-Mode": "Ensure"}),
+        # -Target is the server-derived RemoteApp start-program target ("terminal64" default | "launcher" arming);
+        # absent -> the .ps1 defaults to terminal64 (byte-identical legacy publish).
+        argmap={"terminal_root": "-TerminalRoot", "alias": "-Alias", "target": "-Target"}, fixed={"-Mode": "Ensure"}),
     "remove_remoteapp": PrimitiveSpec(
         script="Set-GuvfxRemoteApp.ps1",
         argmap={"terminal_root": "-TerminalRoot", "alias": "-Alias"}, fixed={"-Mode": "Remove"}),

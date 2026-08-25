@@ -21,11 +21,12 @@ param(
   [Parameter(Mandatory=$true)][string]$TerminalRoot,
   # Stream 6 (M2): the server-derived per-account alias (guvfx_mt5_<id>); Customer Zero keeps legacy terminal64.
   [string]$Alias = "terminal64",
-  # ARMING (Sponsor 2026-08-25): when set, the RemoteApp start-program is the certified NATIVE single-instance
-  # launcher (C:\GuvFX\launcher\guvfx_launch.exe) with NO command line, instead of terminal64.exe /portable. The
-  # launcher derives the tenant identity from the Windows token and runs the tenant's OWN terminal64 /portable
-  # idempotently (refresh/reconnect -> exactly one terminal). DEFAULT OFF -> byte-identical legacy publish.
-  [switch]$UseLauncher
+  # ARMING (Sponsor 2026-08-25): the RemoteApp start-program target. "terminal64" (default) publishes the legacy
+  # per-tenant terminal64.exe /portable byte-identically. "launcher" publishes the certified NATIVE single-
+  # instance launcher (C:\GuvFX\launcher\guvfx_launch.exe) with NO command line -- it derives the tenant identity
+  # from the Windows token and runs the tenant's OWN terminal64 /portable idempotently (refresh/reconnect ->
+  # exactly one terminal). Server-derived (gated by HOSTED_NATIVE_LAUNCHER_GATE_ENABLED); never customer-supplied.
+  [ValidateSet("terminal64","launcher")][string]$Target = "terminal64"
 )
 $ErrorActionPreference = "Stop"
 $ACCOUNTS_BASE = "C:\GuvFX\accounts"
@@ -45,7 +46,7 @@ try {
   if (-not ($full.ToLower().EndsWith("\terminal"))) { Fail "refusing: not a terminal root" }
   $exe = Join-Path $full "terminal64.exe"
   # Arming: the RemoteApp target becomes the native launcher (no args), not the runtime terminal64 /portable.
-  if ($UseLauncher) { $exe = $LAUNCHER; $result.args = "" }
+  if ($Target -eq "launcher") { $exe = $LAUNCHER; $result.args = "" }
   $result.exe = $exe
 
   if ($Mode -eq "Remove") {
@@ -72,7 +73,7 @@ try {
     New-Item -Path $APPKEY -Force | Out-Null
     New-ItemProperty -Path $APPKEY -Name "Name" -Value $ALIAS -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $APPKEY -Name "Path" -Value $exe -PropertyType String -Force | Out-Null
-    if ($UseLauncher) {
+    if ($Target -eq "launcher") {
       # The launcher takes NO args (identity from the Windows token); CommandLineSetting=2 disallows any command
       # line so no customer-supplied argument can ever reach it.
       New-ItemProperty -Path $APPKEY -Name "CommandLineSetting" -Value 2 -PropertyType DWord -Force | Out-Null
@@ -90,7 +91,7 @@ try {
   $result.published = $true
   $pathOk = ($p.Path -ieq $exe)
   # Launcher target: no command line permitted (CommandLineSetting=2, no /portable). Legacy: exactly /portable.
-  if ($UseLauncher) { $argsOk = ([int]$p.CommandLineSetting -eq 2) } else { $argsOk = ($p.RequiredCommandLine -eq "/portable") }
+  if ($Target -eq "launcher") { $argsOk = ([int]$p.CommandLineSetting -eq 2) } else { $argsOk = ($p.RequiredCommandLine -eq "/portable") }
   # Per-account (M2): verify THIS alias resolves to THIS account's exact terminal64.exe + /portable. We do NOT
   # assert a machine-wide single-app count any more (multiple per-account aliases legitimately coexist); a
   # different account's alias points at ITS own tree, so cross-account program access is impossible by path.

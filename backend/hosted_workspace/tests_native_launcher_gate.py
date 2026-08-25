@@ -127,7 +127,56 @@ class NativeLauncherHostScriptStaticTests(SimpleTestCase):
 
     def test_remoteapp_has_launcher_arming_branch(self):
         text = self._read(_REMOTEAPP).decode("ascii")
-        self.assertIn("$UseLauncher", text)
+        self.assertIn('[ValidateSet("terminal64","launcher")][string]$Target', text)
+        self.assertIn('$Target -eq "launcher"', text)
         self.assertIn(r"C:\GuvFX\launcher\guvfx_launch.exe", text)
-        # default (no -UseLauncher) still publishes the legacy terminal64 /portable target byte-identically
+        # default (Target=terminal64) still publishes the legacy terminal64 /portable target byte-identically
         self.assertIn('"RequiredCommandLine" -Value "/portable"', text)
+
+
+class NativeLauncherRemoteAppCouplingTests(SimpleTestCase):
+    """verify_remoteapp (-> ENSURE_REMOTEAPP) repoints publish+verify to the launcher iff the flag is ON."""
+
+    _SLOT = {"username": "guvfx_u_24", "runtime_root": r"C:\GuvFX\accounts\24",
+             "terminal_root": r"C:\GuvFX\accounts\24\terminal", "remoteapp_alias": "guvfx_mt5_24",
+             "account_id": 24}
+
+    def test_ensure_remoteapp_allows_target_param(self):
+        self.assertEqual(D.OP_PRIMITIVES["ENSURE_REMOTEAPP"]["params_allow"], ("target",))
+        self.assertEqual(D.OP_PRIMITIVES["REMOVE_REMOTEAPP"]["params_allow"], ())
+
+    def test_build_args_target_launcher(self):
+        args = D._build_args("ENSURE_REMOTEAPP", self._SLOT, {"params": {"target": "launcher"}}, envelope_open=None)
+        self.assertEqual(args["target"], "launcher")
+        self.assertEqual(args["alias"], "guvfx_mt5_24")
+
+    def test_build_args_defaults_to_terminal64(self):
+        args = D._build_args("ENSURE_REMOTEAPP", self._SLOT, {}, envelope_open=None)
+        self.assertEqual(args["target"], "terminal64")
+
+    def test_build_args_rejects_unknown_target(self):
+        from hosted_workspace.host_protocol import HostProtocolError
+        with self.assertRaises(HostProtocolError):
+            D._build_args("ENSURE_REMOTEAPP", self._SLOT, {"params": {"target": "evil.exe"}}, envelope_open=None)
+
+    def test_remove_remoteapp_has_no_target(self):
+        args = D._build_args("REMOVE_REMOTEAPP", self._SLOT, {}, envelope_open=None)
+        self.assertNotIn("target", args)
+
+    def _capture_verify_remoteapp(self, flag):
+        ex = _executor(account_id=24, result_by_op={"ENSURE_REMOTEAPP": {"ok": True}})
+        captured = {}
+        ex._send = lambda op, **kw: (captured.update(op=op, **kw) or {"ok": True})
+        with override_settings(HOSTED_NATIVE_LAUNCHER_GATE_ENABLED=flag):
+            ex.verify_remoteapp(username="guvfx_u_24", runtime_root=r"C:\GuvFX\accounts\24")
+        return captured
+
+    def test_verify_remoteapp_flag_on_sends_launcher_target(self):
+        cap = self._capture_verify_remoteapp("1")
+        self.assertEqual(cap["op"], "ENSURE_REMOTEAPP")
+        self.assertEqual(cap["params"], {"target": "launcher"})
+
+    def test_verify_remoteapp_flag_off_sends_no_target(self):
+        cap = self._capture_verify_remoteapp("0")
+        self.assertEqual(cap["op"], "ENSURE_REMOTEAPP")
+        self.assertIsNone(cap["params"])
