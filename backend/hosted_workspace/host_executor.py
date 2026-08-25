@@ -131,6 +131,17 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("VERIFY_RUNTIME_BUILD")
 
+    def verify_native_launcher(self, username, runtime_root, rdp_host=None) -> dict:
+        """P0 native-launcher gate: ask the host to read-only-verify the certified single-instance launcher
+        (``C:\\GuvFX\\launcher\\guvfx_launch.exe``) — it EXISTS, its SHA256 matches the pinned launcher manifest,
+        its ACL is non-tenant-writable, an AppLocker ALLOW rule for it is present, and the tenant runtime exists.
+        Read-only on the host (no launch, no login, no mutation). Confined on ``username``/``runtime_root``;
+        Customer Zero refused in ``_send``. Sends NO params (server-derived). Returns ``{"ok", "launcher_exists",
+        "sha256_matches", "acl_safe", "applocker_allow_present", "runtime_exists"}``."""
+        if not self._confined(username=username, runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("VERIFY_NATIVE_LAUNCHER")
+
     def apply_liveupdate_containment(self, username, runtime_root, rdp_host=None) -> dict:
         """P0 proactive LiveUpdate containment (pre-first-launch). Server-derived confinement (identity +
         runtime root); Customer Zero is refused by the reserved-id guard in ``_send``/``_confined``. The host
@@ -161,7 +172,13 @@ class SignedHostExecutor:
     def verify_remoteapp(self, username, runtime_root, rdp_host=None) -> dict:
         if not self._confined(username=username, runtime_root=runtime_root):
             return {"ok": False, "reason": "confinement_mismatch"}
-        return self._send("ENSURE_REMOTEAPP")
+        # ARMING: when the native-launcher gate is ON, publish + verify the RemoteApp against the certified
+        # launcher (Path=guvfx_launch.exe, no command line) instead of terminal64.exe /portable. The target is a
+        # SERVER-derived, signed, params_allow-validated param (mirrors ACTIVATE_TENANT_BRIDGE's port) -- the
+        # host daemon's _build_args never trusts a customer value. While OFF -> no param -> byte-identical legacy.
+        from hosted_workspace.flags import hosted_native_launcher_gate_enabled
+        params = {"target": "launcher"} if hosted_native_launcher_gate_enabled() else None
+        return self._send("ENSURE_REMOTEAPP", params=params)
 
     def applocker_prepare(self, username, rdp_host=None) -> dict:
         if not self._confined(username=username):

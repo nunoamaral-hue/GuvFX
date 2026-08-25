@@ -93,6 +93,12 @@ CONTRACT = {
     "verify_runtime_build": PrimitiveSpec(
         script="Verify-GuvfxRuntimeBuild.ps1",
         argmap={"terminal_root": "-TerminalRoot"}),
+    # P0 native single-instance launcher gate (read-only): verify guvfx_launch.exe exists / SHA256 matches the
+    # pinned launcher manifest / ACL non-tenant-writable / AppLocker allow present / runtime exists. -TerminalRoot
+    # is server-derived; the script emits a JSON verdict and mutates nothing.
+    "verify_native_launcher": PrimitiveSpec(
+        script="Verify-GuvfxNativeLauncher.ps1",
+        argmap={"terminal_root": "-TerminalRoot"}),
     # P0 proactive LiveUpdate containment (pre-first-launch). The .ps1 confines to guvfx_u_<id> +
     # accounts\<id>\terminal, refuses Customer Zero, ensures the tenant profile exists (CreateProfile — NO
     # interactive session, NO MT5 launch), and applies the certified Variant-A tenant-scoped deny-write on the
@@ -116,7 +122,9 @@ CONTRACT = {
         argmap={}, fixed={"-Mode": "Enforce"}),
     "ensure_remoteapp": PrimitiveSpec(
         script="Set-GuvfxRemoteApp.ps1",
-        argmap={"terminal_root": "-TerminalRoot", "alias": "-Alias"}, fixed={"-Mode": "Ensure"}),
+        # -Target is the server-derived RemoteApp start-program target ("terminal64" default | "launcher" arming);
+        # absent -> the .ps1 defaults to terminal64 (byte-identical legacy publish).
+        argmap={"terminal_root": "-TerminalRoot", "alias": "-Alias", "target": "-Target"}, fixed={"-Mode": "Ensure"}),
     "remove_remoteapp": PrimitiveSpec(
         script="Set-GuvfxRemoteApp.ps1",
         argmap={"terminal_root": "-TerminalRoot", "alias": "-Alias"}, fixed={"-Mode": "Remove"}),

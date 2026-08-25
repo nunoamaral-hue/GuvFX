@@ -65,6 +65,7 @@ OP_PRIMITIVES = {
     # P0 golden-drift gate: read the runtime terminal64 build vs the pinned golden manifest (read-only). Server-
     # derived terminal_root + injected account_id; no caller params.
     "VERIFY_RUNTIME_BUILD":     {"primitive": "verify_runtime_build",     "params_allow": ()},
+    "VERIFY_NATIVE_LAUNCHER":   {"primitive": "verify_native_launcher",   "params_allow": ()},
     # P0 proactive LiveUpdate containment: ensure the tenant profile exists (CreateProfile — no session, no MT5
     # launch) then apply the certified Variant-A deny-write on the tenant's OWN roaming LiveUpdate staging.
     # Server-derived identity/paths only (username + accounts\<id>\terminal + account_id); Customer Zero refused.
@@ -72,7 +73,7 @@ OP_PRIMITIVES = {
     "APPLY_AUTOTRADING_CONFIG": {"primitive": "apply_autotrading_config", "params_allow": ()},
     "ENSURE_RDP_MEMBERSHIP":    {"primitive": "ensure_rdp_membership",    "params_allow": ()},
     "ENSURE_SINGLE_SESSION":    {"primitive": "ensure_single_session",    "params_allow": ()},
-    "ENSURE_REMOTEAPP":         {"primitive": "ensure_remoteapp",         "params_allow": ()},
+    "ENSURE_REMOTEAPP":         {"primitive": "ensure_remoteapp",         "params_allow": ("target",)},
     "REMOVE_REMOTEAPP":         {"primitive": "remove_remoteapp",         "params_allow": ()},
     "PREPARE_OBSERVER":         {"primitive": "prepare_observer",         "params_allow": ()},
     "OBSERVE_WORKSPACE":        {"primitive": "observe_workspace",        "params_allow": ()},
@@ -224,7 +225,17 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         # re-assert the CZ refusal as defence in depth.
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
                 "account_id": slot["account_id"]}
-    if op in ("ENSURE_REMOTEAPP", "REMOVE_REMOTEAPP"):
+    if op == "ENSURE_REMOTEAPP":
+        # The alias is DERIVED server-side (never the caller's) — per-account for isolation, legacy for CZ. The
+        # RemoteApp start-program TARGET is a signed, params_allow-validated server value: "launcher" (arming, the
+        # certified single-instance launcher, no command line) or "terminal64" (legacy default, /portable). A value
+        # outside that set is refused (defence in depth over params_allow) — a customer can never influence it.
+        target = (fields.get("params") or {}).get("target", "terminal64")
+        if target not in ("terminal64", "launcher"):
+            raise HostProtocolError("params_not_allowed")
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "alias": slot["remoteapp_alias"], "account_id": slot["account_id"], "target": target}
+    if op == "REMOVE_REMOTEAPP":
         # The alias is DERIVED server-side (never the caller's) — per-account for isolation, legacy for CZ.
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
                 "alias": slot["remoteapp_alias"], "account_id": slot["account_id"]}
