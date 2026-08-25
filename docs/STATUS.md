@@ -14,6 +14,26 @@
 
 ## Execution workstream log
 
+- **2026-08-25 - NATIVE SINGLE-INSTANCE LAUNCHER: BETA_NATIVE_LAUNCHER_ARMED (PR #391, main `d0f5d8f`, backend
+  image `3b8401cc9a85`, DEPLOYED + ARMED).** The certified native launcher (`C:\GuvFX\launcher\guvfx_launch.exe` —
+  makes a browser refresh/reconnect idempotent instead of forking a duplicate `terminal64 /portable` that stalls
+  onboarding at "Detecting your account…") is now authoritative for FUTURE hosted-tenant provisioning behind
+  `HOSTED_NATIVE_LAUNCHER_GATE_ENABLED` (ON). **Interactive certification passed on the production host (0 HIGH/0
+  MEDIUM)** against the actual launcher + actual per-SID AppLocker + a genuine RemoteInteractive RDP session
+  (xfreerdp `/shell` + Interactive scheduled task, throwaway `guvfx_u_990001`): initial/refresh/concurrent/
+  reconnect = 1; ≥2 pre-state → `duplicate_terminal` (kills neither); wrong identity → `refusing_identity`;
+  cross-tenant isolated; production preserved; clean teardown + negative existence. **Arming:** Stage 8
+  `verify_remoteapp` publishes+verifies the launcher (`Path=guvfx_launch.exe`, `CommandLineSetting=2`, no
+  `/portable`) via a signed, `params_allow`-validated `target` param (flag read backend-side in
+  `host_executor.verify_remoteapp`); new REQUIRED Stage 9a `verify_native_launcher` (exists/SHA256/ACL/AppLocker-
+  allow/runtime) fails closed → `PREP_LAUNCHER_FAILED`. Launcher SHA pinned in `C:\GuvFX\launcher\
+  .guvfx_launcher_manifest` (`CE2097…94765`, matches installed). **Armed proof end-to-end:** `verify_remoteapp(990001)`
+  → `exe=guvfx_launch.exe, exact=True`; fail-closed proven (no-runtime → `runtime_exists:False`). Existing tenants
+  (CZ/support@/Brian/Patrick) NOT migrated — all RemoteApps still `terminal64`. Rollback: backend
+  `rollback-prelauncherarm:latest` (`76ea3f4e788a`), host `*.preLAUNCHERARM.bak`, remove the beta.env flag. Overall
+  onboarding stays **BETA_HOSTED_INTERACTIVE_ONBOARDING_INCOMPLETE** — the MT5 build/update/UAC lifecycle is a
+  separate unresolved P0.
+
 - **2026-08-20 - PROACTIVE MT5 LIVEUPDATE CONTAINMENT: BETA_UNATTENDED_ONBOARDING_READY (PR #389, main `c1beb52`,
   backend image `76ea3f4e788a`, DEPLOYED + ARMED).** The final documentation customer exposed a fresh-onboarding
   liveness defect: on a fresh tenant's first MT5 launch, LiveUpdate forked a non-portable sibling terminal that
