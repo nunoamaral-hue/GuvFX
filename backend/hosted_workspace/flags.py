@@ -325,3 +325,23 @@ def hosted_liveupdate_containment_enabled() -> bool:
     RemoteApp / first-launch semantics are unchanged. Grants NO order authority; arms NO customer; performs no
     broker login. Independent of every execution-arming gate so it can be proven DARK and armed on its own."""
     return _flag("HOSTED_LIVEUPDATE_CONTAINMENT_ENABLED")
+
+
+def hosted_native_launcher_gate_enabled() -> bool:
+    """P0 first-launch reliability (Sponsor 2026-08-25) — fail-closed native single-instance LAUNCHER integrity
+    gate. DEFAULT OFF.
+
+    While OFF, ``prepare_hosted_slot`` behaves EXACTLY as before: no launcher check, no host contact for it —
+    byte-identical, so Customer Zero and every existing slot are untouched. While ON, before a slot is READY the
+    host verifies the certified native launcher (``C:\\GuvFX\\launcher\\guvfx_launch.exe`` — the interactive-
+    session-certified single-instance MT5 launch guard that makes a browser refresh / reconnect idempotent
+    instead of forking a duplicate ``terminal64 /portable``): it must EXIST, its SHA256 must equal the pinned
+    launcher manifest, its ACL must be non-tenant-writable (SYSTEM/Administrators only + Users Read+Execute), an
+    AppLocker ALLOW rule for it must be present (deny-by-default), and the tenant runtime must exist. Any failure
+    is ``PREP_LAUNCHER_FAILED`` -> the slot stays NON-READY and no tenant is ever pointed at an
+    absent/tampered/unallow-listed launcher. Read-only on the host (no launch, no login, no mutation); it is the
+    provisioning-side counterpart of the arming step that repoints the RemoteApp target from ``terminal64.exe
+    /portable`` to the launcher. Additive; grants NO authority; performs no broker login. Independent of every
+    execution-arming gate so it can be proven DARK and armed on its own — arm it only after the launcher is
+    installed + AppLocker-allow-listed + its manifest pinned on the host (else it fails every provision)."""
+    return _flag("HOSTED_NATIVE_LAUNCHER_GATE_ENABLED")

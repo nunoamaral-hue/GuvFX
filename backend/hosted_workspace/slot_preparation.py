@@ -46,6 +46,7 @@ PREP_ACL_FAILED = "workspace_acl_failed"         # apply or read-back verificati
 PREP_POPULATE_FAILED = "runtime_populate_failed"
 PREP_GOLDEN_DRIFT = "golden_build_drift"   # P0: runtime terminal64 build != pinned golden manifest (fail closed)
 PREP_CONTAINMENT_FAILED = "liveupdate_containment_failed"   # P0: proactive LiveUpdate containment not verified
+PREP_LAUNCHER_FAILED = "native_launcher_invalid"   # P0: native single-instance launcher missing/tampered/unallowlisted
 PREP_AUTOTRADING_FAILED = "autotrading_config_failed"
 PREP_RDP_FAILED = "rdp_grant_failed"
 PREP_SESSION_FAILED = "single_session_failed"
@@ -65,7 +66,7 @@ PREP_OK = "prepared"
 PREP_FAILURE_REASONS = frozenset({
     PREP_DARK, PREP_REFUSED_RESERVED, PREP_NOT_BOUND, PREP_NODE_UNCONFIGURED, PREP_NO_EXECUTOR,
     PREP_EXECUTOR_INCOMPLETE, PREP_IDENTITY_FAILED, PREP_ACL_FAILED, PREP_POPULATE_FAILED,
-    PREP_GOLDEN_DRIFT, PREP_CONTAINMENT_FAILED,
+    PREP_GOLDEN_DRIFT, PREP_CONTAINMENT_FAILED, PREP_LAUNCHER_FAILED,
     PREP_AUTOTRADING_FAILED, PREP_RDP_FAILED, PREP_SESSION_FAILED, PREP_REMOTEAPP_FAILED,
     PREP_APPLOCKER_FAILED, PREP_OBSERVER_FAILED, PREP_BRIDGE_FAILED, PREP_BRIDGE_ENDPOINT_CONFLICT,
     PREP_BRIDGE_FORBIDDEN_NODE, PREP_HOST_ERROR,
@@ -84,6 +85,7 @@ ST_AUTOTRADING = "apply_autotrading_config"
 ST_RDP = "grant_rdp"
 ST_SESSION = "enforce_single_session"
 ST_REMOTEAPP = "verify_remoteapp"
+ST_LAUNCHER = "verify_native_launcher"
 ST_APPLOCKER = "applocker_prepare"
 ST_BRIDGE = "activate_order_bridge"
 ST_OBSERVER = "register_observer"
@@ -424,6 +426,30 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     res = _call("applocker_prepare", ST_APPLOCKER, username, rdp_host=rdp_host, required=False)
     if res is not None and _ok(res):
         applocker_deferred = False
+
+    # ---- Stage 9a: native single-instance LAUNCHER integrity gate (P0, Sponsor 2026-08-25) ------------------
+    #      The certified native launcher (C:\GuvFX\launcher\guvfx_launch.exe) is the RemoteApp start-program once
+    #      arming repoints the RemoteApp target from terminal64.exe /portable to the launcher — it makes a browser
+    #      refresh / reconnect IDEMPOTENT (one tenant terminal) instead of forking a duplicate that stalls
+    #      onboarding at "Detecting your account...". REQUIRED + FAIL-CLOSED while the flag is ON: the host
+    #      read-only-verifies the launcher EXISTS, its SHA256 matches the pinned launcher manifest, its ACL is
+    #      non-tenant-writable, an AppLocker ALLOW rule for it is present, and the tenant runtime exists; ANY
+    #      false verdict -> PREP_LAUNCHER_FAILED, slot NON-READY, so no tenant is ever pointed at an absent /
+    #      tampered / unallow-listed launcher. Runs AFTER the runtime (Stage 5) and RemoteApp verify (Stage 8);
+    #      it reads AppLocker state INDEPENDENTLY (Stage 9 applocker_prepare is deferred/non-blocking). While the
+    #      flag is OFF this stage is skipped -- byte-identical to before, so Customer Zero and every existing slot
+    #      are untouched. It grants no authority and performs no broker login. -----------------------------------
+    from hosted_workspace.flags import hosted_native_launcher_gate_enabled
+    if hosted_native_launcher_gate_enabled():
+        res = _call("verify_native_launcher", ST_LAUNCHER, username, runtime_root, rdp_host=rdp_host)
+        if res is None:
+            return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_LAUNCHER)
+        if not _ok(res) or not all(bool(res.get(k)) for k in (
+                "launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present", "runtime_exists")):
+            return SlotPreparationResult(False, PREP_LAUNCHER_FAILED, ST_LAUNCHER,
+                                         detail={k: (bool(res.get(k)) if res else None) for k in (
+                                             "launcher_exists", "sha256_matches", "acl_safe",
+                                             "applocker_allow_present", "runtime_exists")})
 
     # ---- Stage 10: observer registration. BB#1 (Sponsor 2026-08-16): with the delivery-lifecycle flag ON the
     #      read-only session-bound observer is a REQUIRED, idempotent, stage-timed host step — a fresh non-CZ

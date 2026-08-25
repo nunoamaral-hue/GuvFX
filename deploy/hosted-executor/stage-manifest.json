@@ -41,7 +41,8 @@
     "Activate-GuvfxTenantBridge.ps1",
     "Relaunch-GuvfxTerminal.ps1",
     "Contain-GuvfxLiveUpdate.ps1",
-    "Verify-GuvfxRuntimeBuild.ps1"
+    "Verify-GuvfxRuntimeBuild.ps1",
+    "Verify-GuvfxNativeLauncher.ps1"
   ],
   "_non_primitive_scripts": {
     "_comment": "Staged to the host but NOT signed-executor primitives. Launch-GuvfxTenantTerminal.ps1 is the per-tenant RemoteApp start-program (single-instance launch guard); it is invoked by RemoteApp in the tenant session, never by the executor, so it is intentionally absent from the primitive 'scripts' list. Deployed + AppLocker-allowlisted + RemoteApp-repointed by the arming step, not the executor bundle.",

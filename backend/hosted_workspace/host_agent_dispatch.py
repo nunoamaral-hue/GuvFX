@@ -65,6 +65,7 @@ OP_PRIMITIVES = {
     # P0 golden-drift gate: read the runtime terminal64 build vs the pinned golden manifest (read-only). Server-
     # derived terminal_root + injected account_id; no caller params.
     "VERIFY_RUNTIME_BUILD":     {"primitive": "verify_runtime_build",     "params_allow": ()},
+    "VERIFY_NATIVE_LAUNCHER":   {"primitive": "verify_native_launcher",   "params_allow": ()},
     # P0 proactive LiveUpdate containment: ensure the tenant profile exists (CreateProfile — no session, no MT5
     # launch) then apply the certified Variant-A deny-write on the tenant's OWN roaming LiveUpdate staging.
     # Server-derived identity/paths only (username + accounts\<id>\terminal + account_id); Customer Zero refused.
