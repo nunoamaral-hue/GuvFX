@@ -14,6 +14,37 @@
 
 ## Execution workstream log
 
+- **2026-08-26 - MT5 LIVEUPDATE CONTAINMENT COMPLETE: MT5_LIVEUPDATE_CONTAINMENT_COMPLETE (PR #392, main
+  `54f9448`, host-script-only — no backend image change, DEPLOYED + effective).** Natural evidence disproved the
+  2026-08-20 containment: a tenant MT5 6073 downloaded + applied build **6140** to
+  `%APPDATA%\MetaQuotes\Terminal\<hash>\liveupdate` **despite** `HOSTED_LIVEUPDATE_CONTAINMENT_ENABLED=1`. Root
+  cause — the containment enumerated only the per-instance `Terminal\<hash>` staging dirs that **existed at
+  provisioning**, but provisioning runs **before first launch** so none exist yet and `<hash>` (a one-way hash of
+  the install path) is not knowable in advance; the update staged to an uncovered per-hash path and swapped the
+  binaries on restart. **Fix (additive, two scripts, in the byte-identical certified `Apply-LiveUpdateContainment`
+  body shared by `Contain-GuvfxLiveUpdate.ps1` + `Relaunch-GuvfxTerminal.ps1`):** (1) **PRIMARY W^X exe-
+  immutability** — deny the tenant `Write,Delete,ChangePermissions,TakeOwnership` on `terminal64.exe`,
+  `MetaEditor64.exe`, `metatester64.exe` (**Read/Execute retained**; MT5 never writes its own binaries), the durable
+  control that blocks the final binary **swap** regardless of which staging path MetaQuotes uses; (2) **SECONDARY
+  parent-`Terminal` deny** (container-inherited) so **any future** per-hash `<hash>\liveupdate` a first launch forks
+  inherits the deny. Tenant stays **non-admin**; runtime data stays writable. **Evidence:** interactive stale-build
+  cert (non-admin `guvfx_u_990002`, 6073 runtime, containment applied, 11-min live session) — MT5 usable,
+  `consent.exe`=0 (no UAC), `WebInstall`=0 + `Terminal`=0 (staging blocked), all three exe hashes **BEFORE==AFTER**,
+  build stays **6073** (no swap); **RULE-11 positive control** — deny-protected `terminal64.exe` tenant-write
+  **BLOCKED** vs unprotected copy **succeeds** (ACL load-bearing); RULE-9 ASCII-only + `ParseFile` clean on host PS
+  5.1.26100; `hosted_workspace`+`terminal_provisioning` **2270 tests pass** (incl. byte-identical body guard).
+  **Deploy:** both scripts staged to `C:\GuvFX\hosted\scripts` with SHA verify (Contain `D514D8A9…`, Relaunch
+  `8A9D9605…`), `GuvFXHostedExecutor` restarted → `verify_scripts` clean → **listening 100.79.101.19:8790**; flag
+  already ARMED so the improved containment is now effective for the **next** provisioned tenant. **Existing tenants
+  (CZ/support@/Brian/Patrick) NOT auto-migrated.** **Limitation (stated):** the headless `/shell` cert launch did
+  not *trigger* a fresh LiveUpdate network check (no broker "Open an Account"), so the block was observed
+  structurally (immutable swap target + denied staging), not as a live 6140 download intercepted mid-flight — the
+  original defect's real 6140 download is the natural-evidence proof the update path fires. **Rollback:** host
+  `Contain-GuvfxLiveUpdate.ps1.preLUCONTAIN.bak` (`155E7F5D…`) + `Relaunch-GuvfxTerminal.ps1.preLUCONTAIN.bak`
+  (`F7493D14…`), then restart the daemon; no backend image to revert. Overall onboarding stays
+  **BETA_HOSTED_INTERACTIVE_ONBOARDING_INCOMPLETE** — the broker-neutral golden + managed broker catalogue is the
+  next separate P0.
+
 - **2026-08-25 - NATIVE SINGLE-INSTANCE LAUNCHER: BETA_NATIVE_LAUNCHER_ARMED (PR #391, main `d0f5d8f`, backend
   image `3b8401cc9a85`, DEPLOYED + ARMED).** The certified native launcher (`C:\GuvFX\launcher\guvfx_launch.exe` —
   makes a browser refresh/reconnect idempotent instead of forking a duplicate `terminal64 /portable` that stalls

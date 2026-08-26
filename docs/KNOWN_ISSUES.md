@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 RESOLVED + DEPLOYED (2026-08-26) — per-tenant LiveUpdate containment was ineffective; now closed
+
+*Was:* the 2026-08-20 per-tenant LiveUpdate containment (`HOSTED_LIVEUPDATE_CONTAINMENT_ENABLED=1`) was proven
+ineffective by **natural evidence** — a tenant MT5 6073 downloaded + applied build **6140** to
+`%APPDATA%\MetaQuotes\Terminal\<hash>\liveupdate` and swapped its binaries on restart. Root cause: the containment
+enumerated only the `Terminal\<hash>` per-instance staging dirs that **existed at provisioning**, but provisioning
+runs **before first launch**, so none exist and `<hash>` (one-way hash of the install path) is unknowable in
+advance; the update staged to an uncovered path. **Fixed (PR #392, main `54f9448`, host-script-only):** PRIMARY W^X
+exe-immutability (tenant `Deny Write,Delete,ChangePermissions,TakeOwnership` on `terminal64/MetaEditor64/
+metatester64.exe`, Read/Execute retained) blocks the binary **swap** regardless of staging path; SECONDARY parent-
+`Terminal` container-inherited deny closes the per-hash staging gap. Interactive stale-build cert (non-admin, 11
+min: no swap, staging=0, no UAC, MT5 usable) + RULE-11 positive control + 2270 tests. Deployed to
+`C:\GuvFX\hosted\scripts`, daemon `verify_scripts` clean. **Effective for FUTURE tenants only** — existing tenants
+(CZ/support@/Brian/Patrick) are **not** auto-migrated (see the migration recommendation in the session handoff).
+Rollback: host `*.preLUCONTAIN.bak`. NB: this is the per-tenant **runtime** control; the separate Beta-Agent
+**golden-image** LiveUpdate drift (below, `C:\GuvFX\golden\newMT5`) is a different layer and remains open.
+
 ## 🔴 P0 PRODUCT POLICY (2026-08-20) — deployed customer pilot can still send trade-open notifications
 
 The certified transport is live for the closed-beta pilot, but its deployed pre-policy revision observes and
