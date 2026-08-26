@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-08-26 - NUNO CUSTOMER-ZERO OPERATIONAL RECONCILIATION: NUNO_CZ_OPERATIONAL_PASS_NATURAL_WIN_PENDING
+  (PR #393, main `8f8ad93`, backend image `341e2c59d69b`, DEPLOYED + verified).** The operator account
+  nuno.amaral@live.com (user 2, superuser; owns ONLY TA1 / MT5 1302561 / WIMS-Demo = Customer Zero) appeared stuck
+  in `/onboarding/hosted` while operational elsewhere. Root cause (forensic): CZ workspace id 1 sits at
+  `canonical_state=WAITING_FOR_LOGIN`, `last_observed_at=None` — the modern per-tenant hosted observer never binds
+  the legacy CZ terminal (:8788), so the customer journey projection correctly-but-misleadingly reported it as
+  forever awaiting login. **Fix (code):** `onboarding_read_model.onboarding_journey_projection` now projects a
+  reserved Customer-Zero account (`is_customer_zero_account`, = account 1 only) as OPERATOR-READY (`WORKSPACE_READY`
+  + additive `operator_account:true`) — a projection/routing correction that writes NO durable state (verified:
+  ws1 still WAITING_FOR_LOGIN / confirmed None). Non-CZ customers (fresh beta, support@=`operator_account:false`,
+  Brian, Patrick) take the unchanged `_phase_and_next` path; 4 regression tests + 959 hosted_workspace tests pass.
+  **Fix (data, Nuno-only, auditable):** enabled Nuno's per-assignment notification opt-in for his OWN Wayond WIM
+  (SA8, 1302561) via `set_strategy_notification_preference` (CSNP id 3, enabled=True) — his user-level prefs
+  already matched the current default (winning_trades=True, losing_trades=False). **CZ execution mode PRESERVED
+  as AUTO_SHADOW** (established; not armed — global execution gate stays DARK). **Notification chain proven:**
+  transport by a REAL delivered `CONNECTION_CONFIRMED` (id 54) to Nuno's chat; WIN-gating proven in a ROLLED-BACK
+  probe (WIN→PENDING, LOSS→SUPPRESSED per losing_trades=False — nothing delivered). Natural WIN pending only
+  because shadow mode produces no real trades. **Isolation:** only DB write = CSNP id 3; support@/Brian/Patrick
+  untouched; 0 cross-account execution jobs to 1302587; Telegram worker healthy (0 stuck); #378 / mutation pins /
+  launcher / LiveUpdate containment / Node-2 max=12 intact. **Rollback:** backend image tag
+  `guvfx-prod-guvfx-backend:rollback-preCZ-3b8401cc9a85` (`3b8401cc9a85`); data rollback = delete CSNP id 3.
+
 - **2026-08-26 - PRE-BETA ACCEPTANCE HARDENING: BETA_ACCEPTANCE_TEST_READY (verification, NO code/deploy — the
   verified image `3b8401cc9a85` is deliberately unchanged for the test).** Independently verified the customer-
   journey areas the Sponsor will deliberately attack, and confirmed the frozen guarantees. **A1 launcher — PASS:**
