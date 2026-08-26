@@ -140,13 +140,29 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
     may proceed to choose a strategy — it does NOT require EXECUTION_READY/arming. The authoritative
     assignment-eligibility contract lives in the strategy layer (eligibility.py: ASSIGNMENT-ELIGIBLE < ARMED <
     ORDER-AUTHORISED) and is strictly below arming. Staff receive extra, still-secret-free operator context."""
-    phase, next_action = _phase_and_next(workspace, account)
+    # Reserved Customer-Zero / operator account: the CUSTOMER hosted-onboarding journey is NOT APPLICABLE. Such an
+    # account is provisioned + operational via the legacy operator surfaces (Terminal Access / Strategies), NOT the
+    # modern per-tenant hosted-observer lifecycle, so its workspace legitimately never advances past
+    # WAITING_FOR_LOGIN (no per-tenant observation ever binds it). Projecting the customer "preparing / awaiting
+    # login" steps for it is misleading (the operator sees a permanently-incomplete journey). Project an
+    # OPERATOR-READY terminal phase instead. This is a PROJECTION/routing correction only — it mutates NO durable
+    # state (canonical_state, workspace_confirmed_at, proj_account_match are read, never written). Non-CZ customer
+    # accounts (every fresh beta tenant, support@, Brian, Patrick) are UNAFFECTED — they take _phase_and_next.
+    from hosted_workspace.tenant_isolation import is_customer_zero_account
+    operator_account = is_customer_zero_account(getattr(account, "id", None))
+    if operator_account:
+        phase, next_action = PHASE_WORKSPACE_READY, NEXT_ASSIGN_STRATEGY
+    else:
+        phase, next_action = _phase_and_next(workspace, account)
     confirmed = getattr(account, "workspace_confirmed_at", None) is not None
     state = str(getattr(workspace, "canonical_state", "") or "") if workspace is not None else ""
     out = {
         "phase": phase,
         "next_action": next_action,
         "confirmed": confirmed,
+        # Additive, secret-free: lets the UI render an operator/Customer-Zero account as "operator account —
+        # manage via the operational surfaces" instead of the customer onboarding steps. Non-CZ customers = False.
+        "operator_account": operator_account,
         "strategy_eligible": bool(phase == PHASE_WORKSPACE_READY),
         "delivery": delivery_readiness(workspace),
         "active_login_masked": _mask(getattr(workspace, "currently_attached_login", "")) if workspace else "",

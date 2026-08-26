@@ -5,6 +5,8 @@ deterministically; delivery-readiness degrades CLOSED (never fabricates a Remote
 and no secret leaks; and strategy-assignment eligibility keeps the three tiers strictly separated
 (assignment < armed < order-authorised) with a reachable checklist.
 """
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -51,6 +53,14 @@ def _ws(user, *, node=False, state=S.PROVISIONING, connected=None, matched=None,
 
 
 class JourneyPhaseTests(TestCase):
+    def setUp(self):
+        # These tests assert the CUSTOMER phase machine on ordinary accounts. Test-DB accounts can receive pk 1,
+        # which production treats as Customer Zero (→ operator projection). Pin the CZ set empty here so the
+        # customer-journey assertions test what they mean regardless of the auto-assigned pk. The dedicated
+        # OperatorAccountProjectionTests exercises the CZ override explicitly.
+        p = patch("hosted_workspace.tenant_isolation.customer_zero_account_ids", return_value=frozenset())
+        p.start(); self.addCleanup(p.stop)
+
     def test_no_workspace(self):
         p = RM.onboarding_journey_projection(None, None)
         self.assertEqual(p["phase"], RM.PHASE_NO_WORKSPACE)
@@ -227,3 +237,50 @@ class EligibilityTierTests(TestCase):
         self.assertEqual(e["state"], EL.STATE_NOT_ELIGIBLE)
         self.assertFalse(e["assignment_eligible"])
         self.assertFalse(e["armed"])
+
+
+class OperatorAccountProjectionTests(TestCase):
+    """A reserved Customer-Zero / operator account must NOT be shown the customer onboarding journey as
+    permanently incomplete. Its workspace legitimately sits at WAITING_FOR_LOGIN forever (legacy operator,
+    never bound by the per-tenant observer); the projection returns OPERATOR-READY instead — a projection-only
+    correction that mutates no durable state. Non-CZ customers are unaffected."""
+
+    def _cz(self, acct_id):
+        return patch("hosted_workspace.tenant_isolation.customer_zero_account_ids",
+                     return_value=frozenset({acct_id}))
+
+    def test_customer_zero_stuck_workspace_projects_operator_ready(self):
+        ws, acct = _ws(_user("cz"), node=True, state=S.WAITING_FOR_LOGIN)   # the exact "stuck" prod shape
+        with self._cz(acct.id):
+            p = RM.onboarding_journey_projection(ws, acct)
+        self.assertTrue(p["operator_account"])
+        self.assertEqual(p["phase"], RM.PHASE_WORKSPACE_READY)              # NOT AWAITING_BROKER_LOGIN
+        self.assertEqual(p["next_action"], RM.NEXT_ASSIGN_STRATEGY)
+        self.assertTrue(p["strategy_eligible"])
+
+    def test_operator_projection_mutates_no_durable_state(self):
+        ws, acct = _ws(_user("cz2"), node=True, state=S.WAITING_FOR_LOGIN)
+        with self._cz(acct.id):
+            RM.onboarding_journey_projection(ws, acct)
+        ws.refresh_from_db(); acct.refresh_from_db()
+        self.assertEqual(ws.canonical_state, S.WAITING_FOR_LOGIN)           # untouched
+        self.assertIsNone(acct.workspace_confirmed_at)                      # never fabricated
+
+    def test_non_cz_customer_same_state_is_unaffected(self):
+        ws, acct = _ws(_user("cust"), node=True, state=S.WAITING_FOR_LOGIN)
+        with patch("hosted_workspace.tenant_isolation.customer_zero_account_ids",
+                   return_value=frozenset({acct.id + 10_000})):            # some OTHER account is CZ
+            p = RM.onboarding_journey_projection(ws, acct)
+        self.assertFalse(p["operator_account"])
+        self.assertEqual(p["phase"], RM.PHASE_AWAITING_BROKER_LOGIN)        # ordinary customer journey preserved
+        self.assertEqual(p["next_action"], RM.NEXT_OPEN_MT5_AND_LOGIN)
+
+    def test_fresh_beta_customer_ready_path_unchanged(self):
+        # A genuinely operational NON-CZ customer still reaches WORKSPACE_READY via the real gates (not the
+        # operator override): operator_account stays False.
+        ws, acct = _ws(_user("beta"), node=True, state=S.CONNECTED, connected=True, matched=True, confirmed=True)
+        with patch("hosted_workspace.tenant_isolation.customer_zero_account_ids",
+                   return_value=frozenset({acct.id + 10_000})):
+            p = RM.onboarding_journey_projection(ws, acct)
+        self.assertFalse(p["operator_account"])
+        self.assertEqual(p["phase"], RM.PHASE_WORKSPACE_READY)
