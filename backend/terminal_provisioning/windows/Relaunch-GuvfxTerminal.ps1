@@ -109,6 +109,10 @@ function Apply-LiveUpdateContainment($tenant) {
   $targets = New-Object System.Collections.Generic.List[string]
   $targets.Add((Join-Path $mqRoot "WebInstall"))
   $terminalRoot = Join-Path $mqRoot "Terminal"
+  # Deny-write the PARENT Terminal dir (container-inherited) so ANY future per-hash <hash>\liveupdate a first-
+  # launch fork stages inherits the deny; the per-hash enumeration below only covers dirs that exist NOW (none
+  # at provisioning, which runs BEFORE first launch) - that gap let build 6140 stage to an uncovered path.
+  if (Test-ChainReparseFree $tenant.profile $terminalRoot) { $targets.Add($terminalRoot) }
   if ((Test-Path -LiteralPath $terminalRoot) -and (Test-ChainReparseFree $tenant.profile $terminalRoot)) {
     foreach ($d in (Get-ChildItem -LiteralPath $terminalRoot -Directory -ErrorAction SilentlyContinue)) {
       if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) { $targets.Add((Join-Path $d.FullName "liveupdate")) }
@@ -139,6 +143,30 @@ function Apply-LiveUpdateContainment($tenant) {
           (([int]$r.FileSystemRights -band [int]$writeRights) -eq [int]$writeRights)) { $ok = $true }
     }
     if (-not $ok) { return $false }
+  }
+  # 3) PRIMARY W^X: make the platform executables tenant-IMMUTABLE so a downloaded LiveUpdate payload can never be
+  #    SWAPPED over them on restart - the durable control, independent of which staging path MetaQuotes uses (they
+  #    move it across builds). MT5 never writes its own binaries in normal operation, so Read/Execute is retained
+  #    and only Write/Delete/ChangePermissions/TakeOwnership are denied for the tenant; runtime data stays writable.
+  $rt = ([string]$tenant.terminalRoot).TrimEnd("\")
+  if ([string]::IsNullOrWhiteSpace($rt) -or -not (Test-Path -LiteralPath $rt)) { return $false }
+  $denyMut = [System.Security.AccessControl.FileSystemRights]"Write,Delete,ChangePermissions,TakeOwnership"
+  foreach ($exeName in @("terminal64.exe", "MetaEditor64.exe", "metatester64.exe")) {
+    $exe = Join-Path $rt $exeName
+    if (-not (Test-Path -LiteralPath $exe)) { continue }
+    if (((Get-Item -LiteralPath $exe -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    $eacl = Get-Acl -LiteralPath $exe
+    $edeny = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $denyMut, [System.Security.AccessControl.AccessControlType]::Deny)
+    [void]$eacl.RemoveAccessRule($edeny)
+    [void]$eacl.AddAccessRule($edeny)
+    Set-Acl -LiteralPath $exe -AclObject $eacl
+    $eok = $false
+    foreach ($r in (Get-Acl -LiteralPath $exe).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+      if ($r.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and (-not $r.IsInherited) -and
+          $r.IdentityReference.Value -eq $sid.Value -and
+          (([int]$r.FileSystemRights -band [int][System.Security.AccessControl.FileSystemRights]::Delete) -eq [int][System.Security.AccessControl.FileSystemRights]::Delete)) { $eok = $true }
+    }
+    if (-not $eok) { return $false }
   }
   return $true
 }
@@ -181,6 +209,7 @@ try {
 
   $tenant = Resolve-Tenant $Username
   if ($null -eq $tenant) { Fail "tenant_resolution_failed" }
+  $tenant.terminalRoot = $full
   $tenantPrincipal = New-ScheduledTaskPrincipal -UserId $Username -LogonType Interactive -RunLevel Limited
 
   # ---- 1) LiveUpdate containment BEFORE relaunch (LocalSystem; reparse-safe; deny tenant write; fail-closed) --
