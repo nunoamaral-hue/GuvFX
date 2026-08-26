@@ -14,6 +14,34 @@
 
 ## Execution workstream log
 
+- **2026-08-26 - PRE-BETA ACCEPTANCE HARDENING: BETA_ACCEPTANCE_TEST_READY (verification, NO code/deploy — the
+  verified image `3b8401cc9a85` is deliberately unchanged for the test).** Independently verified the customer-
+  journey areas the Sponsor will deliberately attack, and confirmed the frozen guarantees. **A1 launcher — PASS:**
+  the native single-instance launcher is ARMED **and** `slot_preparation` is LIVE (all gate flags +
+  `HOSTED_HOST_EXECUTOR_ENABLED=1`), so a NEWLY-provisioned beta account gets `Path=guvfx_launch.exe`
+  (`CommandLineSetting=2`) at Stage 8 + fail-closed Stage 9a; invariant 0→launch/1→reuse/>=2→duplicate_terminal
+  (never kills); refresh/reconnect/2nd-tab→reuse. Live launcher artefact healthy (exists, SHA `CE209728…` ==
+  manifest, ACL non-tenant-writable, AppLocker allow). Hosted delivery uses `build_remoteapp_rdp_payload` (required
+  alias → launcher); the guardless DEDICATED/kiosk path is legacy VNC, not the hosted path. **A2 onboarding resume —
+  PASS:** `HostedWorkspaceJourney` fetches `GET /api/hosted-workspace/onboarding/journey/` on mount and renders the
+  server phase; NO browser-local authority (the historical "savedAck lost on refresh" bug is already fixed);
+  durable server fields (`workspace_confirmed_at` write-once, `canonical_state`/`proj_account_match`,
+  `account_number`→`identity_declared`) survive refresh/navigate/close-reopen; transient observation gaps HOLD state
+  (observer None → ingest nothing), and the state machine forbids CONNECTED→WAITING_FOR_LOGIN. Nuance (by design): a
+  GENUINE live session regression (account switched inside MT5 / recovery relaunch) can re-show "Detecting" — not
+  triggered by the Sponsor's described actions. Covered by `tests_onboarding_read_model.py`. **A3 clipboard — PASS
+  (code+config):** `build_remoteapp_rdp_payload` sets `disable-paste=false` (browser→MT5 paste ON) + `disable-copy=
+  true` (copy-out OFF) + `server-layout=en-us-qwerty`; iframe `allow="clipboard-read; clipboard-write"`; per-workspace
+  connection + per-launch unique username = tenant-isolated; `GUAC_BASE_URL=https://www.guvfx.com/guacamole`
+  (same-site). Residual: live-guacd paste effectiveness is the acceptance test's own first proof (RULE 11). **Broker
+  Catalogue V1 (B) / capture-cert (C) / update lifecycle (D): ARCHITECTURE delivered, implementation DEFERRED to the
+  immediate follow-up** (deploying new provisioning code/image before the test would replace the certified artefact;
+  the test uses Pepperstone = unsupported → existing native-discovery fallback, which already works). Pepperstone is
+  NOT claimed supported. Frozen guarantees intact: #378, mutation pins, LiveUpdate immutability (`=1`), native
+  launcher (`=1`), Node-2 max=12, fresh Wayond 0.01 sizing, Telegram, no auto account adoption, no stored credentials,
+  sacred tenants (CZ/support@/Brian/Patrick) untouched. Design: `docs/operations/hosted-workspace/
+  CATALOGUE_AND_UPDATE_GOVERNANCE_2026-08-26.md`. **VERDICT: BETA_ACCEPTANCE_TEST_READY.**
+
 - **2026-08-26 - BROKER-NEUTRAL GOLDEN + BROKER CATALOGUE: BROKER_CATALOGUE_PRESEED_PROVEN (research + proof,
   NO code/host deploy).** Onboarding UX defect = customer waits minutes for MT5 to online-discover a common
   broker. **Root cause (code + host):** `Populate-GuvfxViewerRuntime.ps1` deliberately creates an EMPTY golden
