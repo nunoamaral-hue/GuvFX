@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-08-26 - BROKER-NEUTRAL GOLDEN + BROKER CATALOGUE: BROKER_CATALOGUE_PRESEED_PROVEN (research + proof,
+  NO code/host deploy).** Onboarding UX defect = customer waits minutes for MT5 to online-discover a common
+  broker. **Root cause (code + host):** `Populate-GuvfxViewerRuntime.ps1` deliberately creates an EMPTY golden
+  `config`; the active materialise source `C:\GuvFX\golden\mt5\5.0.0.5833` ships **no `servers.dat`**, so every
+  fresh tenant must fully online-discover. **Metadata artefact = `config\servers.dat`** (opaque binary; server
+  names not plaintext → presence proven behaviourally). Non-secret source = the broker-shipped
+  `C:\Program Files\IS6 Technologies MT5 Terminal` (build 5833), verified **clean** (no `accounts.dat`/history —
+  no D/E/F). **Empirical proof (disposable runtimes cloned from the GENERIC golden, interactive RDP session,
+  credential-free `Server=`/`Login=999999`/fake-pw config — server resolution logs before the harmless auth
+  failure):** preseed (IS6 `servers.dat` injected) → `authorization on IS6Technologies-Demo failed (Invalid
+  account)` in **~3 s** (server RESOLVED + REACHED); control (no preseed) → **no IS6 resolution in 75 s+**,
+  `servers.dat` never created. Portable across a 2nd path + SID (IS6Technologies-Live resolved in ~2 s). Both IS6
+  servers (Demo+Live, the customers' servers) resolve. **Finding:** branded `servers.dat` is broker-LOCKED
+  (`MetaQuotes-Demo` unresolvable from IS6's file) → catalogue must be **per-broker** (customer picks broker →
+  GuvFX preseeds that file); coexistence not required for one-broker-per-customer. **First-run (Phase 9):** the
+  active golden already precompiles MQL5 samples (0-file compile) → first launch ≈5 s; the Sponsor's ~96 s was a
+  raw install (Phase 11 concern, not current tenants). **Recommended architecture:** neutral golden + versioned
+  per-broker `servers.dat` catalogue on host (`C:\GuvFX\catalogue\vN\<broker>\servers.dat`) reusing
+  `trading.BrokerServer` DB rows; independent `Golden vX`+`Catalogue vY`; GuvFX broker-selection onboarding
+  (server pre-positioned WITHOUT storing any password; no auto-login); unknown-broker → MT5 discovery stays,
+  discovered metadata never auto-trusted. **Bounded implementation DEFERRED** (Amber: touches provisioning +
+  onboarding; needs Sponsor initial-broker-set decision + Phase 11 golden reconciliation first). Existing
+  customers untouched; fixtures torn down. Full evidence:
+  `docs/operations/hosted-workspace/BROKER_CATALOGUE_PRESEED_2026-08-26.md`.
+
 - **2026-08-26 - MT5 LIVEUPDATE CONTAINMENT COMPLETE: MT5_LIVEUPDATE_CONTAINMENT_COMPLETE (PR #392, main
   `54f9448`, host-script-only — no backend image change, DEPLOYED + effective).** Natural evidence disproved the
   2026-08-20 containment: a tenant MT5 6073 downloaded + applied build **6140** to
