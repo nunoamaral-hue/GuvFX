@@ -17,7 +17,11 @@ param(
   [Parameter(Mandatory=$true)][string]$RuntimeRoot,
   [Parameter(Mandatory=$true)][string]$TerminalRoot,
   [Parameter(Mandatory=$true)][int]$AccountId,
-  [int]$TimeoutSeconds = 60,
+  # P0 bounded observation: the observer must fail FAST so a busy first-run terminal cannot consume the whole
+  # wait and (single-instance IgnoreNew task) block the next cycle's observe of the SAME tenant. A healthy
+  # already-running terminal observes in well under this; the attach itself is separately capped (~8s). Kept
+  # below the client OBSERVE read-timeout so the caller reads a real fail-closed result, never a transport abort.
+  [int]$TimeoutSeconds = 18,
   [string]$ObserverDir = "C:\GuvFX\observer"
 )
 $ErrorActionPreference = "Stop"

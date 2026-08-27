@@ -2997,6 +2997,7 @@ const dictionary: Dictionary = {
   "hostedJourney.loginInstruction": { en: "Log in below using your broker password. It is entered only inside MetaTrader and GuvFX never sees it.", ja: "下のMetaTraderで取引口座のパスワードを入力してログインしてください。パスワードをGuvFXが閲覧することはありません。" },
   "hostedJourney.usingMetaTrader": { en: "You're using MetaTrader", ja: "MetaTraderを使用中" },
   "hostedJourney.detectingAccount": { en: "Detecting your account…", ja: "口座を確認しています…" },
+  "hostedJourney.detectingSlow": { en: "This is taking a little longer than expected. Keep MetaTrader open and logged in — we'll continue checking your account and move you on automatically. You don't need to log in again.", ja: "確認に少し時間がかかっています。MetaTraderを開いてログインしたままにしてください。口座の確認を続け、自動的に次に進みます。再度ログインする必要はありません。" },
   "hostedJourney.detectedBody": { en: "We detected account {account} in your MetaTrader workspace. Your identity is already verified — please confirm this is your trading account to finish.", ja: "MetaTraderワークスペースで口座{account}を確認しました。設定を完了するため、ご自身の取引口座であることを確認してください。" },
   "hostedJourney.confirming": { en: "Confirming…", ja: "確認しています…" },
   "hostedJourney.confirmButton": { en: "I confirm this is my trading account", ja: "自分の取引口座であることを確認する" },

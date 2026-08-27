@@ -44,6 +44,10 @@ const ACCENT = "#4ab3ff";
 // AJ#3 UX: how long the "preparing your workspace" wait may run before we swap the reassuring copy for a
 // "taking longer than expected" message — so the customer is never left staring at an endless spinner.
 const SLOW_WAIT_MS = 120_000;
+// P0 detection UX: after this long spinning on "Detecting your account" (backend still not CONNECTED+matched),
+// show a reassuring "taking a little longer" affordance instead of an indefinite silent spinner. The frontend
+// keeps polling every 5s throughout; this is presentation only and never becomes authoritative for state.
+const DETECT_SLOW_MS = 30_000;
 
 const primaryLink: React.CSSProperties = {
   display: "inline-block",
@@ -255,8 +259,8 @@ function LiveStatusPanel({ activeIndex }: { activeIndex: number }) {
 // the customer should do / what happens next, and WRAPS the terminal inside the same panel (accent-bordered
 // "You're using MetaTrader" frame) so it reads as one guided step, never a separate app. Presentation only.
 function EmbeddedMetaTraderStep({
-  activeIndex, title, instruction, hint, detecting = false, children,
-}: { activeIndex: number; title?: string; instruction?: string; hint?: string; detecting?: boolean; children: React.ReactNode }) {
+  activeIndex, title, instruction, hint, detecting = false, detectingSlow = false, children,
+}: { activeIndex: number; title?: string; instruction?: string; hint?: string; detecting?: boolean; detectingSlow?: boolean; children: React.ReactNode }) {
   const lang = useLang();
   return (
     <div style={{ ...waitCard, padding: "1.25rem 1.35rem" }}>
@@ -286,6 +290,12 @@ function EmbeddedMetaTraderStep({
         </div>
         <div>{children}</div>
       </div>
+      {detecting && detectingSlow && (
+        <p role="status" aria-live="polite"
+           style={{ marginTop: 10, fontSize: "0.82rem", lineHeight: 1.5, color: MUTED }}>
+          {t(lang, "hostedJourney.detectingSlow")}
+        </p>
+      )}
       {hint && (
         <p style={{ marginTop: 10, fontSize: "0.82rem", lineHeight: 1.5, color: MUTED }}>{hint}</p>
       )}
@@ -372,6 +382,7 @@ export function HostedWorkspaceJourney() {
   // AJ#3 UX: after the normal preparation window, flip to a "taking longer than expected" reassurance so the
   // customer is never staring at an endless spinner.
   const [slowWait, setSlowWait] = useState(false);
+  const [detectSlow, setDetectSlow] = useState(false);
   // AJ#4: on the terminal Workspace Ready step, the secondary "Open MetaTrader" re-opens the embedded MT5 inline.
   const [showTerminalOnReady, setShowTerminalOnReady] = useState(false);
 
@@ -448,6 +459,18 @@ export function HostedWorkspaceJourney() {
     const t = setTimeout(() => setSlowWait(true), SLOW_WAIT_MS);
     return () => clearTimeout(t);
   }, [waiting]);
+
+  // P0 detection UX: the "Detecting your account" screens (embedded MT5 live, backend not yet CONNECTED+matched)
+  // must not spin forever silently. After DETECT_SLOW_MS show a "taking a little longer — keep MT5 open" hint.
+  // Anchored to the detecting phase so it resets the instant detection advances; presentation only (polling and
+  // backend authority are unchanged). Detecting = MT5 embed live at AWAITING_BROKER_LOGIN, or BROKER_CONNECTED.
+  const detecting = (phase === "AWAITING_BROKER_LOGIN" && identityDeclared && !!view?.canLaunch)
+    || phase === "BROKER_CONNECTED";
+  useEffect(() => {
+    if (!detecting) { setDetectSlow(false); return; }
+    const t = setTimeout(() => setDetectSlow(true), DETECT_SLOW_MS);
+    return () => clearTimeout(t);
+  }, [detecting]);
 
   async function onRequest() {
     if (busy) return;
@@ -605,6 +628,7 @@ export function HostedWorkspaceJourney() {
         }
         hint={t(lang, "hostedJourney.loginHint")}
         detecting
+        detectingSlow={detectSlow}
       >
         <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
       </EmbeddedMetaTraderStep>
@@ -618,6 +642,7 @@ export function HostedWorkspaceJourney() {
         instruction={`${t(lang, "hostedJourney.correctBody")}${m ? ` (${m})` : ""}`}
         hint={t(lang, "hostedJourney.loginHint")}
         detecting
+        detectingSlow={detectSlow}
       >
         <HostedMt5RemoteApp onConnected={() => markTiming("mt5_launched")} />
       </EmbeddedMetaTraderStep>

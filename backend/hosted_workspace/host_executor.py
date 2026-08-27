@@ -287,6 +287,13 @@ _DEFAULT_HTTP_TIMEOUT_S = 30
 # false-negative class as MATERIALISE_RUNTIME). 120s > the host's 60s wait + margin, and < the daemon's 600s
 # primitive timeout. There is NO repost/retry here — exactly one POST per cycle — so a longer wait cannot re-run.
 _OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120}
+# P0 bounded observation: when HOSTED_BOUNDED_OBSERVATION_ENABLED is on, the scheduler observes every workspace
+# CONCURRENTLY, so each OBSERVE_WORKSPACE must fail FAST (a busy first-run terminal must not consume the whole
+# host wait and starve others). This client read-timeout is deliberately > the (flag-shortened) host observer
+# wait (Invoke-GuvfxObserver.ps1 -TimeoutSeconds) + margin, and far < the daemon's 600s primitive timeout.
+# There is NO repost/retry (exactly one POST per cycle), so a shorter wait can only fail-closed sooner, never
+# re-run an observe. The legacy serial path keeps the 120s budget (byte-identical when the flag is OFF).
+_BOUNDED_OBSERVE_HTTP_TIMEOUT_S = 25
 
 
 def _http_transport(base_url: str, request: dict) -> dict:
@@ -296,7 +303,15 @@ def _http_transport(base_url: str, request: dict) -> dict:
     import json
     import urllib.request
     data = json.dumps(request).encode("utf-8")
-    timeout = _OP_HTTP_TIMEOUTS_S.get(str(request.get("operation") or ""), _DEFAULT_HTTP_TIMEOUT_S)
+    op = str(request.get("operation") or "")
+    timeout = _OP_HTTP_TIMEOUTS_S.get(op, _DEFAULT_HTTP_TIMEOUT_S)
+    if op == "OBSERVE_WORKSPACE":
+        try:
+            from hosted_workspace.flags import hosted_bounded_observation_enabled
+            if hosted_bounded_observation_enabled():
+                timeout = _BOUNDED_OBSERVE_HTTP_TIMEOUT_S
+        except Exception:  # noqa: BLE001 — a flag-read failure must never break transport; keep the legacy budget
+            pass
     req = urllib.request.Request(base_url.rstrip("/") + "/hosted/provision", data=data,
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310 — host is a fixed Tailscale peer over TLS

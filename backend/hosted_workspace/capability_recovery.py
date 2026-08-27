@@ -113,6 +113,7 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
 
     candidates = attempted = config_reasserted = relaunched = 0
     skipped_cooldown = skipped_not_ready = skipped_no_executor = errors = 0
+    skipped_onboarding = 0
 
     qs = (HostedMt5Workspace.objects
           .filter(canonical_state=str(S.CONNECTED), proj_connected=True, proj_account_match=True,
@@ -120,11 +121,25 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
           .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS)
           .select_related("trading_account", "execution_node")
           .iterator())
+
+    # P0 (fresh-beta acceptance): the automation CAPABILITY (trade_allowed→EXECUTION_READY) is only needed for
+    # ARMING, which is strictly ABOVE onboarding and requires the customer's confirm + ADR-0047 authorization.
+    # Relaunching a just-authenticated, still-UNCONFIRMED tenant's terminal to pre-establish that capability
+    # briefly disconnects MT5 during the detection→confirm UX (the fresh-beta disruption). When
+    # HOSTED_BOUNDED_OBSERVATION_ENABLED is on, HOLD recovery until the customer has confirmed the account
+    # (``trading_account.workspace_confirmed_at`` set); a confirmed workspace still recovers normally so arming is
+    # never blocked. Flag OFF ⇒ byte-identical to before.
+    from hosted_workspace.flags import hosted_bounded_observation_enabled
+    gate_onboarding = hosted_bounded_observation_enabled()
     for ws in qs:
         candidates += 1
         account = getattr(ws, "trading_account", None)
         if account is None:
             errors += 1
+            continue
+        # Onboarding gate: do not disrupt a just-authenticated, still-unconfirmed tenant (see above).
+        if gate_onboarding and getattr(account, "workspace_confirmed_at", None) is None:
+            skipped_onboarding += 1
             continue
         # Demo-only wall + freshness (a stale projection is not acted on — the observer must be current).
         if getattr(account, "is_demo", False) is not True or not _observation_fresh(ws):
@@ -175,4 +190,5 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
     return {"enabled": True, "candidates": candidates, "attempted": attempted,
             "config_reasserted": config_reasserted, "relaunched": relaunched,
             "skipped_cooldown": skipped_cooldown, "skipped_not_ready": skipped_not_ready,
-            "skipped_no_executor": skipped_no_executor, "errors": errors}
+            "skipped_no_executor": skipped_no_executor, "skipped_onboarding": skipped_onboarding,
+            "errors": errors}

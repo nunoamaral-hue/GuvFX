@@ -387,3 +387,60 @@ def observe_remoteapp_session(workspace, *, now=None):
             and corr.get("process_present") is False):
         return DELIVERY_SESSION_DOWN
     return None
+
+
+# ── P0 de-duplicated combined observe (HOSTED_BOUNDED_OBSERVATION) ───────────────────────────────────────────
+def _delivery_signal_from_result(result, acct_id, now):
+    """Derive the delivery session signal from an ALREADY-OBTAINED raw OBSERVE result (no host contact). Same
+    fail-closed logic as the tail of ``observe_remoteapp_session`` (fresh, tenant-unforgeable corroboration), but
+    consuming a result the caller already has — so one host round-trip can drive BOTH projections."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    corr = result.get("corroboration")
+    if not _delivery_corroboration_fresh(corr, now):
+        return None
+    if corroboration_matches(corr, acct_id):
+        return DELIVERY_SESSION_UP
+    if (isinstance(corr, dict) and _int_or_none(corr.get("account_id")) == int(acct_id)
+            and corr.get("process_present") is False):
+        return DELIVERY_SESSION_DOWN
+    return None
+
+
+def observe_workspace_combined(workspace, *, now=None):
+    """DE-DUPLICATED observe for the bounded scheduler: run the SAME fail-closed gates as ``live_observe_fn`` /
+    ``observe_remoteapp_session``, make EXACTLY ONE ``executor.observe()`` host round-trip, and derive BOTH the
+    canonical ``WorkspaceObservation`` and the delivery session signal from that single raw result. Returns
+    ``(canonical_obs_or_None, delivery_sig_or_None, reason)``. It touches NO Windows/MT5 itself (the injected
+    signed executor does), launches nothing, mutates no state, and preserves every identity/trust gate — it only
+    halves the per-workspace host contact vs the legacy two-call path. The reason string is a coarse, secret-free
+    classification for the runner/telemetry (never flattened away): ``ok`` / ``unavailable`` / typed gate reason."""
+    if not (hosted_remoteapp_isolation_certified() or supervised_single_tenant_beta_active(workspace)):
+        return None, None, "trust_gate_off"
+    if not hosted_mt5_observation_enabled():
+        return None, None, "observation_disabled"
+    if str(getattr(workspace, "canonical_state", "") or "") not in _OBSERVABLE_STATES:
+        return None, None, "not_observable_state"
+    acct = _account_of(workspace)
+    acct_id = getattr(acct, "id", None)
+    if acct is None or acct_id is None:
+        return None, None, "no_account"
+    try:
+        from hosted_workspace.host_executor import resolve_signed_host_executor
+        executor = resolve_signed_host_executor(account_id=int(acct_id), rdp_host=_node_rdp_host(workspace))
+    except Exception:  # noqa: BLE001 — resolver failure is ambiguous → fail closed
+        return None, None, "executor_unresolved"
+    if executor is None:
+        return None, None, "no_executor"
+    try:
+        result = executor.observe()
+    except Exception:  # noqa: BLE001 — transport error (incl. the bounded read-timeout) → ambiguous, hold
+        logger.warning("observe_workspace_combined: transport error account=%s", acct_id)
+        return None, None, "transport_error"
+    if now is None:
+        from django.utils import timezone
+        now = timezone.now().timestamp()
+    canonical = build_observation_from_host(workspace, result)
+    delivery = _delivery_signal_from_result(result, int(acct_id), now)
+    reason = "ok" if canonical is not None else str((result or {}).get("reason") or "unavailable")
+    return canonical, delivery, reason
