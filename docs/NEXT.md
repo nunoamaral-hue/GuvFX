@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ BETA_ACCEPTANCE_CLEAN_RERUN_READY — Sponsor registers next (2026-08-27)
+Disposable beta (user 36 / TA 32 / beta.guvfx01@gmail.com) is PURGED (DB + host, negative-existence proven, sacred
+preserved, email free) and the Telegram connect/UX/discoverability/telemetry fixes are deployed (main `939eeeb`,
+backend `e0f343868153`, frontend `41630ed64863`). **Single next action:** the Sponsor registers the new beta customer
+himself and runs the beginning-to-end journey — DO NOT create the replacement customer. **Tell him:** his personal
+Telegram (`NunoRAmaral`) is bound to Customer Zero, so to test Telegram end-to-end on the new beta he must use a
+DIFFERENT Telegram account, or first disconnect Telegram from CZ himself (CZ is sacred — do not touch it). Optional
+follow-ups (not blocking): arm `OPERATIONS_EVENTS_ENABLED` for the full operator timeline (Amber — enables the whole
+operational-events subsystem); a bot-reply-on-rejection for in-Telegram feedback. Deferred P1 remain: email-verify
+UX, event-driven provisioning, Pepperstone catalogue, golden reconciliation, MT5 update workflow, stock-Guacamole
+reconnect UX.
+
 ## ▶ Bounded Account Observation — DEPLOYED + ARMED + VERIFIED; watch natural detection (2026-08-27)
 P0 fix for fresh-beta detection latency is live (main `4041f7d`, PRs #395/#396; `HOSTED_BOUNDED_OBSERVATION_ENABLED=1`).
 Read-only production evidence is captured (bounded concurrent cycle, typed reasons, `recovery: relaunched=0`,

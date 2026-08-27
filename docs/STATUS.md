@@ -14,6 +14,39 @@
 
 ## Execution workstream log
 
+- **2026-08-27 - FRESH BETA RESET + TELEGRAM CLOSURE: BETA_ACCEPTANCE_CLEAN_RERUN_READY (PR #397 merged, main
+  `939eeeb`; disposable tenant purged).** Prepared a clean disposable-beta rerun. (A) **PURGE** of the disposable
+  beta (user 36 beta.guvfx01@gmail.com / TA 32 / ws 19 / guvfx_u_32, 3rd cycle of this email): pre-purge gz backup
+  `guvfx_prePURGE36_20260827T125019Z.sql.gz` (sha `7e3d78afd8f6f945`); DB purge deleted `AccountProvisioning(25)`
+  (sole PROTECT blocker) then `User(36).delete()` (87-row cascade incl. TA32, ws19, HostedExecutionEndpoint :8802,
+  Strategy/StrategyAssignment, subscription, the unconsumed token, prefs); host purge removed 5 `GuvFX_*_32` tasks,
+  terminal pid 15612, RemoteApp `guvfx_mt5_32`, runtime `C:\GuvFX\accounts\32`, profile, and `guvfx_u_32`.
+  **Negative-existence proven** (user/email-any-case/TA/acct/workspace/provisioning/endpoint/token/binding/strategy/
+  onboarding all absent; 0 orphan endpoints; 0 `_32` tasks/processes). **Sacred preserved byte-for-byte**: CZ 523
+  trades, support@ 65, Brian/Patrick 0, both bindings (NunoRAmaral/Dubaibk) unchanged; sacred terminals (golden
+  3972, CZ 7812, Patrick 16768) still running; Node-2 `max_accounts=12`, occ 4->3. Email FREE — **Sponsor registers
+  the next beta himself**. (B) **Telegram connect failure root cause**: the Sponsor's own Telegram (`NunoRAmaral`)
+  is already actively bound to Customer Zero (user 2), so redemption raised `TelegramChatAlreadyBound`; the webhook
+  acked HTTP 200 (deadlock fix) with NO browser signal -> stuck NOT CONNECTED (prod log
+  `reason=chat_already_connected`; token stayed `consumed=None`). Isolation was correct; the defect was the silent
+  failure. Fix: after the connect poll window, the card shows an actionable help message (expired -> reconnect;
+  already-linked -> disconnect there first). (C) **New-tab connect UX**: both connect surfaces now open the deep
+  link in a NEW tab via a placeholder `window.open("about:blank","_blank")` opened SYNCHRONOUSLY in the click
+  gesture (popup-blocker-safe), then redirected — the old `window.location.assign` self-navigation is removed;
+  onboarding control polls readiness so it flips to connected with no manual refresh. (D) **Strategy
+  discoverability**: the per-strategy control gates on `telegram_connected` — disconnected shows an explanatory
+  state + "Connect Telegram" CTA to `/profile#telegram-notifications` instead of an inert toggle. (E) **Operator
+  telemetry (DARK, `OPERATIONS_EVENTS_ENABLED` off)**: new `customer_notifications/telemetry.py` reuses
+  `operational_events.record_event` for the silent connection lifecycle (token created / binding created+reconnected
+  / connect rejected+reason / transient); every emit `customer_visible=False` + secret-free; `redeem` distinguishes
+  expired/replayed/malformed via `telemetry_reason` (same exception type/code/HTTP). Webhook `reason=` logs remain
+  the immediate diagnosability surface. **Deploy**: backend `ee5f3d629676`->`e0f343868153`, frontend
+  `c89528d70b31`->`41630ed64863`; no host-script changes. **Tests**: full backend 4531 pass (1 skip); 7 telemetry +
+  updated frontend tests (14/14, incl. popup-blocked regression); adversarial review = SHIP (one over-dedup finding
+  fixed). **F regression**: launcher/RemoteApp/bounded-observation (post-purge `polled=4 errors=0`)/pins/LiveUpdate/
+  sizing/#378/Node-2=12/sacred all intact; PR touched ONLY customer_notifications + frontend. Rollback anchors
+  above; DB backup retained. Verdict: **BETA_ACCEPTANCE_CLEAN_RERUN_READY**.
+
 - **2026-08-27 - BOUNDED ACCOUNT OBSERVATION: DEPLOYED + ARMED + VERIFIED (P0, PRs #395 `2025f0a` + #396 `4041f7d`;
   main `4041f7d`).** Implements the approved fix for the ~5-min detection cadence rooted-caused in the entry below.
   Replaces the SERIAL, uncapped, two-pass observe cycle with a **bounded, tenant-isolated, de-duplicated concurrent**

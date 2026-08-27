@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 RESOLVED + DEPLOYED (2026-08-27) — Telegram "still not connected" was a silent cross-user rejection
+
+*Was:* a fresh-beta customer opened the Telegram deep link, pressed Start, and GuvFX still showed NOT CONNECTED.
+**Root cause (proven, not frontend-only):** the Telegram chat used was already actively bound to ANOTHER GuvFX
+account, so `redeem_connection_token` raised `TelegramChatAlreadyBound`; the webhook ACKs deterministic rejections
+with HTTP 200 (the earlier deadlock fix), so the token stayed `consumed=None`, no binding was created, and the
+browser received no signal — it polled forever. Prod evidence: webhook log `reason=chat_already_connected`; the beta
+user's single token was unconsumed + expired; no binding row. Isolation was working correctly; the defect was the
+**silent, unexplained failure** (PR #397, main `939eeeb`): the connect card now shows an actionable help message
+after the poll window (expired link → reconnect; already linked to another account → disconnect there first), the
+connect opens in a NEW tab (no self-navigation), and DARK operator telemetry records the rejection reason.
+
+**⚠ STANDING OPERATIONAL CONSTRAINT (by design — do NOT "fix" by weakening isolation):** one Telegram chat binds to
+at most one GuvFX customer (`cust_tg_one_active_chat` partial unique on `telegram_chat_id WHERE is_active`). The
+Sponsor's personal Telegram (`NunoRAmaral`) is bound to **Customer Zero (user 2)**. To connect the same Telegram to
+a *different* account, the old binding must first be disconnected (or the account owner uses a different Telegram).
+"Moving" a chat from a **disconnected** (is_active=False) binding already works (no conflict); moving from an
+**active** binding is intentionally refused. For a clean beta Telegram test, the Sponsor uses a different Telegram
+account OR disconnects CZ's Telegram himself first. Never auto-disconnect a sacred tenant's binding.
+
 ## 🟢 MITIGATED + DEPLOYED (2026-08-27) — fresh-beta account-detection ~5-min cadence → bounded observation
 
 *Was:* fresh-beta "Detecting your account" stuck >2 min because the `run_hosted_observations` cron was SERIAL over

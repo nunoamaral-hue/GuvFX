@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-08-27 — Fresh beta reset + Telegram closure: BETA_ACCEPTANCE_CLEAN_RERUN_READY
+
+- **Scope / decision.** Prepare one clean disposable-beta rerun: (A) evidence-first purge of the disposable tenant,
+  (B) Telegram connect-failure root cause + fix, (C) new-tab connect UX, (D) strategy-page Telegram discoverability,
+  (E) DARK operator telemetry, (F) regression preservation. Mutation authorised for this packet.
+- **Verified fact vs assumption.** *Verified:* purge negative-existence (DB + host) and sacred byte-for-byte
+  preservation; the connect-failure root cause from the prod webhook log (`reason=chat_already_connected`) + the
+  token row (`consumed=None`, no binding); frontend build+eslint+tests; full backend 4531 pass; bounded-observation
+  intact post-purge (`polled=4 errors=0`). *Assumption (not visually confirmed):* the frontend Telegram UX changes
+  are deployed (image `41630ed64863`, build+tests green) but were not clicked through in a live logged-in beta
+  session — no beta credentials, and the tenant is now purged. Telemetry is deployed DARK (`OPERATIONS_EVENTS_ENABLED`
+  off); it was proven by unit tests, not by a live operator-timeline read.
+- **Operational reality the Sponsor must know for the rerun.** The Sponsor's personal Telegram (`NunoRAmaral`) is
+  bound to Customer Zero (user 2). If he connects THAT Telegram to the new beta account he will again hit
+  `chat_already_connected` (now with an actionable help message, but still refused — isolation is intentional). For a
+  clean end-to-end Telegram test he must either use a DIFFERENT Telegram account for the beta, or first disconnect
+  Telegram from Customer Zero himself (CZ is sacred — NOT touched here).
+- **Deviations from packet.** None material. Telemetry deployed DARK rather than armed (arming
+  `OPERATIONS_EVENTS_ENABLED` enables the whole operational-events subsystem — an Amber decision beyond this Telegram
+  packet; the webhook `reason=` logs already provide diagnosability). Bot-reply-on-rejection was considered and NOT
+  added (keeps the webhook fast + avoids a new outbound path in the ack; frontend help + telemetry cover it).
+- **Exact tests.** `backend/.venv/bin/python manage.py test` -> 4531 pass (1 skip); `customer_notifications.tests_telemetry`
+  7 pass; frontend affected tests 14/14 (incl. popup-blocked regression); `npm run build` green; eslint 0.
+- **Commit / branch state.** main `939eeeb` (merged #397). Prod images backend `e0f343868153`, frontend
+  `41630ed64863`. DB backup `guvfx_prePURGE36_20260827T125019Z.sql.gz` (sha `7e3d78afd8f6f945`).
+- **Rollback.** Code: redeploy backend `ee5f3d629676` / frontend `c89528d70b31`. Data: restore the pre-purge dump
+  (email is otherwise free for a fresh registration, which is the intended next step).
+- **One bounded next action.** Hand `BETA_ACCEPTANCE_CLEAN_RERUN_READY` to the Sponsor to register the new beta and
+  run the journey — do NOT create the replacement customer here. When he reaches Telegram, remind him of the
+  bound-to-CZ constraint above.
+
 ## 2026-08-27 — Bounded Account Observation: DEPLOYED + ARMED + VERIFIED (P0)
 
 - **Scope / decision.** Programme-Director-approved P0 fix for fresh-beta account-detection latency (~5-min
