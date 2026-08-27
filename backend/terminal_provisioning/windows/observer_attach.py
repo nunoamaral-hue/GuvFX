@@ -25,6 +25,13 @@ import os
 
 logger = logging.getLogger("guvfx.hosted_workspace.observer_attach")
 
+# P0 bounded observation: the guarded attach caps mt5.initialize(timeout=) so a busy terminal fails fast (see
+# guarded_initialize). Milliseconds. Overridable via env for host tuning; default 8s (>> a healthy attach).
+try:
+    _ATTACH_TIMEOUT_MS = max(2000, int(os.getenv("GUVFX_OBSERVER_ATTACH_TIMEOUT_MS", "8000")))
+except (TypeError, ValueError):
+    _ATTACH_TIMEOUT_MS = 8000
+
 
 def _guarded_attach_enabled() -> bool:
     """When set (on a persistent-workspace / observer host) the attach primitive enforces the never-launch
@@ -129,7 +136,14 @@ def guarded_initialize(mt5, init_kwargs, *, probe=None) -> bool:
     identity = None
     if running:
         try:
-            init_ok = bool(mt5.initialize(**init_kwargs))
+            # P0 bounded observation: cap the attach so a BUSY first-run terminal (compiling MQL5 / syncing the
+            # broker symbol catalogue) cannot consume the whole host observer wait and starve the cycle. The MT5
+            # python default is 60s; an already-running healthy terminal attaches in well under this. A caller that
+            # already set an explicit timeout is respected. Fail-fast here surfaces as observation_timeout upstream
+            # (a hold, never a launch, never a state mutation).
+            attach_kwargs = dict(init_kwargs)
+            attach_kwargs.setdefault("timeout", _ATTACH_TIMEOUT_MS)
+            init_ok = bool(mt5.initialize(**attach_kwargs))
             if init_ok:
                 term = mt5.terminal_info()
                 connected = bool(term.connected) if term is not None else False

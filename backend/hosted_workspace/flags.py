@@ -49,6 +49,18 @@ def hosted_observation_scheduler_enabled() -> bool:
     return _flag("HOSTED_OBSERVATION_SCHEDULER_ENABLED")
 
 
+def hosted_bounded_observation_enabled() -> bool:
+    """P0 fresh-beta account-detection reliability gate. When ON, the scheduler observes every workspace with a
+    BOUNDED, TENANT-ISOLATED concurrent pass: ONE host ``OBSERVE_WORKSPACE`` per workspace (de-duplicated — the
+    same raw result drives both the canonical observation and the delivery signal), run in a small bounded worker
+    pool with a per-observe deadline, so one slow/busy/unavailable tenant can never serialize the cycle or starve
+    another healthy tenant's detection. When OFF the scheduler uses the legacy SERIAL path (``run_hosted_observations``
+    + ``run_hosted_delivery_observe`` each observing every workspace) BYTE-IDENTICALLY. Default OFF → deploy DARK,
+    verify, arm; rollback = flip OFF. It changes ONLY scheduling/transport shape — it never weakens an identity
+    pin, launches MT5, mutates canonical state directly, or arms execution."""
+    return _flag("HOSTED_BOUNDED_OBSERVATION_ENABLED")
+
+
 def hosted_capability_recovery_enabled() -> bool:
     """AJ#6.3 Shape-3 — the gate for the post-login MT5 automation-CAPABILITY recovery edge (re-assert
     AllowLiveTrading=1 / Enabled=1 then gracefully relaunch THIS tenant's own terminal for a CONNECTED + matched
