@@ -45,8 +45,13 @@ try {
   if (-not ($full.ToLower().StartsWith(($ACCOUNTS_BASE.ToLower() + "\")))) { Fail "refusing: outside accounts base" }
   if (-not ($full.ToLower().EndsWith("\terminal"))) { Fail "refusing: not a terminal root" }
   $exe = Join-Path $full "terminal64.exe"
-  # Arming: the RemoteApp target becomes the native launcher (no args), not the runtime terminal64 /portable.
-  if ($Target -eq "launcher") { $exe = $LAUNCHER; $result.args = "" }
+  # Arming: the RemoteApp start-program becomes the native launcher instead of the runtime terminal64. BOTH
+  # targets are published with the SAME command-line policy (CommandLineSetting=1 / RequiredCommandLine=/portable
+  # -- see Ensure below). The launcher derives its identity from the Windows token and ignores argv entirely
+  # (GuvfxLaunch.Main takes no parameters), so the fixed /portable is inert for it; publishing it byte-identically
+  # to the proven terminal64 policy is what makes the Guacamole/FreeRDP client (which always sends
+  # remote-app-args=/portable) able to start it.
+  if ($Target -eq "launcher") { $exe = $LAUNCHER }
   $result.exe = $exe
 
   if ($Mode -eq "Remove") {
@@ -73,15 +78,15 @@ try {
     New-Item -Path $APPKEY -Force | Out-Null
     New-ItemProperty -Path $APPKEY -Name "Name" -Value $ALIAS -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $APPKEY -Name "Path" -Value $exe -PropertyType String -Force | Out-Null
-    if ($Target -eq "launcher") {
-      # The launcher takes NO args (identity from the Windows token); CommandLineSetting=2 disallows any command
-      # line so no customer-supplied argument can ever reach it.
-      New-ItemProperty -Path $APPKEY -Name "CommandLineSetting" -Value 2 -PropertyType DWord -Force | Out-Null
-      Remove-ItemProperty -Path $APPKEY -Name "RequiredCommandLine" -Force -ErrorAction SilentlyContinue
-    } else {
-      New-ItemProperty -Path $APPKEY -Name "CommandLineSetting" -Value 1 -PropertyType DWord -Force | Out-Null
-      New-ItemProperty -Path $APPKEY -Name "RequiredCommandLine" -Value "/portable" -PropertyType String -Force | Out-Null
-    }
+    # CommandLineSetting=1 with a fixed RequiredCommandLine=/portable for BOTH targets. RDS FORCES exactly this
+    # command line (a customer-supplied one is overridden, never appended), so no customer argument can reach the
+    # program -- the same isolation the launcher arming intended -- while remaining compatible with the delivery
+    # payload, which always sends remote-app-args=/portable. The earlier launcher-only CommandLineSetting=2 ("no
+    # command line permitted") caused RDS to REFUSE the client's /portable and tear the RemoteApp session down
+    # immediately ("You have been disconnected") for every launcher tenant; =1/-/portable matches the proven,
+    # already-working terminal64 publication exactly. The launcher ignores argv, so /portable is inert for it.
+    New-ItemProperty -Path $APPKEY -Name "CommandLineSetting" -Value 1 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $APPKEY -Name "RequiredCommandLine" -Value "/portable" -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $APPKEY -Name "ShowInTSWA" -Value 0 -PropertyType DWord -Force | Out-Null
   }
 
@@ -90,8 +95,8 @@ try {
   $p = Get-ItemProperty -Path $APPKEY
   $result.published = $true
   $pathOk = ($p.Path -ieq $exe)
-  # Launcher target: no command line permitted (CommandLineSetting=2, no /portable). Legacy: exactly /portable.
-  if ($Target -eq "launcher") { $argsOk = ([int]$p.CommandLineSetting -eq 2) } else { $argsOk = ($p.RequiredCommandLine -eq "/portable") }
+  # Both targets: CommandLineSetting=1 with RequiredCommandLine fixed to /portable (RDS forces it; no customer arg).
+  $argsOk = (([int]$p.CommandLineSetting -eq 1) -and ($p.RequiredCommandLine -eq "/portable"))
   # Per-account (M2): verify THIS alias resolves to THIS account's exact terminal64.exe + /portable. We do NOT
   # assert a machine-wide single-app count any more (multiple per-account aliases legitimately coexist); a
   # different account's alias points at ITS own tree, so cross-account program access is impossible by path.

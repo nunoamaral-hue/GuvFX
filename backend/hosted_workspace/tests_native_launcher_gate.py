@@ -133,6 +133,16 @@ class NativeLauncherHostScriptStaticTests(SimpleTestCase):
         # default (Target=terminal64) still publishes the legacy terminal64 /portable target byte-identically
         self.assertIn('"RequiredCommandLine" -Value "/portable"', text)
 
+    def test_remoteapp_launcher_uses_commandlinesetting_1_not_2(self):
+        # Regression (fresh-beta disconnect): the launcher was published CommandLineSetting=2 (no command line
+        # permitted) while delivery always sends remote-app-args=/portable -> RDS REFUSED the launch and tore the
+        # RemoteApp session down immediately ("You have been disconnected") for every launcher tenant. The fix
+        # publishes BOTH targets with =1 + fixed RequiredCommandLine=/portable (RDS forces the arg; no customer
+        # injection; the launcher ignores argv), matching the proven terminal64 policy the delivery payload expects.
+        text = self._read(_REMOTEAPP).decode("ascii")
+        self.assertNotIn('"CommandLineSetting" -Value 2', text, "launcher must NOT publish CommandLineSetting=2")
+        self.assertIn('"CommandLineSetting" -Value 1', text)
+
 
 class NativeLauncherRemoteAppCouplingTests(SimpleTestCase):
     """verify_remoteapp (-> ENSURE_REMOTEAPP) repoints publish+verify to the launcher iff the flag is ON."""
