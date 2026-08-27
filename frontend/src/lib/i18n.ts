@@ -225,6 +225,10 @@ const dictionary: Dictionary = {
     en: "Telegram has opened in a new window. Press Start there to finish connecting.",
     ja: "新しいウィンドウでTelegramが開きました。Telegramで「開始」を押すと接続が完了します。",
   },
+  "telegram.connectHelp": {
+    en: "Still not connected? The link may have expired — press Connect Telegram to get a fresh one. If this Telegram account is already linked to another GuvFX account, disconnect it there first, then reconnect.",
+    ja: "まだ接続されていませんか？リンクの有効期限が切れている可能性があります。「Telegramを接続」を押して新しいリンクを取得してください。このTelegramアカウントが別のGuvFXアカウントに既に接続されている場合は、先にそちらで接続を解除してから、再度接続してください。",
+  },
   "telegram.unavailable": {
     en: "Telegram connection is not available yet.",
     ja: "Telegram接続は現在ご利用いただけません。",

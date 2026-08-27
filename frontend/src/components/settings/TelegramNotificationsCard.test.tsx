@@ -94,19 +94,40 @@ describe("TelegramNotificationsCard", () => {
     expect(screen.queryByRole("button", { name: "Connect Telegram" })).not.toBeInTheDocument();
   });
 
-  it("shows the connecting state after opening the private-bot handshake", async () => {
+  it("opens a placeholder tab synchronously then points it at the deep link (never navigates GuvFX away)", async () => {
     api.getTelegramSettings.mockResolvedValue({ ...connected(), connected: false, display: { username: "", first_name: "" } });
     api.createTelegramConnection.mockResolvedValue({
       url: "https://t.me/GuvFXCustomerBot?start=opaque-token",
       expires_at: "2026-08-19T13:00:00Z",
     });
-    const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
+    const stub = { location: { href: "" }, opener: {}, closed: false } as unknown as Window;
+    const open = vi.spyOn(window, "open").mockReturnValue(stub);
     render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
     fireEvent.click(await screen.findByRole("button", { name: "Connect Telegram" }));
     expect(await screen.findByLabelText("Connecting…")).toBeInTheDocument();
-    expect(open).toHaveBeenCalledWith(
+    // A placeholder tab is opened synchronously inside the gesture (popup-blocker-safe),
+    // then redirected to the deep link — GuvFX itself is never navigated away.
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank");
+    await waitFor(() => expect((stub.location as { href: string }).href).toBe(
+      "https://t.me/GuvFXCustomerBot?start=opaque-token",
+    ));
+    open.mockRestore();
+  });
+
+  it("falls back to a direct new-tab open when the placeholder is popup-blocked (still never navigates away)", async () => {
+    api.getTelegramSettings.mockResolvedValue({ ...connected(), connected: false, display: { username: "", first_name: "" } });
+    api.createTelegramConnection.mockResolvedValue({
+      url: "https://t.me/GuvFXCustomerBot?start=opaque-token",
+      expires_at: "2026-08-19T13:00:00Z",
+    });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    render(<LanguageProvider lang="en"><TelegramNotificationsCard /></LanguageProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Telegram" }));
+    expect(await screen.findByLabelText("Connecting…")).toBeInTheDocument();
+    // Placeholder blocked → best-effort direct new-tab open; NEVER window.location.assign.
+    await waitFor(() => expect(open).toHaveBeenCalledWith(
       "https://t.me/GuvFXCustomerBot?start=opaque-token", "_blank", "noopener,noreferrer",
-    );
+    ));
     open.mockRestore();
   });
 });
