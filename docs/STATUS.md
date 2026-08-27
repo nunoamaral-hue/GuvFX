@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-08-27 - FRESH BETA ACCOUNT DETECTION: BETA_ACCEPTANCE_BLOCKED_ACCOUNT_DETECTION (forensic, READ-ONLY, NO
+  fix deployed — Sponsor-gated).** After the RemoteApp fix, fresh beta TA 32 (guvfx_u_32, acct 62139344) opened MT5
+  and logged into PepperstoneUK-Demo (live prices, 1651 symbols), but GuvFX stuck at "Detecting your account" >2min.
+  **Root cause (Finding B):** the observation scheduler's effective cadence is ~5 min, not ~30s. `run_hosted_observations`
+  cron is every-60s but each cycle is SERIAL over all workspaces with NO per-observe deadline and does TWO
+  OBSERVE_WORKSPACE round-trips/ws; the tenant `mt5.initialize(path=)` is UNCAPPED (MT5 default 60s) and on a busy
+  first-run tenant (broker discovery + MQL5 compile + symbol sync) eats the host observer's 60s wait →
+  `observation_timeout`; a ~5-min cycle overruns the cron and the next ticks SKIP on the Postgres advisory singleton
+  lock. The backend collapses all failure reasons (observation_timeout/terminal_not_running/duplicate_terminal) to
+  ok:false→None→ingest nothing→holds WAITING_FOR_LOGIN. Detection DID complete (login 08:26:39 → CONNECTED 08:31:13,
+  ~4.5 min late); it is slow, not permanently stuck. Side effect: `capability_recovery` FALSE-relaunched TA32's
+  healthy logged-in terminal at 08:31:20 (disrupting the session). Frontend is fine (polls journey every 5s during the
+  Detecting phases → would advance ≤5s after the backend reached CONNECTED); the Detecting screens have NO timeout/
+  escape (spin indefinitely), and after detection there is a MANUAL "I confirm this is my trading account" gate.
+  **Finding A (P1, expected):** the golden has NO `servers.dat` (broker-neutral, catalogue deferred) → Pepperstone via
+  native discovery is the expected unsupported-broker fallback, not a regression; ~30s pre-seeded broker needs the
+  catalogue built. Proposed fix (NOT deployed): cap `mt5.initialize` + retry-hold classification; per-observe deadline
+  + reuse one OBSERVE for canonical+delivery; non-overlapping/parallel cycle; transient duplicate_terminal=retry;
+  don't relaunch a connected+matched terminal on observe-timeout; Detecting-screen timeout UX; (sep) identity-pin
+  case/alias tolerance. Read-only; no tenant mutated; sacred tenants + single-terminal invariant preserved.
+
 - **2026-08-27 - FRESH BETA MT5 REMOTEAPP DISCONNECT: BETA_ACCEPTANCE_READY_TO_RESUME (PR #394, main `50d630e`,
   host-script-only deploy, tenant recovered).** First natural fresh-beta onboarding (user 36 beta.guvfx01@gmail.com,
   TA 32, acct 62139344 PepperstoneUK-Demo) failed at the MT5 step: RemoteApp showed "You have been disconnected",
