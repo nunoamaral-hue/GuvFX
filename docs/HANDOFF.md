@@ -1,5 +1,34 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-08-27 — Bounded Account Observation: DEPLOYED + ARMED + VERIFIED (P0)
+
+- **Scope / decision.** Programme-Director-approved P0 fix for fresh-beta account-detection latency (~5-min
+  effective cadence → ≤~30s). Implemented, tested, merged (PRs #395 + #396), deployed, armed, and verified in
+  production read-only. Mutation was authorised for this packet (scheduler / timeout / recovery / UX + deploy).
+- **Verified fact vs assumption.** *Verified:* the bounded concurrent cycle runs live (workers=8; 3.52s wall vs
+  8.38s serial in a read-only probe); typed reasons + `recovery: relaunched=0` + `re-poll passes=2` are in the ops
+  log; no `terminal64` process started after deploy (attach-only); identity-pin code untouched; TA32 is
+  `EXECUTION_READY` and observable. *Assumption (not stress-tested):* the 18s/8s host deadlines were not forced to
+  fire under a genuinely first-run busy tenant (TA32 is now warm, observe ≈3.5s); the deadline is deployed and one
+  natural `observation_timeout` was observed, but a cold first-run reproduction was not staged. The frontend
+  Detecting-slow copy is deployed (build green, strings in i18n) but was **not** visually confirmed in a live
+  logged-in beta session (no customer credentials).
+- **Deviations from packet.** None material. Added a second small PR (#396) to surface the bounded/recovery
+  telemetry into the ops log — §8/§9 require it be *observable*, and #395 computed but did not print it.
+- **Exact tests.** `backend/.venv/bin/python manage.py test hosted_workspace` → **971 pass**;
+  `… terminal_provisioning` → **1328 pass**; `hosted_workspace.tests_bounded_observation` (9) +
+  `tests_hosted_observation_command` (17, incl. 2 new). Frontend `npm run build` green. Host
+  `Invoke-GuvfxObserver.ps1` `[Parser]::ParseFile` → PARSE-OK, `nonascii_count=0` (RULE 9).
+- **Commit / branch state.** main `4041f7d` (merged #395 `2025f0a`, #396 `4041f7d`). Branches deleted. Prod images:
+  backend `ee5f3d629676`, frontend `c89528d70b31`. Host observer files updated + daemon restarted. `beta.env`
+  gains `HOSTED_BOUNDED_OBSERVATION_ENABLED=1` (backup `beta.env.bak.pre-bounded-*`).
+- **Rollback.** Flip `HOSTED_BOUNDED_OBSERVATION_ENABLED=0` + recreate backend → byte-identical legacy path (host
+  deadlines then simply shorten the legacy serial observe; images/scripts need no revert). Full revert anchors:
+  backend `341e2c59d69b`, host `observer_attach.py` `9F4EE5DA…`, `Invoke-GuvfxObserver.ps1` `FFDD5F74…`.
+- **One bounded next action.** Let TA32 complete its own manual "I confirm this is my trading account" step
+  (customer action; do NOT click it) and watch the ops log confirm detection stays ≤~30s for the next fresh login —
+  do not stage a synthetic first-run reproduction without Sponsor sign-off.
+
 ## 2026-08-20 — Customer Telegram product-policy candidate (no deployment)
 
 - Current branch `feat/customer-telegram-policy-preferences`, baseline main `5d8c534`. The certified dedicated

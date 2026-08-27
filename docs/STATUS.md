@@ -14,8 +14,38 @@
 
 ## Execution workstream log
 
+- **2026-08-27 - BOUNDED ACCOUNT OBSERVATION: DEPLOYED + ARMED + VERIFIED (P0, PRs #395 `2025f0a` + #396 `4041f7d`;
+  main `4041f7d`).** Implements the approved fix for the ~5-min detection cadence rooted-caused in the entry below.
+  Replaces the SERIAL, uncapped, two-pass observe cycle with a **bounded, tenant-isolated, de-duplicated concurrent**
+  cycle behind `HOSTED_BOUNDED_OBSERVATION_ENABLED` (now **ON**). One `observe_workspace_combined` per workspace
+  drives BOTH the canonical + delivery single-writers from ONE host round-trip; a small hard-capped pool
+  (`HOSTED_OBSERVATION_MAX_WORKERS`, default 8, clamped ≤ Node-2 max 12) runs them in parallel on DB-free threads,
+  then the caller thread serially ingests (monotonic-version writer rejects stale). Per-observe deadlines: HTTP
+  OBSERVE 120s→**25s** (flag-gated), host `Invoke-GuvfxObserver.ps1` 60s→**18s**, `mt5.initialize` attach uncapped→
+  **8s** (`GUVFX_OBSERVER_ATTACH_TIMEOUT_MS`). A **fast onboarding re-poll** re-observes ONLY pre-CONNECTED tenants
+  every ~12s for a ~45s budget within each cron minute → login→CONNECTED detection ≤~30s instead of ~2–5 min.
+  `capability_recovery` now **skips unconfirmed onboarding tenants** when armed, so an observe failure never
+  false-relaunches a healthy detecting terminal (the disruption noted below). Detecting-screen UX: after 30s the
+  onboarding journey shows a reassurance ("taking a little longer… keep MetaTrader open, no need to log in again",
+  EN+JA). Flag OFF ⇒ legacy path **byte-identical** (locked by test). **Deploy:** backend `341e2c59d69b`→(DARK)
+  `ff9b84c6f045`→(telemetry) `ee5f3d629676`; frontend `99ba04964084`→`c89528d70b31`; host observer files
+  (`observer_attach.py`, `Invoke-GuvfxObserver.ps1`) ASCII-only + `ParseFile`-OK, `GuvFXHostedExecutor` daemon
+  restarted; `HOSTED_BOUNDED_OBSERVATION_ENABLED=1` in `beta.env` (backup saved). **Evidence (read-only, live):**
+  concurrent cycle 3.52s wall vs 8.38s serial (workers=8); typed reasons `{reserved_identity, terminal_not_running,
+  ok, observation_timeout}` (deadline fires + is captured, not collapsed to None); ops log `recovery: relaunched=0
+  skipped_onboarding=0`; `re-poll passes=2/min`; no observer-launched terminals (all `terminal64` StartTimes
+  pre-deploy — attach-only); identity-pin code (`matching.py`/`producer.py`) untouched; CZ short-circuits via the
+  host `reserved_identity` refusal. **§22 TA32 natural acceptance (READ-ONLY):** TA32 (guvfx_u_32, acct 62139344)
+  reached `EXECUTION_READY` naturally (`reason=ok canonical=True delivery=CONNECTED`), `confirmed=False` awaiting only
+  the kept manual "I confirm this is my trading account" gate; obs_ver advanced 31→44 by normal observation. NOT
+  marked/reset/relaunched/logged-in. Sacred tenants (CZ ws1, support@ ws12, Brian ws17, Patrick ws18) unchanged.
+  Tests: `hosted_workspace` 971 pass (9 bounded + 2 telemetry new), `terminal_provisioning` 1328, frontend build
+  green. Rollback = flip `HOSTED_BOUNDED_OBSERVATION_ENABLED=0` (host scripts + images stay; deadlines then apply to
+  the byte-identical legacy path). Verdict: **BETA_ACCEPTANCE_ACCOUNT_DETECTION_BOUNDED_DEPLOYED**.
+
 - **2026-08-27 - FRESH BETA ACCOUNT DETECTION: BETA_ACCEPTANCE_BLOCKED_ACCOUNT_DETECTION (forensic, READ-ONLY, NO
-  fix deployed — Sponsor-gated).** After the RemoteApp fix, fresh beta TA 32 (guvfx_u_32, acct 62139344) opened MT5
+  fix deployed — Sponsor-gated).** [SUPERSEDED by the entry above — the bounded-observation fix is now deployed +
+  armed.] After the RemoteApp fix, fresh beta TA 32 (guvfx_u_32, acct 62139344) opened MT5
   and logged into PepperstoneUK-Demo (live prices, 1651 symbols), but GuvFX stuck at "Detecting your account" >2min.
   **Root cause (Finding B):** the observation scheduler's effective cadence is ~5 min, not ~30s. `run_hosted_observations`
   cron is every-60s but each cycle is SERIAL over all workspaces with NO per-observe deadline and does TWO

@@ -2,6 +2,27 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 MITIGATED + DEPLOYED (2026-08-27) — fresh-beta account-detection ~5-min cadence → bounded observation
+
+*Was:* fresh-beta "Detecting your account" stuck >2 min because the `run_hosted_observations` cron was SERIAL over
+all workspaces with an UNCAPPED `mt5.initialize` and two OBSERVE round-trips/ws; a busy first-run tenant timed out
+the host observer, the ~5-min cycle overran the 60s cron, and subsequent ticks SKIPPED on the singleton lock.
+**Fixed + deployed + armed (PRs #395/#396, main `4041f7d`, `HOSTED_BOUNDED_OBSERVATION_ENABLED=1`):** bounded,
+tenant-isolated, de-duplicated concurrent observe cycle (one host round-trip drives canonical + delivery; pool
+hard-capped ≤ Node-2 12); per-observe deadlines (HTTP 25s / host 18s / attach 8s); fast onboarding re-poll (≤~30s
+detection); capability-recovery skips unconfirmed onboarding tenants (no false-relaunch). Live evidence: concurrent
+3.52s wall vs 8.38s serial, `bounded: workers=8`, typed reasons incl. `observation_timeout`, `recovery:
+relaunched=0`, `re-poll passes=2`. See STATUS/HANDOFF 2026-08-27.
+
+**⚠ Residual (open):** the shortened host deadlines (18s host wait, 8s `mt5.initialize` attach) were **not
+reproduced firing under a genuinely COLD first-run busy tenant** — TA32 is now warm (observe ≈3.5s). One natural
+`observation_timeout` was captured, proving the typed-reason path, but a staged cold first-run (broker discovery +
+MQL5 compile + symbol sync racing the 8s attach) was NOT run (would need a fresh provision; Sponsor-gated). If a
+future first-run tenant's legitimate warm-up exceeds 8s, its FIRST observe would classify `observation_timeout` and
+detection would wait for a later cycle (still ≤~30s via re-poll, not stuck) — acceptable, but the attach cap is
+tunable via `GUVFX_OBSERVER_ATTACH_TIMEOUT_MS` if cold-start proves tighter. Also: the Detecting-slow frontend copy
+is deployed but not visually confirmed in a live logged-in beta session.
+
 ## 🟢 RESOLVED + DEPLOYED (2026-08-26) — per-tenant LiveUpdate containment was ineffective; now closed
 
 *Was:* the 2026-08-20 per-tenant LiveUpdate containment (`HOSTED_LIVEUPDATE_CONTAINMENT_ENABLED=1`) was proven

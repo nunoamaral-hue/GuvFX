@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Bounded Account Observation — DEPLOYED + ARMED + VERIFIED; watch natural detection (2026-08-27)
+P0 fix for fresh-beta detection latency is live (main `4041f7d`, PRs #395/#396; `HOSTED_BOUNDED_OBSERVATION_ENABLED=1`).
+Read-only production evidence is captured (bounded concurrent cycle, typed reasons, `recovery: relaunched=0`,
+re-poll passes=2, attach-only, pins intact). **Single next action:** allow TA32 to complete its own manual "I confirm
+this is my trading account" step (customer action — do NOT click it) and confirm from the ops log that the next fresh
+login→CONNECTED stays ≤~30s. Do NOT stage a synthetic cold first-run reproduction without Sponsor sign-off. Deferred
+(explicitly out of this packet's scope): Pepperstone broker-catalogue preseed, provisioning-pickup latency,
+email-verify UX. Rollback = flip the flag OFF + recreate backend (legacy path is byte-identical).
+
 ## ▶ Customer Telegram product policy — P0 implementation candidate; NO DEPLOYMENT (2026-08-20)
 
 Local release gates and adversarial review are green (0 HIGH / 0 MEDIUM) on
