@@ -36,6 +36,12 @@ class TelegramUnavailable(TelegramConnectionError):
 class InvalidConnectionToken(TelegramConnectionError):
     code = "invalid_or_expired_token"
 
+    def __init__(self, telemetry_reason: str = ""):
+        # ``code`` (and thus the customer-facing/HTTP behaviour) is unchanged; ``telemetry_reason``
+        # only distinguishes expired vs replayed vs malformed vs unknown for the operator timeline.
+        super().__init__()
+        self.telemetry_reason = telemetry_reason or self.code
+
 
 class TelegramChatAlreadyBound(TelegramConnectionError):
     code = "chat_already_connected"
@@ -82,6 +88,9 @@ def create_connection_token(user, *, language: str = "en") -> dict:
         if pref.language != language:
             pref.language = language
             pref.save(update_fields=["language", "updated_at"])
+    from . import telemetry
+    telemetry.token_created(user_id=user.id, token_pk=token.pk, ttl_seconds=ttl,
+                            actor=str(getattr(user, "email", "") or ""))
     username = str(settings.CUSTOMER_TELEGRAM_BOT_USERNAME).lstrip("@")
     return {
         "url": f"https://t.me/{username}?start={raw}",
@@ -95,7 +104,7 @@ def redeem_connection_token(
 ) -> CustomerTelegramBinding:
     """Atomically consume a token and bind its owner to Telegram's authoritative private chat."""
     if not isinstance(raw_token, str) or not _TOKEN_RE.fullmatch(raw_token):
-        raise InvalidConnectionToken
+        raise InvalidConnectionToken("token_malformed")
     if (
         isinstance(chat_id, bool) or isinstance(telegram_user_id, bool)
         or not isinstance(chat_id, int) or not isinstance(telegram_user_id, int)
@@ -111,11 +120,16 @@ def redeem_connection_token(
                 .filter(token_digest=_digest(raw_token))
                 .first()
             )
-            if (
-                token is None or token.consumed_at is not None or token.expires_at <= now
-                or not token.user.is_active
-            ):
-                raise InvalidConnectionToken
+            # Distinct telemetry reasons (same exception type, same ``code``, same HTTP behaviour), in
+            # the original short-circuit order (None first — guards the attribute reads below).
+            if token is None:
+                raise InvalidConnectionToken("token_unknown")
+            if token.consumed_at is not None:
+                raise InvalidConnectionToken("token_replayed")
+            if token.expires_at <= now:
+                raise InvalidConnectionToken("token_expired")
+            if not token.user.is_active:
+                raise InvalidConnectionToken("user_inactive")
 
             conflict = (
                 CustomerTelegramBinding.objects.select_for_update()
@@ -126,7 +140,7 @@ def redeem_connection_token(
             if conflict:
                 raise TelegramChatAlreadyBound
 
-            binding, _ = CustomerTelegramBinding.objects.select_for_update().get_or_create(
+            binding, created = CustomerTelegramBinding.objects.select_for_update().get_or_create(
                 user=token.user,
                 defaults={"telegram_chat_id": chat_id, "telegram_user_id": telegram_user_id},
             )
@@ -144,7 +158,8 @@ def redeem_connection_token(
             token.save(update_fields=["consumed_at"])
 
             transaction.on_commit(
-                lambda: _after_binding_connected(token.user_id, binding.pk, now), robust=True,
+                lambda: _after_binding_connected(token.user_id, binding.pk, now, created=created),
+                robust=True,
             )
             return binding
     except IntegrityError as exc:
@@ -490,7 +505,10 @@ def telegram_settings_for(user) -> dict:
     }
 
 
-def _after_binding_connected(user_id: int, binding_id: int, connected_at) -> None:
+def _after_binding_connected(user_id: int, binding_id: int, connected_at, *, created: bool = True) -> None:
+    from . import telemetry
+    telemetry.binding_established(user_id=user_id, binding_id=binding_id, created=created,
+                                 connected_at=connected_at)
     safe_enqueue_customer_notification(
         user_id=user_id,
         event_type=CustomerNotification.EventType.CONNECTION_CONFIRMED,

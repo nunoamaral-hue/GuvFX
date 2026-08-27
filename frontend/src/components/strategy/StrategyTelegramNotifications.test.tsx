@@ -34,11 +34,11 @@ describe("StrategyTelegramNotifications", () => {
     expect(screen.getByRole("checkbox")).toBeChecked();
   });
 
-  it("preserves pending intent and routes a disconnected customer to Telegram settings", async () => {
+  it("shows an intentional connect CTA instead of a failing toggle for a disconnected customer", async () => {
     api.getStrategyNotificationSettings.mockResolvedValue({
       assignment_id: 12,
       enabled: false,
-      pending_enable: true,
+      pending_enable: false,
       telegram_connected: false,
     });
     render(<StrategyTelegramNotifications assignmentId={12} lang="en" />);
@@ -46,7 +46,8 @@ describe("StrategyTelegramNotifications", () => {
     expect(screen.getByRole("link", { name: "Connect Telegram" })).toHaveAttribute(
       "href", "/profile#telegram-notifications",
     );
-    expect(screen.getByRole("checkbox")).toBeChecked();
+    // No inert/confusing toggle is rendered while disconnected — the CTA replaces it.
+    expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
   it("renders the Japanese customer control", async () => {

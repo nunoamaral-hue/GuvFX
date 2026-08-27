@@ -192,11 +192,17 @@ class TelegramWebhookView(APIView):
             )
         except _PERMANENT_REDEEM_REJECTIONS as exc:
             # Permanent: expired/invalid/consumed token, bad identity, or chat already owned by ANOTHER user
-            # (ownership unchanged — cross-user rejection is preserved). Ack so Telegram drops it.
+            # (ownership unchanged — cross-user rejection is preserved). Ack so Telegram drops it. Record an
+            # operator-only event (DARK-gated, secret-free) so this otherwise-silent 200 is diagnosable —
+            # ``telemetry_reason`` distinguishes expired vs replayed vs malformed where available.
+            from . import telemetry
+            telemetry.connect_rejected(reason=getattr(exc, "telemetry_reason", exc.code))
             return _ack(exc.code)
         except TelegramUnavailable as exc:
             # TRANSIENT: the customer-notification subsystem is temporarily unavailable — a retry can succeed,
             # so return a retryable non-2xx (never mistake this for a customer rejection).
+            from . import telemetry
+            telemetry.connect_transient(reason=exc.code)
             logger.warning("customer_telegram_webhook: transient unavailable reason=%s", exc.code)
             return Response({"detail": exc.code}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response({"ok": True})

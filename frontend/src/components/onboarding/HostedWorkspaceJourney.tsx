@@ -151,6 +151,7 @@ export function WorkspaceReadyNotifyControl() {
   const [settings, setSettings] = useState<WorkspaceReadinessSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const polls = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,19 +161,48 @@ export function WorkspaceReadyNotifyControl() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    // Once the readiness intent is saved but Telegram is not yet connected, poll so the "finish
+    // connecting" hint clears automatically when the customer completes the connect in the other
+    // tab — no manual page refresh. Bounded; stops on connect or after ~2.5 min.
+    if (!settings?.requested || settings.telegram_connected) return;
+    polls.current = 0;
+    const id = window.setInterval(async () => {
+      polls.current += 1;
+      try {
+        const next = await getWorkspaceReadinessSettings();
+        setSettings(next);
+        if (next.telegram_connected || polls.current >= 60) window.clearInterval(id);
+      } catch {
+        if (polls.current >= 60) window.clearInterval(id);
+      }
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [settings?.requested, settings?.telegram_connected]);
+
   if (!settings || !settings.has_workspace) return null;
 
   const requestNotification = async () => {
+    // Open the Telegram tab SYNCHRONOUSLY in the click gesture (before any await) so it is not
+    // popup-blocked; point it at the deep link once the request returns. Never navigate GuvFX
+    // itself away (no window.location.assign) — that unmounts the whole onboarding journey.
+    const win = window.open("about:blank", "_blank");
+    if (win) {
+      try { win.opener = null; } catch { /* opener already null */ }
+    }
     setBusy(true);
     setError(false);
     try {
       const result = await requestWorkspaceReadinessNotification(lang);
       setSettings(result);
       if (result.connect_url) {
-        const opened = window.open(result.connect_url, "_blank", "noopener,noreferrer");
-        if (!opened) window.location.assign(result.connect_url);
+        if (win && !win.closed) win.location.href = result.connect_url;
+        else if (!win) window.open(result.connect_url, "_blank", "noopener,noreferrer");
+      } else {
+        try { win?.close(); } catch { /* already connected — no connect tab needed */ }
       }
     } catch {
+      try { win?.close(); } catch { /* placeholder already gone */ }
       setError(true);
     } finally {
       setBusy(false);

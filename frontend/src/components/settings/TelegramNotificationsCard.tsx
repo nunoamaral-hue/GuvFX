@@ -34,6 +34,7 @@ export function TelegramNotificationsCard() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [help, setHelp] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [error, setError] = useState("");
   const polls = useRef(0);
@@ -65,8 +66,17 @@ export function TelegramNotificationsCard() {
     const id = window.setInterval(async () => {
       polls.current += 1;
       const next = await load();
-      if (next?.connected || polls.current >= 60) {
+      if (next?.connected) {
         setWaiting(false);
+        setHelp(false);
+        window.clearInterval(id);
+      } else if (polls.current >= 60) {
+        // Polled ~120s without a binding appearing. The webhook acknowledges deterministic
+        // rejections (expired link, or the chat is already bound to another GuvFX account) with
+        // 200, so the browser gets no signal — surface an actionable explanation instead of
+        // spinning silently. Never asserts WHY (that stays server-side); offers both remedies.
+        setWaiting(false);
+        setHelp(true);
         window.clearInterval(id);
       }
     }, 2000);
@@ -74,14 +84,25 @@ export function TelegramNotificationsCard() {
   }, [waiting, load]);
 
   const connect = async () => {
+    // Open the tab SYNCHRONOUSLY inside the click gesture, BEFORE any await, so the browser does
+    // not treat it as a programmatic popup and block it. `about:blank` first, then point it at the
+    // deep link once the token POST returns. Never window.location.assign — that navigates GuvFX
+    // itself away, unmounting this card (and its polling), which is the reported "left the journey"
+    // + "had to refresh" bug. Null the opener to keep the noopener security posture.
+    const win = window.open("about:blank", "_blank");
+    if (win) {
+      try { win.opener = null; } catch { /* cross-origin opener already null */ }
+    }
     setBusy(true);
     setError("");
+    setHelp(false);
     try {
       const result = await createTelegramConnection(lang);
-      const opened = window.open(result.url, "_blank", "noopener,noreferrer");
-      if (!opened) window.location.assign(result.url);
+      if (win && !win.closed) win.location.href = result.url;
+      else if (!win) window.open(result.url, "_blank", "noopener,noreferrer");
       setWaiting(true);
     } catch {
+      try { win?.close(); } catch { /* placeholder already gone */ }
       setError(safeError(lang));
     } finally {
       setBusy(false);
@@ -91,6 +112,7 @@ export function TelegramNotificationsCard() {
   const disconnect = async () => {
     setBusy(true);
     setError("");
+    setHelp(false);
     try {
       setSettings(await disconnectTelegram());
       setWaiting(false);
@@ -176,6 +198,9 @@ export function TelegramNotificationsCard() {
       )}
       {waiting && !settings?.connected && (
         <Alert type="info">{t(lang, "telegram.startPrompt")}</Alert>
+      )}
+      {help && !settings?.connected && (
+        <Alert type="info">{t(lang, "telegram.connectHelp")}</Alert>
       )}
 
     </Card>
