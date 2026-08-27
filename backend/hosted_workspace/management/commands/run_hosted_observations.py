@@ -190,6 +190,16 @@ class Command(BaseCommand):
 
         p, o, a = result["provisioning"], result["observation"], result["auto_arm"]
         d = result["delivery"]
+        # P0 bounded-observation telemetry (§8/§9): worker count + typed unavailable reasons make cycle health and
+        # overlap observable in the ops log; recovery's onboarding-skip/relaunch counts prove an observe failure
+        # never relaunches a tenant. Both sections appear ONLY on the bounded path (legacy line is unchanged).
+        bounded_txt = rec_txt = ""
+        b = result.get("bounded")
+        if b is not None:   # bounded path ONLY — the legacy (flag-off) line stays byte-identical
+            bounded_txt = f" | bounded: workers={b['workers']} reasons={b['reasons']}"
+            rec = result.get("capability_recovery") or {}
+            rec_txt = (f" | recovery: candidates={rec.get('candidates', 0)} attempted={rec.get('attempted', 0)} "
+                       f"relaunched={rec.get('relaunched', 0)} skipped_onboarding={rec.get('skipped_onboarding', 0)}")
         self.stdout.write(
             f"[run_hosted_observations] {now.isoformat()} "
             f"prov: enabled={p['enabled']} candidates={p['candidates']} allocated={p['allocated']} "
@@ -202,4 +212,5 @@ class Command(BaseCommand):
             f"disconnected={d['disconnected']} held={d['held']} cz_skipped={d['cz_skipped']} errors={d['errors']} | "
             f"arm: enabled={a['enabled']} candidates={a['candidates']} armed={a['armed']} "
             f"refused={a['refused']} errors={a['errors']}"
+            f"{rec_txt}{bounded_txt}"
         )
