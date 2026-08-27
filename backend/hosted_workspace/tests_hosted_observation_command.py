@@ -69,3 +69,32 @@ class SchedulerCommandTests(TestCase):
         with mock.patch.object(CMD.connection, "vendor", "sqlite"):
             self.assertTrue(CMD.try_acquire_singleton())
             CMD.release_singleton()                               # must not raise
+
+    @override_settings(**_SCHED_ON, **_FLAGS_ON, HOSTED_BOUNDED_OBSERVATION_ENABLED="1")
+    def test_bounded_telemetry_is_logged_when_armed(self):
+        # §8/§9: the bounded worker count, typed unavailable reasons, and recovery onboarding-skip/relaunch
+        # counts must be OBSERVABLE in the ops summary line. Patch the cycle (no host) and assert they render.
+        canned = {"enabled": True, "polled": 3, "applied": 1, "unavailable": 2, "errors": 0, "workers": 8,
+                  "reasons": {"ok": 1, "observation_timeout": 2},
+                  "delivery": {"connected": 0, "disconnected": 0, "held": 3, "cz_skipped": 0}}
+        with mock.patch("hosted_workspace.bounded_observation.run_bounded_observation_cycle",
+                        return_value=canned):
+            out = StringIO()
+            call_command("run_hosted_observations", stdout=out)
+        s = out.getvalue()
+        self.assertIn("bounded: workers=8", s)
+        self.assertIn("observation_timeout", s)               # typed reason, not flattened
+        self.assertIn("recovery:", s)
+        self.assertIn("skipped_onboarding=", s)               # §9 onboarding-gate counter is visible
+
+    @override_settings(**_SCHED_ON, **_FLAGS_ON)
+    def test_legacy_summary_line_has_no_bounded_or_recovery_section(self):
+        # Flag OFF ⇒ legacy path ⇒ the summary line is byte-identical to before this stream (no new sections).
+        _node(max_accounts=5)
+        _requested()
+        out = StringIO()
+        call_command("run_hosted_observations", stdout=out)
+        s = out.getvalue()
+        self.assertIn("obs:", s)
+        self.assertNotIn("bounded:", s)
+        self.assertNotIn("recovery:", s)
