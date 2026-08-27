@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-08-27 - FRESH BETA MT5 REMOTEAPP DISCONNECT: BETA_ACCEPTANCE_READY_TO_RESUME (PR #394, main `50d630e`,
+  host-script-only deploy, tenant recovered).** First natural fresh-beta onboarding (user 36 beta.guvfx01@gmail.com,
+  TA 32, acct 62139344 PepperstoneUK-Demo) failed at the MT5 step: RemoteApp showed "You have been disconnected",
+  Reconnect → "Signing out", no recovery. **Root cause (host forensics, classification C — RemoteApp cmdline
+  policy mismatch):** the armed native-launcher RemoteApp `guvfx_mt5_32` is published `CommandLineSetting=2` (no
+  command line permitted), but `delivery.REMOTEAPP_ARGS='/portable'` is sent on EVERY connection. RDS refuses a
+  client that supplies a command line the RemoteApp forbids → the RemoteApp application never launches
+  (`guvfx_launch.exe` never appears in AppLocker; `rdpinit` RpcLogoff ~21s after logon; no MT5 log) → RDS logs the
+  RDP session off → the stock Guacamole client (external webapp) renders "You have been disconnected"; its internal
+  Reconnect can't re-mint the single-use json token → "Signing out". Existing tenants publish the terminal64 target
+  (`=1` + `RequiredCommandLine=/portable`) which matches delivery, so ONLY launcher tenants broke. terminal64 is
+  AppLocker-allowed via the `(Everyone) MetaQuotes-signed EXE` publisher rule — no 2nd defect. Natural RULE-11
+  controls: NEGATIVE launcher `=2`+/portable → disconnect (tenant 32); POSITIVE terminal64 `=1`+/portable → works
+  (Brian/Patrick/support via real Guacamole). **Fix:** publish BOTH RemoteApp targets `=1` + `RequiredCommandLine=
+  /portable` (RDS forces the fixed arg → no customer injection, same isolation `=2` intended; launcher ignores
+  argv); `delivery.py` UNCHANGED → sacred tenants byte-identical, cannot regress. Deployed `Set-GuvfxRemoteApp.ps1`
+  to host scripts_dir (daemon restarted, `verify_scripts` clean, listening :8790); recovered tenant 32 (re-published
+  → `CommandLineSetting=1`+/portable, matches working policy). Rollback: host `Set-GuvfxRemoteApp.ps1.preRACMDFIX.bak`
+  (`F1D66488…`) + daemon restart. Waterfall: actual provisioning ~20s; the >4-min "Preparing your workspace" =
+  scheduler cron pickup (request 07:17:43 → node_allocated 07:22:03) — optimisable to event-driven (P1). SECONDARY
+  P1: stock-Guacamole Reconnect dead-ends ("Signing out") — the working recovery is GuvFX "Open MT5 Terminal"
+  re-mint. Frozen guarantees (launcher single-instance, #378, mutation pins, LiveUpdate containment, Node-2 max=12)
+  intact; Brian/Patrick/support/CZ RemoteApps + terminals untouched. **Ultimate confirmation = Sponsor's single
+  natural reconnect.**
+
 - **2026-08-26 - NUNO CUSTOMER-ZERO OPERATIONAL RECONCILIATION: NUNO_CZ_OPERATIONAL_PASS_NATURAL_WIN_PENDING
   (PR #393, main `8f8ad93`, backend image `341e2c59d69b`, DEPLOYED + verified).** The operator account
   nuno.amaral@live.com (user 2, superuser; owns ONLY TA1 / MT5 1302561 / WIMS-Demo = Customer Zero) appeared stuck
