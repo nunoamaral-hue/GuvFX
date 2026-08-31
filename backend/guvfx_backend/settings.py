@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "intelligence",  # Phase 7A — GuvFX Signal Intelligence Producer (produces; WIMS consumes)
     "signal_intake",  # EXEC-E0 — Wayond signal -> human PendingSignalApproval (shadow; no execution)
     "operational_events",  # WP5.1 — Operational Event Model (ADR-0032; owner-scoped ops read model, DARK)
+    "approvals",  # A5 — generic human-gated artefact-SHA approval primitive (DARK; no auto-promote)
     "customer_notifications.apps.CustomerNotificationsConfig",  # Customer Telegram plane; DARK
 ]
 

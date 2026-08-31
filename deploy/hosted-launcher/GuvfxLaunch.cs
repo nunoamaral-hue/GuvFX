@@ -12,8 +12,12 @@
 // /portable at the derived path, kills NOTHING, never logs in, never touches the DB. Customer Zero + the
 // account-18 control are refused. The governed AJ#6.4 relaunch stays the only explicit close+relaunch authority.
 //
-// Compile (no external deps): csc /nologo /optimize /platform:x64 /out:guvfx_launch.exe GuvfxLaunch.cs
-// (built on-host via Add-Type -OutputType ConsoleApplication for the throwaway certification).
+// Compile WINDOWLESS (GUI subsystem -> Windows allocates NO console, so the customer never sees a black
+// console window in front of MT5): csc /nologo /optimize /platform:x64 /target:winexe /out:guvfx_launch.exe GuvfxLaunch.cs
+// (built on-host via Add-Type -OutputType WindowsApplication). Because the subsystem is GUI, stdout is
+// discarded -- launch verdicts go to the Windows Event Log (source "GuvFX-Launcher", pre-registered by host
+// provisioning; a non-admin tenant may write to an existing source, and the process EXIT CODE remains the
+// authoritative machine contract: 0 = launched/reused, 1 = any Fail). Single-instance behaviour is unchanged.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -27,7 +31,17 @@ public static class GuvfxLaunch
     static readonly int[] RESERVED = { 1, 18 };   // SACRED: Customer Zero + the account-18 control.
     const int MUTEX_WAIT_MS = 30000;
 
-    static int Fail(string why) { Console.WriteLine("LAUNCH-VERDICT fail " + why); return 1; }
+    // Diagnostics go to the Windows Event Log (source "GuvFX-Launcher", pre-registered by host provisioning),
+    // NOT stdout: under the GUI subsystem stdout is discarded, and the Event Log is a non-tenant-writable sink a
+    // non-admin tenant may still WriteEntry to when the source already exists. A missing source / access error is
+    // swallowed so it can NEVER change launch behaviour -- the process EXIT CODE remains the machine contract.
+    static void Emit(string verdict, EventLogEntryType type)
+    {
+        try { EventLog.WriteEntry("GuvFX-Launcher", "LAUNCH-VERDICT " + verdict, type); }
+        catch { /* source unregistered / no access -> exit code still carries the verdict */ }
+    }
+
+    static int Fail(string why) { Emit("fail " + why, EventLogEntryType.Warning); return 1; }
 
     public static int Main()
     {
@@ -68,14 +82,14 @@ public static class GuvfxLaunch
                     if (pids.Count == 1)
                     {
                         try { target = Process.GetProcessById(pids[0]); } catch { }
-                        Console.WriteLine("LAUNCH-VERDICT reuse " + id);
+                        Emit("reuse " + id, EventLogEntryType.Information);
                     }
                     else
                     {
                         // /portable is HARD-CODED here; never taken from an argument.
                         var psi = new ProcessStartInfo(exe, "/portable") { UseShellExecute = false, WorkingDirectory = root };
                         target = Process.Start(psi);
-                        Console.WriteLine("LAUNCH-VERDICT launch " + id);
+                        Emit("launch " + id, EventLogEntryType.Information);
                     }
                 }
                 finally { try { mutex.ReleaseMutex(); } catch { } }

@@ -78,7 +78,7 @@ def _subsystem_visible() -> bool:
 def _own_workspace(user):
     # Owner-scoped resolve via the immutable trading_account.user binding (the single ownership source).
     return (HostedMt5Workspace.objects.filter(trading_account__user=user)
-            .select_related("trading_account").first())
+            .select_related("trading_account__broker_server").first())
 
 
 def _projection(request_user, ws, account):
@@ -252,6 +252,6 @@ class OnboardingOpsView(_OnboardingBase):
             return dark
         if not bool(getattr(request.user, "is_staff", False)):
             return _NOT_FOUND                                     # staff-only; invisible to everyone else
-        qs = (HostedMt5Workspace.objects.select_related("trading_account")
+        qs = (HostedMt5Workspace.objects.select_related("trading_account__broker_server")
               .order_by("id")[:_OPS_ROW_LIMIT])
         return Response({"rows": onboarding_fleet_projection(qs), "limit": _OPS_ROW_LIMIT})
