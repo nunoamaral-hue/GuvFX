@@ -24,6 +24,7 @@ function journey(over: Partial<HostedJourney> = {}): HostedJourney {
     strategy_eligible: true,
     delivery: "DELIVERY_READY",
     active_login_masked: "***561",
+    active_server: "PepperstoneUK-Demo",
     identity_declared: true,
     ...over,
   };
@@ -53,8 +54,8 @@ describe("HostedWorkspaceStatus (P0.1)", () => {
     const open = screen.getByRole("link", { name: /open metatrader/i });
     expect(open).toHaveAttribute("href", "/trading/terminal-access");
     expect(screen.getByRole("link", { name: /choose a strategy/i })).toHaveAttribute("href", "/strategies/marketplace");
-    // Shows the detected broker login (masked) and demo classification from the active account.
-    expect(screen.getByText("***561")).toBeInTheDocument();
+    // Shows the detected broker account as "<server> · <masked login>" (never "Not yet" when matched).
+    expect(screen.getByText("PepperstoneUK-Demo · ***561")).toBeInTheDocument();
     expect(screen.getByText("Demo")).toBeInTheDocument();
   });
 

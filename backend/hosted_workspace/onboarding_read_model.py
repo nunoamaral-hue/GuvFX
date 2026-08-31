@@ -156,6 +156,20 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
         phase, next_action = _phase_and_next(workspace, account)
     confirmed = getattr(account, "workspace_confirmed_at", None) is not None
     state = str(getattr(workspace, "canonical_state", "") or "") if workspace is not None else ""
+    # Broker account display: source the DETECTED broker account from the write-once bound identity that the
+    # account matcher keys on (account_number + broker_server.server_name), gated on proj_account_match=True.
+    # The legacy ``currently_attached_login`` field has no production writer, so it was always "" -> every hosted
+    # customer showed "Not yet" even when EXECUTION_READY. Gating on the match signal means an unmatched/mismatch/
+    # awaiting state honestly shows "Not yet" (never a wrong account), and the full login stays masked here (full
+    # number remains only in Linked Accounts). Owner-scoped ``account`` -> no cross-customer leak under staff view.
+    matched = workspace is not None and getattr(workspace, "proj_account_match", None) is True
+    detected_login = str(getattr(account, "account_number", "") or "").strip() if matched else ""
+    _bsrv = getattr(account, "broker_server", None) if matched else None
+    detected_server = (
+        (str(getattr(_bsrv, "server_name", "") or "").strip()
+         or str(getattr(account, "broker_name", "") or "").strip())
+        if matched else ""
+    )
     out = {
         "phase": phase,
         "next_action": next_action,
@@ -165,7 +179,10 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
         "operator_account": operator_account,
         "strategy_eligible": bool(phase == PHASE_WORKSPACE_READY),
         "delivery": delivery_readiness(workspace),
-        "active_login_masked": _mask(getattr(workspace, "currently_attached_login", "")) if workspace else "",
+        "active_login_masked": _mask(detected_login),
+        # Matched broker server name (e.g. "PepperstoneUK-Demo"); "" until the account is matched. Paired with
+        # ``active_login_masked`` so the UI can render "<server> - <masked login>" instead of a bare "Not yet".
+        "active_server": detected_server,
         # Additive, server-derived source of truth (Sponsor 2026-08-16): has the customer's EXPECTED broker
         # identity already been recorded via the write-once deferred bind? The bind writes the login to
         # ``trading_account.account_number`` (provisioning.bind_broker_identity), so a non-empty account number

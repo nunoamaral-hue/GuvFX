@@ -14,8 +14,12 @@ allowing `powershell.exe` for the deny-by-default tenant (preserving AppLocker i
 - **AppLocker**: place the exe in a **non-tenant-writable** location and allow it with the narrowest
   rule — a **publisher rule if GuvFX signs it**, else an **exact SHA256 hash rule**. Never allow
   `powershell.exe` / `cmd.exe` / `wscript` / `cscript`.
-- Build: `csc /nologo /optimize /platform:x64 /out:guvfx_launch.exe GuvfxLaunch.cs`
-  (validated on-host via `Add-Type -OutputType ConsoleApplication`).
+- Build WINDOWLESS (GUI subsystem → no customer-visible console):
+  `csc /nologo /optimize /platform:x64 /target:winexe /out:guvfx_launch.exe GuvfxLaunch.cs`
+  (on-host via `Add-Type -OutputType WindowsApplication`). Launch verdicts go to the Windows Event Log
+  (source `GuvFX-Launcher`, pre-registered by host provisioning); the process exit code (0/1) is the machine
+  contract. Any recompile changes the SHA (non-deterministic PE timestamp/MVID) → re-pin the manifest + the
+  AppLocker FileHashRule in lockstep, and re-assert the ACL (SYSTEM/Admins Full, Users Read+Execute).
 
 Not yet wired into provisioning — arming (RemoteApp repoint + AppLocker allow + provisioning
 integration) is a gated step after the run-as-tenant re-certification.

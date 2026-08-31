@@ -29,6 +29,9 @@ export interface HostedJourney {
   strategy_eligible: boolean;
   delivery: DeliveryState;
   active_login_masked: string;
+  /** Matched broker server name (e.g. "PepperstoneUK-Demo"); "" until the account is matched. Optional so an
+   *  older payload without it degrades to a bare masked login rather than "undefined". */
+  active_server?: string;
   /** Server-derived: has the customer's expected broker identity already been recorded (write-once bind)?
    *  The single source of truth for whether the declaration form is still needed — deterministic across
    *  reloads/devices, so the form is never re-shown for an account that is already linked. */

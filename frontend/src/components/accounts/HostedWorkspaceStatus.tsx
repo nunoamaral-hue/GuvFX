@@ -102,7 +102,13 @@ export function HostedWorkspaceStatus({ journey, accounts, onAuthorized }: {
   const ws = WORKSPACE_STATUS[journey.phase] ?? { key: "hostedStatus.inProgress", color: "#38bdf8" };
   const del = DELIVERY_STATUS[journey.delivery] ?? { key: "hostedStatus.preparing", color: "#38bdf8" };
   const active = accounts.find((a) => a.is_active) ?? accounts[0];
-  const brokerDetected = (journey.active_login_masked || "").trim();
+  // Broker account: show "<server> · <masked login>" once the account is matched (both fields come from the
+  // authoritative read model, non-empty only when proj_account_match=True), else "Not yet".
+  const brokerLogin = (journey.active_login_masked || "").trim();
+  const brokerServer = (journey.active_server || "").trim();
+  const brokerDetected = brokerLogin
+    ? (brokerServer ? `${brokerServer} · ${brokerLogin}` : brokerLogin)
+    : "";
   const ready = journey.phase === "WORKSPACE_READY";
 
   // "Trading readiness" is reported at the ASSIGNMENT tier (strategy_eligible), strictly below arming/order

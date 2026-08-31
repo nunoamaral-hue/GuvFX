@@ -45,7 +45,9 @@ def _ws(user, *, node=False, state=S.PROVISIONING, connected=None, matched=None,
     ws = HostedMt5Workspace.objects.create(
         trading_account=acct, canonical_state=state, proj_connected=connected,
         proj_account_match=matched, execution_enabled=execution_enabled,
-        currently_attached_login=(login if connected else ""))
+        # currently_attached_login has NO production writer (always "" in prod). Keep it empty here so the
+        # broker-account display tests prove the value comes from the matched bound identity, not this dead field.
+        currently_attached_login="")
     if tn is not None:
         ws.execution_node = tn
         ws.save(update_fields=["execution_node"])
@@ -150,12 +152,33 @@ class JourneyPhaseTests(TestCase):
 
 
 class CustomerSafeTests(TestCase):
+    def setUp(self):
+        p = patch("hosted_workspace.tenant_isolation.customer_zero_account_ids", return_value=frozenset())
+        p.start(); self.addCleanup(p.stop)
+
     def test_login_is_masked_and_no_full_login_leaks(self):
         ws, acct = _ws(_user(), node=True, state=S.CONNECTED, connected=True, matched=True, login="7009999")
         p = RM.onboarding_journey_projection(ws, acct, staff=False)
-        self.assertEqual(p["active_login_masked"], "***999")
+        self.assertEqual(p["active_login_masked"], "***999")   # derived from the matched account_number
+        self.assertEqual(p["active_server"], "IS6-Demo")        # matched broker server name
         self.assertNotIn("7009999", str(p))          # the full login never appears
         self.assertNotIn("_staff", p)                 # non-staff never receives operator context
+
+    def test_broker_account_empty_until_matched(self):
+        # An account can be bound (account_number set) + connected but NOT yet matched -> the broker-account
+        # display must stay empty ("Not yet"), never a wrong/unverified account. Guards the matched-gate.
+        ws, acct = _ws(_user(), node=True, state=S.CONNECTED, connected=True, matched=False, login="7001234")
+        p = RM.onboarding_journey_projection(ws, acct, staff=False)
+        self.assertEqual(p["active_login_masked"], "")
+        self.assertEqual(p["active_server"], "")
+
+    def test_broker_account_shows_server_and_masked_login_when_matched(self):
+        ws, acct = _ws(_user(), node=True, state=S.EXECUTION_READY, connected=True, matched=True,
+                       confirmed=True, login="62139344")
+        p = RM.onboarding_journey_projection(ws, acct, staff=False)
+        self.assertEqual(p["active_login_masked"], "***344")
+        self.assertEqual(p["active_server"], "IS6-Demo")
+        self.assertNotIn("62139344", str(p))          # full number never leaves the backend
 
     def test_staff_gets_context_but_no_secret(self):
         ws, acct = _ws(_user(), node=True, state=S.CONNECTED, connected=True, matched=True)
