@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Beta acceptance polish — DONE except two Nuno-gated steps (2026-08-31)
+Natural beta acceptance SUCCEEDED (user37/TA33/ws20 EXECUTION_READY+confirmed). Merged PR #398 (main `3f429f8`):
+C broker-account contradiction FIXED + live (`PepperstoneUK-Demo · ***344`); A Pepperstone candidate captured +
+sanitised + certified (portability/integrity/provenance) and registered PENDING (ArtefactApproval id=1, SHA
+`AFD6D65B…`); A5 approval primitive DARK; B windowless launcher binary compiled + RULE-11-verified (staged). **Two
+Nuno-gated next actions (prepared, NOT performed):** (1) approve the catalogue candidate (`decide_artefact_approval
+--id 1 --approve --by <staff>`), arm `APPROVALS_ENABLED`, then build A6 (Broker Catalogue V1 provisioning — design
+recorded) so future Pepperstone tenants resolve <10s. (2) atomic-switch the launcher to the windowless binary (SHA
+`320F4311…`, staged `C:\GuvFX\_launcher_stage\`) after a genuine interactive RDP single-instance + no-console cert —
+Amber→Red (re-mints a live AppLocker rule; active beta uses this launcher). Rollback launcher SHA `CE2097…94765`. Do
+NOT purge the current beta without a Programme decision. Deferred P1: email-verify UX, event-driven provisioning,
+golden reconciliation, MT5 update workflow, stock-Guacamole reconnect.
+
 ## ▶ BETA_ACCEPTANCE_CLEAN_RERUN_READY — Sponsor registers next (2026-08-27)
 Disposable beta (user 36 / TA 32 / beta.guvfx01@gmail.com) is PURGED (DB + host, negative-existence proven, sacred
 preserved, email free) and the Telegram connect/UX/discoverability/telemetry fixes are deployed (main `939eeeb`,

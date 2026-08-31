@@ -14,6 +14,52 @@
 
 ## Execution workstream log
 
+- **2026-08-31 - BETA ACCEPTANCE POLISH: BETA_ACCEPTANCE_POLISH_COMPLETE_CATALOGUE_APPROVAL_PENDING (PR #398
+  merged, main `3f429f8`).** Follows a SUCCESSFUL natural beta acceptance run. **D - Natural acceptance evidence
+  (preserved, not synthetic):** the Sponsor re-registered the beta after the 2026-08-27 purge (now user 37 / TA 33 /
+  MT5 62139344 PepperstoneUK-Demo / ws 20 / guvfx_u_33, node 2, `EXECUTION_READY` + `proj_account_match=True` +
+  `workspace_confirmed_at` set) and proved end-to-end: native RemoteApp launcher works; reopen/reconnect produced
+  launcher REUSE (natural `LAUNCH-VERDICT reuse 33`), not a second MT5; account detection completed naturally <30s
+  after login; navigated away and back with completed state persisted; terminal stayed available; NO manual DB
+  advancement. Residual UX defects fixed below. Pepperstone native discovery still took ~5 min (catalogue work).
+  **C - "Broker account: Not yet" contradiction FIXED (deployed, verified live).** The summary read
+  `active_login_masked` -> `HostedMt5Workspace.currently_attached_login`, a field with NO production writer (always
+  ""), so EVERY hosted customer showed "Not yet" even when matched. Now the read model derives the detected account
+  from the write-once bound identity (`account_number` + `broker_server.server_name`) gated on `proj_account_match=
+  True`; adds `active_server`; `select_related` broker_server. Live proof (beta ws20): `active_login_masked='***344'`
+  `active_server='PepperstoneUK-Demo'`, full number NOT leaked -> UI now shows "PepperstoneUK-Demo - ***344", "Not
+  yet" only when genuinely unmatched (never a wrong/mismatch account); owner-scoped (no cross-customer leak). Removed
+  a fake test. **A - Pepperstone Broker Catalogue V1 (candidate CERTIFIED structurally + provenance; APPROVAL
+  PENDING).** Read-only host capture of the beta runtime `accounts\33` config: `servers.dat` 86592 B SHA
+  `AFD6D65B43B5DF45...072C6B`, MT5 build 5.0.0.5833. Sanitisation PASS (RULE-11 positive control via `common.ini`;
+  account number 62139344 NOT in servers.dat; `accounts.dat`/`common.ini`/`terminal.ini`/`bases\PepperstoneUK-Demo`
+  all EXCLUDED, never copied). Sanitised candidate staged host-side `C:\GuvFX\catalogue\candidates\pepperstone\
+  pepperstone-b5005833-AFD6D65B43B5\` (servers.dat + manifest.json, `active:false`). A4 cert: portability + integrity
+  (SHA read-back matches at two disposable paths), account-free re-confirmed, golden broker-neutral base servers.dat
+  (25476 B, `CD7D15B5...`) UNCHANGED. Provenance = captured from a CONFIRMED working PepperstoneUK-Demo connection
+  (ws20 EXECUTION_READY matched); size delta +61116 B over golden base. NOTE: MT5 `servers.dat` is opaque (a plaintext
+  broker-name needle is NOT a reliable presence test - "MetaQuotes" is UTF-16-findable in golden but full server
+  strings are not); the <=10s behavioural timing is the already-proven IS6 preseed mechanism, inferred here from
+  provenance - a live interactive (xfreerdp) Pepperstone re-measurement was NOT re-driven (Sponsor-gated). A5 -
+  generic human-gated artefact-SHA approval primitive (new `approvals` app, DARK `APPROVALS_ENABLED`): the Pepperstone
+  candidate is registered PENDING (ArtefactApproval id=1, bound to SHA `AFD6D65B...`), NO auto-promote; consumer
+  `is_artefact_approved` fail-closed while dark (verified False). A6 (catalogue provisioning integration) DEFERRED to
+  a post-approval follow-up (design recorded; not built speculatively before the human gate). **B - Invisible native
+  launcher (source + verified binary; live switch Nuno-GATED).** `GuvfxLaunch.cs` -> `/target:winexe` (GUI subsystem,
+  no customer-visible console) + the three `LAUNCH-VERDICT` sinks moved to the Windows Event Log (source
+  `GuvFX-Launcher`, registered on host); single-instance logic byte-identical, exit codes unchanged. Host STAGING
+  compile verified (RULE-11: control console build = CONSOLE(3), winexe = GUI(2)); new SHA `320F4311...`. The live
+  atomic switch (replace `C:\GuvFX\launcher\guvfx_launch.exe` + re-pin `.guvfx_launcher_manifest` + re-mint the
+  AppLocker FileHashRule + re-assert ACL) is Amber->Red and DEFERRED to a Nuno-gated interactive RDP single-instance +
+  no-console cert, because the active beta uses this launcher and a botched AppLocker re-pin would block all launches;
+  binary staged `C:\GuvFX\_launcher_stage\`. **Deploy:** backend `e0f343868153`->`55c2d34ac04b`, frontend
+  `41630ed64863`->`42ac8a40f5fb`; approvals migration applied. **E regression (all intact):** launcher gate/RemoteApp
+  #394/bounded observation (armed)/pins/LiveUpdate/0.01 sizing/Telegram #397 + isolation/#378/Node-2=12/sacred
+  (CZ 523, support@ 65, Brian/Patrick 0, bindings NunoRAmaral+Dubaibk) - PR touched ONLY approvals + onboarding read
+  model + launcher source + frontend. **Tests:** hosted_workspace+approvals+operational_events 1102 pass; 7 approvals;
+  read-model 30 (+3); frontend 6; build+eslint clean; adversarial (prior) SHIP. No purge this packet. Verdict:
+  **BETA_ACCEPTANCE_POLISH_COMPLETE_CATALOGUE_APPROVAL_PENDING** (+ launcher switch Nuno-gated).
+
 - **2026-08-27 - FRESH BETA RESET + TELEGRAM CLOSURE: BETA_ACCEPTANCE_CLEAN_RERUN_READY (PR #397 merged, main
   `939eeeb`; disposable tenant purged).** Prepared a clean disposable-beta rerun. (A) **PURGE** of the disposable
   beta (user 36 beta.guvfx01@gmail.com / TA 32 / ws 19 / guvfx_u_32, 3rd cycle of this email): pre-purge gz backup

@@ -1,5 +1,42 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-08-31 — Beta acceptance polish: POLISH_COMPLETE_CATALOGUE_APPROVAL_PENDING
+
+- **Scope / decision.** Three bounded post-acceptance objectives: (A) capture+certify Pepperstone for Broker
+  Catalogue V1, (B) make the native launcher windowless, (C) fix the "Broker account: Not yet" contradiction.
+  Plus (D) preserve natural acceptance evidence and (E) regression. Merged PR #398 (main `3f429f8`).
+- **Verified fact vs assumption.** *Verified:* C fixed + live (beta ws20 now `PepperstoneUK-Demo · ***344`);
+  Pepperstone candidate captured + sanitised (RULE-11 positive control) + portable + integrity + golden-neutral;
+  A5 approval primitive DARK + PENDING id=1 registered; B windowless binary compiles GUI(2) (RULE-11 control);
+  full backend/target suites green; E regression intact. *Assumption / NOT re-driven:* the Pepperstone `<=10s`
+  behavioural resolution timing is the already-proven IS6 preseed mechanism inferred from provenance (candidate came
+  from a working PepperstoneUK-Demo connection) — a live interactive (xfreerdp) Pepperstone measurement was not
+  performed; `servers.dat` is opaque so a plaintext broker-name needle is not a reliable presence test.
+- **Two Nuno-gated next actions (both prepared, neither performed — human gates):**
+  1. **Catalogue promotion.** Approve `ArtefactApproval id=1` (kind `broker_servers_dat`, ref `pepperstone/v1`, SHA
+     `AFD6D65B43B5DF45...072C6B`) via `decide_artefact_approval --id 1 --approve --by <staff email>`, then arm
+     `APPROVALS_ENABLED` + build A6 (Broker Catalogue V1 provisioning integration — design recorded in the survey:
+     new `APPLY_BROKER_CATALOGUE` host op + `Apply-GuvfxBrokerCatalogue.ps1` + slot_preparation Stage 5-catalogue +
+     `HOSTED_BROKER_CATALOGUE_ENABLED`). Only then do future Pepperstone tenants resolve fast. A6 was deliberately
+     NOT built before approval (would be speculative infra).
+  2. **Launcher switch.** The windowless binary is staged on host (`C:\GuvFX\_launcher_stage\guvfx_launch.exe`, SHA
+     `320F4311542C97AD...E019EA`). The live atomic switch (replace `C:\GuvFX\launcher\guvfx_launch.exe` + re-pin
+     `.guvfx_launcher_manifest` first line to the new SHA + re-mint the `GuvFX-NativeLauncher*` AppLocker
+     FileHashRule + re-assert ACL SYSTEM/Admins Full, Users R+X) is Amber→Red: it re-mints a live security rule and
+     the active beta uses this launcher, so it needs a genuine interactive RDP single-instance battery + no-console
+     visual proof before switching. Rollback = current live SHA `CE2097…94765` (manifest + AppLocker rule + old exe).
+- **Deviations from packet.** A6 deferred to post-approval (human gate); B live switch deferred to a gated interactive
+  cert (Amber→Red). Both are prepared/verified, not performed. No beta purge this packet (per Objective A).
+- **Exact tests.** `hosted_workspace+approvals+operational_events` 1102 pass; `approvals` 7; onboarding read-model 30
+  (+3 new); frontend `HostedWorkspaceStatus` 6; `npm run build` + eslint clean.
+- **Commit / branch state.** main `3f429f8` (merged #398). Prod images backend `55c2d34ac04b`, frontend
+  `42ac8a40f5fb`; approvals migration `0001` applied. Host: candidate + staged winexe binary in place; live launcher
+  UNCHANGED.
+- **Rollback.** Code: redeploy backend `e0f343868153` / frontend `41630ed64863`; `migrate approvals zero` (DARK, no
+  consumer). B/A leave no live-behaviour change to roll back (both gated).
+- **One bounded next action.** Hand the two gated items above to Nuno; recommend approving the catalogue candidate
+  first (unblocks A6) — do NOT switch the launcher or arm the catalogue without the interactive certs.
+
 ## 2026-08-27 — Fresh beta reset + Telegram closure: BETA_ACCEPTANCE_CLEAN_RERUN_READY
 
 - **Scope / decision.** Prepare one clean disposable-beta rerun: (A) evidence-first purge of the disposable tenant,

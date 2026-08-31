@@ -2,6 +2,29 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 RESOLVED + DEPLOYED (2026-08-31) — Trading Workspace "Broker account: Not yet" was a dead read-model field
+
+*Was:* the Trading Workspace summary showed "Broker account: Not yet" for EVERY hosted customer even when
+EXECUTION_READY + matched (e.g. the beta knew acct 62139344 / PepperstoneUK-Demo in Linked Accounts). Root cause:
+the summary read `active_login_masked` -> `HostedMt5Workspace.currently_attached_login`, a field with **no
+production writer anywhere** (only ever set in test helpers), so it is always "". **Fixed + deployed (PR #398, main
+`3f429f8`):** the read model now derives the detected account from the authoritative write-once bound identity
+(`account_number` + `broker_server.server_name`) gated on `proj_account_match=True`, exposing `active_login_masked`
++ new `active_server`. Live: beta ws20 -> `active_login_masked='***344'`, `active_server='PepperstoneUK-Demo'`.
+Secondary latent occurrence remains (staff-only): `backend/hosted_workspace/read_model.py:51-59` masks the same dead
+field — harmless (always empty) — a follow-up, not customer-facing.
+
+**⚠ TWO PREPARED-BUT-NUNO-GATED items from this packet (do NOT self-approve):**
+1. **Broker Catalogue promotion.** The Pepperstone `servers.dat` candidate (SHA `AFD6D65B43B5DF45...072C6B`, staged
+   `C:\GuvFX\catalogue\candidates\pepperstone\...`) is registered as `ArtefactApproval id=1` PENDING. It is NOT
+   approved (human gate); `APPROVALS_ENABLED` is DARK; A6 provisioning integration is NOT built. Until Nuno approves
+   + A6 ships, Pepperstone tenants still do the ~5-min native discovery.
+2. **Launcher windowless switch.** The GUI-subsystem binary (SHA `320F4311...`) is compiled + staged
+   (`C:\GuvFX\_launcher_stage\`) but the live launcher (`C:\GuvFX\launcher\guvfx_launch.exe`, SHA `CE2097...94765`)
+   is UNCHANGED. The switch re-mints a live AppLocker FileHashRule (Amber→Red) and the active beta uses this
+   launcher, so it needs a gated interactive RDP single-instance + no-console cert first. Until then the customer
+   still sees the console window on RemoteApp open.
+
 ## 🟢 RESOLVED + DEPLOYED (2026-08-27) — Telegram "still not connected" was a silent cross-user rejection
 
 *Was:* a fresh-beta customer opened the Telegram deep link, pressed Start, and GuvFX still showed NOT CONNECTED.
