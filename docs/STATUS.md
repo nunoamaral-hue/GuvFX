@@ -14,6 +14,34 @@
 
 ## Execution workstream log
 
+- **2026-09-10 - TI SIGNALS INGESTION FORENSIC: TI_SIGNALS_PIPELINE_HEALTHY (READ-ONLY, no mutation, no fix).**
+  Sponsor suspected the TI Signals Telegram format changed and broke parsing. **Finding: format DID drift but the
+  parser fully absorbs it — pipeline healthy end-to-end.** All TI code: listener = single `guvfx-wayond-listener`
+  container (Telethon, healthy, serves all providers via the acquisition dispatcher); parser = pure
+  `intelligence/ti_signals_source.py` (`ti_signals_v1`, cert MEDIUM); raw capture = `signal_intake.AcquiredMessage`;
+  parsed = `PendingSignalApproval`. **Drift observed:** current messages now carry trailing
+  `Direction Confidence / Overall Setup / ML Score / Target…` lines and `Date of expiry:` (was `有効期限`); core
+  `🔔 XAUUSD BUY/SELL (M15)` + `Entry: lo-hi (mid X)` + `TP1-3` + `SL:` structure UNCHANGED. The targeted
+  line-anchored/labelled regexes ignore the new lines (no false TP/SL match) and `Expir(y)` already matches
+  "Date of expiry". **Empirical proof (read-only):** outcomes all-time INTAKEN=581, STALE=6, **QUARANTINED=0**;
+  latest signal msg 601 acquired 0.7h before the check; semantic e2e correct (msg601 BUY entry=mid 4426.57, SL 4424.14
+  below, TP1-3 above, ascending → approval #605 → plan #615). Local adversarial harness 21/22 correct (current+old
+  BUY/SELL, Unicode en/em dash, missing-SL→UNKNOWN, bare-range-no-mid→quarantine fail-closed, informational→UNKNOWN,
+  updates→UPDATE not re-ingested); the 1 miss is a synthetic malformed `Entry: 44ab.83`→entry=44 single-value
+  fallback, NEVER seen in prod (TI always clean). Dedup intact (587 acquired = 587 distinct message_id, 0 dupes);
+  TI sends opening signals only (SignalUpdate/ProviderCommand/MessageAmendment = 0). **MATERIAL STATE FINDING (not a
+  defect, not caused here):** TI signals are LIVE **AUTO_DEMO** executing (real `order_send` on DEMO accounts), NOT
+  shadow-only as older notes said. Gates all ON pre-packet: `ExecutionControl.signal_execution_mode=DEMO`,
+  `auto_execution_enabled=True`, `kill_switch=False`, `SignalSourceConfig(ti_signals).auto_demo_execution_enabled=True`
+  (1.20/signal, 0.40/leg), `MULTI_ACCOUNT_ROUTING_ENABLED=1`. Assignments: asn#8 CZ(acct1) AUTO_SHADOW (dormant while
+  global=DEMO), **asn#10 support@(acct25) AUTO_DEMO**, **asn#15 beta(acct33) AUTO_DEMO** — last 7d PLACE_ORDER acct25=153,
+  acct33=153, acct1=0 (real demo orders, fan-out identical values). Sponsor should confirm the demo copy-trading on
+  support@ + the beta is intended. **Observability:** `AcquiredMessage.outcome` ledger distinguishes INTAKEN/UPDATE/
+  STALE/QUARANTINED/DROPPED; gap = no app-level listener heartbeat (relies on container health to tell listener-down
+  from source-quiet). **No fix required, no code change, nothing armed/disarmed, AUTO_SHADOW/AUTO_DEMO left as
+  configured, sacred tenants untouched.** Verdict: **TI_SIGNALS_PIPELINE_HEALTHY** (secondary: format-drift-absorbed;
+  AUTO_DEMO-live verify-intended; latent malformed-numeric edge; listener-heartbeat observability gap).
+
 - **2026-08-31 - BETA ACCEPTANCE POLISH: BETA_ACCEPTANCE_POLISH_COMPLETE_CATALOGUE_APPROVAL_PENDING (PR #398
   merged, main `3f429f8`).** Follows a SUCCESSFUL natural beta acceptance run. **D - Natural acceptance evidence
   (preserved, not synthetic):** the Sponsor re-registered the beta after the 2026-08-27 purge (now user 37 / TA 33 /
