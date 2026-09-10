@@ -14,6 +14,40 @@
 
 ## Execution workstream log
 
+- **2026-09-11 - MULTI-STREAM (Nuno AUTO_DEMO / catalogue / Brian+Patrick): READ-ONLY forensic, NO MUTATION (git
+  clean); streams A blocked, B partial, C root-caused.** **A - Nuno TI AUTO_DEMO: BLOCKED at A1 preflight, NOT
+  activated.** Nuno=user2=Customer Zero (staff/super), TA1/acct1302561/WIMS-Demo/is_demo=True; target asn#8
+  (ti_signals, AUTO_SHADOW). A1 identity/account gates #2-#5 FAIL: ws1=WAITING_FOR_LOGIN on node1 (CZ live-node
+  carve-out, NOT hosted-observed) with conn/match/trade=False; CZ acct1 has **0 trades in 30d** (last 2026-08-07) so
+  no live-connection evidence either. The auto-router's routable filter gates on assignment config only (mode/stage/
+  demo-account), NOT on workspace match — so flipping asn#8 would arm TI order fan-out to an UNPROVEN connection,
+  exactly what A1 forbids. Per A1 "STOP - do not activate". A2 sizing NOT reached. Escalation: to activate safely CZ
+  must become hosted-observable + account-matched, OR the Programme must explicitly waive the A1 observed-match gate
+  for the CZ carve-out (accepting the wrong-account risk). Verdict A: **NUNO_TI_AUTO_DEMO_BLOCKED_A1_ACCOUNT_MATCH_
+  UNPROVABLE**. **B - Broker Catalogue: PARTIAL (reconcile + hashes only).** Pepperstone candidate intact
+  (`C:\GuvFX\catalogue\candidates\pepperstone\pepperstone-b5005833-AFD6D65B43B5`, servers.dat 86592 SHA
+  `AFD6D65B43B5DF45...072C6B`) = ArtefactApproval#1 PENDING; `APPROVALS_ENABLED=False`; golden base broker-neutral
+  (25476 `CD7D15B5`) unchanged; `catalogue\active.json` ABSENT (B4 unbuilt). Clean IS6 source available (Brian/Patrick
+  servers.dat 69032, accounts.dat ABSENT); IS6 candidate NOT built. B1/B2 fresh-runtime <=10s latency cert NOT
+  performed - requires an interactive xfreerdp disposable-runtime session (session-0 headless does NO network); B3
+  IS6 approval not created (no certified artefact to bind); B4/B5 approval-gated, unbuilt. Not fabricated (evidence
+  rule). **C - Brian + Patrick MT5 onboarding forensic: root-caused, DIFFERENT causes, NO mutation.** Both never
+  advanced past WAITING_FOR_LOGIN (last_observed_at=None, obs_ver=1, single PROVISIONING->WAITING transition), both
+  IS6Technologies-Live, both accounts.dat ABSENT (never logged in), both **legacy DIRECT-terminal RemoteApps**
+  (`Path=terminal64.exe` =1 /portable, #394 fix present) - NEVER migrated to the native launcher. **Brian**
+  (user34/acct10054/guvfx_u_30, SID …-1026): NO terminal running, RDP session Disc idle **17d** -> class **A**
+  (customer never completed broker login). **Patrick** (user35/acct51757602/guvfx_u_31, SID …-1037): **TWO** login-less
+  terminal64 (pids 4068+9832, 09/02, 11s apart) -> **duplicate-terminal -> observer fails closed -> never observed**;
+  caused by the legacy direct-terminal RemoteApp (no single-instance guard -> reconnects spawn duplicates) -> class
+  **D+C**; also never logged in. Remediation (RETURNED, not executed - Amber/gated): per-tenant native-launcher
+  migration (single-instance guard) with rollback for BOTH, + governed duplicate-cleanup (Relaunch-GuvfxTerminal.ps1
+  Variant-A, previously certified) for Patrick; both still require the human broker login to complete. **Cross-stream
+  regression:** TI healthy (last signal 2026-09-10 23:05, ARMED); support@ asn#10 + beta asn#15 AUTO_DEMO UNCHANGED;
+  Nuno asn#8 AUTO_SHADOW UNCHANGED; Node-2 max_accounts=12; global DEMO/auto_exec/kill unchanged; all pins intact;
+  sacred untouched. **Zero mutations, zero deploys, git clean.** Overall: streams blocked/partial - evidence
+  returned, awaiting Programme decisions (CZ A1 waiver; catalogue interactive cert + approval; Brian/Patrick launcher
+  migration authorization).
+
 - **2026-09-10 - TI SIGNALS INGESTION FORENSIC: TI_SIGNALS_PIPELINE_HEALTHY (READ-ONLY, no mutation, no fix).**
   Sponsor suspected the TI Signals Telegram format changed and broke parsing. **Finding: format DID drift but the
   parser fully absorbs it — pipeline healthy end-to-end.** All TI code: listener = single `guvfx-wayond-listener`
