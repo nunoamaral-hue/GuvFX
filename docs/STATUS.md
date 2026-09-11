@@ -14,6 +14,39 @@
 
 ## Execution workstream log
 
+- **2026-09-11 - MULTI-STREAM IMPLEMENTATION (Nuno AUTO_DEMO / catalogue / Brian+Patrick recovery): A STOP, B
+  PARTIAL, C EXECUTED. No code change (host mutations only for C).** **A - Nuno TI AUTO_DEMO: STOP at A3, NOT
+  activated (now with LIVE terminal evidence, not just projection).** CZ (acct1/1302561/WIMS-Demo, is_demo=True) MT5
+  terminal IS running (pid 7812, single) but its log tail (2026-09-11 00:58, ~5.5h stale) ends with
+  `Network '1302561': scanning network for access points / scanning network finished` - a DISCONNECTED/reconnecting
+  state, NOT `authorized on WIMS-Demo`; 0 trades/30d corroborates. A3 gates connected/account_match/trade_allowed =
+  FALSE. Per A3 STOP. A2 CZ observation adapter NOT built (would derive from live evidence that does not currently
+  exist - would be speculative/untestable). Escalation: CZ's MT5 must first re-authorize/connect to WIMS-Demo (a
+  human reconnect on CZ's terminal), THEN re-run A. **B - Pepperstone/IS6 catalogue: PARTIAL.** Pepperstone candidate
+  intact (servers.dat 86592 SHA `AFD6D65B43B5DF45...072C6B`) = ArtefactApproval#1 PENDING; APPROVALS_ENABLED=False;
+  golden base broker-neutral (25476 `CD7D15B5`) unchanged; `catalogue\active.json` ABSENT. Clean IS6 source available
+  (Brian/Patrick servers.dat 69032, accounts.dat ABSENT; CZ acct1 23772 has accounts.dat -> EXCLUDE); IS6 candidate
+  NOT built. B1/B2 fresh-runtime <=10s latency cert NOT performed - requires an interactive xfreerdp disposable-runtime
+  session (session-0 headless does NO network) = gated host resource; B3 IS6 approval not created (no certified
+  artefact); B4/B5 approval-gated, unbuilt. Not fabricated. **C - Brian + Patrick recovery: EXECUTED + verified
+  (bounded, reversible host mutations).** Both were legacy DIRECT-terminal RemoteApps (`terminal64.exe`), never
+  migrated. **Patrick (guvfx_u_31/acct51757602)**: cleared the duplicate (2 login-less terminal64 pids 4068+9832 ->
+  0) via a fail-closed `accounts\31`-guarded kill with GuvFX_HostedRelaunch_31 + TenantBridgeWatchdog_31 frozen then
+  thawed; then migrated RemoteApp guvfx_mt5_31 -> `C:\GuvFX\launcher\guvfx_launch.exe` (Cmd=1 /portable). **Brian
+  (guvfx_u_30/acct10054)**: migrated RemoteApp guvfx_mt5_30 -> launcher (no terminal running). Both
+  `Set-GuvfxRemoteApp -Mode Verify` => `exact=true ok=true`; live launcher SHA `CE20972842098322` (certified, PR#391,
+  AppLocker-allowed) unchanged; #394 cmdline policy (=1 /portable) preserved; accounts\30 + accounts\31 terminal
+  count=0. GOTCHA a nested `& powershell -File` inside `-Command` over ssh mangled + transiently REMOVED both
+  RemoteApps; recovered by direct `-File` invocation (published=true exact=true). **Final state Brian + Patrick:
+  READY_FOR_CUSTOMER_LOGIN** - one launcher-protected path, no duplicate, WAITING_FOR_LOGIN; remaining action = the
+  customer's own broker login (runtime single-instance proof happens at their interactive connect). **Rollback (C):**
+  `Set-GuvfxRemoteApp.ps1 -Mode Ensure -Alias guvfx_mt5_<30|31> -TerminalRoot C:\GuvFX\accounts\<30|31>\terminal
+  -Target terminal64` (reverts to direct terminal64). Patrick duplicate kill = login-less, no data loss. **Regression:**
+  TI healthy (last 2026-09-10 23:05); support@ asn#10 + beta asn#15 AUTO_DEMO UNCHANGED; Nuno asn#8 AUTO_SHADOW
+  UNCHANGED (A not activated); Node-2 max_accounts=12; sacred terminals CZ(7812)+golden(3972) untouched; pins intact.
+  Verdict: A `NUNO_TI_AUTO_DEMO_BLOCKED_A3_CZ_DISCONNECTED` (reconnect-gated); B PARTIAL (interactive-cert gated); C
+  **BRIAN+PATRICK_READY_FOR_CUSTOMER_LOGIN** (migrated + Patrick duplicate cleared).
+
 - **2026-09-11 - MULTI-STREAM (Nuno AUTO_DEMO / catalogue / Brian+Patrick): READ-ONLY forensic, NO MUTATION (git
   clean); streams A blocked, B partial, C root-caused.** **A - Nuno TI AUTO_DEMO: BLOCKED at A1 preflight, NOT
   activated.** Nuno=user2=Customer Zero (staff/super), TA1/acct1302561/WIMS-Demo/is_demo=True; target asn#8
