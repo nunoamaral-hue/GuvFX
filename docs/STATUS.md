@@ -14,6 +14,30 @@
 
 ## Execution workstream log
 
+- **2026-09-14 - TI PLACE_ORDER OUTAGE FORENSIC: ROOT-CAUSED (READ-ONLY, no mutation). Verdict
+  TI_EXECUTION_P0_BLOCKED_WORKSPACE_OBSERVATION_STALE.** TI signals parse+route fine but every PLACE_ORDER is
+  refused `hosted claim entitlement refused: workspace_execution_not_armed` (NOT an HTTP/bridge error - it never
+  reaches the bridge). CAUSAL CHAIN: the two AUTO_DEMO tenant MT5 terminals are NOT running (host: `accounts\25` +
+  `accounts\33` terminal64 count=0; last logs 2026-08-20 / 2026-09-03) -> the observer gets terminal_not_running ->
+  no canonical decision written -> `HostedMt5Workspace.last_decision_at` goes stale (acct25 ~24d, acct33 ~11d; gate
+  window `WORKSPACE_OBSERVATION_FRESH_SECONDS`=300s) -> `execution/readiness.PersistentWorkspaceProvider.evaluate`
+  returns `workspace_observation_stale` (`_observation_fresh` uses last_decision_at, NOT last_observed_at) ->
+  `hosted_execution_armed=False` -> `resolve_hosted_route` -> ER_NOT_ARMED -> PLACE_ORDER refused at the backend
+  entitlement gate (execution/views.py:386) BEFORE dispatch. This is a FAIL-CLOSED SAFETY GATE WORKING AS DESIGNED:
+  it won't trade a workspace whose live connection can't be freshly confirmed; the stale `proj_connected=True` in the
+  DB is exactly what the freshness gate distrusts. acct33 traded Aug31-Sep3 (166 fills) until its terminal stopped
+  Sep3, then 100% refused; acct25 terminal down since ~Aug20 (0 fills whole window, last real trade Aug20). Both
+  have saved logins (`accounts.dat` present) so a relaunch SHOULD auto-reconnect. Classification: account/workspace-
+  specific execution-readiness (both node-2 AUTO_DEMO tenants), NOT strategy/broker/bridge/transport. Identity pins
+  intact (payloads carry correct expected_login/server per account; refusal is pre-dispatch; no cross-account leak).
+  **REMEDIATION (Phase-8 GATED, NOT executed - restarting live terminals + ensuring a logged-in session are explicit
+  STOP conditions):** relaunch acct25+acct33 terminals via the certified HostedRelaunch tooling; with saved creds
+  they should auto-reconnect -> fresh observation within 5 min -> auto re-arm -> execution resumes; if a terminal
+  comes up login-less/session expired (cf. CZ scanning-not-authorized), a human broker login is required. DURABLE
+  fix: the persistent-terminal mechanism (GuvFX_HostedRelaunch_/TenantBridgeWatchdog_ tasks are `Ready` but did NOT
+  keep the terminals up) must keep autonomous AUTO_DEMO terminals continuously running+logged-in. NO gate/pin/sizing
+  weakening. Zero mutation this packet; git clean.
+
 - **2026-09-11 - MULTI-STREAM IMPLEMENTATION (Nuno AUTO_DEMO / catalogue / Brian+Patrick recovery): A STOP, B
   PARTIAL, C EXECUTED. No code change (host mutations only for C).** **A - Nuno TI AUTO_DEMO: STOP at A3, NOT
   activated (now with LIVE terminal evidence, not just projection).** CZ (acct1/1302561/WIMS-Demo, is_demo=True) MT5
