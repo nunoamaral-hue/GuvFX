@@ -27,7 +27,8 @@
   `node2_bridge_watchdog.ps1` (hardcodes :8789, ignores -Port/-Task) as the per-tenant watchdog, so a dead
   :8802 was never restarted. Re-activated :8802 via the certified ACTIVATE_TENANT_BRIDGE primitive (health OK,
   pin-enforcing) and repointed acct33's watchdog to a new port-targeted `tenant_bridge_watchdog.ps1`. acct33
-  natural-signal certification PENDING its next signal (bridge now up). Effective sizing CONFIRMED unchanged
+  CERTIFIED end-to-end on its next NATURAL signal (msg 639 XAUUSD SELL; plan 690, 3 legs @ 0.01; jobs 59610-612
+  SUCCESS; broker tickets 89200346/89200347/89200348; no duplicate). Effective sizing CONFIRMED unchanged
   (acct25 0.40/leg source-cap; acct33 0.01/leg via AssignmentLegSizing asn#15) - no divergence, no sizing change.
   **Replay-safe:** HISTORIC_FAILED_TI_ORDERS_REPLAYABLE=FALSE (no PENDING/RUNNING jobs, no live plans; FAILED
   terminal + lease-null; workers claim only PENDING; only human-gated retry; reconciler never re-dispatches).
@@ -36,7 +37,8 @@
   primitive (bounded/loop-safe; CZ+acct18 excluded; never arms/logs-in/orders; observer re-proves before
   re-arm), + operator AlertEvent (MT5_TERMINAL) on disarm/recovery, migration 0010, 17 tests. Regression:
   CZ asn#8 AUTO_SHADOW preserved; CZ/Brian/Patrick untouched; node2 max_accounts=12; no real-money account
-  touched. Verdict **TI_EXECUTION_RECOVERED_NATURAL_SIGNAL_PENDING** (final pending acct33 natural signal).
+  touched. PR #399 merged to main (`2865369`), CI green (backend+frontend+governance). Verdict
+  **TI_EXECUTION_RECOVERED_AND_PERSISTENCE_FIXED** (both accounts certified on natural signals).
   Root cause of the ~24d/~11d outage: capability_recovery only relaunches a CONNECTED terminal, so it cannot
   recover from zero, and nothing watched terminal64 liveness (acct25 exited during a LiveUpdate 2026-08-20;
   acct33 terminated mid-reconnect 2026-09-03).
