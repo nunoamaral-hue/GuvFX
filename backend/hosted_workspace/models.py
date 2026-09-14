@@ -181,6 +181,16 @@ class HostedMt5Workspace(models.Model):
     capability_recovery_at = models.DateTimeField(null=True, blank=True, default=None)
     capability_recovery_count = models.PositiveIntegerField(default=0)
 
+    # --- P0 zero-terminal liveness recovery (2026-09-14) — bounded/loop-safe attempt bookkeeping -----------
+    # DISTINCT from capability recovery: those two fields track relaunches of a CONNECTED-but-capability-stuck
+    # terminal; these track relaunches of an ARMED workspace whose terminal has fully EXITED (recover-from-zero,
+    # which capability recovery structurally cannot do). ``liveness_recovery_at`` stamps the last attempt and
+    # ``liveness_recovery_count`` caps total attempts so a persistently-failing relaunch backs off (and raises
+    # one operator alert) instead of restart-looping. Written ONLY by the liveness runner; never arms, never
+    # places an order — the observer re-proves identity + trade_allowed and the freshness gate re-arms.
+    liveness_recovery_at = models.DateTimeField(null=True, blank=True, default=None)
+    liveness_recovery_count = models.PositiveIntegerField(default=0)
+
     # --- ADR-0034 Execution Engine capstone (PART 2/3): durable workspace->node execution binding ---------
     # The ONE authorised execution TerminalNode this workspace resolves to (Decision C). NULL ⇒ NOT
     # execution-routable (fail-closed). Server-assigned only, via the provisioning contract

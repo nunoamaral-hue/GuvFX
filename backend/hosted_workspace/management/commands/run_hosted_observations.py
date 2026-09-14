@@ -97,6 +97,7 @@ def run_cycle(*, observe_fn=None) -> dict:
     workspace (ADR-0044 Decision 2; DARK unless master + execution flags on; the arm re-proves all preconditions)."""
     from hosted_workspace.auto_arm_runner import run_hosted_auto_arm
     from hosted_workspace.capability_recovery import run_hosted_capability_recovery
+    from hosted_workspace.liveness_recovery import run_hosted_liveness_recovery
     from hosted_workspace.delivery_observe_runner import run_hosted_delivery_observe
     from hosted_workspace.flags import hosted_bounded_observation_enabled, hosted_delivery_lifecycle_enabled
     from hosted_workspace.observation_runner import run_hosted_observations
@@ -115,9 +116,14 @@ def run_cycle(*, observe_fn=None) -> dict:
                  "connected": dd["connected"], "disconnected": dd["disconnected"], "held": dd["held"],
                  "cz_skipped": dd["cz_skipped"], "errors": b["errors"]}
         recovery = run_hosted_capability_recovery()
+        # P0 (2026-09-14): zero-terminal liveness recovery — relaunch an ARMED workspace whose terminal has
+        # fully EXITED (capability_recovery cannot; it needs a CONNECTED terminal). DARK unless
+        # HOSTED_LIVENESS_RECOVERY_ENABLED; bounded/loop-safe; CZ-excluded; arms nothing (observer re-proves).
+        liveness = run_hosted_liveness_recovery()
         arm = run_hosted_auto_arm()
         return {"provisioning": prov, "observation": obs, "capability_recovery": recovery,
-                "delivery": deliv, "auto_arm": arm, "bounded": {"workers": b["workers"], "reasons": b["reasons"]}}
+                "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm,
+                "bounded": {"workers": b["workers"], "reasons": b["reasons"]}}
     # LEGACY serial path (flag OFF or test-injected observe_fn) — byte-identical to before this stream.
     obs = run_hosted_observations(observe_fn=observe_fn or resolve_observe_fn(),
                                   source="hosted_workspace.scheduler")
@@ -126,12 +132,15 @@ def run_cycle(*, observe_fn=None) -> dict:
     # ENABLED; capability-only (re-assert config + graceful tenant relaunch); bounded/loop-safe; CZ-excluded; it
     # advances no state and arms nothing — the observer re-proves trade_allowed=True on the next cycle.
     recovery = run_hosted_capability_recovery()
+    # P0 (2026-09-14): zero-terminal liveness recovery — see the bounded path above. DARK unless
+    # HOSTED_LIVENESS_RECOVERY_ENABLED; bounded/loop-safe; CZ-excluded; arms nothing.
+    liveness = run_hosted_liveness_recovery()
     # BB#1: the delivery-CONNECTED edge — drive the delivery single writer from the trusted session signal.
     # DARK unless HOSTED_DELIVERY_LIFECYCLE_ENABLED; own transport gating; CZ-excluded; single-writer.
     deliv = run_hosted_delivery_observe(source="hosted_workspace.scheduler")
     arm = run_hosted_auto_arm()
     return {"provisioning": prov, "observation": obs, "capability_recovery": recovery,
-            "delivery": deliv, "auto_arm": arm}
+            "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm}
 
 
 class Command(BaseCommand):
@@ -193,13 +202,18 @@ class Command(BaseCommand):
         # P0 bounded-observation telemetry (§8/§9): worker count + typed unavailable reasons make cycle health and
         # overlap observable in the ops log; recovery's onboarding-skip/relaunch counts prove an observe failure
         # never relaunches a tenant. Both sections appear ONLY on the bounded path (legacy line is unchanged).
-        bounded_txt = rec_txt = ""
+        bounded_txt = rec_txt = live_txt = ""
         b = result.get("bounded")
         if b is not None:   # bounded path ONLY — the legacy (flag-off) line stays byte-identical
             bounded_txt = f" | bounded: workers={b['workers']} reasons={b['reasons']}"
             rec = result.get("capability_recovery") or {}
             rec_txt = (f" | recovery: candidates={rec.get('candidates', 0)} attempted={rec.get('attempted', 0)} "
                        f"relaunched={rec.get('relaunched', 0)} skipped_onboarding={rec.get('skipped_onboarding', 0)}")
+            lv = result.get("liveness_recovery") or {}
+            if lv.get("enabled"):
+                live_txt = (f" | liveness: candidates={lv.get('candidates', 0)} down={lv.get('down', 0)} "
+                            f"relaunched={lv.get('relaunched', 0)} recovered={lv.get('recovered', 0)} "
+                            f"errors={lv.get('errors', 0)}")
         self.stdout.write(
             f"[run_hosted_observations] {now.isoformat()} "
             f"prov: enabled={p['enabled']} candidates={p['candidates']} allocated={p['allocated']} "
@@ -212,5 +226,5 @@ class Command(BaseCommand):
             f"disconnected={d['disconnected']} held={d['held']} cz_skipped={d['cz_skipped']} errors={d['errors']} | "
             f"arm: enabled={a['enabled']} candidates={a['candidates']} armed={a['armed']} "
             f"refused={a['refused']} errors={a['errors']}"
-            f"{rec_txt}{bounded_txt}"
+            f"{rec_txt}{live_txt}{bounded_txt}"
         )
