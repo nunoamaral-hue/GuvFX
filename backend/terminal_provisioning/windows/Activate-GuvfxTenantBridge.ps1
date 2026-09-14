@@ -50,7 +50,10 @@ try {
   # ---- The shared bridge package must be staged (binary + launcher template + watchdog) ----
   $bin = Join-Path $SHARED_DIR "mt5_signal_bridge.py"
   $tpl = Join-Path $SHARED_DIR "node2_bridge.env.template.bat"
-  $wd  = Join-Path $SHARED_DIR "node2_bridge_watchdog.ps1"
+  # Per-tenant bridges MUST use the port-targeted watchdog (tenant_bridge_watchdog.ps1), NOT the node-only
+  # node2_bridge_watchdog.ps1 which HARDCODES :8789 and ignores -Port/-Task (2026-09-14 P0: that mis-wiring
+  # left acct33's :8802 bridge unsupervised - a dead per-tenant bridge was never restarted).
+  $wd  = Join-Path $SHARED_DIR "tenant_bridge_watchdog.ps1"
   foreach ($p in @($bin,$tpl,$wd)) { if (-not (Test-Path $p)) { Fail "bridge_package_missing" } }
 
   $tenantDir = Join-Path $TENANTS_BASE ([string]$AccountId)

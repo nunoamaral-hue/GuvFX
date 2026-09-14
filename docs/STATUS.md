@@ -14,6 +14,33 @@
 
 ## Execution workstream log
 
+- **2026-09-14 - TI EXECUTION RECOVERED + PERSISTENCE FIXED (authorized bounded recovery; mutations executed).**
+  Restored both AUTO_DEMO terminals via the certified RELAUNCH_TERMINAL primitive (recover-from-zero):
+  acct25 (1302587/IS6Technologies-Demo) and acct33 (62139344/PepperstoneUK-Demo), each authorized on its EXACT
+  expected account/server, single-instance (one terminal64 per runtime root). The every-minute governed observer
+  re-armed both NATURALLY (last_decision_at fresh; proj_connected/match/trade_allowed True; readiness ok;
+  hosted_execution_armed True; route ok with correct server-derived pins). **acct25 CERTIFIED end-to-end on the
+  next NATURAL TI signal** (msg 638 XAUUSD SELL entry 4314.06 SL 4316.98 TP 4309.76/4307.95/4305.50; plan 689,
+  3 legs @ 0.40; PLACE_ORDER jobs 59598-600 SUCCESS; broker tickets 254845/254846/254847; no duplicate).
+  **acct33 second blocker found + fixed:** arm gate now passes but its per-tenant order bridge (:8802) was down
+  (`agent_unreachable`) - root cause: `Activate-GuvfxTenantBridge.ps1` staged the node-only
+  `node2_bridge_watchdog.ps1` (hardcodes :8789, ignores -Port/-Task) as the per-tenant watchdog, so a dead
+  :8802 was never restarted. Re-activated :8802 via the certified ACTIVATE_TENANT_BRIDGE primitive (health OK,
+  pin-enforcing) and repointed acct33's watchdog to a new port-targeted `tenant_bridge_watchdog.ps1`. acct33
+  natural-signal certification PENDING its next signal (bridge now up). Effective sizing CONFIRMED unchanged
+  (acct25 0.40/leg source-cap; acct33 0.01/leg via AssignmentLegSizing asn#15) - no divergence, no sizing change.
+  **Replay-safe:** HISTORIC_FAILED_TI_ORDERS_REPLAYABLE=FALSE (no PENDING/RUNNING jobs, no live plans; FAILED
+  terminal + lease-null; workers claim only PENDING; only human-gated retry; reconciler never re-dispatches).
+  **Durable fix (PR #399, deployed+ARMED):** `hosted_workspace/liveness_recovery.py` - DARK
+  `HOSTED_LIVENESS_RECOVERY_ENABLED` pass relaunches an ARMED zero-terminal workspace via the certified
+  primitive (bounded/loop-safe; CZ+acct18 excluded; never arms/logs-in/orders; observer re-proves before
+  re-arm), + operator AlertEvent (MT5_TERMINAL) on disarm/recovery, migration 0010, 17 tests. Regression:
+  CZ asn#8 AUTO_SHADOW preserved; CZ/Brian/Patrick untouched; node2 max_accounts=12; no real-money account
+  touched. Verdict **TI_EXECUTION_RECOVERED_NATURAL_SIGNAL_PENDING** (final pending acct33 natural signal).
+  Root cause of the ~24d/~11d outage: capability_recovery only relaunches a CONNECTED terminal, so it cannot
+  recover from zero, and nothing watched terminal64 liveness (acct25 exited during a LiveUpdate 2026-08-20;
+  acct33 terminated mid-reconnect 2026-09-03).
+
 - **2026-09-14 - TI PLACE_ORDER OUTAGE FORENSIC: ROOT-CAUSED (READ-ONLY, no mutation). Verdict
   TI_EXECUTION_P0_BLOCKED_WORKSPACE_OBSERVATION_STALE.** TI signals parse+route fine but every PLACE_ORDER is
   refused `hosted claim entitlement refused: workspace_execution_not_armed` (NOT an HTTP/bridge error - it never

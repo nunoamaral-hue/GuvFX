@@ -2,6 +2,29 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 RESOLVED + DEPLOYED (2026-09-14) — armed AUTO_DEMO workspace could sit terminal-less (disarmed) for days
+
+*Was:* when an ARMED hosted AUTO_DEMO tenant's MT5 `terminal64` exited (MetaTrader LiveUpdate, crash, or session
+teardown), nothing relaunched it — `capability_recovery` only targets a CONNECTED-but-capability-stuck terminal so
+it **cannot recover from zero**, and no watchdog watched terminal liveness. The terminal stayed down → observer got
+no fresh canonical decision → `last_decision_at` stale → readiness `workspace_observation_stale` →
+`hosted_execution_armed=False` → every PLACE_ORDER refused pre-dispatch, **silently**. support@ (acct25) was down
+~24d, beta (acct33) ~11d. *Fixed (PR #399, deployed + armed):* `hosted_workspace/liveness_recovery.py` (DARK
+`HOSTED_LIVENESS_RECOVERY_ENABLED`) relaunches an ARMED zero-terminal workspace via the certified RELAUNCH_TERMINAL
+primitive (bounded/loop-safe; CZ+acct18 excluded; observer re-proves before re-arm; never arms/logs-in/orders), with
+an operator `AlertEvent` (MT5_TERMINAL) on disarm and recovery. Both terminals were relaunched + re-armed under the
+authorized bounded recovery; acct25 certified on a natural signal.
+
+## 🟠 SHARP EDGE (partially fixed 2026-09-14) — per-tenant order bridge (:8802) was unsupervised
+
+`Activate-GuvfxTenantBridge.ps1` staged the **node-only** `node2_bridge_watchdog.ps1` (hardcodes :8789, has NO
+`param()` block so it ignores the `-Port 8802 -Task GuvFX_TenantBridge_<id>` args) as each tenant's watchdog —
+so a dead per-tenant bridge was never restarted (acct33 :8802 down → PLACE_ORDER `agent_unreachable`). *Fixed in
+Git (PR #399):* new port-targeted `deploy/node2-order-bridge/tenant_bridge_watchdog.ps1` + `Activate-GuvfxTenant
+Bridge.ps1` repointed to it. *Applied on host for acct33* (watchdog task repointed; :8802 re-activated + healthy).
+**Follow-up:** re-stage the shared bridge package + re-register the `Activate-GuvfxTenantBridge.ps1` contract SHA so
+future per-tenant bridges pick up the correct watchdog.
+
 ## 🟢 RESOLVED + DEPLOYED (2026-08-31) — Trading Workspace "Broker account: Not yet" was a dead read-model field
 
 *Was:* the Trading Workspace summary showed "Broker account: Not yet" for EVERY hosted customer even when

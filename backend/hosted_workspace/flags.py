@@ -357,3 +357,23 @@ def hosted_native_launcher_gate_enabled() -> bool:
     execution-arming gate so it can be proven DARK and armed on its own — arm it only after the launcher is
     installed + AppLocker-allow-listed + its manifest pinned on the host (else it fails every provision)."""
     return _flag("HOSTED_NATIVE_LAUNCHER_GATE_ENABLED")
+
+
+def hosted_liveness_recovery_enabled() -> bool:
+    """P0 zero-terminal liveness recovery (Sponsor 2026-09-14) — the gate for the governed step that relaunches
+    an ARMED hosted AUTO_DEMO workspace whose MT5 terminal has EXITED (LiveUpdate / crash / session teardown),
+    so an execution-authorized workspace can never sit terminal-less — and therefore observation-stale and
+    silently DISARMED — for days. DEFAULT OFF, and DISTINCT from the master ``HOSTED_PERSISTENT_MT5_ENABLED``
+    (two-level darkness: the runner is a dormant no-op unless BOTH are on) and from
+    ``HOSTED_CAPABILITY_RECOVERY_ENABLED`` (which only repairs a CONNECTED-but-capability-stuck terminal and
+    structurally CANNOT recover from zero — the gap this closes).
+
+    It is LIVENESS ONLY: for an armed (``execution_enabled`` + ``execution_authorized_at``), account-confirmed,
+    previously-matched, demo, non-reserved workspace observed with NO running terminal, it relaunches EXACTLY
+    ONE terminal via the certified RELAUNCH_TERMINAL primitive (single-instance, LiveUpdate-contained,
+    fail-closed). It NEVER logs in, changes the broker account, ARMS execution, or places an order — a started
+    process is NOT inferred as connected: the observer must re-prove the exact identity + trade_allowed on the
+    next cycle and the freshness gate remains the sole re-arm authority. Bounded + loop-safe (per-workspace
+    attempt cap + cooldown); a persistently-failing relaunch backs off and raises ONE operator alert rather
+    than restart-looping. Customer Zero (1) and account 18 are reserved and never touched."""
+    return _flag("HOSTED_LIVENESS_RECOVERY_ENABLED")

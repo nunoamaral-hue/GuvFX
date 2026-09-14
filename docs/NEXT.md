@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ TI execution recovered — CERTIFY acct33 natural signal + deploy tenant-watchdog fix (2026-09-14)
+Authorized bounded recovery COMPLETE: both AUTO_DEMO terminals relaunched + re-armed naturally; **acct25 certified
+on a natural TI signal** (tickets 254845-847); acct33 per-tenant bridge (:8802) re-activated. Durable fix shipped
+(PR #399, deployed + armed `HOSTED_LIVENESS_RECOVERY_ENABLED=1`). **Single next action:** confirm acct33 executes
+its NEXT natural TI signal (bridge now up) — poll `ExecutionJob(account_id=33, job_type=PLACE_ORDER, status=SUCCESS)`
+after the next signal (~hourly at :03/:04 UTC); do NOT replay a signal or manufacture a trade. **Deploy follow-up
+(non-blocking):** re-stage the shared bridge package to include `deploy/node2-order-bridge/tenant_bridge_watchdog.ps1`
+and re-register the `Activate-GuvfxTenantBridge.ps1` contract SHA so FUTURE per-tenant bridges get the correct
+port-targeted watchdog (acct33's watchdog is already repointed on the host). Merge PR #399 after CI green.
+
 ## ▶ Beta acceptance polish — DONE except two Nuno-gated steps (2026-08-31)
 Natural beta acceptance SUCCEEDED (user37/TA33/ws20 EXECUTION_READY+confirmed). Merged PR #398 (main `3f429f8`):
 C broker-account contradiction FIXED + live (`PepperstoneUK-Demo · ***344`); A Pepperstone candidate captured +
