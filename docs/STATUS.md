@@ -14,6 +14,22 @@
 
 ## Execution workstream log
 
+- **2026-09-14 - MYFXBOOK T1 PREP FORENSIC (READ-ONLY, ZERO mutation). Verdict
+  MYFXBOOK_T1_READY_INVESTOR_PASSWORD_REQUIRED.** Assessed support@ (user29 / TA25 / MT5 1302587 /
+  IS6Technologies-Demo, demo, active) for publishing the T1/Wayond (ti_signals, asn#10 AUTO_DEMO, 0.40/leg) demo
+  as a Myfxbook public track record via MT5 Auto Update (investor/read-only password). Broker ledger (181 deals):
+  1x $50,000 initial deposit (2026-08-05), 0 withdrawals/adjustments, 91 positions (89 closed + 2 open) = matches
+  the GuvFX Trade table exactly. Classification: 89 T1 (XAUUSD 0.40, first 2026-08-18T22:03:53Z, net ~-$578 -
+  LOSING demo) + 2 pre-T1 manual EURUSD probes (2026-08-07, -0.69); no other strategy / test / unknown / cross-
+  account leak. History past is cleanly isolable -> custom Myfxbook start date **2026-08-18T00:00:00Z**; but
+  support@ is the SHARED live execution account and Auto Update syncs forward-continuously, so a start date fences
+  only the past (a dedicated reporting account is the hard forward fence, but that is an architecture change this
+  packet excluded; support@ is already de-facto mono-strategy T1 -> governance: keep it T1-only). Investor password
+  = HUMAN_RESET_REQUIRED (GuvFX stores no credential for this account - persistent_workspace attach model; not read,
+  not exposed). Myfxbook zero-authority CONFIRMED (code+host: no EA/DLL, no integration; T1 orders reach the broker
+  only via GuvFX's own pin-enforcing bridge order_send). Zero mutations; the only human action is the Sponsor
+  creating/supplying the investor password directly to Myfxbook. See [[project_myfxbook_t1_prep]].
+
 - **2026-09-14 - TI EXECUTION RECOVERED + PERSISTENCE FIXED (authorized bounded recovery; mutations executed).**
   Restored both AUTO_DEMO terminals via the certified RELAUNCH_TERMINAL primitive (recover-from-zero):
   acct25 (1302587/IS6Technologies-Demo) and acct33 (62139344/PepperstoneUK-Demo), each authorized on its EXACT
