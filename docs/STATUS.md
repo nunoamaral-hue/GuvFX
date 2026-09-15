@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-09-15 - BROKER CATALOGUE V1 + IS6 RECOVERY + WINDOWLESS LAUNCHER (implementation packet; DARK).**
+  (A1/B) Built the `broker_catalogue` app (PR #400, branch feat/broker-catalogue-v1) — immutable versioned
+  store (CatalogueVersion one-ACTIVE partial-unique + CatalogueArtefact SHA-bound), broker resolution from the
+  authoritative broker-server name, DARK provisioning preseed (`HOSTED_BROKER_CATALOGUE_ENABLED` off) that only
+  copies a SUPPORTED+human-APPROVED+SHA-verified servers.dat into a FRESH runtime (read-back verify) and else
+  falls back to native discovery (never fails provisioning, never touches golden), + confined host primitive
+  `PRESEED_BROKER_ARTEFACT` (executor+dispatch+HOSTED_OPERATIONS+primitive_runner CONTRACT+stage-manifest+
+  Preseed-GuvfxBrokerArtefact.ps1, ParseFile-clean). 14 tests; hosted_workspace+broker_catalogue 1004 green;
+  migration 0001 additive. DEPLOYED DARK (img `91ab5911`), flag OFF, verified inert (0 versions/artefacts,
+  support@+beta still armed, cron clean). ARMING gated: host-daemon re-registration for the primitive.
+  (A2/A3/A4/A6) Pepperstone candidate reverified intact (`AFD6D65B…` == PENDING approval id=1; source acct33
+  drifted to 86936 but candidate is an immutable earlier snapshot). IS6 candidate CREATED from Brian's clean
+  IS6-Live runtime (accounts.dat ABSENT at source, single-file) -> `catalogue\candidates\is6\…\servers.dat`
+  SHA `DB013E27AD0D…`, 69032, build 5.0.0.5833; registered PENDING approval **id=2 is6/v1**. BOTH await human
+  approval (A6) + interactive fresh-runtime broker-discovery behavioural cert (A5, needs interactive MT5).
+  (C) Brian (acct30) + Patrick (acct31) both **READY_FOR_CUSTOMER_LOGIN, NO MUTATION** — launcher RemoteApp +
+  #394 (/portable,Cmd=1), 0 terminals/no duplicate, IS6-Live servers.dat bootstrap present, accounts.dat absent.
+  (D1) Windowless launcher REBUILT from current source -> **subsystem=2 (GUI)** SHA `AEB16835…`, AppLocker hash
+  `0x661B21ED…`, staged C:\GuvFX\_launcher_stage (rebuilt SHA != remembered 320F4311 -> reverified from source).
+  Live launcher still subsystem=3 SHA `CE209728…` (AppLocker `0xB572C264…`). D3 atomic switch + interactive cert
+  gated. ZERO sacred mutation; golden broker-neutral (25476, no accounts.dat). See [[project_catalogue_v1_is6_launcher]].
+
 - **2026-09-14 - MYFXBOOK T1 PREP FORENSIC (READ-ONLY, ZERO mutation). Verdict
   MYFXBOOK_T1_READY_INVESTOR_PASSWORD_REQUIRED.** Assessed support@ (user29 / TA25 / MT5 1302587 /
   IS6Technologies-Demo, demo, active) for publishing the T1/Wayond (ti_signals, asn#10 AUTO_DEMO, 0.40/leg) demo
