@@ -50,6 +50,7 @@ HOSTED_OPERATIONS = (
     "ACTIVATE_ORDER_BRIDGE",     # start THIS node's dedicated pin-enforcing order bridge + health-check (server-derived slot)
     "ACTIVATE_TENANT_BRIDGE",    # P0-B1.1: start THIS tenant's OWN pin-enforcing order bridge on its per-tenant PORT (multi-tenant host)
     "RELAUNCH_TERMINAL",         # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own MT5 (capability recovery; NEVER CZ; no order)
+    "PRESEED_BROKER_ARTEFACT",   # Broker Catalogue V1: copy ONE approved+SHA-verified servers.dat into a FRESH runtime (RO source; no golden; no login)
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.
 CREDENTIALED_HOSTED_OPERATIONS = ("PROVISION_IDENTITY",)
