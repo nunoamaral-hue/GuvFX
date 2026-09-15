@@ -158,6 +158,15 @@ CONTRACT = {
     "activate_tenant_bridge": PrimitiveSpec(
         script="Activate-GuvfxTenantBridge.ps1",
         argmap={"terminal_root": "-TerminalRoot", "account_id": "-AccountId", "port": "-Port"}),
+    # Broker Catalogue V1: copy ONE approved+SHA-verified catalogue servers.dat into a FRESH runtime + read-back
+    # verify. Reviewed .ps1 takes -Username/-TerminalRoot/-AccountId (server-derived, confined; refuses CZ) plus
+    # -BrokerId/-ExpectedSha256/-HostRelpath (dispatch-validated: 64-hex sha, versions-relative path, no traversal).
+    # SOURCE is read-only + confined to C:\GuvFX\catalogue\versions; DEST is the tenant's own config\servers.dat.
+    # It NEVER touches the golden, accounts.dat, or another tenant, and REFUSES if a terminal is running.
+    "preseed_broker_artefact": PrimitiveSpec(
+        script="Preseed-GuvfxBrokerArtefact.ps1",
+        argmap={"username": "-Username", "terminal_root": "-TerminalRoot", "account_id": "-AccountId",
+                "broker_id": "-BrokerId", "expected_sha256": "-ExpectedSha256", "host_relpath": "-HostRelpath"}),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and

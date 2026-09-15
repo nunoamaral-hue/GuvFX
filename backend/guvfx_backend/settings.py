@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "signal_intake",  # EXEC-E0 — Wayond signal -> human PendingSignalApproval (shadow; no execution)
     "operational_events",  # WP5.1 — Operational Event Model (ADR-0032; owner-scoped ops read model, DARK)
     "approvals",  # A5 — generic human-gated artefact-SHA approval primitive (DARK; no auto-promote)
+    "broker_catalogue",  # Broker Catalogue V1 — immutable versioned broker-bootstrap store (DARK; approval-gated)
     "customer_notifications.apps.CustomerNotificationsConfig",  # Customer Telegram plane; DARK
 ]
 

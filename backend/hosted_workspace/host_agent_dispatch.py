@@ -91,6 +91,7 @@ OP_PRIMITIVES = {
     # recovery). Server-derived identity/paths only; Customer Zero is refused (reserved) before this maps. It
     # relaunches a terminal — it NEVER logs in, changes accounts, arms a strategy, or places an order.
     "RELAUNCH_TERMINAL":        {"primitive": "relaunch_terminal",        "params_allow": ()},
+    "PRESEED_BROKER_ARTEFACT":  {"primitive": "preseed_broker_artefact",  "params_allow": ("broker_id", "expected_sha256", "host_relpath")},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 
@@ -225,6 +226,25 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         # re-assert the CZ refusal as defence in depth.
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
                 "account_id": slot["account_id"]}
+    if op == "PRESEED_BROKER_ARTEFACT":
+        # Broker Catalogue V1: copy ONE approved catalogue servers.dat into the tenant's fresh runtime + read-back
+        # verify. All identity/paths are server-derived from the account slot; the SOURCE is confined host-side to
+        # under C:\GuvFX\catalogue\versions. Re-validate the caller-influenced values here (defence in depth):
+        #   expected_sha256 must be 64 lowercase hex; host_relpath must be a versions-relative path with no
+        #   traversal; broker_id must be a short slug. The .ps1 REFUSES the copy unless the read-back SHA matches.
+        params = fields.get("params") or {}
+        sha = str(params.get("expected_sha256", "")).lower()
+        rel = str(params.get("host_relpath", "")).replace("/", "\\").strip("\\")
+        broker = str(params.get("broker_id", ""))
+        import re as _re
+        if not _re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise HostProtocolError("params_malformed")
+        if not _re.fullmatch(r"[a-z0-9_]{1,32}", broker):
+            raise HostProtocolError("params_malformed")
+        if (".." in rel) or (not rel.lower().startswith("versions\\")) or (not rel.lower().endswith("servers.dat")):
+            raise HostProtocolError("params_not_allowed")
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "account_id": slot["account_id"], "broker_id": broker, "expected_sha256": sha, "host_relpath": rel}
     if op == "ENSURE_REMOTEAPP":
         # The alias is DERIVED server-side (never the caller's) — per-account for isolation, legacy for CZ. The
         # RemoteApp start-program TARGET is a signed, params_allow-validated server value: "launcher" (arming, the

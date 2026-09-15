@@ -317,6 +317,20 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         if not _ok(res):
             return SlotPreparationResult(False, PREP_CONTAINMENT_FAILED, ST_CONTAINMENT)
 
+    # ---- Stage 5a2: Broker Catalogue V1 preseed (DARK; FAIL-OPEN) — copy an APPROVED, SHA-verified broker
+    #      servers.dat into the FRESH runtime so the customer's broker/server is immediately selectable. DARK
+    #      unless HOSTED_BROKER_CATALOGUE_ENABLED; an unsupported/unapproved broker (or ANY host issue) leaves the
+    #      runtime broker-neutral for native MT5 discovery — it NEVER fails provisioning and NEVER touches the
+    #      golden. Runs after the golden is populated + contained, before RemoteApp publication. -----------------
+    try:
+        from broker_catalogue.preseed import run_catalogue_preseed
+        _pre = run_catalogue_preseed(account, executor=ex, rdp_host=rdp_host)
+        if _pre.get("enabled"):
+            logger.info("hosted slot prep: broker_catalogue preseed account=%s %s", account_id,
+                        {k: _pre.get(k) for k in ("reason_code", "broker_id", "preseeded", "fallback_native")})
+    except Exception:  # noqa: BLE001 — preseed is best-effort; never breaks provisioning (native fallback stands)
+        logger.warning("hosted slot prep: broker_catalogue preseed errored account=%s", account_id)
+
     # ---- Stage 5b: AutoTrading CAPABILITY config — write [Experts] AllowLiveTrading=1 Enabled=1 into the
     #      runtime's common.ini (the empirically certified minimum). This is CAPABILITY ONLY: it authorises no
     #      order. Execution stays gated independently (HOSTED_MT5_EXECUTION_ENABLED + the per-workspace arm + the

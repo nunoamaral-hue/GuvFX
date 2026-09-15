@@ -224,6 +224,21 @@ class SignedHostExecutor:
         identity/path is host-derived from ``account_id``. It NEVER logs in, NEVER trades, NEVER mutates."""
         return self._send("OBSERVE_WORKSPACE")
 
+    def preseed_broker_artefact(self, runtime_root, broker_id, expected_sha256, host_relpath, rdp_host=None) -> dict:
+        """Broker Catalogue V1 — copy ONE approved, immutable catalogue ``servers.dat`` into this tenant's fresh
+        runtime and read-back-verify its SHA. Confined on ``runtime_root`` (Django layer) + Customer-Zero refused
+        in ``_send``; the host re-derives the tenant runtime from ``account_id`` and confines the SOURCE to under
+        ``C:\\GuvFX\\catalogue\\versions`` (no traversal). ``broker_id``/``host_relpath``/``expected_sha256`` are
+        the sole caller-influenced values — signed, params_allow-validated, and re-validated host-side; the copy
+        is REFUSED unless the read-back SHA equals ``expected_sha256``. It NEVER logs in, changes the broker
+        account, arms execution, places an order, or touches the golden image. Returns the sanitised signed
+        result (``{"ok", "verified_sha256", ...}``)."""
+        if not self._confined(runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("PRESEED_BROKER_ARTEFACT", params={
+            "broker_id": str(broker_id), "expected_sha256": str(expected_sha256).lower(),
+            "host_relpath": str(host_relpath)})
+
 
 # ── DARK factory ─────────────────────────────────────────────────────────────────────────────────────────
 def _default_seal_password(password_bytes, *, account_id, correlation_id, nonce):
