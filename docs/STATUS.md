@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-09-15 - CATALOGUE + LAUNCHER GATE CLOSURE (continuation; interactive cert). PR #400 MERGED (main
+  `ed5e4bf`).** Behavioural cert (disposable runtimes, fake logins only, RULE-11 pos+neg controls): **Pepperstone
+  candidate id=1 (`AFD6D65B`): Demo PASS ~1.5s + Live PASS**; **IS6 candidate id=2 (`DB013E27`, from Brian
+  never-logged-in): FAIL** (no Demo/Live connection attempt - servers.dat lacks resolved access points). Created a
+  **NEW IS6 candidate id=3 (`A05DDD55`, from support@/acct25 CONNECTED runtime servers.dat, provenance-sanitised):
+  Demo PASS ~2.0s + Live PASS**. KEY LESSON: catalogue servers.dat must come from a runtime that actually connected.
+  **Recommendation: APPROVE id=1 + id=3, REJECT id=2 - ALL remain PENDING (never self-approved); STOP at Sponsor.**
+  Windowless launcher: staged `AEB16835` subsystem=2 (no-console) + AppLocker `0x661B21ED`; identity-refuse + EventLog
+  PASS; single-instance battery NOT independently re-run (SSH harness can't establish a fresh disposable-tenant
+  session: SeBatchLogonRight won't apply via secedit-over-SSH, xfreerdp needs X on headless VPS) - logic is
+  byte-identical to certified live launcher CE209728 (PR#391). **Atomic switch NOT performed** (D not complete + E's
+  interactive verification needs an RDP session unavailable via SSH); live launcher unchanged (`CE209728` subsystem 3).
+  Brian(acct30)+Patrick(acct31) reverified READY_FOR_CUSTOMER_LOGIN (0 terminals, untouched). ZERO sacred mutation;
+  node2=12; disposable cert artifacts cleaned. See [[project_catalogue_v1_is6_launcher]].
+
 - **2026-09-15 - BROKER CATALOGUE V1 + IS6 RECOVERY + WINDOWLESS LAUNCHER (implementation packet; DARK).**
   (A1/B) Built the `broker_catalogue` app (PR #400, branch feat/broker-catalogue-v1) — immutable versioned
   store (CatalogueVersion one-ACTIVE partial-unique + CatalogueArtefact SHA-bound), broker resolution from the
