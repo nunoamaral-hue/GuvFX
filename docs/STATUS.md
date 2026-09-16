@@ -14,6 +14,35 @@
 
 ## Execution workstream log
 
+- **2026-09-16 - BROKER CATALOGUE V1: ACTIVE + CERTIFIED (Sponsor-approved production activation).** Sponsor
+  granted SHA-specific approval: APPROVE id=1 Pepperstone `afd6d65b`, APPROVE id=3 IS6 `a05ddd55`, REJECT id=2 IS6
+  `db013e27` (failed cert). Executed Phases 0-9. **Decisions:** id=2 REJECTED, id=1 + id=3 APPROVED by
+  nuno.amaral@live.com (exact-SHA, immutable). **Catalogue V1 DRAFT** built ([pepperstone afd6d65b [Demo,Live],
+  is6 a05ddd55 [Demo,Live]], id=2 excluded; manifest `1df73667`). **PRESEED primitive fix:** the host daemon's
+  `lib\hosted_workspace\{host_protocol,host_agent_dispatch}.py` were STALE (2026-08-25, no `PRESEED_BROKER_ARTEFACT`)
+  while only `primitive_runner.py` had been swapped — so preseed calls returned `unknown_key_id` (daemon returned an
+  unsigned sanitised denial; backend response-verify has no key_id → surfaces generic). Root-caused + deployed the two
+  repo modules byte-identical (host_protocol `C63E21CE`, host_agent_dispatch `16DD22CD`; backups `.preCATALOGUE.bak`),
+  restarted daemon; OBSERVE regression clean. **Primitive battery (disposable acct 96, RULE-11):** Pepperstone +
+  IS6 positive copies ok:true (exact SHA read-back); wrong_sha→`source_sha_mismatch`, nonexistent→`source_missing`,
+  unsupported→`source_missing`; path-traversal REFUSED (dispatch `params_not_allowed`, proven at the dispatch layer
+  with positive+negative controls); golden never leaked. **Activation:** armed `APPROVALS_ENABLED=1` (the fail-closed
+  gate that makes human approvals effective; only consumer is broker_catalogue; REJECTED/unknown SHAs still fail
+  closed - verified) → `activate_catalogue_version --label v1 --require-certified` → V1 **ACTIVE**, atomic pointer
+  (active_count=1), rollback_to=null. **DARK test (flag off):** resolution maps Pepperstone/IS6 Demo+Live → correct
+  artefact, WIMS/unknown/empty → native; `run_catalogue_preseed` short-circuits `catalogue_disabled` with a raising
+  dummy executor NEVER called (byte-identical). **Armed** `HOSTED_BROKER_CATALOGUE_ENABLED=1`; backend recreated;
+  execution unchanged (support@/beta armed + fresh, 0 alerts), **no MT5 terminal restart** (acct25/33 pids predate
+  recreate by ~46h). **Real-path provisioning acceptance (5 disposable runtimes, exact Stage-5a2 call):**
+  Pepperstone Demo+Live → `afd6d65b`, IS6 Demo+Live → `a05ddd55`, unsupported → golden-neutral (native fallback),
+  all ≤0.82s, golden untouched, cleaned up. **Brian/Patrick** reverified unchanged (inactive, NOT_PROVISIONED, 0
+  assignments, original 69032-byte IS6 servers.dat, accounts.dat absent, 0 terminals). **Regression:** DEMO mode,
+  node2=12, CZ AUTO_SHADOW (#8 ti/#7 wayond), RemoteApp #394 (Cmd=1 /portable), LiveUpdate containment (terminal64
+  Deny ACE), golden neutral `CD7D15B5`, live launcher UNCHANGED `CE209728` subsystem 3 (windowless switch OUT OF
+  SCOPE - staged GUI `AEB16835` still staged). Verdict **BROKER_CATALOGUE_V1_ACTIVE_AND_CERTIFIED**. Rollback:
+  set both flags off + recreate (→ native discovery, byte-identical); daemon `.preCATALOGUE.bak` anchors;
+  beta.env.preCATALOGUE.bak. See [[project_catalogue_v1_is6_launcher]].
+
 - **2026-09-15 - CATALOGUE + LAUNCHER GATE CLOSURE (continuation; interactive cert). PR #400 MERGED (main
   `ed5e4bf`).** Behavioural cert (disposable runtimes, fake logins only, RULE-11 pos+neg controls): **Pepperstone
   candidate id=1 (`AFD6D65B`): Demo PASS ~1.5s + Live PASS**; **IS6 candidate id=2 (`DB013E27`, from Brian
