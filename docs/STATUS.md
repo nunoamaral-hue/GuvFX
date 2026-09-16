@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-09-16 - WINDOWLESS NATIVE LAUNCHER: interactive-cert packet -> STAGED_INTERACTIVE_CERT_REQUIRED (production launcher UNCHANGED).**
+  Pre-work: committed the Broker Catalogue V1 activation STATUS entry (`4186147`) + recorded the daemon
+  unsigned-denial -> `unknown_key_id` masking as a **P2 observability** issue in `docs/KNOWN_ISSUES.md` (`ae0eb3e`, no
+  fix). Reconcile clean (catalogue ACTIVE, support@/beta armed AUTO_DEMO, CZ AUTO_SHADOW, node2=12, Brian/Patrick
+  inactive). Launcher facts (host-verified): live `CE20972842098322…` subsystem **3** (console) / AppLocker Authenticode
+  `0xB572C264`; staged `AEB16835061DD860…9456` subsystem **2** (GUI) / AppLocker `0x661B21ED…` (both exact matches to
+  the packet); manifest `.guvfx_launcher_manifest` pins `CE209728` (raw SHA); staged Authenticode not yet in effective
+  AppLocker. **Provenance re-verified TRUSTWORTHY** (packet demanded not trusting the prior "unchanged" claim): a 4-lens
+  adversarial audit + an on-host reflection **IL compare** of the staged binary against a fresh rebuild of the reviewed
+  source (== HEAD `180538f`, tree clean; `csc /nologo /optimize /platform:x64 /target:winexe`) found **all 4 methods
+  byte-identical IL** (Main 640B, TenantPids 74B, Fail, Emit); the c603d41->180538f source diff is exactly
+  windowing(`/target:winexe`) + a swallowed-EventLog diagnostic swap, launcher-only (no shell/net/cred/registry/
+  reflection). Corrected a **stale doc ref**: the real staged SHA is `AEB16835`, not `320F4311`. **Interactive
+  certification could NOT be established by the agent** — the production Guacamole delivery path needs a login password
+  (prohibited credential entry; browser-pane nav denied) and the VPS raw-RDP path (Xvfb/xfreerdp present) needs
+  prohibited RDP auth, bypasses Guacamole/RDS, and mutates prod; no credential-request tool. Per the packet's explicit
+  fallback: **STOP, no disposable tenant provisioned, no switch.** Live launcher unchanged; RemoteApp targets intact
+  (Brian/Patrick/beta -> launcher Cmd=1 /portable; support@/CZ -> direct terminal64; #394 correct). Switch hazards for
+  a future operator with an interactive RDP session: add the new Authenticode FileHashRule `0x661B` BEFORE swapping the
+  deny-by-default exe; MERGE (not REPLACE) the AppLocker policy; keep manifest=raw-SHA vs FileHashRule=Authenticode;
+  repoint manifest to `AEB16835`. Rollback anchors in place (live `CE209728`, manifest `CE209728`, AppLocker
+  `0xB572C264`). See [[project_catalogue_v1_is6_launcher]].
+
 - **2026-09-16 - BROKER CATALOGUE V1: ACTIVE + CERTIFIED (Sponsor-approved production activation).** Sponsor
   granted SHA-specific approval: APPROVE id=1 Pepperstone `afd6d65b`, APPROVE id=3 IS6 `a05ddd55`, REJECT id=2 IS6
   `db013e27` (failed cert). Executed Phases 0-9. **Decisions:** id=2 REJECTED, id=1 + id=3 APPROVED by
