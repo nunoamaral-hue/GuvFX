@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔵 P2 OBSERVABILITY (recorded 2026-09-16) — daemon dispatch-time denials surface to the backend as generic `unknown_key_id`
+
+*What:* the hosted host-executor daemon signs SUCCESS responses but returns validation/authorization denials as an
+**unsigned** sanitised body — `200 {"outcome":"denied","reason_code":<code>}` (`deploy/hosted-executor/daemon.py`
+`except HostProtocolError -> return 200, {...}`). The backend's `SignedHostExecutor._send`
+(`backend/hosted_workspace/host_executor.py`) always runs `verify_hosted_response` first, which requires a signed
+`key_id`; an unsigned denial has none, so verify raises `HostProtocolError("unknown_key_id")` and `_send` returns
+`{"ok": False, "reason": "unknown_key_id"}` — **masking the real `reason_code`** (e.g. `params_not_allowed`,
+`operation_not_allowed`). *Impact:* diagnostics only. The behaviour is **fail-closed and correct** (any daemon-side
+rejection → `ok:false`, and provisioning consumers fall open to native discovery); it only appears in adversarial
+negative tests, never on the server-derived-params happy path. It is **pre-existing**, not introduced by Broker
+Catalogue V1. Surfaced during the catalogue PRESEED primitive certification (path-traversal negative returned
+`unknown_key_id` instead of `params_not_allowed`; the confinement was proven separately at the dispatch layer).
+*Priority:* **P2 (observability), not a fix in the current packet.* *Possible future fix (out of scope here):* have
+the daemon sign denial responses too (or the backend inspect an `outcome:denied` shape before signature verify) so
+the real `reason_code` reaches operators. Do NOT weaken response-signature verification to achieve this.
+
 ## 🟢 RESOLVED + DEPLOYED (2026-09-14) — armed AUTO_DEMO workspace could sit terminal-less (disarmed) for days
 
 *Was:* when an ARMED hosted AUTO_DEMO tenant's MT5 `terminal64` exited (MetaTrader LiveUpdate, crash, or session
