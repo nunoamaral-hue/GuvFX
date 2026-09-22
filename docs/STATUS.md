@@ -14,6 +14,72 @@
 
 ## Execution workstream log
 
+- **2026-09-22 - PHASE A: DURABLE STRATEGY OWNERSHIP + MT5 MAGIC NUMBERS (DARK, all flags OFF).** Built the
+  multi-broker/multi-strategy execution-ownership foundation on branch `feat/strategy-ownership-phase-a`
+  behind four DARK flags, ALL default OFF -> byte-identical to today (ADR-0049). A0 forensic (read-only, zero
+  mutation): magic is VIABLE — the deployed node1==node2 bridge (SHA `819E62B0`) already sets `request.magic`
+  from the payload and exposes magic on deals/orders/positions; `Trade.magic_number` already persisted; live
+  path is magic=0 / comment-only `WAY{plan}L{leg}`; NO drift. Schema (additive/nullable, NO NOT-NULL / NO
+  DB-default): `StrategyAssignment.magic_number` (+`_allocated_at`, partial-unique registry + CheckConstraint
+  `>=1e9`), `SignalExecutionPlan.strategy_assignment` FK, `Trade.strategy_assignment` FK (migs strategies 0014,
+  execution 0033, trading 0016). Magic = deterministic `1_000_000_000 + assignment.id` (disjoint from legacy
+  99xxxx/small-int; int32-safe) via `allocate_assignment_magics` (DRY-RUN default). Dual-write
+  (`STRATEGY_OWNERSHIP_DUAL_WRITE_ENABLED`): plan.strategy_assignment (signal_planning), job.assignment
+  (signal_promotion), Trade stamping (monitor-chain `stamp_ownership` step, §9 magic/comment matrix,
+  fail-closed on conflict). Magic-send (`STRATEGY_MAGIC_SEND_ENABLED`, MONEY-PATH) adds payload `magic` on the
+  DEMO real-order path only; never on shadow. Guarded owner-scoping primitive `execution/ownership.py`
+  (`STRATEGY_OWNERSHIP_ENFORCE_ENABLED`, fail-open on legacy NULL) — worker wiring deferred to A6.
+  `STRATEGY_OWNERSHIP_READ_ENABLED` reserved for A5. Backfill DRY-RUN `backfill_execution_ownership`. Tests:
+  backend `manage.py test` = 4599 OK (skipped=1); new `execution.tests_strategy_ownership` = 27 adversarial;
+  fixed a latent migration-test fragility (`tests_tb1_migration` now seeds via the historical model, as it
+  already did for TradingAccount). NOT ENABLED: dual-write / magic-send / read / enforce are SEPARATE
+  go-aheads (magic-send is money-path, Red-adjacent — needs host bridge verification + Nuno). make check:
+  backend + governance + frontend-parity GREEN; 6 PRE-EXISTING frontend i18n/route test failures
+  (support/login/dashboard localization) are unrelated (branch has zero frontend edits) and NOT fixed here.
+  Rollback: flags OFF (written values inert) + reverse the 3 additive migrations; pre-deploy image tag
+  `rollback-preOWNERSHIP`. See ADR-0049.
+
+- **2026-09-18 - BRIAN + PATRICK LiveUpdate exe-immutability -> BRIAN_AND_PATRICK_RETRY_FULLY_CONTAINED.** Closed the
+  P1 LiveUpdate-containment gap from 2026-09-17 using the **certified governed primitive** `APPLY_LIVEUPDATE_CONTAINMENT`
+  (`host_executor.apply_liveupdate_containment` → `Contain-GuvfxLiveUpdate.ps1`, already deployed on the daemon, SHA
+  `D514D8A9`) — the same control current provisioning applies at Stage 5a. Reconciled 30/31 (SIDs `…-1026`/`…-1037`,
+  profiles present, **0 terminals, no accounts.dat**, servers.dat `A05DDD55`); captured before-ACL rollback sidecars
+  `<exe>.preCONTAIN.sddl` for all 6 executables. Applied per tenant (each `ok:true, contained:true, profile_present_before`,
+  no MT5 launch). **Verified** on `terminal64.exe`/`MetaEditor64.exe`/`metatester64.exe`: tenant-SID Deny
+  `Write, Delete, ChangePermissions, TakeOwnership` present, **execute_denied=false, read_denied=false** (cannot
+  overwrite/delete, retains Read/Execute; AppLocker authorizes MT5 by MetaQuotes **publisher**, not hash) + roaming
+  `WebInstall`+`Terminal` staging deny present. servers.dat still `A05DDD55`, RemoteApp `guvfx_launch.exe` Cmd=1
+  `/portable`, 0 terminals, accounts.dat absent — all unchanged. Versions left intact (containment, not version
+  reconciliation): Brian `terminal64` 5833 / MetaEditor+metatester 6140; Patrick all 6182. GOTCHA: the executor
+  `runtime_root` arg must equal the slot **base** `C:\GuvFX\accounts\<id>` (not the `\terminal` subdir) or `_confined`
+  returns `confinement_mismatch`; Django reserved default = {1}. Regression clean (CZ/support@/beta unchanged;
+  support@ already carried its own tenant-deny → provisioning contains live tenants, 30/31 were the predate gap;
+  golden `CD7D15B5`, launcher `CE209728`, staged `AEB16835`, node2=12, catalogue v1 `1df73667`). Rollback per tenant:
+  restore `.preCONTAIN.sddl` / remove the tenant Deny ACE. No repo/DB mutation; host mutation = tenant-confined ACLs on
+  30/31 + rollback sidecars. Live single-terminal proof is at the customer's interactive launch (no creds); the
+  duplicate **vector** is now removed. See [[project_brian_patrick_nuno_multistream]].
+
+- **2026-09-17 - BRIAN + PATRICK IS6 ONBOARDING CLOSURE -> BRIAN_AND_PATRICK_READY_FOR_CUSTOMER_RETRY.** Read-only
+  reconcile then bounded per-tenant catalogue reconciliation. Both bound to the same BrokerServer `ed113626` →
+  `IS6Technologies-Live`, canonical_state `WAITING_FOR_LOGIN`, not armed, 0 assignments, no fabricated proj/confirm.
+  Their runtimes predated Catalogue V1, so servers.dat were never-connected files (Brian `DB013E27`/69032; Patrick had
+  drifted to `D6851B71`/69376). **Migrated both to the certified ACTIVE IS6 artefact `a05ddd55` (36528)** via the
+  governed `run_catalogue_preseed` (resolves `IS6Technologies-Live` → is6 → `PRESEED_BROKER_ARTEFACT` primitive),
+  read-back verified; per-tenant backups `servers.dat.preBPMIG.bak`. accounts.dat absent throughout (no completed
+  login). **Patrick's duplicate recurred** — 2 orphaned login-less `terminal64` (LiveUpdate cascade) in disconnected
+  session 9; `GuvFX_HostedClose_31` had stale PIDs; cleared by tenant-confined `Stop-Process` (verified `accounts\31`),
+  stayed 0 across an observer cycle. **P1 finding — LiveUpdate containment gap:** `terminal64.exe` has **no Deny-Write
+  ACE** on Brian/Patrick/**golden**, so LiveUpdate replaced Patrick's binary (now `5.0.0.6182`; Brian `5.0.0.5833`;
+  golden `6073`). Not an onboarding blocker — AppLocker authorizes MT5 by the **MetaQuotes publisher** rule, not by
+  hash — but a residual duplicate risk on first launch; recommend a bounded follow-up to apply exe-immutability to
+  predate-containment tenants (not done here; packet scope was servers.dat + duplicate clear). Neither customer logged
+  in → `AWAITING_CUSTOMER_BROKER_LOGIN`. Regression clean: CZ/support@/beta unchanged (support@/beta armed AUTO_DEMO,
+  CZ AUTO_SHADOW), catalogue v1 `1df73667` (Pepperstone+IS6 SHAs ok), golden neutral `CD7D15B5`, live launcher
+  `CE209728`, staged `AEB16835`, node2=12, #394 preserved. No repo/DB mutation; host mutation = 2 tenants' servers.dat
+  + 2 backups + Patrick duplicate clear. Rollback per tenant: restore `.preBPMIG.bak`. **Fast-IS6 = YES, equivalent to
+  a fresh customer** (identical certified servers.dat with resolved access points). See
+  [[project_brian_patrick_nuno_multistream]].
+
 - **2026-09-16 - WINDOWLESS NATIVE LAUNCHER: interactive-cert packet -> STAGED_INTERACTIVE_CERT_REQUIRED (production launcher UNCHANGED).**
   Pre-work: committed the Broker Catalogue V1 activation STATUS entry (`4186147`) + recorded the daemon
   unsigned-denial -> `unknown_key_id` masking as a **P2 observability** issue in `docs/KNOWN_ISSUES.md` (`ae0eb3e`, no
