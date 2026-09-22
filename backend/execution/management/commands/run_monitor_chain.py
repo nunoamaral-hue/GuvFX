@@ -39,6 +39,7 @@ from execution.provider_commands_engine import apply_provider_commands
 from execution.notifications.dispatcher import dispatch_enabled, dispatch_pending
 from execution.notifications.reconcile import check_notification_health, reconcile_notifications
 from execution.outcome_router import route_outcomes
+from execution.ownership_stamp import sweep_trade_ownership
 
 logger = logging.getLogger("guvfx.execution.monitor_chain")
 
@@ -69,6 +70,10 @@ class Command(BaseCommand):
             # reclaimed slot / surfaced defect is visible to the rest of the chain this tick.
             ("execution_health", sweep_execution_health),
             ("resolve_plans", resolve_completed_plans),
+            # Phase A (DARK, STRATEGY_OWNERSHIP_DUAL_WRITE_ENABLED): stamp durable
+            # Trade -> StrategyAssignment ownership from magic/comment. No-op while the
+            # flag is OFF; idempotent + bounded, so safe to run every tick.
+            ("stamp_ownership", sweep_trade_ownership),
             # WS-B AUTO-BREAKEVEN — after TP1 closes, move remaining legs' SL to entry. Inert
             # unless BREAKEVEN_ENABLED. Enqueue-only + idempotent, so safe to run every minute.
             ("breakeven", sweep_breakeven),
