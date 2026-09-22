@@ -277,6 +277,16 @@ def plan_demo_execution(
         correlation_id=correlation_id, proposed_by=actor,
     )
 
+    # Phase A dual-write (DARK, STRATEGY_OWNERSHIP_DUAL_WRITE_ENABLED). Persist the
+    # originating StrategyAssignment on the plan so ownership is durable from the
+    # start of the chain. Additive: with the flag OFF the key is absent → the plan's
+    # strategy_assignment defaults NULL (byte-identical). Invariant-guarded — only
+    # written when the assignment belongs to THIS account (never a mismatched owner).
+    from execution import ownership_flags
+    if (ownership_flags.dual_write_enabled() and assignment is not None
+            and getattr(assignment, "account_id", None) == getattr(account, "id", None)):
+        common["strategy_assignment"] = assignment
+
     # 7. Reject/hold if SL or required TP is missing → HELD plan, no legs.
     tps = [t for t in (approval.take_profits or []) if t]
     if not approval.stop_loss:

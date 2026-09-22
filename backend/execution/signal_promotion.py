@@ -60,7 +60,7 @@ def _audit(event, *, plan=None, leg=None, job=None, approval=None, actor=None, *
 
 
 def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
-                   execution_mode: str, broker_symbol: str = None) -> dict:
+                   execution_mode: str, broker_symbol: str = None, magic=None) -> dict:
     """Build the per-leg order payload. Market-only, demo. ``execution_mode`` is 'SHADOW'
     (suppressed dry-run — order_check only) or 'DEMO' (real order_send). Identical shape either
     way — the worker's PLACE_ORDER path ignores execution_mode; only the shadow worker enforces
@@ -68,6 +68,10 @@ def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
 
     ``broker_symbol`` (resolved by the broker-symbol registry) is what the order is placed under;
     the original provider (Wayond) symbol is preserved separately for audit/reporting.
+
+    ``magic`` (Phase A, STRATEGY_MAGIC_SEND_ENABLED) is the owning assignment's MT5 magic. Added to
+    the payload ONLY when non-None; when None the key is ABSENT and the bridge defaults magic=0
+    (byte-identical to today). The deployed bridge already sets ``request.magic`` from this key.
     """
     windows_username = None
     acct = plan.account
@@ -77,7 +81,7 @@ def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
     # creation boundary ``ExecutionJob.save()`` (ADR-0034 Execution Engine G3), so every mutation-creating
     # seam — this one, OPEN_TRADE, CLOSE, MODIFY — is covered without per-seam edits and a future seam
     # inherits it automatically. It is a no-op for non-Provider-B accounts / a dark subsystem.
-    return {
+    payload = {
         "symbol": broker_symbol or plan.symbol,   # the BROKER symbol used for order placement
         "provider_symbol": plan.symbol,           # the Wayond signal symbol (audit/reporting)
         "side": plan.direction,
@@ -103,6 +107,27 @@ def _order_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg, *,
         "signal_timestamp": plan.signal_timestamp.isoformat() if plan.signal_timestamp else None,
         "windows_username": windows_username,
     }
+    # Phase A (STRATEGY_MAGIC_SEND_ENABLED) — durable machine ownership. Only present when
+    # a magic was resolved for this leg's owning assignment; absent ⇒ bridge default 0.
+    if magic is not None:
+        payload["magic"] = magic
+    return payload
+
+
+def _resolve_plan_assignment(plan: SignalExecutionPlan):
+    """Phase A — the StrategyAssignment that owns this plan (or None; fail-open).
+
+    Prefer the dual-written ``plan.strategy_assignment``; else resolve by
+    ``(account, signal_source, is_active)`` — the same rule the auto-router uses — and
+    only when it is UNAMBIGUOUS (exactly one). Never returns a mismatched-account owner.
+    """
+    owner = getattr(plan, "strategy_assignment", None)
+    if owner is not None:
+        return owner if owner.account_id == plan.account_id else None
+    from strategies.models import StrategyAssignment
+    matches = list(StrategyAssignment.objects.filter(
+        account_id=plan.account_id, signal_source=plan.source, is_active=True)[:2])
+    return matches[0] if len(matches) == 1 else None
 
 
 def _shadow_payload(plan: SignalExecutionPlan, leg: ProposedOrderLeg) -> dict:
@@ -238,6 +263,25 @@ def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload
         raise
 
     legs = list(plan.legs.order_by("leg_index"))
+
+    # Phase A dual-write (DARK). Resolve the owning StrategyAssignment ONCE and write it
+    # onto every job. ``magic`` is a SEPARATE money-path flag (STRATEGY_MAGIC_SEND_ENABLED)
+    # and is sent ONLY on the real (DEMO) order path, never for shadow jobs. With both flags
+    # OFF (default) owner=None + magic=None ⇒ job.assignment=None + no payload magic ⇒
+    # byte-identical to today (no extra DB query is issued when dual-write is OFF).
+    from execution import ownership_flags
+    owner = _resolve_plan_assignment(plan) if ownership_flags.dual_write_enabled() else None
+    send_magic = (
+        ownership_flags.magic_send_enabled()
+        and payload_mode == "DEMO"
+        and owner is not None
+        and owner.magic_number is not None
+    )
+    magic = owner.magic_number if send_magic else None
+    if send_magic:
+        log_stage("magic_send", plan.correlation_id, plan_id=plan.id,
+                  assignment_id=owner.id, magic=magic)
+
     try:
         with transaction.atomic():
             jobs = []
@@ -251,8 +295,10 @@ def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload
                     terminal_node_id=plan.account.terminal_node_id,
                     status=ExecutionJob.Status.PENDING,
                     created_by=actor,
+                    assignment=owner,
+                    strategy=(owner.strategy if owner else None),
                     payload=_order_payload(plan, leg, execution_mode=payload_mode,
-                                           broker_symbol=symbol_res.broker_symbol),
+                                           broker_symbol=symbol_res.broker_symbol, magic=magic),
                 )
                 leg.execution_job = job
                 leg.status = ProposedOrderLeg.Status.PROMOTED

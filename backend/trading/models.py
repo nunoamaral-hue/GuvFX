@@ -337,6 +337,19 @@ class Trade(models.Model):
     comment = models.CharField(max_length=255, blank=True)
     opened_by = models.CharField(max_length=64, blank=True)
 
+    # Phase A — durable strategy ownership. The StrategyAssignment that owns this
+    # trade, stamped by the Django-side monitor-chain from magic → registry, else
+    # comment WAY{plan}L{leg} → plan.strategy_assignment. Nullable (NULL =
+    # legacy/unattributed); the DB stays authoritative and MT5 magic/comment are
+    # reconciliation metadata. SET_NULL so an assignment delete never cascades a Trade.
+    strategy_assignment = models.ForeignKey(
+        "strategies.StrategyAssignment",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="trades",
+        db_index=True,
+    )
+
     source_stage = models.CharField(
         max_length=8,
         choices=SOURCE_STAGE_CHOICES,

@@ -317,6 +317,16 @@ class StrategyAssignment(models.Model):
         blank=True,
         help_text="Overrides the strategy's default risk per trade percentage for this account.",
     )
+    # Phase A — durable strategy ownership. GuvFX-controlled MT5 magic number
+    # (ASSIGNMENT_MAGIC_BASE + id, see strategies.magic_allocation), allocated once
+    # and IMMUTABLE. Nullable during rollout; NULL = not yet allocated (legacy).
+    magic_number = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="GuvFX MT5 magic for this assignment (1e9 + id); immutable once set.",
+    )
+    magic_number_allocated_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -331,6 +341,19 @@ class StrategyAssignment(models.Model):
                 fields=["account", "strategy"],
                 condition=Q(is_active=True),
                 name="uniq_active_assignment_per_account_strategy",
+            ),
+            # Phase A — the magic-number REGISTRY: globally unique when set, so a
+            # broker magic resolves to exactly one StrategyAssignment.
+            models.UniqueConstraint(
+                fields=["magic_number"],
+                condition=Q(magic_number__isnull=False),
+                name="uniq_assignment_magic_number",
+            ),
+            # Phase A — keep the assignment band disjoint from legacy magics
+            # (99xxxx / small-int); NULL allowed during rollout.
+            models.CheckConstraint(
+                check=Q(magic_number__isnull=True) | Q(magic_number__gte=1_000_000_000),
+                name="assignment_magic_in_band",
             ),
         ]
 

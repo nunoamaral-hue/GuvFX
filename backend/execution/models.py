@@ -822,6 +822,18 @@ class SignalExecutionPlan(models.Model):
     account = models.ForeignKey(
         TradingAccount, on_delete=models.PROTECT, related_name="signal_execution_plans",
     )
+    # Phase A — durable strategy ownership. The StrategyAssignment that originated
+    # this plan. Nullable during rollout (NULL = legacy/unattributed); written under
+    # STRATEGY_OWNERSHIP_DUAL_WRITE_ENABLED. SET_NULL so an assignment delete never
+    # blocks/cascades a plan; the invariant assignment.account == plan.account is
+    # asserted at the write seam, not by the DB.
+    strategy_assignment = models.ForeignKey(
+        "strategies.StrategyAssignment",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="signal_execution_plans",
+        db_index=True,
+    )
 
     # Dedup identity (source/chat/message) — REQUIRED idempotency at plan level.
     source = models.CharField(max_length=32)
