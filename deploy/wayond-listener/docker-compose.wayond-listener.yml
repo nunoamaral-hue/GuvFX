@@ -64,5 +64,8 @@ services:
         max-size: "10m"
         max-file: "5"
     # No ports exposed, no volumes. Prefer a consistent, non-datacenter egress IP.
+    # The prod base compose names its Postgres service `guvfx-postgres` (NOT `db`); a bare `db`
+    # here is an undefined service and makes the merged `docker compose config` invalid. Start
+    # ordering only — the listener also reaches the DB via DB_HOST from wayond-listener.env.
     depends_on:
-      - db
+      - guvfx-postgres

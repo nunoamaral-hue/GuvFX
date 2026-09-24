@@ -14,6 +14,16 @@
 
 ## Execution workstream log
 
+- **2026-09-24 (follow-up) - Wayond listener overlay made recreate-valid.** Deploy-time validation of
+  the entry below found two pre-existing/authoring defects in the committed listener deploy definition
+  (the overlay had never been used in prod): (1) `depends_on: db` named an undefined service — the prod
+  base names its Postgres service `guvfx-postgres` — so `docker compose config` was invalid and a
+  compose recreate would fail; fixed to `guvfx-postgres` (`config -q` now valid). (2) the RUNBOOK
+  pre-recreate gate used `docker compose config | grep KEY:`, which never works because `config` does
+  NOT inline `env_file` contents; replaced with a `config -q` validity check + an on-disk env-file
+  key-presence check (names only, no values). CI guard added (`tests_wayond_listener_deploy`) against a
+  bare `- db`. The backend sweep deploy (below) is unaffected; no runtime container changed.
+
 - **2026-09-24 - PHASE A1 FORWARD-SAFETY: bounded ownership sweep + listener deploy hygiene (branch
   `feat/dual-write-forward-safety`).** DUAL_WRITE is live + healthy and the Sponsor ACCEPTED the historical
   attribution (1483 trades stamped, 0 cross-account, magics still NULL — NOT reverted). Two governance fixes,
