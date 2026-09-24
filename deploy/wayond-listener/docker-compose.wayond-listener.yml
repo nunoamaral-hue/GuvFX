@@ -23,6 +23,23 @@ services:
       python manage.py run_wayond_listener --live --health-file /tmp/wayond_health
     restart: unless-stopped
     env_file:
+      # Full certified listener environment. Values are NEVER committed — these files live ONLY in
+      # the prod secret store (/home/ubuntu/guvfx-prod/, chmod 600) and are referenced BY NAME.
+      # docker compose resolves relative env_file paths against the PROJECT DIRECTORY (the dir of the
+      # first `-f` file = /home/ubuntu/guvfx-prod; see RUNBOOK "Deploy" — pin it with
+      # --project-directory). See deploy/wayond-listener/wayond-listener.env.example for the required
+      # key NAMES (values-only-in-secret-store), enforced by tests_wayond_listener_deploy.
+      #
+      # wayond-listener.env carries the 17 keys the certified running container has: DB_* (5),
+      # DJANGO_SECRET_KEY, the 6 TELEGRAM_* (session + FROZEN device fingerprint), and — critically —
+      # MULTI_ACCOUNT_ROUTING_ENABLED, RISK_MAX_DAILY_DRAWDOWN_ABS, HOSTED_PERSISTENT_MT5_ENABLED,
+      # GUVFX_AGENT_URL, GUVFX_WINDOWS_AGENT_BASE_URL. Loaded as a WHOLE FILE (not a hand-enumerated
+      # `environment:` block) so no key can be silently dropped on a recreate. A prior `environment:`
+      # block here omitted those five functional keys → a compose recreate would have disabled
+      # multi-account routing + the drawdown gate (RULE 5/8). Its DB_*/DJANGO_SECRET_KEY/TELEGRAM_*
+      # were a strict subset of this file, so removing it lost nothing; keeping it would also be unsafe
+      # (compose precedence environment > env_file → an empty ${VAR} could shadow the file value).
+      - wayond-listener.env
       # Canonical Windows-agent authentication source (values NEVER committed — this file lives only
       # in the prod secret store, e.g. /home/ubuntu/guvfx-prod/bridge-agent.env). It supplies
       # GUVFX_WINDOWS_AGENT_TOKEN (+ aliases) so the auto-router margin-guard `order_check` authenticates.
@@ -31,22 +48,6 @@ services:
       # the listener was started ad-hoc via `docker run` and lost the token that lived only in its
       # runtime env). Carrying it via env_file makes every compose recreate deterministic.
       - bridge-agent.env
-    environment:
-      # DB (same as backend)
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
-      # Telegram — the CURRENT operational session (temporary: personal account;
-      # target: aged GFX) + its FROZEN device fingerprint. From the secret store only.
-      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
-      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
-      TELEGRAM_STRING_SESSION: ${TELEGRAM_STRING_SESSION}
-      TELEGRAM_DEVICE_MODEL: ${TELEGRAM_DEVICE_MODEL:-Desktop}
-      TELEGRAM_SYSTEM_VERSION: ${TELEGRAM_SYSTEM_VERSION:-Windows 10}
-      TELEGRAM_APP_VERSION: ${TELEGRAM_APP_VERSION:-4.16.8}
     healthcheck:
       # UNHEALTHY if the liveness heartbeat file goes stale (loop hung/dead).
       # heartbeat writes every 30s → max-age 90s tolerates one missed write; interval

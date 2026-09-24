@@ -109,17 +109,27 @@ def stamp_trade_ownership(trade, *, save: bool = True) -> str:
 
 
 def sweep_trade_ownership(limit: int = 200) -> dict:
-    """Monitor-chain step: stamp ownership on recently-attributable un-owned trades.
+    """Monitor-chain step: stamp ownership on recently-INGESTED un-owned trades.
 
     No-op (returns ``{"skipped": "dark"}``) unless STRATEGY_OWNERSHIP_DUAL_WRITE_ENABLED.
     Idempotent + bounded, so it is safe to run every tick. Only considers trades that
-    carry an assignment magic or a WAY comment (nothing to guess otherwise).
+    carry an assignment magic or a WAY comment (nothing to guess otherwise), AND whose
+    ``created_at`` (ingestion time) is within the rolling forward-safety window
+    (``STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS``, default 72h). The window makes ownership a
+    property of NEW execution activity: enabling/re-enabling DUAL_WRITE can never
+    implicitly walk the whole back-catalogue — full-history attribution is the explicit
+    ``backfill_execution_ownership`` command's job. The bound is on ``created_at`` (not
+    ``open_time``) so a late-ingested older position is still caught on the tick after it
+    lands (async ingestion).
     """
     if not ownership_flags.dual_write_enabled():
         return {"skipped": "dark"}
+    from datetime import timedelta
     from django.db.models import Q
+    from django.utils import timezone
     from trading.models import Trade
-    qs = (Trade.objects.filter(strategy_assignment__isnull=True)
+    cutoff = timezone.now() - timedelta(hours=ownership_flags.ownership_sweep_window_hours())
+    qs = (Trade.objects.filter(strategy_assignment__isnull=True, created_at__gte=cutoff)
           .filter(Q(magic_number__gte=ASSIGNMENT_MAGIC_BASE) | Q(comment__startswith="WAY"))
           .order_by("-id")[:limit])
     counts: dict = {}

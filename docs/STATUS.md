@@ -14,6 +14,25 @@
 
 ## Execution workstream log
 
+- **2026-09-24 - PHASE A1 FORWARD-SAFETY: bounded ownership sweep + listener deploy hygiene (branch
+  `feat/dual-write-forward-safety`).** DUAL_WRITE is live + healthy and the Sponsor ACCEPTED the historical
+  attribution (1483 trades stamped, 0 cross-account, magics still NULL — NOT reverted). Two governance fixes,
+  zero behaviour change to accepted data: (1) `sweep_trade_ownership` now bounds on `Trade.created_at`
+  (ingestion time) within a rolling window `STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS` (default 72h; fail-safe to 72
+  on junk/`<=0`) so enabling/re-enabling DUAL_WRITE can never implicitly walk the back-catalogue — full-history
+  attribution is now ONLY the explicit `backfill_execution_ownership` command (dry-run default; its docstring/
+  help now designate it the `>window` tool). `created_at` (not `open_time`) keeps async-ingested trades in scope.
+  (2) The listener overlay `deploy/wayond-listener/docker-compose.wayond-listener.yml` now loads the full env via
+  `env_file: [wayond-listener.env, bridge-agent.env]`, and the hand-enumerated `environment:` block — which
+  OMITTED `MULTI_ACCOUNT_ROUTING_ENABLED` / `RISK_MAX_DAILY_DRAWDOWN_ABS` / `HOSTED_PERSISTENT_MT5_ENABLED` /
+  `GUVFX_AGENT_URL` / `GUVFX_WINDOWS_AGENT_BASE_URL` and (compose precedence) could shadow the file — is
+  **REMOVED** (deletion called out), so a compose recreate reproduces the certified env with no dropped keys
+  (RULE 5/8). New committed key contract `deploy/wayond-listener/wayond-listener.env.example` (names only) + CI
+  test `execution/tests_wayond_listener_deploy.py`; RUNBOOK pins `--project-directory` + a presence-only
+  pre-recreate config gate. No migration; MAGIC_SEND/READ/ENFORCE stay OFF. Tests: `SweepWindowTests` +
+  window-precedence + config-check (full ownership module + full backend suite green). Next: PR → CI → merge →
+  deploy (sweep + hygiene only) → ONE natural-signal forward cert; STOP before MAGIC_SEND.
+
 - **2026-09-22 - PHASE A: DURABLE STRATEGY OWNERSHIP + MT5 MAGIC NUMBERS (DARK, all flags OFF).** Built the
   multi-broker/multi-strategy execution-ownership foundation on branch `feat/strategy-ownership-phase-a`
   behind four DARK flags, ALL default OFF -> byte-identical to today (ADR-0049). A0 forensic (read-only, zero
