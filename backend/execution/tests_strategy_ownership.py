@@ -235,6 +235,23 @@ class TradeAttributionTests(OwnershipBase):
         t.refresh_from_db()
         self.assertEqual(t.strategy_assignment_id, a.id)
 
+    def test_ownership_survives_assignment_deactivation(self):
+        # Durable historical lineage: once a Trade is attributed, DEACTIVATING the assignment
+        # (is_active=False — not a delete) must never null or change the Trade's ownership FK.
+        a = self._asn(self.strat, self.acct_a)
+        allocate_magic(a)
+        plan = self._plan_with_owner(self.acct_a, a, "deact1")
+        t = self._trade(self.acct_a, magic=a.magic_number, comment=f"WAY{plan.id}L1")
+        with override_settings(**{DUAL: True}):
+            self.assertEqual(ownership_stamp.stamp_trade_ownership(t), ownership_stamp.STRONG)
+        t.refresh_from_db()
+        self.assertEqual(t.strategy_assignment_id, a.id)
+        a.is_active = False
+        a.save(update_fields=["is_active"])
+        t.refresh_from_db()
+        self.assertEqual(t.strategy_assignment_id, a.id)          # FK is independent of is_active
+        self.assertFalse(t.strategy_assignment.is_active)         # and still resolves to the (now-inactive) owner
+
 
 # --- §10 guarded owner-scoping -----------------------------------------------
 class OwnerScopingTests(OwnershipBase):
