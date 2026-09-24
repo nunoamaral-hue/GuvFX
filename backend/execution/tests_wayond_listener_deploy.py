@@ -61,6 +61,19 @@ class WayondListenerDeployContractTests(SimpleTestCase):
                 text, rf"(?m)^\s*-\s*{re.escape(name)}\s*$",
                 f"overlay must load {name} via env_file (guards the dropped-key regression)")
 
+    def test_overlay_depends_on_names_the_real_db_service(self):
+        # A bare `- db` is undefined in the prod base compose (its Postgres service is
+        # `guvfx-postgres`) and makes the merged `docker compose config` invalid — the overlay
+        # would fail to recreate. Guard the exact regression.
+        text = _OVERLAY.read_text()
+        self.assertNotRegex(
+            text, r"(?m)^\s*-\s*db\s*$",
+            "overlay depends_on must not reference the undefined base service 'db'")
+        if re.search(r"(?m)^\s*depends_on:", text):
+            self.assertRegex(
+                text, r"(?m)^\s*-\s*guvfx-postgres\s*$",
+                "overlay depends_on must name the base DB service 'guvfx-postgres'")
+
     def test_overlay_has_no_environment_block(self):
         # env_file loads the whole file; a hand-enumerated `environment:` block is how the five
         # functional keys were dropped, and (compose precedence environment > env_file) it could

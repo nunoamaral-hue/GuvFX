@@ -52,17 +52,27 @@ docker compose --project-directory /home/ubuntu/guvfx-prod \
   up -d --build guvfx-wayond-listener
 ```
 
-**Pre-recreate GATE (RULE 8 — run on the host BEFORE `up`).** Prove the resolved config carries
-every functional key + the Windows-agent token; a missing key means a routing/drawdown regression
-or an `order_check` 401. Presence-only (prints key NAMES, never secret values):
+**Pre-recreate GATE (RULE 8 — run on the host BEFORE `up`).** Two checks; ABORT on either failure.
+A missing key means a routing/drawdown regression or an `order_check` 401.
 
 ```bash
+# 1. The merged overlay must be a VALID compose project (catches an undefined depends_on
+#    service or an unresolved env_file path). config -q prints nothing; exit 0 = valid.
 docker compose --project-directory /home/ubuntu/guvfx-prod \
   -f /home/ubuntu/guvfx-prod/docker-compose.yml \
-  -f /home/ubuntu/guvfx-app/deploy/wayond-listener/docker-compose.wayond-listener.yml config \
-  | grep -oE '(MULTI_ACCOUNT_ROUTING_ENABLED|RISK_MAX_DAILY_DRAWDOWN_ABS|HOSTED_PERSISTENT_MT5_ENABLED|GUVFX_AGENT_URL|GUVFX_WINDOWS_AGENT_BASE_URL|GUVFX_WINDOWS_AGENT_TOKEN):' \
-  | sort -u
-# EXPECT all 6 key names. Fewer → ABORT (a source *.env is missing/misresolved).
+  -f /home/ubuntu/guvfx-app/deploy/wayond-listener/docker-compose.wayond-listener.yml config -q \
+  && echo "overlay OK" || echo "overlay INVALID → ABORT"
+
+# 2. Every functional key + the Windows-agent token must be present in the on-disk env-files.
+#    NOTE: `docker compose config` does NOT inline env_file contents, so check the source files
+#    directly. Names only — no secret VALUES are printed.
+cd /home/ubuntu/guvfx-prod
+for k in MULTI_ACCOUNT_ROUTING_ENABLED RISK_MAX_DAILY_DRAWDOWN_ABS HOSTED_PERSISTENT_MT5_ENABLED \
+         GUVFX_AGENT_URL GUVFX_WINDOWS_AGENT_BASE_URL GUVFX_WINDOWS_AGENT_TOKEN \
+         DB_NAME DJANGO_SECRET_KEY TELEGRAM_STRING_SESSION; do
+  grep -qE "^$k=" wayond-listener.env bridge-agent.env || echo "MISSING $k → ABORT"
+done
+# No "MISSING" line + "overlay OK" ⇒ safe to `up`.
 ```
 
 The committed key contract is `wayond-listener.env.example` (names only); CI enforces it via
