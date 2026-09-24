@@ -6,6 +6,7 @@ account-verified); guarded owner-scoping (§10) fail-open/enforce; hedging-safe
 BUY+SELL distinction; and — critically — that with the DARK flags OFF the promotion
 path is byte-identical (no plan/job ownership, no payload magic).
 """
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -353,3 +354,108 @@ class FlagDefaultTests(TestCase):
         self.assertFalse(ownership_flags.magic_send_enabled())
         self.assertFalse(ownership_flags.ownership_read_enabled())
         self.assertFalse(ownership_flags.ownership_enforce_enabled())
+
+    def test_sweep_window_hours_precedence(self):
+        import os
+        from unittest.mock import patch
+        # default when neither setting nor env is set
+        self.assertEqual(ownership_flags.ownership_sweep_window_hours(), 72.0)
+        # env honoured
+        with patch.dict(os.environ, {"STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS": "24"}):
+            self.assertEqual(ownership_flags.ownership_sweep_window_hours(), 24.0)
+        # explicit Django setting wins over env
+        with patch.dict(os.environ, {"STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS": "24"}):
+            with override_settings(STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS=12):
+                self.assertEqual(ownership_flags.ownership_sweep_window_hours(), 12.0)
+        # junk / non-positive / non-finite / over-range → default (fail-safe: never
+        # unbounded, never an OverflowError on timedelta).
+        for bad in ("abc", 0, -5, "inf", "-inf", "nan", "1e13", 1e13, float("inf")):
+            with self.subTest(bad=bad):
+                with override_settings(STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS=bad):
+                    self.assertEqual(ownership_flags.ownership_sweep_window_hours(), 72.0)
+        # a large-but-sane value within the cap is honoured
+        with override_settings(STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS=8000):
+            self.assertEqual(ownership_flags.ownership_sweep_window_hours(), 8000.0)
+
+
+class SweepWindowTests(OwnershipBase):
+    """Forward-safety: ``sweep_trade_ownership`` only attributes trades INGESTED within the
+    rolling window (``STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS``), measured on
+    ``Trade.created_at`` — so enabling/re-enabling DUAL_WRITE never implicitly walks the
+    back-catalogue. Older trades are the explicit ``backfill_execution_ownership`` job."""
+
+    def _trade(self, account, *, magic=0, comment="", open_time=None):
+        return Trade.objects.create(
+            account=account, ticket="tk", symbol="EURUSD", side="BUY",
+            volume=Decimal("0.01"), open_time=open_time or timezone.now(),
+            open_price=Decimal("1.085"), magic_number=magic, comment=comment)
+
+    def _plan_with_owner(self, account, assignment, mid):
+        with override_settings(**{DUAL: True}):
+            return self._plan(account, assignment, mid=mid)
+
+    def _eligible_trade(self, mid, *, open_time=None):
+        """A live-shape eligible trade: magic=0 + WAY comment → LEGACY-resolvable to the
+        single active (account, ti_signals) assignment."""
+        a = self._asn(self.strat, self.acct_a)
+        plan = self._plan_with_owner(self.acct_a, a, mid)
+        t = self._trade(self.acct_a, magic=0, comment=f"WAY{plan.id}L1", open_time=open_time)
+        return a, t
+
+    def _set_created(self, trade, when):
+        # created_at is auto_now_add; bypass it via a queryset .update().
+        Trade.objects.filter(pk=trade.pk).update(created_at=when)
+        trade.refresh_from_db()
+
+    def test_sweep_skips_trade_ingested_before_window(self):
+        with override_settings(**{DUAL: True}):
+            a, t = self._eligible_trade("w1")
+            self._set_created(t, timezone.now() - timedelta(days=10))
+            ownership_stamp.sweep_trade_ownership()
+        t.refresh_from_db()
+        self.assertIsNone(t.strategy_assignment_id)  # back-catalogue not walked
+
+    def test_sweep_stamps_recent_trade(self):
+        with override_settings(**{DUAL: True}):
+            a, t = self._eligible_trade("w2")  # created_at defaults to now
+            counts = ownership_stamp.sweep_trade_ownership()
+        t.refresh_from_db()
+        self.assertEqual(t.strategy_assignment_id, a.id)
+        self.assertEqual(counts.get(ownership_stamp.LEGACY), 1)
+
+    def test_sweep_stamps_late_ingested_old_open_time(self):
+        # open_time old (market time) but created_at recent (ingestion) → stamped: proves
+        # the bound is on created_at, not open_time (async ingestion).
+        with override_settings(**{DUAL: True}):
+            a, t = self._eligible_trade("w3", open_time=timezone.now() - timedelta(days=30))
+            ownership_stamp.sweep_trade_ownership()
+        t.refresh_from_db()
+        self.assertEqual(t.strategy_assignment_id, a.id)
+
+    def test_window_setting_widens_scope(self):
+        # 8000h (~11mo, within the sanity cap) covers a 10-day-old ingestion.
+        with override_settings(**{DUAL: True, "STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS": 8000}):
+            a, t = self._eligible_trade("w4")
+            self._set_created(t, timezone.now() - timedelta(days=10))
+            ownership_stamp.sweep_trade_ownership()
+        t.refresh_from_db()
+        self.assertEqual(t.strategy_assignment_id, a.id)
+
+    def test_absurd_window_falls_back_and_does_not_crash_sweep(self):
+        # An inf/over-range window must degrade to the 72h default, NOT overflow timedelta on
+        # every tick. A 10-day-old ingestion is then OUT of the (default) window → not stamped.
+        # (Helper-level fall-back for inf/1e13/100000 is covered in FlagDefaultTests.)
+        with override_settings(**{DUAL: True, "STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS": "inf"}):
+            a, t = self._eligible_trade("wbad")
+            self._set_created(t, timezone.now() - timedelta(days=10))
+            counts = ownership_stamp.sweep_trade_ownership()  # must not raise
+        t.refresh_from_db()
+        self.assertIsNone(t.strategy_assignment_id)
+        self.assertIsInstance(counts, dict)
+
+    def test_sweep_noop_when_dual_write_off(self):
+        a, t = self._eligible_trade("w5")  # created now; flag OFF (default)
+        result = ownership_stamp.sweep_trade_ownership()
+        t.refresh_from_db()
+        self.assertEqual(result, {"skipped": "dark"})
+        self.assertIsNone(t.strategy_assignment_id)

@@ -24,6 +24,7 @@ enabling them always leaves a durable trace, even when set via the environment.
 from __future__ import annotations
 
 import logging
+import math
 import os
 
 from django.conf import settings
@@ -70,3 +71,34 @@ def ownership_read_enabled() -> bool:
 def ownership_enforce_enabled() -> bool:
     """A6 — fail-closed owner-scoping in close/modify/protection (MONEY-PATH)."""
     return _flag("STRATEGY_OWNERSHIP_ENFORCE_ENABLED", warn_on=True)
+
+
+# Upper bound for the sweep look-back (one year). A value above this is treated as a
+# fat-finger and degrades to the default: an over-range window would overflow
+# ``timedelta`` (~2.4e10 h) and raise on every monitor tick, and a genuinely long
+# look-back is the explicit ``backfill_execution_ownership`` command's job, not the sweep's.
+_MAX_SWEEP_WINDOW_HOURS = 8784.0
+
+
+def ownership_sweep_window_hours() -> float:
+    """Rolling look-back (hours) bounding the monitor-chain ownership sweep on
+    ``Trade.created_at`` (ingestion time). Setting wins, else env, else default (72h).
+
+    Forward-safety: the sweep only stamps trades INGESTED within this window, so enabling
+    (or re-enabling) DUAL_WRITE can never implicitly walk the whole back-catalogue — that
+    is the explicit ``backfill_execution_ownership`` command's job. Precedence mirrors
+    ``_flag`` (Django setting → env → default). Any value that is not a finite number in
+    ``(0, _MAX_SWEEP_WINDOW_HOURS]`` — unparseable, non-positive, NaN/inf, or absurdly
+    large enough to overflow ``timedelta`` — degrades to the default; the window is never
+    unbounded (a ``=0`` "off" typo, or an ``inf``, must not reopen a full-history walk or
+    crash the sweep)."""
+    val = getattr(settings, "STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS", None)
+    if val is None:
+        val = os.getenv("STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS", "")
+    try:
+        hours = float(val)
+    except (TypeError, ValueError):
+        return 72.0
+    if not math.isfinite(hours) or not (0 < hours <= _MAX_SWEEP_WINDOW_HOURS):
+        return 72.0
+    return hours

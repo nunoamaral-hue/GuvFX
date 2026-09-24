@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-24 — Phase A1 forward-safety: bounded ownership sweep + listener deploy hygiene
+
+- **Scope / decision.** Sponsor ACCEPTED the historical strategy-ownership attribution as-is (do NOT revert the
+  1483 stamped trades). Make the DUAL_WRITE mechanism forward-safe + fix the listener deploy definition; ship via
+  branch → PR → CI → merge → deploy, then one natural-signal forward cert. DUAL_WRITE stays ON;
+  MAGIC_SEND/READ/ENFORCE stay OFF. Branch `feat/dual-write-forward-safety` off main `95fbafc`.
+- **Verified fact vs assumption.** *Verified (pre-mutation reconcile, prod 2026-09-24):* flags dual=True /
+  magic=read=enforce=False in backend **and** listener; attributed 1483, cross_account 0, unresolved 21, assignment
+  magics NULL; modes unchanged (asn7/8 CZ AUTO_SHADOW, asn10 support@ / asn15 beta AUTO_DEMO); catalogue V1
+  `1df73667`; Node2=12; Brian/Patrick WAITING_FOR_LOGIN; listener healthy 37h img `7dd209f3`; **50 live natural
+  plans already carry forward ownership** (plan_assignment_not_null 0→50) — the forward path already works.
+  *Assumption:* the 72h window comfortably covers ingest lag + a monitor-chain outage (chain runs every minute with
+  a heartbeat alert); >window recovery is the explicit backfill command's job.
+- **What changed (small, additive; the one deletion is called out).** (1) `execution/ownership_flags.py` +helper
+  `ownership_sweep_window_hours()` (setting→env→72.0, fail-safe); (2) `execution/ownership_stamp.py` sweep bounds on
+  `created_at__gte=now-window`; (3) `backfill_execution_ownership` docstring/help = explicit `>window` full-history
+  tool (NO logic change); (4) listener overlay: **+**`env_file: wayond-listener.env`, **REMOVED** the `environment:`
+  block (its keys were a strict subset of the file and it could shadow the file); (5) NEW
+  `deploy/wayond-listener/wayond-listener.env.example` (keys only, no secrets); (6) RUNBOOK: `--project-directory`
+  pin + presence-only pre-recreate config gate; (7) `tests_strategy_ownership.py` +SweepWindowTests +precedence;
+  (8) NEW `tests_wayond_listener_deploy.py` (dependency-free, no PyYAML); (9) handoff docs. **No migration.**
+- **Deviations from packet.** Historical backfill command already existed and met the contract → docstring-only
+  enhancement (not rewritten). `DEPLOY_ISOLATED.md` Phase-4 `docker run` (omits `bridge-agent.env`) left as a
+  pre-existing discrepancy → recorded in KNOWN_ISSUES, RUNBOOK compose path made canonical. Sweep design = rolling
+  window (not a persistent watermark) — stateless, no migration, self-limiting on any future re-enable.
+- **Exact tests.** `execution.tests_strategy_ownership execution.tests_wayond_listener_deploy` = 37 pass;
+  `execution.tests_monitor_chain` = 10 pass; full backend suite green (CI gate).
+- **One bounded next action.** Open the PR, get CI green + adversarial review, merge, deploy sweep+hygiene only
+  (listener recreate via the RUNBOOK `--project-directory` + config gate), then observe ONE natural TI signal
+  end-to-end (support@→asn10, beta→asn15, CZ shadow-only) — no replay, no manufactured trade. STOP before MAGIC_SEND.
+
 ## 2026-08-31 — Beta acceptance polish: POLISH_COMPLETE_CATALOGUE_APPROVAL_PENDING
 
 - **Scope / decision.** Three bounded post-acceptance objectives: (A) capture+certify Pepperstone for Broker

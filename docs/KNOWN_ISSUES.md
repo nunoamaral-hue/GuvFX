@@ -2,6 +2,29 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔵 P3 DOC DRIFT (recorded 2026-09-24) — `DEPLOY_ISOLATED.md` Phase-4 `docker run` omits `bridge-agent.env`
+
+*What:* `deploy/wayond-listener/DEPLOY_ISOLATED.md` (a 2026-07-05 artefact) documents starting the listener with a
+bare `docker run` whose `--env-file` set does NOT include `bridge-agent.env`, so it would lack
+`GUVFX_WINDOWS_AGENT_TOKEN`. *Impact:* if followed, the auto-router `order_check` returns HTTP 401 →
+`margin_unverifiable` → fail-closed → no PLACE_ORDER (silent). *Status:* the **canonical** deploy path is now the
+compose overlay in `RUNBOOK.md` (loads `wayond-listener.env` + `bridge-agent.env` via `env_file`, with a
+`--project-directory` pin and a presence-only pre-recreate config gate proving the token + 5 functional keys). The
+overlay + its key contract are CI-enforced (`backend/execution/tests_wayond_listener_deploy.py`). *Fix (out of
+current scope):* reconcile or retire the `DEPLOY_ISOLATED.md` Phase-4 `docker run` block to match the compose path.
+
+## 🔵 P3 OPERATIONAL (recorded 2026-09-24) — ownership sweep will not auto-attribute trades ingested during a `>window` monitor-chain outage
+
+*What:* the forward-safe ownership sweep (`sweep_trade_ownership`) only attributes trades whose `Trade.created_at`
+is within `STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS` (default 72h). If the monitor-chain is down longer than the window
+while trades keep ingesting, those trades age out of the window and are not auto-stamped. *Impact:* rare; a few
+`strategy_assignment=NULL` rows (attribution only — no money-path effect). This is the **intended** governance
+trade-off (the window is what prevents an implicit unbounded historical backfill). *Workaround:* run the explicit
+`backfill_execution_ownership` command (dry-run first, then `--commit`) to stamp the gap, or raise the window via
+`STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS` env for a known long outage (no deploy needed). Mitigated by the
+`monitor_chain` heartbeat alert (`reliability_tick`) that fires if the chain stops.
+
+
 ## 🔵 P2 OBSERVABILITY (recorded 2026-09-16) — daemon dispatch-time denials surface to the backend as generic `unknown_key_id`
 
 *What:* the hosted host-executor daemon signs SUCCESS responses but returns validation/authorization denials as an

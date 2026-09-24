@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Phase A1 forward-safety — PR/CI/merge/deploy + ONE natural-signal forward cert (2026-09-24)
+Sponsor ACCEPTED the historical ownership attribution (1483 stamped, 0 cross-account, magics NULL — NOT reverted).
+Built on branch `feat/dual-write-forward-safety`: forward-safe bounded ownership sweep (`sweep_trade_ownership` now
+bounds on `Trade.created_at` within `STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS`, default 72h; full-history attribution is
+now only the explicit `backfill_execution_ownership` command) + listener deploy hygiene (overlay loads full env via
+`env_file: [wayond-listener.env, bridge-agent.env]`, `environment:` block removed; new `wayond-listener.env.example`
+key contract + CI test; RUNBOOK `--project-directory` pin + pre-recreate gate). No migration. DUAL_WRITE stays ON;
+MAGIC_SEND/READ/ENFORCE stay OFF. **Single next action:** open the PR → CI green → merge → deploy **sweep + hygiene
+only** (recreate listener via the RUNBOOK `--project-directory` + presence-only config gate), then observe ONE
+NATURAL TI signal end-to-end (support@→asn10 plan+job+trade ownership; beta→asn15; CZ shadow-only) — no replay, no
+manufactured trade; if none arrives in the bounded window report `NATURAL_SIGNAL_PENDING`. **STOP before MAGIC_SEND**
+(money-path/Red — separate Sponsor gate + live-bridge magic check).
+
 ## ▶ TI execution recovered — CERTIFY acct33 natural signal + deploy tenant-watchdog fix (2026-09-14)
 Authorized bounded recovery COMPLETE: both AUTO_DEMO terminals relaunched + re-armed naturally; **acct25 certified
 on a natural TI signal** (tickets 254845-847); acct33 per-tenant bridge (:8802) re-activated. Durable fix shipped

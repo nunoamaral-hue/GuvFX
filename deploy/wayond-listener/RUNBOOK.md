@@ -34,10 +34,41 @@ account while GFX ages. Target architecture remains the dedicated **GFX** accoun
 4. Ensure a `SignalProvider` for Wayond's chat id exists and is **NOT armed** (ONBOARDING).
 
 ## Deploy
+
+The listener loads its **whole** environment via `env_file` from the prod secret store —
+`wayond-listener.env` (DB_*, DJANGO_SECRET_KEY, the 6 TELEGRAM_*, and the functional keys
+`MULTI_ACCOUNT_ROUTING_ENABLED` / `RISK_MAX_DAILY_DRAWDOWN_ABS` / `HOSTED_PERSISTENT_MT5_ENABLED`
+/ `GUVFX_AGENT_URL` / `GUVFX_WINDOWS_AGENT_BASE_URL`) and `bridge-agent.env`
+(`GUVFX_WINDOWS_AGENT_TOKEN` + aliases). Values live ONLY in those 600-perm files; the overlay
+references them **by name**. docker compose resolves relative `env_file` paths against the
+**project directory** (the dir of the first `-f` file). The base `docker-compose.yml` lives only
+in `/home/ubuntu/guvfx-prod/` (not in this repo), so **pin the project directory** so the *.env
+files are found:
+
 ```bash
-docker compose -f docker-compose.yml \
-  -f deploy/wayond-listener/docker-compose.wayond-listener.yml up -d --build guvfx-wayond-listener
+docker compose --project-directory /home/ubuntu/guvfx-prod \
+  -f /home/ubuntu/guvfx-prod/docker-compose.yml \
+  -f /home/ubuntu/guvfx-app/deploy/wayond-listener/docker-compose.wayond-listener.yml \
+  up -d --build guvfx-wayond-listener
 ```
+
+**Pre-recreate GATE (RULE 8 — run on the host BEFORE `up`).** Prove the resolved config carries
+every functional key + the Windows-agent token; a missing key means a routing/drawdown regression
+or an `order_check` 401. Presence-only (prints key NAMES, never secret values):
+
+```bash
+docker compose --project-directory /home/ubuntu/guvfx-prod \
+  -f /home/ubuntu/guvfx-prod/docker-compose.yml \
+  -f /home/ubuntu/guvfx-app/deploy/wayond-listener/docker-compose.wayond-listener.yml config \
+  | grep -oE '(MULTI_ACCOUNT_ROUTING_ENABLED|RISK_MAX_DAILY_DRAWDOWN_ABS|HOSTED_PERSISTENT_MT5_ENABLED|GUVFX_AGENT_URL|GUVFX_WINDOWS_AGENT_BASE_URL|GUVFX_WINDOWS_AGENT_TOKEN):' \
+  | sort -u
+# EXPECT all 6 key names. Fewer → ABORT (a source *.env is missing/misresolved).
+```
+
+The committed key contract is `wayond-listener.env.example` (names only); CI enforces it via
+`backend/execution/tests_wayond_listener_deploy.py` (fails if the overlay drops an env_file or
+re-introduces an `environment:` block that could shadow the file).
+
 On start it connects read-only, catches up from each provider's watermark, then listens
 for new + edited messages (flood-waits honoured). `restart: unless-stopped`.
 

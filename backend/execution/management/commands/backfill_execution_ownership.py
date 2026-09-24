@@ -1,5 +1,12 @@
 """Phase A §13 — backfill durable strategy ownership onto historical Plans + Trades.
 
+This is the EXPLICIT, human-invoked full-history ownership tool. It complements the
+bounded monitor-chain sweep (``sweep_trade_ownership`` / ``STRATEGY_OWNERSHIP_SWEEP_
+WINDOW_HOURS``): the sweep only attributes trades ingested within its rolling window, so
+full-history attribution older than that window is an operator DECISION run here — never
+an implicit side effect of enabling a flag. This command deliberately scans ALL un-owned
+rows (no window) and is idempotent.
+
 Backfills ONLY deterministically-resolvable provenance; leaves everything else NULL
 (LEGACY_UNATTRIBUTED — never fabricated). DRY-RUN by default (prints counts, writes
 nothing); ``--commit`` persists; ``--account <id>`` scopes to one account.
@@ -14,7 +21,9 @@ from django.db import transaction
 
 
 class Command(BaseCommand):
-    help = "Backfill durable strategy ownership on Plans + Trades where deterministic (DRY-RUN by default)."
+    help = ("Explicit full-history backfill of durable strategy ownership on Plans + Trades where "
+            "deterministic (DRY-RUN by default). Complements the bounded monitor-chain sweep; run this "
+            "for attribution older than STRATEGY_OWNERSHIP_SWEEP_WINDOW_HOURS.")
 
     def add_arguments(self, parser):
         parser.add_argument("--commit", action="store_true", help="Persist (default: dry-run).")
