@@ -69,11 +69,56 @@ class BuildPositionsTests(TestCase):
         (p,) = build_positions_from_deals(deals)
         self.assertEqual(p["close_price"], Decimal("4055"))
 
+    def test_hedging_same_symbol_multi_strategy_ownership_survives_lifecycle(self):
+        # B1.2 Phase 8/9: on a HEDGING account three strategies hold XAUUSD concurrently, each on its own
+        # position_id. The deal-lifecycle builder yields THREE independent positions, each retaining ITS OWN
+        # strategy identity (magic 1e9+id) + comment SOURCED FROM THE OPENING DEAL — proving ownership
+        # survives the IN→OUT lifecycle and is not lost to the close deal.
+        #
+        # Critically, the CLOSE deals carry magic=0 / comment="" — matching real MT5 (an OUT deal's magic is
+        # typically 0). So this test FAILS if the builder ever sourced magic/comment from the close deal
+        # instead of the opening deal (the exact regression the ownership invariant must resist).
+        specs = [(901, 1_000_000_010, "WAY10L1"), (902, 1_000_000_011, "WAY11L1"),
+                 (903, 1_000_000_012, "WAY12L1")]
+        deals = []
+        for pid, magic, comment in specs:
+            deals += [
+                _deal(pid, 0, 1, 4054.6, 0.02, time=100, magic=magic, comment=comment, symbol="XAUUSD"),
+                _deal(pid, 1, 0, 4056.1, 0.02, time=200, magic=0, comment="", symbol="XAUUSD", profit=-2.0),
+            ]
+        by_pid = {p["position_id"]: p for p in build_positions_from_deals(deals)}
+        self.assertEqual(set(by_pid), {"901", "902", "903"})           # three independent positions
+        for pid, magic, comment in specs:
+            p = by_pid[str(pid)]
+            self.assertEqual(p["symbol"], "XAUUSD")                     # same symbol, all three
+            self.assertEqual(p["magic"], magic)     # OPENING-deal magic survives the close (not the OUT's 0)
+            self.assertEqual(p["comment"], comment)  # OPENING-deal comment survives (not the OUT's "")
+            self.assertIsNotNone(p["close_time"])                      # each closed independently
+        # The three opening-deal magics stay distinct across the closed lifecycle (no cross-contamination).
+        self.assertEqual(len({by_pid[str(pid)]["magic"] for pid, _, _ in specs}), 3)
+
     def test_missing_entry_field_no_open_leg_skipped(self):
         # Old bridge (no 'entry') → cannot identify the IN deal → skip (fail-closed, no bad trade).
         d = _deal(700, 0, 1, 4054.6, 0.02)
         d.pop("entry")
         self.assertEqual(build_positions_from_deals([d]), [])
+
+    def test_deal_entry_inout_is_quarantined_not_built(self):
+        # B1.2: a DEAL_ENTRY_INOUT (2) netting reversal is not representable in the single-row Trade schema.
+        # It is quarantined (fail-closed, loud) instead of silently dropped / built into a corrupt row.
+        import contextlib
+        import io
+        deals = [
+            _deal(800, 0, 1, 4054.6, 0.10, time=100, comment="WAY9L1"),   # IN
+            _deal(800, 2, 0, 4060.0, 0.20, time=200, profit=6.0),         # INOUT reversal
+            _deal(800, 1, 1, 4066.0, 0.10, time=300, profit=6.0),         # OUT
+        ]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            pos = build_positions_from_deals(deals)
+        self.assertEqual(pos, [])                                   # no corrupt Trade produced
+        self.assertIn("QUARANTINE deal_inout", buf.getvalue())     # loud + greppable, never a silent drop
+        self.assertIn("position_id=800", buf.getvalue())
 
 
 class UpsertTradesTests(TestCase):
