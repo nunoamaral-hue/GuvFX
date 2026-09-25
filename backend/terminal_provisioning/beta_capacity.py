@@ -89,6 +89,35 @@ def active_beta_runtime_count_for_user(user) -> int:
         state__in=HELD_STATES).count()
 
 
+def _global_max_active_runtimes() -> int:
+    """Global beta-pool cap — config-driven (settings/env) so the pool can be raised for the POC without a
+    code change (a blast-radius / capacity decision). Default = ``BETA_MAX_ACTIVE_RUNTIMES`` (unchanged), so
+    this is byte-identical until an operator sets it."""
+    val = getattr(settings, "BETA_MAX_ACTIVE_RUNTIMES", None)
+    if val is None:
+        val = os.getenv("BETA_MAX_ACTIVE_RUNTIMES", "")
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return BETA_MAX_ACTIVE_RUNTIMES
+
+
+def _per_user_max_active_runtimes(user) -> int:
+    """Per-user active-runtime cap. Phase C2: when Phase-C enforcement is ARMED
+    (``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED``), this is the user's entitlement concurrent-active limit
+    (STANDARD ⇒ 1, CONCURRENT ⇒ the configured/overridden limit) instead of the hard-coded
+    ``BETA_MAX_ACTIVE_PER_USER``. DARK by default: while the flag is OFF (or on any resolution error) it
+    fails safe to the legacy cap of 1, so behaviour is byte-identical until armed."""
+    try:
+        from trading.account_entitlement import effective_concurrent_limit, enforcement_enabled
+        if enforcement_enabled():
+            from billing.entitlements import resolve_effective_entitlements
+            return int(effective_concurrent_limit(resolve_effective_entitlements(user)))
+    except Exception:  # noqa: BLE001 — any resolution error fails safe to the conservative legacy cap
+        pass
+    return BETA_MAX_ACTIVE_PER_USER
+
+
 def _require_beta(rt: AccountRuntime) -> None:
     """Structural guard (control 14): refuse to mutate a non-BETA runtime. This makes 'never touch
     Nuno's production runtime' an invariant of the mutators themselves, not a caller responsibility."""
@@ -146,9 +175,9 @@ def reserve_beta_slot(account) -> AccountRuntime:
         from trading.brokers import get_broker_validator
         if not get_broker_validator(account).validate_account_record(account).ok:
             denial = "broker_record_invalid"
-        elif active_beta_runtime_count_for_user(account.user) >= BETA_MAX_ACTIVE_PER_USER:
+        elif active_beta_runtime_count_for_user(account.user) >= _per_user_max_active_runtimes(account.user):
             denial = "per_user_runtime_cap"
-        elif active_beta_runtime_count() >= BETA_MAX_ACTIVE_RUNTIMES:
+        elif active_beta_runtime_count() >= _global_max_active_runtimes():
             denial = "beta_pool_full"
         elif not host_has_capacity():
             denial = "host_at_capacity"

@@ -167,8 +167,11 @@ def runtime_capacity_available() -> bool:
     """A NEW dedicated runtime slot can be allocated (global cap + host capacity). Enforced hard and
     idempotently at ``reserve_beta_slot``; this is the entry-time view of the same fact."""
     from terminal_provisioning.beta_capacity import (
-        BETA_MAX_ACTIVE_RUNTIMES, active_beta_runtime_count, host_has_capacity)
-    return active_beta_runtime_count() < BETA_MAX_ACTIVE_RUNTIMES and host_has_capacity()
+        _global_max_active_runtimes, active_beta_runtime_count, host_has_capacity)
+    # Phase C2 — read the SAME config-driven global pool cap that reserve_beta_slot enforces, so raising
+    # BETA_MAX_ACTIVE_RUNTIMES by config actually admits new customers at the entry gate (the two gates must
+    # not diverge). Default (config unset) = the module constant 5, unchanged.
+    return active_beta_runtime_count() < _global_max_active_runtimes() and host_has_capacity()
 
 
 def user_holds_runtime(user) -> bool:

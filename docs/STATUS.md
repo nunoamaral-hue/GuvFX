@@ -34,7 +34,18 @@
     + `check_can_add_account`/`check_can_activate` + `enforcement_enabled()` flag
     `CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` (default OFF). `account_service.py` add-account cap routed through
     the new helper ONLY when the flag is ON; flag-OFF path is byte-identical to today. Tests: 21 new (entitlement
-    model/override + helpers/flag). No money-path change; per-account SID/magic/pin untouched.
+    model/override + helpers/flag). No money-path change; per-account SID/magic/pin untouched. PR #406 merged.
+  - **C2 built (branch `feat/concurrent-accounts-funnel`, additive/DARK/NO migration):** re-scoped the two named
+    one-account-per-user gates to consume the C1 entitlement. `hosted_workspace/provisioning.py
+    request_hosted_workspace`: flag-OFF keeps one workspace/user (byte-identical); flag-ON allows up to the user's
+    OWNED entitlement, idempotent on the canonical `(login, server)` pair, `check_can_add_account` inside the
+    user-row lock, new `REQ_LIMIT_REACHED`. `terminal_provisioning/beta_capacity.py reserve_beta_slot`: per-user
+    active cap `BETA_MAX_ACTIVE_PER_USER=1` → entitlement `effective_concurrent_limit` (STANDARD=1, CONCURRENT=
+    configured/override) only when armed, fail-safe to 1; global pool cap `BETA_MAX_ACTIVE_RUNTIMES` config-driven
+    (default 5) at BOTH `reserve_beta_slot` AND the entry gate `billing/beta.runtime_capacity_available`.
+    Adversarial review (3-agent) → fixed: entry-gate config wiring, `(login, server)` idempotency key, stronger
+    tests (real-threads armed race, different-per-user-limits, entry-gate raise, same-login/different-server).
+    Tests: +17. Full suite green. `CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` stays OFF; no production state touched.
 
 - **2026-09-25 - PHASE B2: MAGIC_SEND PRODUCTION-CERTIFIED (support@ + beta demo).** DUAL_WRITE stays ON;
   READ/ENFORCE/symbol-conflict OFF. Allocated magic ONLY for assignment #10 (support@ → **1000000010**) + #15

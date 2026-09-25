@@ -1,6 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Phase C (Concurrent Broker Accounts) — C1 DARK built, sequence C2→C9 (2026-09-25)
+## ▶ Phase C (Concurrent Broker Accounts) — C1+C2 DARK merged, C3 next (2026-09-25)
+C1 (entitlement model) + C2 (funnel + BETA_MAX_ACTIVE_PER_USER re-scoped to the entitlement) built DARK
+(`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` OFF; per-account SID kept; no migration; no money-path). **Proposed
+C3 scope (DARK):** provisioning "Add Broker Account" — support first-account-then-add flow so a user provisions
+ONLY accounts they actually add (never auto-5); each new account gets its own runtime/catalogue-preseed/observer/
+bridge-endpoint/identity-pin/RemoteApp metadata via the existing per-account path (reuse, don't rebuild); enforce
+ownership + entitlement at the add API; and fix the onboarding `.first()` funnels (`onboarding/services.py:482,537`,
+`hosted_workspace/onboarding_views.py _own_workspace`) to take an explicit `account_id`/workspace selector (the
+armed-latent gap the C2 review flagged) — pattern already correct in `hosted_workspace/delivery_views.py:66,127`.
+Still gated (not code): isolation cert (co-residency), RDS licensing ~2026-12-07. C4 UI/APIs + Telegram/myfxbook,
+C5 support@ migration (hard rollback gate), C6 2-acct cert, C7 scale to 5, C8 Nuno migration, C9 10-acct POC.
+Enforcement stays OFF until an explicit arming gate. **Single next action:** return to Sponsor for C3 go-ahead.
+
+## ▶ Phase C — earlier C0/C1 notes (superseded by the line above)
 1 GuvFX user → N broker accounts → concurrent MT5. Sponsor decisions locked: **Direction A** (keep per-account
 Windows SID — do NOT collapse to 1-SID-per-user), **isolation cert = separate packet**, build phased. C0 collision
 map done (cap-and-funnel problem, not a runtime rearchitecture). **C1 built DARK on branch

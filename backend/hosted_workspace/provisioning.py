@@ -37,6 +37,9 @@ REQ_IDENTITY_INVALID = "expected_identity_invalid"   # login/server too long or 
 REQ_PASSWORD_FORBIDDEN = "broker_password_forbidden"
 REQ_CREATED = "created"
 REQ_EXISTS = "exists"
+# Phase C2 — the user's owned-broker-account entitlement is reached (only reachable when the Phase-C
+# enforcement flag is ON; while DARK the funnel keeps its legacy one-workspace-per-user behaviour).
+REQ_LIMIT_REACHED = "broker_account_limit_reached"
 ALLOC_NO_CAPACITY = "no_node_capacity"
 ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
 ALLOC_CZ_NODE_FORBIDDEN = "cz_node_forbidden"         # ADR-0043 Addendum B: refuse a non-CZ tenant on a CZ node
@@ -172,12 +175,42 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
     from trading.models import BrokerServer, TradingAccount
 
     with transaction.atomic():
-        # Serialise this user's requests so a duplicate/concurrent request cannot create two workspaces.
+        # Serialise this user's requests so a duplicate/concurrent request cannot make two workspaces for
+        # the SAME identity (and, while DARK, cannot make a second workspace at all).
         locked_user = get_user_model().objects.select_for_update().get(pk=user.pk)
-        existing = (HostedMt5Workspace.objects.filter(trading_account__user=locked_user)
-                    .select_related("trading_account").first())   # ownership = trading_account.user
-        if existing is not None:
-            return RequestResult(True, REQ_EXISTS, existing, False)
+        owned = (HostedMt5Workspace.objects.filter(trading_account__user=locked_user)
+                 .select_related("trading_account"))   # ownership = trading_account.user
+        # Phase C2 — re-scope the one-workspace-per-user funnel to the entitlement model. DARK by default:
+        # while ``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED`` is OFF the legacy branch runs UNCHANGED (a user
+        # keeps exactly one workspace). While ON, a user may hold up to their OWNED-account entitlement of
+        # workspaces; a re-request for the SAME broker identity is still idempotent (returns that workspace),
+        # and creating a NEW one is bounded by ``check_can_add_account`` (active/tombstone-aware, override-
+        # aware). Per-account SID/runtime isolation is unchanged — this only lifts the count restriction.
+        from trading.account_entitlement import enforcement_enabled
+        if enforcement_enabled():
+            # Idempotency is keyed on the CANONICAL broker identity pair (login, server) — the same pair the
+            # DB uniqueness constraints + bind_broker_identity use — so a user may legitimately hold the same
+            # login on two different servers, and a re-request returns the workspace for THAT exact identity.
+            # ``login``/``server`` may both be empty under deferred-identity bind, which then idempotently
+            # matches this user's single unbound intent workspace.
+            srv_name = str(expected_server or "").strip()
+            match_q = owned.filter(trading_account__account_number=login)
+            match_q = (match_q.filter(trading_account__broker_server__server_name=srv_name) if srv_name
+                       else match_q.filter(trading_account__broker_server__isnull=True))
+            match = match_q.first()
+            if match is not None:
+                return RequestResult(True, REQ_EXISTS, match, False)
+            from rest_framework.exceptions import ValidationError as _DRFValidationError
+            from trading.account_entitlement import check_can_add_account
+            try:
+                check_can_add_account(locked_user)   # owned-account entitlement (config/override-driven)
+            except _DRFValidationError:
+                return RequestResult(False, REQ_LIMIT_REACHED)
+            # under limit → fall through to create a new workspace for this new broker identity
+        else:
+            existing = owned.first()
+            if existing is not None:
+                return RequestResult(True, REQ_EXISTS, existing, False)
 
         server = None
         srv_name = str(expected_server or "").strip()
