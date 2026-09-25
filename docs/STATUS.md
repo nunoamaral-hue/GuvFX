@@ -14,6 +14,45 @@
 
 ## Execution workstream log
 
+- **2026-09-25 - PHASE C (Concurrent Broker Accounts) — C0 collision audit + C1 entitlement model DARK —
+  branch `feat/concurrent-accounts-entitlement`.** Product: 1 GuvFX user → N broker accounts → concurrent MT5
+  (initial entitlement 5, config-scalable to 10/20/50). **Sponsor decisions: Direction A (KEEP per-account
+  Windows SID `guvfx_u_<account_id>` — the codebase already is "N SIDs per user"; do NOT collapse to 1-SID-
+  per-user); isolation cert = SEPARATE packet; build C1 now.**
+  - **C0 collision map (read-only, 7-agent audit):** the runtime/isolation/execution/strategy layers are
+    already keyed on `TradingAccount.id`, so N accounts/user already yields N isolated identities/runtimes/
+    endpoints/magics. Blockers are narrow: (1) cap math `account_service.py:85` `min(10,…)` + counts total-not-
+    active + dead `EntitlementOverride`; (2) one-workspace-per-user funnel `hosted_workspace/provisioning.py:
+    151-180`; (3) `BETA_MAX_ACTIVE_PER_USER=1` `beta_capacity.py:28`; (4) onboarding `.first()` funnels; (5) the
+    DARK per-node single-tenant gate (blocks co-residency until the isolation cert). REUSE as-is: Phase A/B
+    magic, per-account pin, per-tenant endpoint, StrategyAssignment N:M, HostedMt5Workspace-per-account,
+    observe/liveness/recovery. Full design in `docs/` handoff / scratch `PHASEC_C0_DESIGN.md`.
+  - **C1 built (additive, DARK, NO migration):** `billing/entitlements.py` +`account_mode` (STANDARD/CONCURRENT)
+    +`concurrent_broker_account_limit` (default 1; pro/advanced/beta=5) on the Entitlements dataclass +
+    `AccountMode` +`resolve_effective_entitlements(user)` (layers active EntitlementOverride → FIXES the dead
+    override path). New `trading/account_entitlement.py`: owned/active tombstone-aware counts + effective limits
+    + `check_can_add_account`/`check_can_activate` + `enforcement_enabled()` flag
+    `CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` (default OFF). `account_service.py` add-account cap routed through
+    the new helper ONLY when the flag is ON; flag-OFF path is byte-identical to today. Tests: 21 new (entitlement
+    model/override + helpers/flag). No money-path change; per-account SID/magic/pin untouched.
+
+- **2026-09-25 - PHASE B2: MAGIC_SEND PRODUCTION-CERTIFIED (support@ + beta demo).** DUAL_WRITE stays ON;
+  READ/ENFORCE/symbol-conflict OFF. Allocated magic ONLY for assignment #10 (support@ → **1000000010**) + #15
+  (beta → **1000000015**) via the per-assignment `allocate_magic` (NOT the bulk command). Enabled MAGIC_SEND by
+  recreating the listener (ad-hoc docker-run, zero-drift env-file `wayond-listener-magicsend.env`; rollback =
+  stopped `guvfx-wayond-listener-preMAGICSEND`). Certified on a NATURAL T1 signal (16:35 UTC): both accounts'
+  broker deals carried the sent magic → `Trade.magic_number` = 1000000010/1000000015 (broker readback proven),
+  `Trade.strategy_assignment` = 10/15, comments/sizing unchanged, cross-account 0, no band-magic leak, CZ #7/#8
+  magic NULL. Verdict `MAGIC_SEND_PRODUCTION_CERTIFIED_SUPPORT_BETA`. Backend magic_send stays False (listener =
+  the only natural-path sender). Rollback = flag-off (magic stays allocated as stable identity).
+
+- **2026-09-25 - WINDOWS MT5 CAPACITY ASSESSMENT (read-only).** ONE box (100.79.101.19) hosts BOTH logical nodes
+  (node1 CZ + node2 beta co-resident; shared 4 physical cores → limits NOT additive). 8 vCPU / 32 GB / 480 GB.
+  Binding constraint = CPU correlated single-thread XAUUSD-tick bursts (RAM/disk hugely spare). Verdict
+  `CURRENT_SERVER_SAFE_FOR_12_NOT_20`: safe ~12 box-wide, ceiling 16, configured 22 = RED; 20 accounts → split
+  10+10 on two nodes (arch supports 1 login → N via User→TA 1:N + per-tenant endpoints + TerminalNode.rdp_host).
+  RDS grace ~2026-12-07 = hard time-cliff. See `reference_windows_host_capacity` memory + `CAPACITY_RETURN.md`.
+
 - **2026-09-25 - PHASE B1.2: ACCOUNT IDENTITY PINNING + MT5 DEAL LIFECYCLE HARDENING — branch
   `feat/account-pin-deal-lifecycle`, PR #405.** P0 prerequisite for MAGIC_SEND (stays OFF). Additive,
   fail-closed, dormant on the current all-hedging estate.
