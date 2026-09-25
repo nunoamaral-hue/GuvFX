@@ -38,6 +38,10 @@ class WorkspaceObservation:
     previous_state: str
     previous_reason: str = WorkspaceReason.NONE
     observed_at: Optional[int] = None
+    # B1: raw ENUM_ACCOUNT_MARGIN_MODE int (null = unknown). Carried for the projection/capability
+    # read-model ONLY — deliberately NOT referenced by _all_execution_conditions or _derive, so it
+    # can never influence lifecycle state or the EXECUTION_READY gate.
+    margin_mode: Optional[int] = None
 
 
 @dataclass(frozen=True)

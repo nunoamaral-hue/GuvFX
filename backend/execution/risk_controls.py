@@ -112,6 +112,73 @@ def node_assignment_block_reason(account) -> str | None:
         return "node_not_active"
     return None
 
+
+# --- B1: multi-strategy same-symbol conflict on accounts that cannot keep positions independent ------
+
+def _account_margin_label(account) -> str:
+    """Fresh, authoritative margin-mode label for an account, else UNKNOWN (fail-closed). Reads the
+    HostedMt5Workspace projection (the single authority) via the shared freshness+mapping gate; no
+    workspace / missing / stale -> UNKNOWN. Never infers from broker/server names."""
+    from hosted_workspace.margin_mode import label_if_fresh, UNKNOWN
+    try:
+        ws = getattr(account, "hosted_workspace", None)
+        if ws is None:
+            return UNKNOWN
+        return label_if_fresh(ws.proj_margin_mode, ws.last_decision_at, timezone.now())
+    except Exception:
+        return UNKNOWN
+
+
+def _foreign_symbol_owner_exists(account_id, symbol, owner_id, exclude_plan_id=None) -> bool:
+    """True if a DIFFERENT (or un-attributable) active StrategyAssignment already owns live exposure or
+    order-intent for ``symbol`` on this account: an open Trade, or a PLANNED/PROMOTED plan. Rows owned by
+    ``owner_id`` are excluded (same-assignment multi-leg / repeated signals are NOT a conflict). NULL-owner
+    rows (manual / legacy magic=0 / unattributed) count as foreign — fail-closed, independence unprovable.
+
+    ``exclude_plan_id`` MUST be the promoting plan's id: it is itself a PLANNED plan on this account/symbol,
+    and when its own FK is NULL (dual-write off, or resolved only via the (account,source) fallback) an
+    ``exclude(strategy_assignment_id=owner_id)`` would KEEP it (NULL != owner_id) and the plan would count
+    itself as a foreign owner — a spurious self-conflict. Excluding by pk is the robust guard."""
+    if (Trade.objects.filter(account_id=account_id, symbol=symbol, close_time__isnull=True)
+            .exclude(strategy_assignment_id=owner_id).exists()):
+        return True
+    qs = (SignalExecutionPlan.objects
+          .filter(account_id=account_id, symbol=symbol, status__in=_ACTIVE_PLAN_STATUSES)
+          .exclude(strategy_assignment_id=owner_id))
+    if exclude_plan_id is not None:
+        qs = qs.exclude(id=exclude_plan_id)
+    return qs.exists()
+
+
+def evaluate_symbol_conflict(plan, owner) -> str | None:
+    """B1 DARK guard (flag ``STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED``). Returns a reason code to REFUSE
+    promotion, or None to allow. Inert (None) when the flag is OFF, so the promotion gate is byte-identical
+    to today. HEDGING accounts always allow (positions stay independent). NETTING / EXCHANGE / UNKNOWN allow
+    only when NO different assignment already owns the symbol; otherwise fail-closed. An un-attributable
+    promoting owner on a non-hedging account is itself unsafe. Any error while armed -> fail-closed."""
+    from execution.ownership_flags import symbol_conflict_policy_enabled
+    if not symbol_conflict_policy_enabled():
+        return None
+    from hosted_workspace.margin_mode import (
+        NETTING, EXCHANGE_LABEL, supports_independent_same_symbol)
+    try:
+        label = _account_margin_label(plan.account)
+        if supports_independent_same_symbol(label):  # proven HEDGING → independent positions
+            return None
+        reason = {
+            NETTING: "multi_strategy_netting_symbol_conflict",
+            EXCHANGE_LABEL: "exchange_mode_multi_strategy_uncertified",
+        }.get(label, "margin_mode_unknown_multi_strategy_conflict")
+        if owner is None:
+            return reason  # cannot scope ownership on a non-hedging account → fail closed
+        if _foreign_symbol_owner_exists(plan.account_id, plan.symbol, owner.id, exclude_plan_id=plan.id):
+            return reason
+        return None
+    except Exception:
+        logger.exception("evaluate_symbol_conflict failed (fail-closed) plan=%s", getattr(plan, "id", "?"))
+        return "symbol_conflict_indeterminate"
+
+
 _ORDER_OPENING_JOBS = (
     ExecutionJob.JobType.OPEN_TRADE,
     ExecutionJob.JobType.PLACE_ORDER,

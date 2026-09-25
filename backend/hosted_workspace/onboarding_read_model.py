@@ -8,8 +8,33 @@ readiness independently and NEVER exposes a credential, a full login (masked), a
 """
 from __future__ import annotations
 
+from django.utils import timezone
+
 from hosted_workspace.flags import hosted_delivery_lifecycle_enabled, hosted_mt5_remoteapp_enabled
 from hosted_workspace.state_machine import WorkspaceLifecycleState as S, WorkspaceReason
+
+
+def capability_projection(workspace, *, now) -> dict:
+    """B1 — per-account multi-strategy capability, derived purely from the observed margin mode + its
+    freshness. Read-only, secret-free, fail-closed: no workspace / never-observed / stale -> UNKNOWN /
+    PENDING / same_symbol=False. Only a FRESH, proven HEDGING account is FULL multi-strategy."""
+    from hosted_workspace.margin_mode import label_if_fresh, HEDGING, NETTING, EXCHANGE_LABEL, UNKNOWN
+    raw = getattr(workspace, "proj_margin_mode", None) if workspace is not None else None
+    last = getattr(workspace, "last_decision_at", None) if workspace is not None else None
+    mode = label_if_fresh(raw, last, now)
+    if mode == HEDGING:
+        multi, same = "FULL", True
+    elif mode in (NETTING, EXCHANGE_LABEL):
+        multi, same = "LIMITED", False
+    else:
+        multi, same = "PENDING", False
+    return {
+        "margin_mode": mode,
+        "multi_strategy": multi,
+        "same_symbol_concurrent": same,
+        "capability_fresh": mode != UNKNOWN,
+        "capability_observed_at": last.isoformat() if last is not None else None,
+    }
 
 # Customer-facing journey phases (ADR-0034 Onboarding PART G), stable identifiers.
 PHASE_NO_WORKSPACE = "NO_WORKSPACE"
@@ -202,6 +227,10 @@ def onboarding_journey_projection(workspace, account, *, staff: bool = False) ->
             workspace is not None and state == S.EXECUTION_READY and confirmed
             and getattr(workspace, "proj_account_match", None) is True
             and getattr(workspace, "execution_authorized_at", None) is None),
+        # B1 — per-account multi-strategy capability read-model (mode / multi_strategy / same_symbol_concurrent
+        # / capability_fresh / capability_observed_at). Derived read-only from the observed margin mode; a
+        # non-hedging / unknown / stale account is PENDING/LIMITED with same-symbol concurrency unsupported.
+        **capability_projection(workspace, now=timezone.now()),
     }
     if staff and workspace is not None:
         out["_staff"] = {

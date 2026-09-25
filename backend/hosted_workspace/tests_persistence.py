@@ -109,6 +109,19 @@ class WriterHappyPathTests(_Base):
         self.assertIs(ws.proj_connected, True)
         self.assertIs(ws.proj_execution_ready, False)  # trading halted -> not ready
 
+    def test_projection_cache_stores_margin_mode(self):
+        # B1: the observed margin mode is cached on proj_margin_mode, refreshed every applied observation
+        # (a live health cache, not sticky) and stamped atomically with last_decision_at.
+        ws = self._ws(canonical_state=S.CONNECTED)
+        decision = derive_workspace_decision(_obs(previous_state=str(S.CONNECTED)))
+        persist_workspace_decision(ws, _obs(margin_mode=2), decision, observation_version=3)
+        ws.refresh_from_db()
+        self.assertEqual(ws.proj_margin_mode, 2)
+        self.assertIsNotNone(ws.last_decision_at)
+        persist_workspace_decision(ws, _obs(margin_mode=None), decision, observation_version=4)
+        ws.refresh_from_db()
+        self.assertIsNone(ws.proj_margin_mode)  # not sticky — a later None observation clears it
+
 
 class WriterRejectionTests(_Base):
     def test_stale_observation_is_rejected_without_mutation(self):

@@ -22,7 +22,8 @@ from execution.models import (
     SignalSourceConfig,
 )
 from execution.signal_planning import plan_demo_execution
-from execution.signal_promotion import _resolve_plan_assignment, promote_plan_to_demo_jobs
+from execution.signal_promotion import (
+    PromotionRejected, _resolve_plan_assignment, promote_plan_to_demo_jobs)
 from signal_intake.models import PendingSignalApproval
 from strategies.magic_allocation import (
     ASSIGNMENT_MAGIC_BASE,
@@ -299,6 +300,43 @@ class OwnerScopingTests(OwnershipBase):
 
 # --- Promotion path: flags OFF byte-identical; ON writes ownership ------------
 class PromotionDualWriteTests(OwnershipBase):
+    def _netting_ws(self, account):
+        from hosted_workspace.models import HostedMt5Workspace
+        from hosted_workspace.margin_mode import RETAIL_NETTING
+        return HostedMt5Workspace.objects.create(
+            trading_account=account, proj_margin_mode=RETAIL_NETTING, last_decision_at=timezone.now())
+
+    def test_symbol_conflict_guard_blocks_promotion_when_armed(self):
+        # B1: on a netting account, a DIFFERENT assignment already owns the symbol -> the armed guard
+        # refuses promotion through the real _validate path (proves the hook wiring + owner resolution).
+        a = self._asn(self.strat, self.acct_a)
+        b = self._asn(self.strat2, self.acct_a)
+        self._netting_ws(self.acct_a)
+        Trade.objects.create(account=self.acct_a, ticket="fx", symbol="EURUSD", side="BUY",
+                             volume=Decimal("0.01"), open_time=timezone.now(),
+                             open_price=Decimal("1.0"), strategy_assignment=b)  # B owns EURUSD
+        self._mode_demo()
+        with override_settings(**{DUAL: True}):
+            plan = self._plan(self.acct_a, a, mid="cf1")  # FK = A (EURUSD)
+        self.assertEqual(plan.strategy_assignment_id, a.id)
+        with override_settings(**{DUAL: True, "STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED": True}):
+            with self.assertRaises(PromotionRejected) as cm:
+                promote_plan_to_demo_jobs(plan, actor=self.op)
+        self.assertEqual(cm.exception.code, "multi_strategy_netting_symbol_conflict")
+
+    def test_null_fk_single_strategy_not_self_blocked_when_armed(self):
+        # B1 regression (review HIGH): a PLANNED plan whose OWN strategy_assignment FK is NULL but whose
+        # owner resolves via the (account, source) fallback must NOT count itself as a foreign owner. With a
+        # single active assignment and no foreign exposure, the armed guard must ALLOW promotion.
+        a = self._asn(self.strat, self.acct_a)  # the only active (acct_a, ti_signals) assignment
+        self._netting_ws(self.acct_a)
+        self._mode_demo()
+        plan = self._plan(self.acct_a, a, mid="nf1")  # dual-write OFF -> plan FK NULL
+        self.assertIsNone(plan.strategy_assignment_id)
+        with override_settings(**{"STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED": True}):
+            jobs = promote_plan_to_demo_jobs(plan, actor=self.op)  # must NOT self-conflict
+        self.assertTrue(jobs)
+
     def test_flags_off_promotion_is_byte_identical(self):
         a = self._asn(self.strat, self.acct_a)
         allocate_magic(a)

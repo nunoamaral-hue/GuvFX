@@ -169,6 +169,9 @@ def persist_workspace_decision(
         locked.proj_account_match = bool(observation.account_match)
         locked.proj_trade_allowed = bool(observation.trade_allowed)
         locked.proj_execution_ready = exec_ready
+        # B1: cache the observed margin mode alongside the health projection, stamped atomically with
+        # last_decision_at (its freshness key). Health/capability signal only — never an order/identity gate.
+        locked.proj_margin_mode = getattr(observation, "margin_mode", None)
         locked.last_correlation_id = corr
         locked.last_decision_at = now
         # NB: ``last_decision_at`` (stamped here, atomically with ``proj_*`` under the row lock) is the
@@ -180,8 +183,8 @@ def persist_workspace_decision(
 
         update_fields = [
             "observation_version", "proj_process_running", "proj_ipc_available", "proj_connected",
-            "proj_account_match", "proj_trade_allowed", "proj_execution_ready", "last_correlation_id",
-            "last_decision_at", "updated_at",
+            "proj_account_match", "proj_trade_allowed", "proj_execution_ready", "proj_margin_mode",
+            "last_correlation_id", "last_decision_at", "updated_at",
         ]
 
         transition_created = False

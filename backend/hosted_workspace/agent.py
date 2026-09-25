@@ -229,6 +229,7 @@ def build_agent_snapshot(host, spec, *, clock):
                     observed_login=_identity(_get(account, "login")),
                     observed_server=_identity(_get(account, "server")),
                     observed_trade_mode=_get(account, "trade_mode"),  # producer rejects bool; None -> deny
+                    observed_margin_mode=_get(account, "margin_mode"),  # B1 health signal; producer cleans
                     observed_at=observed_at,
                     freshness_limit_seconds=getattr(spec, "freshness_limit_seconds", None),
                     attach_reason=attach_reason,

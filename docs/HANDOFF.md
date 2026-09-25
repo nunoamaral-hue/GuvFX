@@ -1,5 +1,35 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-25 — Phase B1: MT5 margin-mode authority + multi-strategy conflict policy (DARK)
+
+- **Scope / decision.** P0 prerequisite for MAGIC_SEND (which stays OFF). Give GuvFX an authoritative
+  per-account MT5 margin mode and a DARK, fail-closed multi-strategy same-symbol conflict policy, so a
+  future MAGIC_SEND can never permit two strategies to independently own the same symbol on a netting
+  account. Additive/DARK only. Branch `feat/mt5-margin-mode-authority` off main `6997d69`. ADR-0050.
+- **Verified fact vs assumption.** *Verified (Phase 0 reconcile):* MAGIC_SEND/READ/ENFORCE OFF everywhere,
+  DUAL_WRITE ON, no drift. *Verified (forensic):* `account_info()` returns `margin_mode` natively; GuvFX
+  captured it nowhere (grep=0); the observer read is a field-by-field copy → a Windows-host redeploy is
+  required to capture it; position management is already cross-strategy-safe via `WAY{plan}L{leg}` comment
+  scoping. *Assumption / to confirm on host (RULE 11):* the 0/1/2 enum mapping (positive control on a
+  known-hedging account before arming); the live margin mode of support@/beta/CZ/Brian/Patrick.
+- **What changed (additive/DARK).** `hosted_workspace/margin_mode.py` (new int→label + freshness);
+  `HostedMt5Workspace.proj_margin_mode` (+ migration 0011); observation plumbing (producer/manager/
+  live_observe/persistence carry `margin_mode`, health-only); `execution/risk_controls.evaluate_symbol_conflict`
+  + flag `STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED` (OFF) hooked in `signal_promotion._validate`;
+  `onboarding_read_model.capability_projection`; host observer scripts (`run_observer.py` +
+  `Invoke-GuvfxObserver.ps1`, read-only, ASCII). Tests: 12 + 18 new; full suite green.
+- **Deviations from packet.** Delivered the safe additive/DARK boundary + host scripts. **Design-only /
+  gated** (governance): live host observer redeploy + Phase-4/13 real-mode observation + Phase-14 verdict
+  (Amber/Red — Nuno-gated); `DEAL_ENTRY_INOUT` fix (Phase 8 — shared Trade keying ADR + no real INOUT data,
+  RULE 11); mandatory identity-pin enforcement for legacy/CZ (Phase 7 — money-path STOP). All recorded in
+  ADR-0050 with the exact designs.
+- **Exact tests.** `hosted_workspace.tests_margin_mode execution.tests_symbol_conflict` pass (30);
+  `hosted_workspace execution.tests_strategy_ownership execution.tests_symbol_conflict execution.tests_monitor_chain`
+  = 1065 pass; full backend suite green (CI gate).
+- **One bounded next action.** Merge the DARK PR; then (separately, Nuno-gated) redeploy the read-only host
+  observer + run a RULE-11 positive control + observe support@/beta real margin mode (Phase 4/13) → Phase-14
+  MAGIC_SEND readiness verdict.
+
 ## 2026-09-24 — Phase A1 forward-safety: bounded ownership sweep + listener deploy hygiene
 
 - **Scope / decision.** Sponsor ACCEPTED the historical strategy-ownership attribution as-is (do NOT revert the

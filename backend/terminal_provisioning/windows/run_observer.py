@@ -54,8 +54,9 @@ def _term_read(mt5):
 
 
 def _acc_read(mt5):
-    """Read account_info -> {login, server, trade_mode} (read-only). Any failure -> None (fail closed).
-    Mirrors the certified agent_host._acc_read."""
+    """Read account_info -> {login, server, trade_mode, margin_mode} (read-only). Any failure -> None
+    (fail closed). Mirrors the certified agent_host._acc_read. margin_mode is the native
+    ENUM_ACCOUNT_MARGIN_MODE int already on the account_info namedtuple (no extra IPC call)."""
     try:
         acc = mt5.account_info()
     except Exception:
@@ -63,7 +64,8 @@ def _acc_read(mt5):
     if acc is None:
         return None
     return {"login": getattr(acc, "login", None), "server": getattr(acc, "server", None),
-            "trade_mode": getattr(acc, "trade_mode", None)}
+            "trade_mode": getattr(acc, "trade_mode", None),
+            "margin_mode": getattr(acc, "margin_mode", None)}
 
 
 def _identity(value):
@@ -94,6 +96,7 @@ def _blank_snapshot(account_id, term_path):
         "observed_login": None,
         "observed_server": None,
         "observed_trade_mode": None,
+        "observed_margin_mode": None,
         "attach_reason": "",
         "process_reason": "",
         "connection_reason": "",
@@ -163,6 +166,8 @@ def observe(account_id, *, mt5=None, bridge=None):
             snap["observed_server"] = _identity(acc.get("server"))
             tm = acc.get("trade_mode")
             snap["observed_trade_mode"] = tm if (isinstance(tm, int) and not isinstance(tm, bool)) else None
+            mm = acc.get("margin_mode")
+            snap["observed_margin_mode"] = mm if (isinstance(mm, int) and not isinstance(mm, bool)) else None
         snap["ok"] = True
     except Exception:
         snap["connection_reason"] = "read_error"

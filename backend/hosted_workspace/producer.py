@@ -52,6 +52,7 @@ class RawWorkspaceSnapshot:
     observed_login: Optional[str] = None
     observed_server: Optional[str] = None
     observed_trade_mode: Optional[int] = None
+    observed_margin_mode: Optional[int] = None  # B1: raw ENUM_ACCOUNT_MARGIN_MODE int (health signal only)
     # Freshness
     observed_at: Optional[float] = None
     freshness_limit_seconds: Optional[float] = None
@@ -140,10 +141,13 @@ def build_workspace_observation(snapshot, *, now, previous_state,
         fresh = _compute_freshness(
             snapshot.observed_at, now, snapshot.freshness_limit_seconds, clock_tolerance_seconds)
         observed_at = snapshot.observed_at if _is_number(snapshot.observed_at) else None
+        # margin_mode is a nullable health signal, independent of the fail-closed booleans above.
+        margin_mode = _clean_trade_mode(snapshot.observed_margin_mode)
     except Exception:
         # No exception may fall through into a permissive observation — collapse to fully fail-closed.
         process_running = ipc_available = connected = trade_allowed = account_match = fresh = False
         observed_at = None
+        margin_mode = None
 
     return WorkspaceObservation(
         process_running=process_running,
@@ -155,4 +159,5 @@ def build_workspace_observation(snapshot, *, now, previous_state,
         previous_state=str(previous_state),
         previous_reason=str(previous_reason),
         observed_at=observed_at,
+        margin_mode=margin_mode,
     )

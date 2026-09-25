@@ -36,7 +36,9 @@ def _term_read(mt5):
 
 
 def _acc_read(mt5):
-    """Read account_info -> {login, server, trade_mode} (read-only). Any failure -> None (fail closed)."""
+    """Read account_info -> {login, server, trade_mode, margin_mode} (read-only). Any failure -> None
+    (fail closed). margin_mode is the native ENUM_ACCOUNT_MARGIN_MODE int on the namedtuple (no extra IPC).
+    Parity with terminal_provisioning/windows/run_observer._acc_read (the live observe path)."""
     try:
         acc = mt5.account_info()
     except Exception:
@@ -47,6 +49,7 @@ def _acc_read(mt5):
         "login": getattr(acc, "login", None),
         "server": getattr(acc, "server", None),
         "trade_mode": getattr(acc, "trade_mode", None),
+        "margin_mode": getattr(acc, "margin_mode", None),
     }
 
 

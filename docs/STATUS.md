@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-09-25 - PHASE B1: MT5 MARGIN-MODE AUTHORITY + MULTI-STRATEGY CONFLICT POLICY (DARK) — branch
+  `feat/mt5-margin-mode-authority` (ADR-0050).** P0 prerequisite for MAGIC_SEND (still OFF). Additive/DARK
+  backend + read-only host observer changes. (1) **Authoritative margin mode**: observer now reads
+  `account_info().margin_mode` (native int, read-only `getattr`) → carried through the observation pipeline
+  to new additive nullable `HostedMt5Workspace.proj_margin_mode` (migration `hosted_workspace 0011`);
+  int→label (`RETAIL_NETTING=0`/`EXCHANGE=1`/`RETAIL_HEDGING=2`, else UNKNOWN) in
+  `hosted_workspace/margin_mode.py`; strict + freshness-gated (`label_if_fresh`, 24h; stale→UNKNOWN). Health
+  signal ONLY — never feeds the identity matcher / EXECUTION_READY gate / lifecycle state. Authority lives on
+  the workspace projection, not TradingAccount (single authority). (2) **DARK conflict policy**
+  (`execution/risk_controls.evaluate_symbol_conflict`, flag `STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED` default
+  OFF) hooked in `signal_promotion._validate`: HEDGING allows independent same-symbol; NETTING/EXCHANGE/
+  UNKNOWN/stale allow only if no *different* assignment owns the symbol, else fail-closed; promoting owner
+  excluded (same-assignment multi-leg never trips); NULL-owner (manual/legacy) counts as foreign. Reason
+  codes `multi_strategy_netting_symbol_conflict` / `exchange_mode_multi_strategy_uncertified` /
+  `margin_mode_unknown_multi_strategy_conflict`. Flag OFF ⇒ `_validate` byte-identical (no query). (3)
+  **Capability read-model** (`onboarding_read_model.capability_projection`): additive `margin_mode` /
+  `multi_strategy` / `same_symbol_concurrent` / `capability_fresh`. Host observer scripts (`run_observer.py`,
+  `Invoke-GuvfxObserver.ps1`) updated read-only + ASCII-only (RULE 9). Tests: `hosted_workspace.tests_margin_mode`
+  (12) + `execution.tests_symbol_conflict` (18, incl. 5-account matrix); full backend suite green. **Gated/
+  design-only** (see ADR-0050): live Windows-host observer redeploy + real-mode observation cert (Amber/Red);
+  `DEAL_ENTRY_INOUT` ingest fix (touches Trade keying = ADR + no real data / RULE 11); mandatory identity-pin
+  enforcement for legacy/CZ (money-path STOP). MAGIC_SEND/READ/ENFORCE remain OFF.
+
 - **2026-09-24 (follow-up) - Wayond listener overlay made recreate-valid.** Deploy-time validation of
   the entry below found two pre-existing/authoring defects in the committed listener deploy definition
   (the overlay had never been used in prod): (1) `depends_on: db` named an undefined service — the prod

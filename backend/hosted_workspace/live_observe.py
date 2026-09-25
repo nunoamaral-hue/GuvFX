@@ -247,6 +247,7 @@ def build_observation_from_host(workspace, result, *, now=None):
         observed_login=_str_or_none(result.get("observed_login")),
         observed_server=_str_or_none(result.get("observed_server")),
         observed_trade_mode=_int_or_none(result.get("observed_trade_mode")),
+        observed_margin_mode=_int_or_none(result.get("observed_margin_mode")),
         observed_at=collected_at,
         freshness_limit_seconds=_OBSERVATION_FRESHNESS_LIMIT_SECONDS,
         attach_reason=_str_or_none(result.get("attach_reason")) or "",
