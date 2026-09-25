@@ -10,6 +10,7 @@ from hosted_workspace.delivery_views import (
     HostedWorkspaceDeliveryStateView,
 )
 from hosted_workspace.onboarding_views import (
+    OnboardingAddBrokerAccountView,
     OnboardingAuthorizeExecutionView,
     OnboardingBindView,
     OnboardingConfirmView,
@@ -30,6 +31,8 @@ urlpatterns = [
     # ADR-0034 Onboarding — DARK customer journey API (404-invisible unless master + onboarding flags ON).
     path("onboarding/journey/", OnboardingJourneyView.as_view(), name="onboarding-journey"),
     path("onboarding/request/", OnboardingRequestView.as_view(), name="onboarding-request"),
+    # Phase C3 — Add ANOTHER broker account (DARK; delegates to the same request service; supports DEMO/LIVE).
+    path("accounts/add/", OnboardingAddBrokerAccountView.as_view(), name="accounts-add"),
     path("onboarding/bind/", OnboardingBindView.as_view(), name="onboarding-bind"),
     path("onboarding/confirm/", OnboardingConfirmView.as_view(), name="onboarding-confirm"),
     # ADR-0047 — the customer's EXPLICIT "Enable automated trading" authorization (the only path that arms).

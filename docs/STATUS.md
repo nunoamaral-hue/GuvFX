@@ -46,6 +46,22 @@
     Adversarial review (3-agent) → fixed: entry-gate config wiring, `(login, server)` idempotency key, stronger
     tests (real-threads armed race, different-per-user-limits, entry-gate raise, same-login/different-server).
     Tests: +17. Full suite green. `CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` stays OFF; no production state touched.
+  - **C3 built (branch `feat/concurrent-accounts-add`, additive/DARK/NO migration):** Add Broker Account. New
+    `POST /api/hosted-workspace/accounts/add/` (`OnboardingAddBrokerAccountView`) delegates to the SAME certified
+    `request_hosted_workspace` service (no second provisioning architecture); the existing scheduler drives
+    `prepare_hosted_slot` per NEW workspace (never pre-provisions the entitlement max); supports different brokers/
+    servers + DEMO/LIVE; returns `{trading_account_id, workspace_uuid}`. Removed ambiguous user-level `.first()`:
+    `_own_workspace` now account-explicit (`workspace_uuid`/`account_id`, fail-closed on N>1 ambiguity, malformed
+    uuid→404 not 500); confirm/authorize/bind/journey via `_resolve_or_error`; `onboarding/services.py`
+    `_resolve_onboarding_account` account-explicit BUT DARK-gated (legacy `.first()` while OFF — a user can already
+    hold N TradingAccounts today, so ambiguity-refusal only when armed). `TradingAccount.id` = internal selector;
+    login+server = broker identity/pin (unchanged). Per-account independence reused (per-workspace runner
+    try/except/continue). 3-agent adversarial review → fixed a HIGH DARK-regression (ambiguity refusal was un-gated)
+    + a 500-on-malformed-uuid + strengthened tests (exact-account resolution, authorize IDOR, DARK endpoint).
+    +30 adversarial tests (first/2-5/6th/same-login-diff-server/diff-brokers/DEMO+LIVE/idempotency/final-slot race
+    (real threads)/cross-user account-id+workspace-uuid IDOR/sibling-failure isolation/tombstone). Full suite green.
+    Deferred+noted: `mt5/views.py` launch `.first()`→C4; `check_can_activate` wiring→C7. `CONCURRENT_ACCOUNTS_
+    ENFORCEMENT_ENABLED` stays OFF; no production account created/provisioned/migrated.
 
 - **2026-09-25 - PHASE B2: MAGIC_SEND PRODUCTION-CERTIFIED (support@ + beta demo).** DUAL_WRITE stays ON;
   READ/ENFORCE/symbol-conflict OFF. Allocated magic ONLY for assignment #10 (support@ → **1000000010**) + #15

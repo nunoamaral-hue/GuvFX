@@ -471,17 +471,40 @@ mark_plan_selected = confirm_plan_selection
 # Account connected — reads existing TradingAccount state
 # ─────────────────────────────────────────────────────────────────────
 
-def _mark_beta_runtime_ready(user, state, request=None) -> UserOnboardingState:
+def _resolve_onboarding_account(user, account_id=None):
+    """C3 — account-explicit resolve of the onboarding milestone's target ``TradingAccount``. With an explicit
+    ``account_id`` (the internal canonical selector) resolve exactly that owned account (owner-scoped → a
+    cross-user id is ``no_broker_account``, never a leak). With none, fall back to the single account ONLY
+    while unambiguous (the user owns ≤ 1); once they own > 1, refuse to guess (``account_selector_required``)
+    instead of silently picking ``.first()``. DARK-identical: with one account this returns that one."""
+    qs = TradingAccount.objects.filter(user=user).order_by("id")
+    if account_id is not None:
+        acct = qs.filter(id=account_id).first()
+        if acct is None:
+            raise OnboardingStepError("no_broker_account")
+        return acct
+    # DARK-SAFE: a user can already hold multiple TradingAccounts today (the normal Accounts page, independent
+    # of Phase-C). So the ambiguity refusal is gated on Phase-C enforcement — while OFF this preserves the
+    # legacy single-pick (oldest) EXACTLY, and only once ARMED does it refuse to guess across N>1.
+    from trading.account_entitlement import enforcement_enabled
+    if enforcement_enabled() and qs.count() > 1:
+        raise OnboardingStepError("account_selector_required")   # armed + ambiguous — caller must identify
+    acct = qs.first()
+    if not acct:
+        raise OnboardingStepError("no_broker_account")
+    return acct
+
+
+def _mark_beta_runtime_ready(user, state, request=None, *, account_id=None) -> UserOnboardingState:
     """CVM-Inc-3: mark the beta "hosted runtime ready" milestone (stored on ``account_connected``) ONLY
     when the owned beta runtime is genuinely runtime_ready — materialised/launched/process-verified,
     heartbeat-fresh and carrying an immutable Verification Report. Never touches the legacy provisioning
-    path or ``mt5_instance``, and never implies broker connectivity (broker_connected is separate)."""
+    path or ``mt5_instance``, and never implies broker connectivity (broker_connected is separate).
+    C3: account-explicit (``account_id``); refuses to guess when the user owns multiple accounts."""
     from terminal_provisioning.beta_activation import runtime_ready
     from terminal_provisioning.models import AccountRuntime
 
-    account = TradingAccount.objects.filter(user=user).order_by("id").first()
-    if not account:
-        raise OnboardingStepError("no_broker_account")
+    account = _resolve_onboarding_account(user, account_id)
     runtime = AccountRuntime.objects.filter(trading_account=account).first()
     if runtime is not None and runtime_ready(runtime):
         if state.account_connected:
@@ -518,10 +541,12 @@ def _runtime_progress_reason(runtime) -> str:
     return "runtime_not_ready"
 
 
-def mark_account_connected(user, request=None) -> UserOnboardingState:
+def mark_account_connected(user, request=None, *, account_id=None) -> UserOnboardingState:
     """
     Mark account_connected=True on onboarding state.
     Validates that the user actually has an active TradingAccount.
+    C3: account-explicit (optional ``account_id``); when the user owns multiple accounts the milestone
+    refuses to guess (``account_selector_required``) rather than silently acting on an arbitrary one.
     """
     state = get_or_create_onboarding_state(user)
     _check_prerequisites(state, "account_connected")
@@ -531,10 +556,18 @@ def mark_account_connected(user, request=None) -> UserOnboardingState:
     # the runtime's durable state, NEVER by spare capacity / registration / new-provisioning availability
     # (those gate only a NEW runtime reservation, at broker-add). Staff keep the legacy path below.
     if not user.is_staff:
-        return _mark_beta_runtime_ready(user, state, request=request)
+        return _mark_beta_runtime_ready(user, state, request=request, account_id=account_id)
 
-    # Staff / legacy shared-instance path (Nuno) — unchanged.
-    account = TradingAccount.objects.filter(user=user, is_active=True).first()
+    # Staff / legacy shared-instance path (Nuno) — DARK-safe: refuse to guess across multiple actives ONLY when
+    # Phase-C enforcement is armed; while OFF this is the exact legacy single-pick (byte-identical).
+    active = TradingAccount.objects.filter(user=user, is_active=True).order_by("id")
+    if account_id is not None:
+        account = active.filter(id=account_id).first()
+    else:
+        from trading.account_entitlement import enforcement_enabled
+        if enforcement_enabled() and active.count() > 1:
+            raise OnboardingStepError("account_selector_required")
+        account = active.first()
     if not account:
         raise OnboardingStepError("No active trading account found. Connect one first.")
 

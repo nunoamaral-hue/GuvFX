@@ -16,6 +16,7 @@ order — the journey stops at assignment-eligibility.
 """
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status as http
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -75,10 +76,68 @@ def _subsystem_visible() -> bool:
     return bool(hosted_persistent_mt5_enabled() and hosted_workspace_onboarding_enabled())
 
 
-def _own_workspace(user):
-    # Owner-scoped resolve via the immutable trading_account.user binding (the single ownership source).
-    return (HostedMt5Workspace.objects.filter(trading_account__user=user)
-            .select_related("trading_account__broker_server").first())
+def _own_workspace(user, *, workspace_uuid=None, account_id=None):
+    """Owner-scoped resolve via the immutable ``trading_account.user`` binding (the single ownership source).
+
+    C3 (Concurrent Broker Accounts) — ACCOUNT-EXPLICIT. When a selector (``workspace_uuid`` or
+    ``account_id``) is supplied, resolve exactly that ONE owned workspace; because the queryset is owner-
+    scoped, a cross-user id simply yields ``None`` → 404 (IDOR-safe). With NO selector it falls back to the
+    single workspace ONLY while unambiguous (the user owns ≤ 1). Once the user owns > 1, an unqualified
+    resolve is AMBIGUOUS and returns ``None`` so the caller MUST identify the intended account — no silent
+    arbitrary ``.first()`` pick. DARK-identical: with one workspace per user (today) this returns that one."""
+    qs = (HostedMt5Workspace.objects.filter(trading_account__user=user)
+          .select_related("trading_account__broker_server"))
+    if workspace_uuid:
+        try:
+            return qs.filter(workspace_uuid=workspace_uuid).first()
+        except (ValueError, DjangoValidationError):
+            return None      # a malformed uuid matches nothing -> 404 (never an unhandled 500)
+    if account_id is not None:
+        return qs.filter(trading_account_id=account_id).first()
+    if qs.count() > 1:
+        return None                       # ambiguous — fail closed; caller must specify the account
+    return qs.first()
+
+
+def _selector(request):
+    """Optional explicit account selector from the request (query for GET, body for POST): ``workspace_uuid``
+    or ``account_id`` (TradingAccount.id — the internal canonical selector). Lets a multi-account customer
+    identify the intended workspace; absent while a user has a single workspace (backward-compatible)."""
+    src = request.query_params if request.method == "GET" else (
+        request.data if isinstance(request.data, dict) else {})
+    wu = str(src.get("workspace_uuid", "") or "").strip() or None
+    aid = src.get("account_id")
+    try:
+        aid = int(aid) if aid not in (None, "") else None
+    except (TypeError, ValueError):
+        aid = None
+    return {"workspace_uuid": wu, "account_id": aid}
+
+
+def _resolve_or_error(request):
+    """Account-explicit resolve for a WRITE/ARM op → ``(workspace, error_response)``. 404 when the user has no
+    workspace OR when a supplied selector matches none of THEIR accounts (IDOR-safe); 400 asking for a selector
+    when the user owns > 1 and gave none (never acts on an arbitrary account)."""
+    sel = _selector(request)
+    ws = _own_workspace(request.user, **sel)
+    if ws is not None:
+        return ws, None
+    total = HostedMt5Workspace.objects.filter(trading_account__user=request.user).count()
+    if total == 0 or sel["workspace_uuid"] or sel["account_id"] is not None:
+        return None, _NOT_FOUND      # no workspace, or a selector that isn't the caller's → 404 (owner-scoped)
+    return None, Response({"detail": "Multiple broker accounts — specify account_id or workspace_uuid.",
+                           "reason": "account_selector_required"}, status=http.HTTP_400_BAD_REQUEST)
+
+
+def _account_summary(ws):
+    """Secret-free per-account row for the multi-account chooser (C3): the internal selector (account_id /
+    workspace_uuid) + broker/server/demo labels only — NO login/account_number, NO credential."""
+    acct = ws.trading_account
+    srv = getattr(acct, "broker_server", None)
+    return {"account_id": acct.id, "workspace_uuid": str(ws.workspace_uuid),
+            "broker_name": acct.broker_name or "",
+            "broker_server": (getattr(srv, "server_name", "") if srv else ""),
+            "is_demo": bool(acct.is_demo)}
 
 
 def _projection(request_user, ws, account):
@@ -107,7 +166,16 @@ class OnboardingJourneyView(_OnboardingBase):
         dark = self._dark()
         if dark is not None:
             return dark
-        ws = _own_workspace(request.user)
+        sel = _selector(request)
+        ws = _own_workspace(request.user, **sel)
+        if ws is None and not sel["workspace_uuid"] and sel["account_id"] is None:
+            # No selector: either 0 workspaces (NO_WORKSPACE projection, unchanged) or >1 (ambiguous) → return
+            # the account chooser so a multi-account customer can pick which journey to view (C3).
+            owned = list(HostedMt5Workspace.objects.filter(trading_account__user=request.user)
+                         .select_related("trading_account__broker_server").order_by("id"))
+            if len(owned) > 1:
+                return Response({"status": "multiple_accounts",
+                                 "accounts": [_account_summary(w) for w in owned]})
         account = ws.trading_account if ws is not None else None
         return Response(_projection(request.user, ws, account))
 
@@ -146,6 +214,53 @@ class OnboardingRequestView(_OnboardingBase):
         return Response(body, status=(http.HTTP_201_CREATED if res.created else http.HTTP_200_OK))
 
 
+class OnboardingAddBrokerAccountView(_OnboardingBase):
+    """POST — Add ANOTHER broker account (C3, DARK). Delegates to the SAME certified service the first-account
+    request uses (``request_hosted_workspace``) — no second provisioning architecture: it creates an intent-only
+    ``TradingAccount`` + workspace and the existing per-account scheduler provisions ONLY this account (never
+    pre-provisions the entitlement maximum). Owner-scoped (``request.user``) and entitlement-bounded server-side
+    (the owned-account cap + the per-user final-slot lock live in the service). Idempotent on the canonical
+    ``(expected_login, expected_server)`` pair. Supports different brokers, different servers, and DEMO or LIVE
+    (``is_demo`` from the body). Rejects any password-bearing field. Returns the internal selectors
+    ``trading_account_id`` + ``workspace_uuid``.
+
+    DARK: while ``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED`` is OFF the service keeps one-workspace-per-user, so a
+    second add returns the caller's existing workspace (``status=exists``) — it cannot create a second production
+    account until the flag is armed."""
+
+    def post(self, request):
+        dark = self._dark()
+        if dark is not None:
+            return dark
+        data = request.data if isinstance(request.data, dict) else {}
+        if _body_has_secret(data):
+            return Response({"detail": "A broker password must never be submitted.",
+                             "reason": P.REQ_PASSWORD_FORBIDDEN}, status=http.HTTP_400_BAD_REQUEST)
+        res = P.request_hosted_workspace(
+            request.user,
+            expected_login=str(data.get("expected_login", "") or ""),
+            expected_server=str(data.get("expected_server", "") or ""),
+            broker_name=str(data.get("broker_name", "") or ""),
+            is_demo=bool(data.get("is_demo", True)),
+            request=request)
+        if not res.ok:
+            if res.reason in (P.REQ_LOGIN_REQUIRED, P.REQ_IDENTITY_INVALID):
+                return Response({"detail": "The broker account number / server is missing or invalid.",
+                                 "reason": res.reason}, status=http.HTTP_400_BAD_REQUEST)
+            if res.reason == P.REQ_LIMIT_REACHED:
+                return Response({"detail": "Broker-account limit reached for your plan.",
+                                 "reason": res.reason}, status=http.HTTP_409_CONFLICT)
+            status = _ADMISSION_HTTP.get(res.reason, http.HTTP_403_FORBIDDEN)
+            if status == http.HTTP_404_NOT_FOUND:
+                return _NOT_FOUND
+            return Response({"detail": "Not permitted.", "reason": res.reason}, status=status)
+        acct = res.workspace.trading_account
+        body = {"status": ("created" if res.created else "exists"),
+                "trading_account_id": acct.id, "workspace_uuid": str(res.workspace.workspace_uuid),
+                **_projection(request.user, res.workspace, acct)}
+        return Response(body, status=(http.HTTP_201_CREATED if res.created else http.HTTP_200_OK))
+
+
 class OnboardingConfirmView(_OnboardingBase):
     """POST to confirm the discovered broker account is the customer's. Gated on a POSITIVE observed match on
     a connected workspace; idempotent. No body required (acts on the caller's own workspace)."""
@@ -154,9 +269,9 @@ class OnboardingConfirmView(_OnboardingBase):
         dark = self._dark()
         if dark is not None:
             return dark
-        ws = _own_workspace(request.user)
-        if ws is None:
-            return _NOT_FOUND
+        ws, err = _resolve_or_error(request)
+        if err is not None:
+            return err
         res = P.confirm_broker_account(request.user, ws, request=request)
         if not res.ok:
             if res.reason in _ADMISSION_HTTP:
@@ -184,9 +299,9 @@ class OnboardingAuthorizeExecutionView(_OnboardingBase):
         dark = self._dark()
         if dark is not None:
             return dark
-        ws = _own_workspace(request.user)
-        if ws is None:
-            return _NOT_FOUND
+        ws, err = _resolve_or_error(request)
+        if err is not None:
+            return err
         res = P.authorize_workspace_execution(request.user, ws, request=request)
         if not res.ok:
             if res.reason in _ADMISSION_HTTP:
@@ -220,9 +335,9 @@ class OnboardingBindView(_OnboardingBase):
         if _body_has_secret(data):
             return Response({"detail": "A broker password must never be submitted.",
                              "reason": P.REQ_PASSWORD_FORBIDDEN}, status=http.HTTP_400_BAD_REQUEST)
-        ws = _own_workspace(request.user)
-        if ws is None:
-            return _NOT_FOUND                                      # no workspace to bind against
+        ws, err = _resolve_or_error(request)                      # account-explicit; no workspace to bind → error
+        if err is not None:
+            return err
         res = P.bind_broker_identity(
             request.user, ws,
             expected_login=str(data.get("expected_login", "") or ""),

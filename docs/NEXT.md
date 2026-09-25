@@ -1,5 +1,22 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Phase C (Concurrent Broker Accounts) — C1+C2+C3 DARK merged, C4 next (2026-09-25)
+C1 (entitlement) + C2 (funnel/BETA cap re-scope) + C3 (Add Broker Account API + `.first()` removal) built DARK
+(`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` OFF; per-account SID/magic/pin kept; no migration; no money-path). C3
+= `POST /api/hosted-workspace/accounts/add/` over the certified `request_hosted_workspace`/`prepare_hosted_slot`
+chain + account-explicit onboarding writes/arms. **Proposed C4 scope (DARK):** the customer-visible multi-account
+model — Web UX Broker-Accounts list (broker, masked account #, server, DEMO/LIVE, connection, exec state, active
+strategies, MT5 status, Myfxbook link) with Add / View-MT5 / Manage-Strategies / Activate-Deactivate and
+`Active N/5` (CONCURRENT) or `1 active at a time` (STANDARD) + switch-confirmation modal; Terminal-Access UX (View
+MT5 per account via RemoteApp selector WITHOUT stopping sibling terminals — reuse the account-scoped delivery-
+connect); Telegram attribution (broker + masked account + strategy-from-FK) additive; per-TradingAccount Myfxbook
+metadata fields (`myfxbook_url`/`system_id`/`enabled`, no credentials); and the deferred `mt5/views.py` launch
+`.first()` → explicit `account_id`. Then C5 support@ migration (hard-rollback gate), C6 2-acct cert, C7 scale to 5
+(+ wire `check_can_activate` at the activation boundary), C8 Nuno migration, C9 10-acct POC. Gated deps unchanged
+(isolation cert, RDS licensing). Enforcement stays OFF until an explicit arming gate. **Single next action:**
+return to Sponsor for C4 go-ahead.
+
+## ▶ Phase C — earlier C1/C2 sequencing note (superseded by the line above)
 ## ▶ Phase C (Concurrent Broker Accounts) — C1+C2 DARK merged, C3 next (2026-09-25)
 C1 (entitlement model) + C2 (funnel + BETA_MAX_ACTIVE_PER_USER re-scoped to the entitlement) built DARK
 (`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` OFF; per-account SID kept; no migration; no money-path). **Proposed
