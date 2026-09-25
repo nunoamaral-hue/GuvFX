@@ -1,5 +1,25 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Phase C (Concurrent Broker Accounts) — C1 DARK built, sequence C2→C9 (2026-09-25)
+1 GuvFX user → N broker accounts → concurrent MT5. Sponsor decisions locked: **Direction A** (keep per-account
+Windows SID — do NOT collapse to 1-SID-per-user), **isolation cert = separate packet**, build phased. C0 collision
+map done (cap-and-funnel problem, not a runtime rearchitecture). **C1 built DARK on branch
+`feat/concurrent-accounts-entitlement`** (entitlement model + `account_mode`/`concurrent_broker_account_limit` +
+override-aware resolver + `trading/account_entitlement` helpers + `CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` flag
+default OFF; no migration; account_service cap flag-gated, flag-OFF byte-identical). **Single next action:** run
+`make check` → PR → CI → merge C1 DARK. **Then C2:** re-scope the one-workspace-per-user funnel
+(`hosted_workspace/provisioning.py:151-180`) + `BETA_MAX_ACTIVE_PER_USER` to the entitlement, DARK. Sequence:
+C3 provisioning "Add Broker Account" → C4 multi-account APIs/UI + Telegram attribution + myfxbook fields → C5
+support@ migration (hard rollback) → C6 2-account concurrent cert → C7 scale support@ to 5 → C8 Nuno migration
+(preserve CZ carve-outs) → C9 10-account POC cert. Gating deps (not code): isolation cert (co-residency), RDS
+licensing (~2026-12-07). Each money-path activation = its own gate. Do NOT enable enforcement until C-arming gate.
+
+## ▶ Phase B2 MAGIC_SEND — CERTIFIED (support@ + beta). READ/ENFORCE next-gated (2026-09-25)
+`MAGIC_SEND_PRODUCTION_CERTIFIED_SUPPORT_BETA` (natural T1 16:35Z; Trade.magic_number 1000000010/1000000015 read
+from broker deal = readback proven; cross_account 0). DUAL_WRITE ON; MAGIC_SEND ON (listener); READ/ENFORCE OFF.
+Rollback = flag-off (magic stays allocated). **Next (separate Sponsor gate):** READ then ENFORCE — each its own
+money-path packet; before ENFORCE, keep the close-deal-magic-0 fallback (ownership from position/comment lineage).
+
 ## ▶ Phase B1.2 identity pinning + deal lifecycle — merge PR #405, then Sponsor MAGIC_SEND decision (2026-09-25)
 Delivered on branch `feat/account-pin-deal-lifecycle` (PR #405): verified in production (read-only) that account
 identity pinning is ALREADY satisfied for the whole active estate (server-derived `require_identity_pin` +

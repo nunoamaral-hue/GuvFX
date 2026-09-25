@@ -81,10 +81,17 @@ def create_customer_account(request, serializer):
                 serializer.instance = locked   # a concurrent identical submission just won — reuse it
                 created = False
             else:
-                ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
-                limit = min(10, ent.max_trading_accounts)
-                if TradingAccount.objects.filter(user=user).count() >= limit:
-                    raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
+                # Phase C: config-driven owned-account cap (override-aware, active/tombstone-correct) once
+                # armed. DARK by default — while the flag is OFF the legacy cap below runs UNCHANGED, so
+                # production behaviour is byte-identical until Phase C enforcement is explicitly enabled.
+                from trading.account_entitlement import check_can_add_account, enforcement_enabled
+                if enforcement_enabled():
+                    check_can_add_account(user)
+                else:
+                    ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
+                    limit = min(10, ent.max_trading_accounts)
+                    if TradingAccount.objects.filter(user=user).count() >= limit:
+                        raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
                 serializer.save(user=user, mt5_instance=None, is_active=False)
     except IntegrityError:
         # Winner recovery (belt-and-suspenders backstop to the DB unique constraint): a concurrent
