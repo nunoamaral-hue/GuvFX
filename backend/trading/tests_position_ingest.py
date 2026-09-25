@@ -66,6 +66,60 @@ class BuildPositionsFromDeals(TestCase):
         self.assertEqual(pos[0]["profit"], Decimal("3.00"))
 
 
+class DealEntryInoutQuarantine(TestCase):
+    """B1.2 Objective B — a DEAL_ENTRY_INOUT (2) netting reversal cannot be represented by the single-row
+    Trade schema (one open/close pair, one side, one volume). It is now QUARANTINED (fail-closed, loud,
+    greppable) rather than silently dropped / built into a corrupt row. DORMANT on hedging accounts (MT5
+    emits no INOUT deal under RETAIL_HEDGING); this locks the netting behaviour for the later schema work."""
+
+    def _capture(self, deals):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            pos = build_positions_from_deals(deals)
+        return pos, buf.getvalue()
+
+    def test_inout_only_position_is_quarantined_not_built(self):
+        pos, log = self._capture([_deal(position_id="R1", ticket="1", entry=2)])
+        self.assertEqual(pos, [])                              # no Trade produced
+        self.assertIn("QUARANTINE deal_inout", log)           # loud, greppable — never a silent drop
+        self.assertIn("position_id=R1", log)
+
+    def test_inout_mixed_with_in_out_quarantines_whole_position(self):
+        # The critical fail-closed case: previously IN+OUT still built a Trade while the INOUT reversal's
+        # volume/side/P&L were silently lost → a corrupt row. Now the whole position is quarantined.
+        pos, log = self._capture([
+            _deal(position_id="R2", ticket="1", entry=0, price="4431.0", volume="0.10"),   # IN
+            _deal(position_id="R2", ticket="2", entry=2, price="4440.0", volume="0.20"),   # INOUT reversal
+            _deal(position_id="R2", ticket="3", entry=1, price="4450.0", volume="0.10", profit="9.0"),  # OUT
+        ])
+        self.assertEqual(pos, [])                              # NOT built into a corrupt single row
+        self.assertIn("QUARANTINE deal_inout", log)
+        self.assertIn("position_id=R2", log)
+        self.assertIn("inout_deals=1", log)
+
+    def test_pure_in_out_position_is_unaffected_by_quarantine_branch(self):
+        # Regression: no INOUT deal ⇒ byte-identical prior behaviour (the estate today is all-hedging).
+        pos, log = self._capture([
+            _deal(position_id="R3", ticket="1", entry=0, price="4431.0"),
+            _deal(position_id="R3", ticket="2", entry=1, price="4436.0", profit="5.0", time=1_700_000_600),
+        ])
+        self.assertEqual(len(pos), 1)
+        self.assertEqual(pos[0]["profit"], Decimal("5.0"))
+        self.assertNotIn("QUARANTINE", log)                   # branch never triggers without an INOUT deal
+
+    def test_out_by_is_still_a_normal_close_not_quarantined(self):
+        # OUT_BY (3) is an ordinary close-by, representable in the schema — must NOT be caught by the INOUT gate.
+        pos, log = self._capture([
+            _deal(position_id="R4", ticket="1", entry=0, price="4431.0"),
+            _deal(position_id="R4", ticket="2", entry=3, price="4436.0", profit="5.0", time=1_700_000_600),
+        ])
+        self.assertEqual(len(pos), 1)
+        self.assertIsNotNone(pos[0]["close_time"])            # OUT_BY closes the position normally
+        self.assertNotIn("QUARANTINE", log)
+
+
 class SyncNowUpsertProducesPositionRows(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="pi", email="pi@x.invalid", password="x")

@@ -2,6 +2,39 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 P2 EXECUTION (recorded 2026-09-25, B1.2) — hosted breakeven / TP-protection MODIFY never enqueues
+
+*What:* `execution/breakeven.py::_enqueue_modify` resolves the Windows identity via `_windows_username`
+(mt5_instance-only). Hosted Provider-B accounts (support@ id25, beta id33, Brian id30, Patrick id31) have
+`mt5_instance=None`, so it returns None and no `MODIFY_POSITION` job is ever created. Confirmed empirically:
+these accounts have zero MODIFY/CLOSE ExecutionJobs. *Impact:* the breakeven / TP2-lock SL-advance ladder
+cannot fire for hosted accounts (their orders still carry SL/TP at open, so it is a **functional** protection
+gap, NOT a safety gap — a job never created cannot hit the wrong account). *Fix (out of B1.2 scope; touches
+the money path → Amber):* resolve the hosted Windows identity via the same authoritative `AccountProvisioning`
+source the identity pin uses (a hosted-aware `_sync_windows_username` already exists but is deliberately not
+used by the MODIFY path). Tracked as a spawned follow-up task.
+
+## 🔵 P3 DOC DRIFT (recorded 2026-09-25, B1.2) — `execution/order_transport.py` docstring says Customer Zero is non-hosted
+
+*What:* the `resolve_order_transport` docstring (lines ~68-70) states "Customer Zero / Provider A unaffected …
+byte-identical to the pre-seam path", implying CZ classifies non-hosted. The production DB shows CZ (acct 1) is
+`readiness_provider=persistent_workspace` / `is_hosted_workspace_account=True`, so CZ actually routes down the
+HOSTED branch. *Impact:* none today — CZ has a **READY** per-tenant `HostedExecutionEndpoint` on its node, so a
+CZ order resolves `order_transport_node_ok` to CZ's own pin-enforcing bridge (never the global bridge), and CZ
+is AUTO_SHADOW so no real order dispatches anyway. It is stale documentation, not a behavioural bug. *Fix (out
+of scope):* correct the docstring; before ever promoting CZ from AUTO_SHADOW to real orders, re-confirm its
+endpoint READY state + identity pin (both currently hold).
+
+## 🔵 P3 OPERATIONAL (recorded 2026-09-25, B1.2) — `guvfx-mt5-trade-ingest-worker` image is ~5 weeks behind backend
+
+*What:* the container `guvfx-mt5-trade-ingest-worker` runs an image started 2026-08-19; the backend runs
+`df33826b` (2026-09-25). The node2-order worker shares the same Aug-19 image. Backend trade-ingestion changes
+since Aug 19 (incl. the B1.2 `DEAL_ENTRY_INOUT` quarantine merged in PR #405) are NOT live in the worker.
+*Impact:* the merged INOUT quarantine is dormant on the current all-hedging estate anyway, so no functional
+effect today; but it means worker-side hardening cannot be deployed without a large, unreviewed version jump.
+*Fix (out of scope; Amber/Red — Nuno-gated):* controlled worker rebuild+recreate to the current backend image
+with a rollback tag + post-recreate ingest validation. Tracked as a spawned follow-up task.
+
 ## 🔵 P3 DOC DRIFT (recorded 2026-09-24) — `DEPLOY_ISOLATED.md` Phase-4 `docker run` omits `bridge-agent.env`
 
 *What:* `deploy/wayond-listener/DEPLOY_ISOLATED.md` (a 2026-07-05 artefact) documents starting the listener with a

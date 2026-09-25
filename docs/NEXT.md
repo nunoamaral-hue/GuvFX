@@ -1,5 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Phase B1.2 identity pinning + deal lifecycle — merge PR #405, then Sponsor MAGIC_SEND decision (2026-09-25)
+Delivered on branch `feat/account-pin-deal-lifecycle` (PR #405): verified in production (read-only) that account
+identity pinning is ALREADY satisfied for the whole active estate (server-derived `require_identity_pin` +
+login/server/windows_username on every mutating job type; per-tenant transport resolves `order_transport_node_ok`
+to each account's own READY endpoint; bridge fails closed) → NO pin code change, NO CZ carve-out (would un-pin
+CZ). Added the `DEAL_ENTRY_INOUT` fail-closed **quarantine** (both `build_positions_from_deals` writers, replaces
+silent drop; dormant on hedging; full two-row schema returned as a gated item) + identity/ownership tests. Full
+suite green (4654). **Verdict: `MAGIC_SEND_EXECUTION_FOUNDATION_CERTIFIED (scoped)`** for support@ + beta.
+**Single next action:** merge PR #405 once CI is green (NO deploy — the quarantine is dormant + the ingest worker
+runs a drifted Aug-19 image; deploy is deferred to the next worker rebuild). **Then (Sponsor-gated, separate
+packet):** decide on a MAGIC_SEND arming packet; before arming, lock `HOSTED_PERSISTENT_MT5_ENABLED` as a
+precondition (or confirm the flag-OFF global-bridge backstop), capture CZ/Brian/Patrick margin modes, and rebuild
+the listener (img 7dd209f3). Do NOT enable MAGIC_SEND/READ/ENFORCE/symbol_conflict. Follow-ups spawned: hosted
+breakeven MODIFY-enqueue gap; ingest-worker image drift.
+
 ## ▶ Phase B1 margin-mode authority — merge DARK, then Nuno-gated host observe + Phase-14 verdict (2026-09-25)
 Built on branch `feat/mt5-margin-mode-authority` (ADR-0050): authoritative MT5 `margin_mode` capture
 (`HostedMt5Workspace.proj_margin_mode`, migration 0011, health-only) + DARK multi-strategy same-symbol

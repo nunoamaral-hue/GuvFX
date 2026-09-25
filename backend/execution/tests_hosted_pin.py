@@ -311,3 +311,53 @@ class HostedWindowsUsernameTests(TestCase):
         p = job.payload
         self.assertFalse(all([p.get("windows_username"), p.get("symbol"), p.get("side"), p.get("lots"),
                               p.get("comment")]))  # fails closed at the worker
+
+
+class AccountIdentityNotFromPayloadTests(TestCase):
+    """B1.2 Objective A — account identity is structurally keyed to the OWNING account, never to the
+    ticket / symbol / magic in the payload.
+
+    The bridge re-reads live ``account_info()`` and refuses on any expected_login/expected_server/
+    windows_username mismatch, so proving the BACKEND derives those three from the account (not the payload)
+    proves a mis-routed close/modify fails closed: a job routed to the wrong terminal carries the OWNER's
+    login/server, which cannot match the wrong terminal's live identity.
+    """
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+    def test_same_ticket_symbol_magic_yields_distinct_per_account_pins(self):
+        # Two hosted accounts, byte-identical mutation payloads (same ticket/symbol/magic). Identity resolves
+        # to EACH account's own broker login/server + tenant — proving it is keyed to the account, not the
+        # payload. (The load-bearing adversarial case — a payload that actively spoofs another account's
+        # tenant — is test_payload_cannot_redirect_identity_to_another_account below.)
+        a = _account(provider=PERSISTENT_WORKSPACE, login="111111", server_name="Broker-A-Demo",
+                     provisioned_username="guvfx_u_a")
+        b = _account(provider=PERSISTENT_WORKSPACE, login="222222", server_name="Broker-B-Demo",
+                     provisioned_username="guvfx_u_b")
+        shared_payload = {"ticket": 5001, "symbol": "XAUUSD", "magic": 1_000_000_010}
+        ja = ExecutionJob(job_type=ExecutionJob.JobType.CLOSE_TRADE, account=a, payload=dict(shared_payload))
+        jb = ExecutionJob(job_type=ExecutionJob.JobType.CLOSE_TRADE, account=b, payload=dict(shared_payload))
+        inject_identity_pin(ja)
+        inject_identity_pin(jb)
+        self.assertEqual((ja.payload["expected_login"], ja.payload["expected_server"],
+                          ja.payload["windows_username"]), ("111111", "Broker-A-Demo", "guvfx_u_a"))
+        self.assertEqual((jb.payload["expected_login"], jb.payload["expected_server"],
+                          jb.payload["windows_username"]), ("222222", "Broker-B-Demo", "guvfx_u_b"))
+        # The identical ticket did NOT collapse the two identities together.
+        self.assertNotEqual(ja.payload["expected_login"], jb.payload["expected_login"])
+        self.assertNotEqual(ja.payload["windows_username"], jb.payload["windows_username"])
+
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True)
+    def test_payload_cannot_redirect_identity_to_another_account(self):
+        # A payload crafted to look like account B's identity is created for account A → the server-derived
+        # tenant is FORCED back to A, and the pin stays required. (expected_login is setdefault, so a spoofed
+        # login is retained in the payload — but the load-bearing tenant identity + require flag are forced,
+        # and the bridge's live account_info re-check refuses the login mismatch. Documents that split.)
+        a = _account(provider=PERSISTENT_WORKSPACE, login="111111", server_name="Broker-A-Demo",
+                     provisioned_username="guvfx_u_a")
+        _account(provider=PERSISTENT_WORKSPACE, login="222222", server_name="Broker-B-Demo",
+                 provisioned_username="guvfx_u_b")
+        job = ExecutionJob(job_type=ExecutionJob.JobType.CLOSE_TRADE, account=a,
+                           payload={"ticket": 5001, "windows_username": "guvfx_u_b"})
+        inject_identity_pin(job)
+        self.assertEqual(job.payload["windows_username"], "guvfx_u_a")   # forced to the OWNER, not the spoof
+        self.assertTrue(job.payload["require_identity_pin"])

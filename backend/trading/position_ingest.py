@@ -75,6 +75,21 @@ def build_positions_from_deals(deals: list[dict]) -> list[dict]:
         try:
             ins = [d for d in dl if deal_entry_type(d) == DEAL_ENTRY_IN]
             outs = [d for d in dl if deal_entry_type(d) in (DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY)]
+            inouts = [d for d in dl if deal_entry_type(d) == DEAL_ENTRY_INOUT]
+            if inouts:
+                # DEAL_ENTRY_INOUT (2) is a NETTING-only reversal: one deal both closes the existing
+                # position and opens an opposite one on the SAME position_id. The single-row Trade schema
+                # (Trade.ticket == position_id, one open/close pair, one side, one volume) cannot represent
+                # that without silently corrupting side / volume / realised P&L / strategy ownership.
+                # Fail closed LOUDLY rather than the previous silent drop (data.md: quarantine, don't
+                # destroy): skip building a Trade and emit a structured, greppable marker for operator
+                # follow-up + a later schema migration. DORMANT on hedging accounts (MT5 emits no INOUT
+                # deal under RETAIL_HEDGING) -> the current all-hedging estate never triggers this branch.
+                print(f"[position_ingest] QUARANTINE deal_inout position_id={pid} "
+                      f"inout_deals={len(inouts)} in_deals={len(ins)} out_deals={len(outs)}: "
+                      f"DEAL_ENTRY_INOUT reversal not representable in single-row Trade schema; "
+                      f"skipped pending schema support")
+                continue
             if not ins:
                 continue  # no opening leg -> not a tradeable position
             in_vol = sum(fnum(d.get("volume")) for d in ins) or fnum(ins[0].get("volume"))

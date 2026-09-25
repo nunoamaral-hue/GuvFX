@@ -14,6 +14,39 @@
 
 ## Execution workstream log
 
+- **2026-09-25 - PHASE B1.2: ACCOUNT IDENTITY PINNING + MT5 DEAL LIFECYCLE HARDENING — branch
+  `feat/account-pin-deal-lifecycle`, PR #405.** P0 prerequisite for MAGIC_SEND (stays OFF). Additive,
+  fail-closed, dormant on the current all-hedging estate.
+  - **Objective A (identity pinning) — verified ALREADY SATISFIED; NO code change.** Read-only production
+    probe (unsaved `ExecutionJob`s, zero DB writes): every active account (CZ id1, support@ id25, beta id33,
+    Brian id30, Patrick id31) is `readiness_provider=persistent_workspace`, `is_hosted_ws=True`, PROVISIONED
+    non-admin `AccountProvisioning`; for OPEN/PLACE/PLACE_TEST/CLOSE/MODIFY the server-derived pin is injected
+    (`require_identity_pin=True` + `expected_login`/`expected_server` + `windows_username`, all from the
+    account, never from ticket/symbol/magic). Transport probe: all three of CZ/support@/beta resolve
+    `order_transport_node_ok` (hosted=True) to their OWN READY per-tenant endpoint — never the global bridge,
+    never cross-tenant. Bridge fails closed on pin mismatch/absence (`verify_mutation_identity`). **No CZ
+    carve-out was added** — CZ is hosted + fully pinned; a carve-out would UN-pin it (the forensic's
+    recommendation was refuted and rejected). Adversarial 3-agent review confirmed no unpinned mutation path
+    for the current flag-ON state.
+  - **Objective B (INOUT) — Phase-7 STOP honoured (schema NOT distorted).** A `DEAL_ENTRY_INOUT` (netting
+    reversal) is unrepresentable in the single-row `Trade` schema. Both `build_positions_from_deals` writers
+    (`mt5_trade_ingest_worker.py`, `trading/position_ingest.py`) now QUARANTINE (skip + loud greppable marker)
+    any position group containing an INOUT deal, replacing the prior SILENT drop / corrupt row. Dormant on
+    hedging (MT5 emits no INOUT under RETAIL_HEDGING). Full two-row INOUT schema returned as a gated design
+    item. Tests: INOUT quarantine (both writers) + hedging same-symbol multi-strategy ownership through IN→OUT
+    (close-deal magic=0 proves opening-deal sourcing) + account-identity-not-from-payload. Full backend suite
+    green (4654, skipped=1). Prod regression: 1537 trades / 1516 attributed / 0 cross-account violations.
+  - **DEPLOY DEFERRED (documented):** the quarantine is dormant, and the primary ingester
+    `guvfx-mt5-trade-ingest-worker` runs a 2026-08-19 image (~5wk behind backend `df33826b`) so an isolated
+    safe deploy is impossible without a large version jump. Merged to canonical source; lands on the next
+    worker/backend rebuild, which is only needed when a netting account is onboarded. Flagged as follow-ups:
+    worker image drift; hosted breakeven MODIFY-enqueue gap.
+  - **VERDICT: `MAGIC_SEND_EXECUTION_FOUNDATION_CERTIFIED (scoped)`** for support@ + beta (confirmed HEDGING)
+    under `HOSTED_PERSISTENT_MT5_ENABLED=ON`. MAGIC_SEND/READ/ENFORCE/symbol_conflict remain OFF; MAGIC_SEND
+    is a separate Sponsor-gated packet. Gated before broadening/arming: confirm the flag-OFF global-bridge
+    backstop (or lock the flag as a precondition); capture CZ/Brian/Patrick margin modes before deploying the
+    quarantine or promoting CZ from AUTO_SHADOW to real orders.
+
 - **2026-09-25 - PHASE B1: MT5 MARGIN-MODE AUTHORITY + MULTI-STRATEGY CONFLICT POLICY (DARK) — branch
   `feat/mt5-margin-mode-authority` (ADR-0050).** P0 prerequisite for MAGIC_SEND (still OFF). Additive/DARK
   backend + read-only host observer changes. (1) **Authoritative margin mode**: observer now reads
