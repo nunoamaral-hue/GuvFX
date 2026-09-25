@@ -80,6 +80,15 @@ def ownership_enforce_enabled() -> bool:
 _MAX_SWEEP_WINDOW_HOURS = 8784.0
 
 
+def symbol_conflict_policy_enabled() -> bool:
+    """B1 — DARK guard: when ON, refuse promoting a StrategyAssignment's order for a symbol on an
+    account that cannot keep independent per-strategy positions (netting/exchange/unknown margin mode)
+    while a DIFFERENT active assignment already owns live exposure/order-intent for that symbol. Default
+    OFF → the promotion gate is byte-identical to today. Does NOT enable MAGIC_SEND and does NOT change
+    the order payload; it only GATES promotion (fail-closed)."""
+    return _flag("STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED")
+
+
 def ownership_sweep_window_hours() -> float:
     """Rolling look-back (hours) bounding the monitor-chain ownership sweep on
     ``Trade.created_at`` (ingestion time). Setting wins, else env, else default (72h).

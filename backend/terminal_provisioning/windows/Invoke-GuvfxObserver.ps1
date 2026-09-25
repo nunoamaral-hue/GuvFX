@@ -32,7 +32,7 @@ $snap = [ordered]@{
   ok=$false; account_id=$AccountId;
   process_running=$false; attach_attempted=$false; attach_succeeded=$false; ipc_available=$false;
   terminal_connected=$false; trade_allowed=$false;
-  observed_login=$null; observed_server=$null; observed_trade_mode=$null; observed_at=$null;
+  observed_login=$null; observed_server=$null; observed_trade_mode=$null; observed_margin_mode=$null; observed_at=$null;
   attach_reason=""; process_reason=""; connection_reason=""; corroboration=$null; reason=""
 }
 function Emit([string]$why) { if ($why) { $snap.reason = $why }; ($snap | ConvertTo-Json -Compress -Depth 5); if (-not $snap.ok) { exit 1 } else { exit 0 } }
@@ -150,6 +150,7 @@ try {
   $snap.observed_login     = $obj.observed_login
   $snap.observed_server    = $obj.observed_server
   if ($obj.observed_trade_mode -is [int]) { $snap.observed_trade_mode = [int]$obj.observed_trade_mode }
+  if ($obj.observed_margin_mode -is [int]) { $snap.observed_margin_mode = [int]$obj.observed_margin_mode }
   $snap.observed_at        = [double]$obj.observed_at
   $snap.attach_reason      = "$($obj.attach_reason)"
   $snap.process_reason     = "$($obj.process_reason)"

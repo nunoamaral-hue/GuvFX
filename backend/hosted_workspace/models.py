@@ -143,6 +143,11 @@ class HostedMt5Workspace(models.Model):
     proj_account_match = models.BooleanField(null=True, blank=True)
     proj_trade_allowed = models.BooleanField(null=True, blank=True)
     proj_execution_ready = models.BooleanField(null=True, blank=True)
+    # B1: authoritative MT5 account margin mode as last observed (raw ENUM_ACCOUNT_MARGIN_MODE int;
+    # null = never observed = UNKNOWN). Health/capability signal ONLY — it is NOT an order gate, NOT an
+    # identity field, and MUST NOT derive lifecycle state. Freshness is judged against last_decision_at
+    # (a stale value is treated as UNKNOWN by the consumer). See margin_mode.py for the int->label map.
+    proj_margin_mode = models.IntegerField(null=True, blank=True)
     last_correlation_id = models.CharField(max_length=128, blank=True, default="")
 
     # --- ADR-0034 Execution Engine: explicit per-workspace ARM (Decision D, condition 4) ---------------

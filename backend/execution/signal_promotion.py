@@ -27,7 +27,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from core.observability import log_stage
-from execution.risk_controls import evaluate_promotion_risk
+from execution.risk_controls import evaluate_promotion_risk, evaluate_symbol_conflict
 from execution.broker_symbols import can_account_trade_symbol
 from execution.models import (
     MAX_TOTAL_LOT_PER_SIGNAL,
@@ -229,6 +229,17 @@ def _validate(plan: SignalExecutionPlan, *, now,
     risk_reason = evaluate_promotion_risk(plan, legs)
     if risk_reason:
         raise PromotionRejected(risk_reason, f"runtime risk control blocked promotion: {risk_reason}")
+
+    # B1 (DARK) — multi-strategy same-symbol ownership guard for accounts that cannot keep independent
+    # per-strategy positions (netting/exchange/unknown margin mode). Inert unless
+    # STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED; the flag is checked FIRST so the OFF path issues no owner
+    # query and is byte-identical to today. HEDGING always allows; the promoting owner is excluded so
+    # same-assignment multi-leg / repeated signals never trip. Fail-closed. Places no order, sends no magic.
+    from execution.ownership_flags import symbol_conflict_policy_enabled
+    if symbol_conflict_policy_enabled():
+        conflict_reason = evaluate_symbol_conflict(plan, _resolve_plan_assignment(plan))
+        if conflict_reason:
+            raise PromotionRejected(conflict_reason, f"multi-strategy symbol-ownership guard: {conflict_reason}")
 
 
 def _promote_plan(plan: SignalExecutionPlan, *, expected_mode, job_type, payload_mode,

@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Phase B1 margin-mode authority — merge DARK, then Nuno-gated host observe + Phase-14 verdict (2026-09-25)
+Built on branch `feat/mt5-margin-mode-authority` (ADR-0050): authoritative MT5 `margin_mode` capture
+(`HostedMt5Workspace.proj_margin_mode`, migration 0011, health-only) + DARK multi-strategy same-symbol
+conflict policy (`STRATEGY_SYMBOL_CONFLICT_POLICY_ENABLED` OFF, fail-closed on netting/exchange/unknown) +
+capability read-model + read-only host observer script changes. Additive/DARK; MAGIC_SEND stays OFF; full
+suite green. **Single next action:** PR → CI → merge → DARK-deploy the backend (+migration; conflict flag
+stays OFF). **Then (separate, Nuno-gated — Amber/Red):** redeploy the read-only host observer scripts
+(`run_observer.py` + `Invoke-GuvfxObserver.ps1`, ASCII/RULE-9, Parser::ParseFile on host), run a RULE-11
+positive control (assert `margin_mode==2` on a known-hedging demo account), then observe support@/beta real
+margin mode (Phase 4/13) → Phase-14 MAGIC_SEND readiness verdict. **Deferred (own ADRs):** `DEAL_ENTRY_INOUT`
+ingest fix (Trade-keying ADR + needs a real INOUT deal, RULE 11); mandatory identity-pin enforcement for
+legacy/CZ (money-path STOP). Do NOT enable MAGIC_SEND/READ/ENFORCE.
+
 ## ▶ Phase A1 forward-safety — PR/CI/merge/deploy + ONE natural-signal forward cert (2026-09-24)
 Sponsor ACCEPTED the historical ownership attribution (1483 stamped, 0 cross-account, magics NULL — NOT reverted).
 Built on branch `feat/dual-write-forward-safety`: forward-safe bounded ownership sweep (`sweep_trade_ownership` now

@@ -142,7 +142,8 @@ class ReadStateTests(SimpleTestCase):
         host, _ = _host(spy)
         state = host.read_state(_spec())
         self.assertEqual(state.terminal, {"connected": True, "trade_allowed": True})
-        self.assertEqual(state.account, {"login": 12345, "server": "Demo", "trade_mode": 0})
+        self.assertEqual(state.account,
+                         {"login": 12345, "server": "Demo", "trade_mode": 0, "margin_mode": None})
         self.assertEqual((state.position_count, state.order_count, state.tick_present), (2, 1, True))
         self.assertNotIn("login", spy.calls)
 
