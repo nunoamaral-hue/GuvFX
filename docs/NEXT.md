@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Phase C / WAYOND POC — support@ TWO concurrent DEMO accounts LIVE; natural-signal cert pending (2026-09-26)
+Account B (TradingAccount 35) broker login CERTIFIED (`62145672`/`PepperstoneUK-Demo`/DEMO, HEDGING, CONNECTED)
+and armed for concurrent execution: StrategyAssignment **#16** (Wayond WIM, `AUTO_DEMO`/`LIVE`/`ti_signals`,
+active), deterministic magic **1000000016**, EXPLICIT conservative sizing `0.01`/leg (NOT A's 0.40). The
+ADR-0020 fan-out already routes `ti_signals` to both support@ accounts (25 + 35) with **no new code**; Account 35
+endpoint `:8804 READY`. Account A (asn #10 / magic 1000000010 / no sizing / Myfxbook) fully unchanged.
+`HOSTED_REMOTEAPP_MULTI_ACCOUNT_ISOLATION = CERTIFIED`. Phase-6 adversarial routing tests added
+(`execution/tests_support_two_account_fanout.py`, 13 tests; N=5/N=20 scalability proves no new code for 3→5).
+**Single next action:** wait for a NATURAL `ti_signals` signal and certify simultaneous 2-account execution
+(broker readback per account: distinct magic, WAY comments, 0.01 vs 0.40 sizing, SL/TP, cross-account writes = 0)
+— do NOT manufacture a signal; if none in-window, return `NATURAL_SIGNAL_PENDING`. Then Telegram/Myfxbook-B
+attribution. MAGIC READ/ENFORCE stay OFF; do NOT create accounts C/D/E; do NOT touch CZ/Brian/Patrick/Nuno.
+
 ## ▶ Phase C / WAYOND POC — C4 + per-user enforcement DEPLOYED DARK; support@ at activation boundary (2026-09-26)
 C4 (#409) + per-user enforcement scope (#410) merged AND **deployed to prod DARK/inert**. support@ (user 29)
 entitlement set to **CONCURRENT / limit 5** via reversible EntitlementOverrides (ids 1/2/3), proven inert
