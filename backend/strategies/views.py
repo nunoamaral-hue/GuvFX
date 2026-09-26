@@ -21,6 +21,7 @@ from .models import (
     StrategyRuntimeEvent,
     seed_default_leg_sizing,
 )
+from .assignment_service import assert_assignment_ownership, initialize_new_assignment
 from .serializers import (
     StrategySerializer,
     StrategyAssignmentSerializer,
@@ -1261,9 +1262,10 @@ class StrategyViewSet(viewsets.ModelViewSet):
                     # GFX-BETA-PHASE0 (Option B): a NEW acquisition owns its per-leg lot at the
                     # conservative beta default (0.01). Existing assignments are NEVER backfilled —
                     # they keep NO row and fall back to the source-global cap, so the certified
-                    # support@ sizing is unchanged. Idempotent (OneToOne + get_or_create). [P0-A: now
-                    # via the shared seed_default_leg_sizing helper — identical behaviour.]
-                    seed_default_leg_sizing(assignment)
+                    # support@ sizing is unchanged. Idempotent (OneToOne + get_or_create). [Now via the
+                    # shared canonical initializer so marketplace and account-page creates are identical
+                    # in completeness — sizing + deterministic magic; magic is inert until armed.]
+                    initialize_new_assignment(assignment)
 
         except Exception:
             logger.exception("marketplace_assign failed for %s account=%s", marketplace_strategy_id, account_id)
@@ -1726,12 +1728,14 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         require_entitlement(user, "can_assign_strategies")
 
-        assignment = serializer.validated_data
-        account = assignment["account"]
+        data = serializer.validated_data
+        account = data["account"]
+        strategy = data["strategy"]
 
-        # Non-staff can only assign strategies to their own accounts
-        if not user.is_staff and account.user_id != user.id:
-            raise PermissionDenied("You do not own this trading account.")
+        # Both-axis ownership (Sponsor decision): a non-staff caller must own BOTH the trading account
+        # AND the strategy. Fail-closed — a foreign strategy on an owned account (or an owned strategy
+        # onto a foreign account) is 403, not a silent success. Staff bypass preserved.
+        assert_assignment_ownership(user=user, account=account, strategy=strategy)
 
         with transaction.atomic():
             obj = serializer.save()
@@ -1743,8 +1747,31 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
                     is_active=True,
                 ).exclude(id=obj.id).update(is_active=False)
 
+            # Complete the new assignment (conservative sizing + deterministic magic) via the ONE
+            # canonical initializer, so an account-page-created assignment is exactly as complete as a
+            # marketplace one — never left on the source-global cap by omission.
+            initialize_new_assignment(obj)
+
             # Audit log
             log_assignment_created(self.request, obj)
+
+    def perform_update(self, serializer):
+        # Re-validate BOTH ownership axes on the RESULTING (account, strategy). A PATCH/PUT may repoint
+        # either FK; a field left unchanged defaults to the current instance value. This closes the
+        # repoint-to-foreign-account / attach-foreign-strategy IDOR the create-only guard missed.
+        user = self.request.user
+        instance = serializer.instance
+        account = serializer.validated_data.get("account", instance.account)
+        strategy = serializer.validated_data.get("strategy", instance.strategy)
+        assert_assignment_ownership(user=user, account=account, strategy=strategy)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        # Defense-in-depth: removal requires ownership of BOTH the assignment's account and its strategy
+        # (get_queryset already scopes reads by strategy owner; this also asserts the account owner).
+        assert_assignment_ownership(
+            user=self.request.user, account=instance.account, strategy=instance.strategy)
+        instance.delete()
 
     def get_queryset(self):
         qs = super().get_queryset()

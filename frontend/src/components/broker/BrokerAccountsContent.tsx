@@ -95,6 +95,11 @@ export function BrokerAccountsContent() {
   useEffect(() => { void load(); }, [load]);
 
   const isConcurrent = entitlement?.account_mode === "concurrent";
+  // Phase 9 — the STANDARD "the other account stops trading" confirm must gate on whether the backend
+  // will ACTUALLY perform the switch (per-user enforcement armed), not on account_mode alone. When the
+  // backend is not enforcing, Start is a plain flip (the other account keeps trading), so showing the
+  // switch promise would be a lie. Frontend and backend agree via this authoritative field.
+  const switchEnforced = Boolean(entitlement?.switch_enforced);
 
   const currentActive = useCallback((): BrokerAccount | null => {
     if (!accounts) return null;
@@ -136,13 +141,13 @@ export function BrokerAccountsContent() {
   // In STANDARD mode, activating a DIFFERENT account is a switch (the current one stops) → confirm first.
   const handleSetActive = useCallback((account: BrokerAccount, nextActive: boolean) => {
     const active = currentActive();
-    if (nextActive && !isConcurrent && active && active.id !== account.id) {
+    if (nextActive && switchEnforced && !isConcurrent && active && active.id !== account.id) {
       setSwitchError("");
       setSwitchTarget(account);
       return;
     }
     void doSetActive(account, nextActive);
-  }, [currentActive, isConcurrent, doSetActive]);
+  }, [currentActive, switchEnforced, isConcurrent, doSetActive]);
 
   const confirmSwitch = useCallback(async () => {
     if (!switchTarget) return;

@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-09-26 - WAYOND ACCOUNT-SCOPED STRATEGY MANAGEMENT + MEMBER UX (P1 member launch).** Fixes the
+  production issues Nuno found (Manage no-op / Manage reload / implicit strategy assignment / Activate-Deactivate
+  ambiguity) + closes an assignment-API IDOR asymmetry. **Backend:** (1) `strategies/assignment_service.py`
+  (NEW) — `assert_assignment_ownership` requires BOTH axes (caller owns the TradingAccount AND the Strategy),
+  bypass on `is_superuser` to match `get_queryset`'s read scope (adversarial-review fix: was `is_staff`, a
+  write-widening asymmetry); `initialize_new_assignment` = the ONE canonical completion (seed 0.01 sizing +
+  deterministic magic, both idempotent/immutable). (2) `StrategyAssignmentViewSet` — `perform_create` now
+  both-axis + canonical-init; NEW `perform_update` re-validates both axes (closes PATCH repoint IDOR); NEW
+  `perform_destroy` asserts ownership; `marketplace_assign` routed through the same initializer for parity.
+  (3) `StrategyAssignmentSerializer` +read-only `strategy_name`/`lot_per_leg` (display only). (4)
+  `trading/views.set_active` hosted branch: **STOP trading always succeeds** (never blocked by an unhealthy
+  runtime — START still requires runtime-ready); zero-active allowed. (5) `entitlement-summary` +`switch_enforced`
+  (so the STANDARD switch confirm gates on real backend enforcement, not `account_mode`). **Frontend:**
+  `/accounts/[id]` now renders `AccountManageContent` (account-explicit, gated per-user on `broker_accounts_ux`,
+  NOT the legacy build flag; member facts + Open MT5 / Manage strategies / Start-Stop trading / Myfxbook; no infra
+  terms); NEW `/accounts/[id]/strategies` → `AccountStrategiesContent` (lists this account's assignments, Add a
+  strategy the member owns to THIS account only, Remove — multiple strategies per account, no limit);
+  Activate/Deactivate → **Start/Stop trading** copy; `SwitchActiveDialog` gated on `switch_enforced`; broker-naming
+  helper `brokerLabel`/`accountTitle` in `broker-status.ts` derives the real broker identity from authoritative
+  server metadata so the IS6 account shows "IS6 Technologies" not "Hosted Workspace" (presentation-only, NO
+  account mutation, no IS6 hardcode). Tests: backend `tests_assignment_ownership` (IDOR matrix) +
+  `tests_set_active_stop`; frontend `account-strategy-mgmt.test.tsx` + updated `multi-account`/`redirect`. 2-agent
+  adversarial review (1 LOW fixed, 1 CLEAN). NOT-mutated: Account 25/#10 + Account 35/#16 (magic/sizing/active
+  untouched); MAGIC READ/ENFORCE OFF; natural-signal watcher still armed READ-ONLY.
+
 - **2026-09-26 - WAYOND SUPPORT@ ACCOUNT B — login CERTIFIED; concurrent routing wired (NO new code);
   Phase-6 adversarial tests added.** support@ (user 29) now runs TWO concurrent DEMO broker accounts.
   (1) **Account B (TradingAccount 35) broker login CERTIFIED** — `62145672` / `PepperstoneUK-Demo` /

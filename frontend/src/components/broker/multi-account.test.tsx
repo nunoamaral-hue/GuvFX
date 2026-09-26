@@ -101,18 +101,36 @@ describe("BrokerAccountsContent (C4)", () => {
     ]);
     api.getEntitlementSummary.mockResolvedValue({
       account_mode: "standard", active_count: 1, concurrent_limit: 1, owned_count: 2, owned_limit: 5,
+      switch_enforced: true,  // backend WILL perform the one-active switch → the confirm is truthful
     });
     render(<BrokerAccountsContent />);
     expect(await screen.findByText(/only one account can trade at a time/i)).toBeInTheDocument();
 
-    // Activate Bravo → confirm modal (does NOT call the API yet).
-    await userEvent.click(await screen.findByRole("button", { name: /^activate bravo$/i }));
+    // Start trading on Bravo → confirm modal (does NOT call the API yet).
+    await userEvent.click(await screen.findByRole("button", { name: /^start trading on bravo$/i }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/will stop/i);
     expect(api.setAccountActive).not.toHaveBeenCalled();
 
     // Confirm → activates Bravo (id 2) exactly.
-    await userEvent.click(within(dialog).getByRole("button", { name: /activate bravo/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /start trading on bravo/i }));
+    await waitFor(() => expect(api.setAccountActive).toHaveBeenCalledWith(2, true));
+  });
+
+  it("STANDARD but NOT enforced: no switch modal — Start is a plain flip (backend won't stop the other)", async () => {
+    // Phase 9 — the STANDARD switch confirm must gate on switch_enforced, not account_mode alone. When the
+    // backend is not enforcing, Start must NOT promise the other account stops → skip the modal, flip directly.
+    api.listAccounts.mockResolvedValue([
+      acct({ id: 1, name: "Alpha", is_active: true }),
+      acct({ id: 2, name: "Bravo", is_active: false }),
+    ]);
+    api.getEntitlementSummary.mockResolvedValue({
+      account_mode: "standard", active_count: 1, concurrent_limit: 1, owned_count: 2, owned_limit: 5,
+      switch_enforced: false,
+    });
+    render(<BrokerAccountsContent />);
+    await userEvent.click(await screen.findByRole("button", { name: /^start trading on bravo$/i }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();       // no misleading switch promise
     await waitFor(() => expect(api.setAccountActive).toHaveBeenCalledWith(2, true));
   });
 
@@ -127,7 +145,7 @@ describe("BrokerAccountsContent (C4)", () => {
     render(<BrokerAccountsContent />);
     expect(await screen.findByText(/Active 1 \/ 5/)).toBeInTheDocument();
 
-    await userEvent.click(await screen.findByRole("button", { name: /^activate bravo$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^start trading on bravo$/i }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();  // no switch modal in CONCURRENT
     await waitFor(() => expect(api.setAccountActive).toHaveBeenCalledWith(2, true));
   });

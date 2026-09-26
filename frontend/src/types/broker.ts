@@ -41,6 +41,10 @@ export type EntitlementSummary = {
   concurrent_limit: number;
   owned_count: number;
   owned_limit: number;
+  /** Whether the backend will ACTUALLY apply STANDARD/CONCURRENT switch semantics for this user (master
+   * kill on AND a per-user grant). The STANDARD "the other account stops trading" confirm must gate on
+   * THIS, not on `account_mode` alone — otherwise the UI promises a switch the backend won't perform. */
+  switch_enforced?: boolean;
 };
 
 /** POST /api/mt5/desktop-link/ (account-explicit in C4). `url` is null when the viewer isn't applicable. */
