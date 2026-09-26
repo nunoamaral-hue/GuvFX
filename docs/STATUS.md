@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-09-26 - WAYOND SUPPORT@ ACCOUNT B — login CERTIFIED; concurrent routing wired (NO new code);
+  Phase-6 adversarial tests added.** support@ (user 29) now runs TWO concurrent DEMO broker accounts.
+  (1) **Account B (TradingAccount 35) broker login CERTIFIED** — `62145672` / `PepperstoneUK-Demo` /
+  Pepperstone / DEMO, CONNECTED, `margin_mode=2` (RETAIL_HEDGING), `accounts.dat` present, one terminal in
+  `C:\GuvFX\accounts\35`. Human entered the demo password directly in MT5 (never in chat). Visual positive
+  control PASSED → **HOSTED_REMOTEAPP_MULTI_ACCOUNT_ISOLATION = CERTIFIED** (25→guvfx_u_25/session7/
+  accounts\25; 35→guvfx_u_35/session14/accounts\35, concurrent + isolated). (2) **Account B StrategyAssignment
+  created + armed** — asn **#16** on strategy "Wayond WIM Strategy", `AUTO_DEMO`/stage `LIVE`/
+  `signal_source=ti_signals`/`is_active=True`; deterministic magic **1000000016** (= 1e9+16, via
+  `allocate_magic`, distinct from A's 1000000010, reserved band); **EXPLICIT conservative sizing
+  `AssignmentLegSizing.lot_per_leg=0.01`** (NOT inherited from A's 0.40 engine-default); Account 35 activated.
+  (3) **Concurrent routing needs NO new code** — the ADR-0020 fan-out (`_resolve_targets`,
+  `MULTI_ACCOUNT_ROUTING_ENABLED=1`) now returns `[(16,35),(15,33),(10,25)]`; Account 35 has its own
+  `HostedExecutionEndpoint :8804 READY`. **Account A (asn #10) fully unchanged** (magic 1000000010, no sizing
+  row, still active, Myfxbook untouched). (4) **Phase-6 adversarial routing tests** — new
+  `execution/tests_support_two_account_fanout.py` (13 tests): same-user two-account fan-out, per-assignment
+  deterministic magic + immutability of A on B-add, per-account job/assignment binding (prod-accurate:
+  dual-write ON, magic-send OFF) + per-account payload magic never crossed when armed, per-assignment sizing
+  divergence (A source-global vs B explicit 0.01), injection resistance, and **N=5 / N=20 scalability proving
+  NO_NEW_ARCHITECTURE_FOR_ACCOUNTS_3_TO_5**. 129 tests OK (new + 6 adjacent suites). MAGIC READ/ENFORCE stay
+  OFF. **PENDING:** natural-signal 2-account execution certification (do NOT manufacture a signal) +
+  Telegram/Myfxbook-B attribution.
+
 - **2026-09-26 - WAYOND FAST-TRACK POC — C4 + per-user enforcement DEPLOYED DARK; support@ at activation
   boundary.** Sponsor fast-track (support@ ONLY → 2 concurrent DEMO accounts). (1) **C4 (#409) merged +
   C1–C4 DEPLOYED to prod DARK** — prod was behind at #404; pulled main, rebuilt the backend image, applied the
