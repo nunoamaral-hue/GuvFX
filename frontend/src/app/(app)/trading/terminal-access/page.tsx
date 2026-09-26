@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -501,6 +501,19 @@ function ViewerPanel({
 
 export default function TerminalAccessPage() {
   const lang = useLang();
+  // Phase 9 (multi-account) — an optional ``?account_id=`` binds the embedded RemoteApp to EXACTLY that owned
+  // account (e.g. arriving from a Broker Account card's "Open MT5"), instead of auto-detecting the single
+  // hosted account. Read once; the RemoteApp preserves its own owner check. Absent ⇒ legacy auto-detect.
+  const remoteAppAccountId = useMemo<number | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    try {
+      const raw = new URLSearchParams(window.location.search).get("account_id");
+      // Strict positive integer only ("12abc"/"12.5"/oversized → ignore → auto-detect). Never trust junk.
+      if (!raw || !/^\d{1,18}$/.test(raw)) return undefined;
+      const n = parseInt(raw, 10);
+      return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+    } catch { return undefined; }
+  }, []);
   // ── Bindings list state ──
   const [bindings, setBindings] = useState<TerminalBinding[]>([]);
   const [bindingsLoading, setBindingsLoading] = useState(true);
@@ -910,7 +923,7 @@ export default function TerminalAccessPage() {
       <StateNotice type="info" message={t(lang, "terminalAccess.restricted")} />
 
       {/* ── ADR-0034 Hosted MT5 Workspace — portable RemoteApp (customer path; invisible unless owned) ── */}
-      <HostedMt5RemoteApp onActiveChange={onHostedResolved} />
+      <HostedMt5RemoteApp onActiveChange={onHostedResolved} accountId={remoteAppAccountId} />
 
       {/* ── MT5 Runtime Status card ── */}
       {!credLoading && credStatus && (

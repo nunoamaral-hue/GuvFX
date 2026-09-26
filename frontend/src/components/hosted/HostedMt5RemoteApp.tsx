@@ -59,9 +59,13 @@ type HostedAccount = { id: number; label: string };
 // AJ#5.1: `onConnected` is an OPTIONAL diagnostic hook fired once when the terminal descriptor is minted (the
 // terminal is launched). It carries no data and does no I/O — onboarding uses it only to record a local
 // "MT5 launched" timestamp for future timing investigations. Terminal Access omits it (no behaviour change).
-export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
+export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
   onActiveChange?: (active: boolean) => void;
   onConnected?: () => void;
+  /** Phase 9 (multi-account) — when provided, this card binds to EXACTLY this owned TradingAccount.id (e.g.
+   * "Open MT5" for a specific Broker Account) instead of auto-detecting the user's single hosted account. The
+   * ownership check is preserved (delivery-state is_owner), and connect/mint is owner-only regardless. */
+  accountId?: number;
 }) {
   const lang = useLang();
   const [account, setAccount] = useState<HostedAccount | null>(null);
@@ -226,6 +230,21 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
     };
     const attemptDetection = async () => {
       if (cancelled || settled) return;
+      // Multi-account: bind to EXACTLY the requested account (owner-checked). Skip the auto-detect scan.
+      if (accountId != null) {
+        try {
+          const state = await fetchRetry(() =>
+            apiFetch<{ is_owner?: boolean }>(`/api/hosted-workspace/delivery-state/?account_id=${accountId}`, {}));
+          if (cancelled || settled) return;
+          if (state?.is_owner) { setAccount({ id: accountId, label: `#${accountId}` }); settle(true); }
+          else settle(false); // definitive not-owned / not a hosted workspace for this account
+        } catch (e) {
+          if (is404(e)) settle(false); else scheduleRetry();
+        } finally {
+          clearTimeout(timer);
+        }
+        return;
+      }
       try {
         let accounts: Array<{ id: number; name?: string; account_number?: string; is_active?: boolean }>;
         try {
@@ -279,7 +298,7 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected }: {
       clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [accountId]);
 
   const openTerminal = useCallback(async () => {
     if (!account) return;

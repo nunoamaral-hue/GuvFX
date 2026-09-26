@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  getBrokerStatus, getEntitlementSummary, listAccounts, openMt5Desktop, setAccountActive,
+  getBrokerStatus, getDeliveryState, getEntitlementSummary, listAccounts, openMt5Desktop, setAccountActive,
 } from "@/lib/broker-api";
 import { AccountCard } from "@/components/broker/AccountCard";
 import { BrokerAccountWizard } from "@/components/broker/BrokerAccountWizard";
@@ -12,7 +12,7 @@ import { toCustomerError } from "@/lib/broker-status";
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
-import type { BrokerAccount, BrokerStatus, EntitlementSummary } from "@/types/broker";
+import type { BrokerAccount, BrokerStatus, DeliveryStateResult, EntitlementSummary } from "@/types/broker";
 
 /** Phase 9 — member-friendly copy for the hosted-workspace journey banner (no infrastructure terms). Makes
  * the WAITING_FOR_LOGIN → Open MT5 → connected → ready journey understandable to a non-technical member. */
@@ -48,6 +48,7 @@ function hostedBanner(journey: HostedJourney): { type: "info"; text: string } | 
 export function BrokerAccountsContent() {
   const [accounts, setAccounts] = useState<BrokerAccount[] | null>(null);
   const [statuses, setStatuses] = useState<Record<number, BrokerStatus | null>>({});
+  const [deliveries, setDeliveries] = useState<Record<number, DeliveryStateResult | null>>({});
   const [statusLoading, setStatusLoading] = useState(false);
   const [entitlement, setEntitlement] = useState<EntitlementSummary | null>(null);
   const [journey, setJourney] = useState<HostedJourney | null>(null);
@@ -77,6 +78,13 @@ export function BrokerAccountsContent() {
         catch { return [a.id, null] as const; } // status unavailable → degrade, don't fail the page
       }));
       setStatuses(Object.fromEntries(entries));
+      // Per-account hosted delivery signal (authoritative "can Open MT5" + broker-connection lifecycle).
+      // Best-effort + account-explicit (owner-scoped/IDOR-safe on the backend); null for traditional accounts.
+      const deliv = await Promise.all(list.map(async (a) => {
+        try { return [a.id, await getDeliveryState(a.id)] as const; }
+        catch { return [a.id, null] as const; }
+      }));
+      setDeliveries(Object.fromEntries(deliv));
     } catch (err) {
       setError(toCustomerError(err, "We couldn't load your broker accounts."));
     } finally {
@@ -196,6 +204,7 @@ export function BrokerAccountsContent() {
                 {accounts.map((a) => (
                   <AccountCard key={a.id} account={a} status={statuses[a.id]}
                     statusLoading={statusLoading && !(a.id in statuses)}
+                    delivery={deliveries[a.id]}
                     onViewMt5={handleViewMt5} onSetActive={handleSetActive} busy={busyId === a.id} />
                 ))}
               </div>
