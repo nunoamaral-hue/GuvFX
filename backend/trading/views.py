@@ -317,6 +317,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         # runtime_ready/runtime_state fields (IPR Area B / C6) add no per-row query.
         qs = TradingAccount.objects.select_related(
             "user", "broker_server", "mt5_instance", "runtime").all()
+        # Phase C4 — prefetch StrategyAssignments so the serializer's active_strategy_count adds no N+1.
+        qs = qs.prefetch_related("strategy_assignments")
         if not user.is_staff:
             qs = qs.filter(user=user)
         return qs.order_by("-created_at")
@@ -350,6 +352,24 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
     from rest_framework.response import Response
     from rest_framework import status
 
+    @action(detail=False, methods=["GET"], url_path="entitlement-summary")
+    def entitlement_summary(self, request):
+        """Phase C4 — read-only entitlement summary for the Broker Accounts header: the customer's account
+        mode + how many accounts they may OWN and how many may be ACTIVE simultaneously (the "Active N /
+        limit"). Computed for ``request.user`` ONLY (never accepts a user param). Reflects entitlement, arms
+        nothing. STANDARD ⇒ concurrent_limit 1; CONCURRENT ⇒ the configured/overridden limit."""
+        from billing.entitlements import resolve_effective_entitlements
+        from trading.account_entitlement import (active_account_count, effective_concurrent_limit,
+                                                  effective_owned_limit, owned_account_count)
+        ent = resolve_effective_entitlements(request.user)
+        return Response({
+            "account_mode": getattr(ent, "account_mode", "standard"),
+            "active_count": active_account_count(request.user),
+            "concurrent_limit": effective_concurrent_limit(ent),
+            "owned_count": owned_account_count(request.user),
+            "owned_limit": effective_owned_limit(ent),
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=["POST"], url_path="set-active")
     def set_active(self, request, pk=None):
         """
@@ -378,6 +398,37 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             # so this flip must succeed instead of the legacy 409. Legacy shared-instance accounts fall
             # through to the unchanged path below.
             if _account_runtime_ready(acc):
+                # Phase C4 (DARK) — apply the entitlement's ACTIVATION semantics ONLY when armed. While
+                # ``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED`` is OFF this is the exact legacy plain-flip
+                # (byte-identical). STANDARD: activating this account atomically deactivates the user's OTHER
+                # active accounts (one-active-per-USER — hosted accounts have mt5_instance=None so the legacy
+                # per-instance rule can't cover them). CONCURRENT: refuse beyond the concurrent-active limit.
+                # This only toggles ``is_active`` — it NEVER arms execution (the layered arm + live-bridge gate
+                # remains the sole order authority).
+                from trading.account_entitlement import enforcement_enabled
+                if is_active and enforcement_enabled():
+                    from django.db import transaction as _txn
+                    from django.utils import timezone as _tz
+                    from rest_framework.exceptions import ValidationError as _DRFValidationError
+                    from billing.entitlements import AccountMode, resolve_effective_entitlements
+                    from trading.account_entitlement import check_can_activate
+                    with _txn.atomic():
+                        type(user).objects.select_for_update().get(pk=user.pk)   # serialise this user's switches
+                        ent = resolve_effective_entitlements(user)
+                        if str(getattr(ent, "account_mode", AccountMode.STANDARD)) == AccountMode.CONCURRENT:
+                            try:
+                                check_can_activate(user, exclude_account_id=acc.id)
+                            except _DRFValidationError as exc:
+                                detail = exc.detail.get("detail") if isinstance(exc.detail, dict) else exc.detail
+                                return Response({"detail": detail}, status=status.HTTP_409_CONFLICT)
+                        else:  # STANDARD — one active per user; deactivate the others atomically first
+                            (TradingAccount.objects.filter(user=user, is_active=True,
+                                                           disconnected_at__isnull=True)
+                             .exclude(id=acc.id).update(is_active=False, updated_at=_tz.now()))
+                        acc.is_active = True
+                        acc.save(update_fields=["is_active", "updated_at"])
+                    return Response({"ok": True, "id": acc.id, "is_active": acc.is_active},
+                                    status=status.HTTP_200_OK)
                 acc.is_active = is_active
                 acc.save(update_fields=["is_active", "updated_at"])
                 return Response({"ok": True, "id": acc.id, "is_active": acc.is_active},

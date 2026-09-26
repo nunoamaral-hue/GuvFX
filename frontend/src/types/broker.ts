@@ -13,11 +13,38 @@ export type BrokerAccount = {
   server_name?: string | null;
   broker_server?: number | null;
   account_number: string;
+  /** Phase C4 — last-4 masked number the customer UI shows (raw `account_number` stays for internal use). */
+  masked_account_number?: string | null;
+  /** Phase C4 — count of ACTIVE StrategyAssignments on this account (N:M), for the "strategies" badge. */
+  active_strategy_count?: number;
+  /** Phase C4 — Provider-A vs Provider-B (persistent workspace) readiness provider; presentation only. */
+  readiness_provider?: string | null;
+  /** Hosted (Provider-B/beta) accounts have no shared MT5 instance; the runtime IS the terminal. */
+  mt5_instance?: number | null;
+  runtime_ready?: boolean;
+  runtime_state?: string | null;
   is_demo: boolean;
   is_active: boolean;
+  /** Phase C4 — customer-supplied public Myfxbook page link + optional system id (NO credentials, ever). */
+  myfxbook_url?: string | null;
+  myfxbook_system_id?: string | null;
+  myfxbook_enabled?: boolean;
   created_at?: string;
   updated_at?: string;
 };
+
+/** GET /api/trading/accounts/entitlement-summary/ — Phase C4 read-only header summary.
+ * `account_mode` "standard" ⇒ only one account can trade; "concurrent" ⇒ up to `concurrent_limit` active. */
+export type EntitlementSummary = {
+  account_mode: string;      // "standard" | "concurrent"
+  active_count: number;
+  concurrent_limit: number;
+  owned_count: number;
+  owned_limit: number;
+};
+
+/** POST /api/mt5/desktop-link/ (account-explicit in C4). `url` is null when the viewer isn't applicable. */
+export type DesktopLinkResult = { url: string | null; available?: boolean; detail?: string };
 
 /** BrokerValidationAttemptSerializer — ADR-0027 secret-safe allow-list only. */
 export type ValidationAttempt = {

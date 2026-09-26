@@ -400,10 +400,12 @@ class PreferenceAndRoutingTests(CustomerTelegramTestBase):
         client = FakeClient([TelegramAck("a"), TelegramAck("b")])
         self.assertEqual(dispatch_customer_notifications(client=client)["delivered"], 2)
         self.assertEqual([chat_id for chat_id, _ in client.calls], [111, 222])
-        self.assertIn("10001", client.calls[0][1])
-        self.assertNotIn("20002", client.calls[0][1])
-        self.assertIn("20002", client.calls[1][1])
-        self.assertNotIn("10001", client.calls[1][1])
+        # Phase C4 — account numbers are masked to last-4 in notifications; routing is still verifiable by
+        # each user's own masked account (A=••••0001, B=••••0002) and the absence of the other's.
+        self.assertIn("••••0001", client.calls[0][1])
+        self.assertNotIn("••••0002", client.calls[0][1])
+        self.assertIn("••••0002", client.calls[1][1])
+        self.assertNotIn("••••0001", client.calls[1][1])
 
     def test_explicit_cross_owner_enqueue_fails_closed(self):
         row = enqueue_customer_notification(
@@ -956,7 +958,7 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         self.assertEqual(update.status, CustomerNotification.Status.PENDING)
         update_text = render_customer_message(update)
         self.assertIn("TP1 reached", update_text)
-        self.assertIn("Demo account · 10001", update_text)
+        self.assertIn("Demo account · ••••0001", update_text)   # Phase C4 — masked to last-4
         self.assertIn("UTC", update_text)
 
         for index, trade in enumerate(trades[1:], start=2):

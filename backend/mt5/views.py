@@ -158,19 +158,42 @@ def _server_name_for_account(account: TradingAccount) -> str:
     return account.broker_name or ""
 
 
+def _resolve_launch_account(request):
+    """Phase C4 — account-EXPLICIT View-MT5 resolve → ``(account, selector_given)``.
+
+    With an explicit ``account_id`` (query for GET, body for POST) resolve exactly THAT owner-scoped account
+    (a cross-user or unknown id → ``None`` → the caller 404s; IDOR-safe, never leaks another user's account).
+    Without one, fall back to the user's single active account — behaviour-preserving for existing
+    single-account clients. Direction A is untouched: this only selects WHICH TradingAccount to view; each
+    account keeps its own SID/runtime/terminal, and viewing B never mutates A."""
+    if getattr(request, "method", "POST") == "GET":
+        src = getattr(request, "query_params", None) or getattr(request, "GET", {}) or {}
+    else:
+        src = getattr(request, "data", None)
+        if not isinstance(src, dict):
+            src = getattr(request, "POST", {}) or {}
+    raw = src.get("account_id")
+    base = (TradingAccount.objects.select_related("broker_server", "mt5_instance")
+            .filter(user=request.user))
+    if raw not in (None, ""):
+        try:
+            aid = int(raw)
+        except (TypeError, ValueError):
+            return None, True
+        return base.filter(id=aid).first(), True
+    return base.filter(is_active=True).first(), False
+
+
 class Mt5DesktopLinkView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user_label = f"user-{request.user.id}"
 
-        # ── HARD GATE 1: user must have an active TradingAccount ──
-        account = (
-            TradingAccount.objects
-            .select_related("broker_server", "mt5_instance")
-            .filter(user=request.user, is_active=True)
-            .first()
-        )
+        # ── HARD GATE 1: user must have an active TradingAccount (Phase C4: account-explicit + owner-scoped) ──
+        account, selector_given = _resolve_launch_account(request)
+        if selector_given and account is None:
+            return Response({"detail": "Account not found."}, status=status.HTTP_404_NOT_FOUND)
         if not account:
             return Response(
                 {"detail": "No active trading account. Add and activate an account first."},
@@ -257,13 +280,10 @@ class Mt5LaunchApplyView(APIView):
     def post(self, request):
         from trading.views import _get_user_mt5_instance
 
-        account = (
-            TradingAccount.objects
-            .select_related("broker_server", "mt5_instance")
-            .filter(user=request.user, is_active=True)
-            .first()
-        )
+        account, selector_given = _resolve_launch_account(request)
         if not account:
+            if selector_given:   # an explicit account_id that isn't the caller's → 404 (owner-scoped, no leak)
+                return Response({"detail": "Account not found."}, status=status.HTTP_404_NOT_FOUND)
             return Response({"detail": "No active trading account"}, status=status.HTTP_409_CONFLICT)
 
         inst = _get_user_mt5_instance(request.user)

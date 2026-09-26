@@ -11,12 +11,29 @@ def _line(value, fallback: str = "") -> str:
     return " ".join(text.replace("\x00", "").split())[:160]
 
 
+def _mask_number(value) -> str:
+    """Last-4 mask for a broker account number (e.g. ``••••3344``); empty when unset. Presentation-only —
+    Phase C4: a multi-account customer's notifications must not carry the full number by default."""
+    n = _line(value)
+    if not n:
+        return ""
+    return ("•" * 4 + n[-4:]) if len(n) > 4 else ("•" * len(n))
+
+
 def _account(payload: dict, lang: str) -> str:
+    """Account attribution block. Phase C4 — additive multi-account attribution: a Broker line (when the
+    server-derived ``broker`` is present) plus the DEMO/LIVE label and the MASKED account number, so a
+    customer with several broker accounts can tell which one a notification is about."""
     kind = payload.get("account_kind", "demo")
     label = ("デモ口座" if kind == "demo" else "取引口座") if lang == "ja" else (
         "Demo account" if kind == "demo" else "Trading account")
-    number = _line(payload.get("account_number"))
-    return f"{label} · {number}" if number else label
+    number = _mask_number(payload.get("account_number"))
+    lines = []
+    broker = _line(payload.get("broker"))
+    if broker:
+        lines.append(("ブローカー: " if lang == "ja" else "Broker: ") + broker)
+    lines.append(f"{label} · {number}" if number else label)
+    return "\n".join(lines)
 
 
 def _money(value, currency: str) -> str:
