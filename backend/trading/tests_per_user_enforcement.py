@@ -209,6 +209,43 @@ class ActivationIsInert(TestCase):
         self.assertTrue(enforcement_enabled(u))
 
 
+class FiveAccountScale(TestCase):
+    """(Phase 12) support@-shaped scale proof: a granted CONCURRENT/5 user may OWN 5 and ACTIVATE 5, and the
+    6th is rejected — via the entitlement predicates (no new code; the limit is data, 5→20 is a data change)."""
+
+    def test_five_owned_five_active_sixth_rejected(self):
+        from rest_framework.exceptions import ValidationError
+        from trading.account_entitlement import check_can_add_account, owned_account_count
+        u = _concurrent(_user("scale5"), limit=5)   # account_mode=concurrent, concurrent limit 5
+        EntitlementOverride.objects.create(user=u, capability="max_trading_accounts",
+                                           override_value={"value": 5}, reason="t", is_active=True,
+                                           expires_at=timezone.now() + timedelta(days=1))  # owned limit 5
+        grant_concurrent_enforcement(u)
+        # Own 5 (add-account cap allows exactly 5).
+        for i in range(5):
+            check_can_add_account(u)                 # each allowed while under the owned cap
+            _acct(u, f"L{i}", is_active=True)
+        self.assertEqual(owned_account_count(u), 5)
+        # 6th OWNED is rejected.
+        with self.assertRaises(ValidationError):
+            check_can_add_account(u)
+        # 5 ACTIVE allowed; the 6th active is rejected.
+        self.assertEqual(effective_concurrent_limit(resolve_effective_entitlements(u)), 5)
+        with self.assertRaises(ValidationError):
+            check_can_activate(u)                    # already 5 active ⇒ 6th refused
+
+    def test_raising_limit_to_twenty_is_data_only(self):
+        # Confirms 5→20 needs no code: bump the override value and the owned cap follows.
+        from trading.account_entitlement import effective_owned_limit
+        u = _concurrent(_user("scale20"), limit=20)
+        EntitlementOverride.objects.create(user=u, capability="max_trading_accounts",
+                                           override_value={"value": 20}, reason="t", is_active=True,
+                                           expires_at=timezone.now() + timedelta(days=1))
+        grant_concurrent_enforcement(u)
+        self.assertEqual(effective_owned_limit(resolve_effective_entitlements(u)), 20)
+        self.assertEqual(effective_concurrent_limit(resolve_effective_entitlements(u)), 20)
+
+
 class DowngradeFailsClosed(TestCase):
     """(7) downgrade while too many accounts active → fail closed (existing actives kept, new ones refused)."""
 
