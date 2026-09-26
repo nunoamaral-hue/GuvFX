@@ -4,7 +4,7 @@
  * on 401, and throws the DRF customer-safe `detail` on error). No new backend endpoints. */
 import { apiFetch } from "@/lib/api";
 import type {
-  BrokerAccount, BrokerStatus, DesktopLinkResult, DisconnectResult, EntitlementSummary,
+  BrokerAccount, BrokerStatus, DeliveryStateResult, DesktopLinkResult, DisconnectResult, EntitlementSummary,
   ReplaceCredentialsResult, ValidationAttempt, ValidationTimeline,
 } from "@/types/broker";
 
@@ -108,6 +108,17 @@ export async function getBrokerAccountsUxEnabled(): Promise<boolean> {
  * legacy plain flip. Toggling active NEVER arms execution. */
 export function setAccountActive(id: number, isActive: boolean): Promise<{ ok: boolean; id: number; is_active: boolean }> {
   return apiFetch(`${BASE}/${id}/set-active/`, { method: "POST", body: JSON.stringify({ is_active: isActive }) });
+}
+
+/** Phase 9 — the AUTHORITATIVE per-account hosted delivery signal (owner-scoped, IDOR-safe, account-explicit).
+ * `deliverable` gates the "Open MT5" button (availability, not connection); `delivery_state` reports the broker
+ * session/connection lifecycle. Returns null on 404 (traditional account / dark / no workspace) or any error. */
+export async function getDeliveryState(accountId: number): Promise<DeliveryStateResult | null> {
+  try {
+    return await apiFetch<DeliveryStateResult>(`/api/hosted-workspace/delivery-state/?account_id=${accountId}`);
+  } catch {
+    return null; // traditional account / dark / not-owned → no hosted delivery signal
+  }
 }
 
 /** Phase C4 — account-EXPLICIT "View MT5". Passes the owner-scoped TradingAccount.id so the desktop link is

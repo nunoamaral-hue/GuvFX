@@ -46,6 +46,22 @@ export type EntitlementSummary = {
 /** POST /api/mt5/desktop-link/ (account-explicit in C4). `url` is null when the viewer isn't applicable. */
 export type DesktopLinkResult = { url: string | null; available?: boolean; detail?: string };
 
+/** GET /api/hosted-workspace/delivery-state/?account_id= — the AUTHORITATIVE per-account hosted delivery
+ * signal. `deliverable` = an owner "Open MetaTrader" mint would succeed right now (availability, NOT
+ * connection) — the correct gate for the Open MT5 button. `delivery_state` is the session/broker lifecycle
+ * (e.g. "NONE"/"CONNECTED"). These are DISTINCT: a terminal being deliverable does not imply a broker is
+ * connected or trading. Owner-scoped + IDOR-safe on the backend. */
+export type DeliveryStateResult = {
+  account_id: number;
+  deliverable: boolean;         // may Open MetaTrader now (availability) — the correct gate for the button
+  connected: boolean;           // broker RemoteApp session actually up (distinct from deliverable)
+  delivery_readiness: string;   // DELIVERY_PREPARING | DELIVERY_DELIVERABLE | DELIVERY_READY | ...
+  delivery_state: string;       // raw session field: "NONE" | "CONNECTED" | ...
+  remoteapp_ready: boolean;
+  node_assigned: boolean;
+  is_owner: boolean;
+};
+
 /** BrokerValidationAttemptSerializer — ADR-0027 secret-safe allow-list only. */
 export type ValidationAttempt = {
   id: number;

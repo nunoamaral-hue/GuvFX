@@ -18,6 +18,17 @@ def _iso(dt):
     return dt.isoformat() if dt else None
 
 
+def _readiness(workspace) -> str:
+    """Customer-facing delivery readiness (lazy import; fail-closed). This is the openability projection that
+    correctly WITHHOLDS during provisioning and for Customer Zero — not the raw mint authority — so the UI never
+    surfaces "Open MetaTrader" at an unpublished/unobservable slot."""
+    try:
+        from hosted_workspace.onboarding_read_model import delivery_readiness
+        return str(delivery_readiness(workspace))
+    except Exception:  # noqa: BLE001 — readiness is fail-closed
+        return "DELIVERY_NOT_AVAILABLE"
+
+
 def delivery_state_projection(workspace: HostedMt5Workspace, *, staff: bool = False) -> dict:
     """Return the safe, allow-listed projection of ``workspace``'s delivery state. Customer-safe by default;
     ``staff=True`` adds operator-only (still secret-free) fields — the delivery host and correlation id."""
@@ -26,6 +37,16 @@ def delivery_state_projection(workspace: HostedMt5Workspace, *, staff: bool = Fa
         "workspace_uuid": str(workspace.workspace_uuid),
         "delivery_state": str(workspace.delivery_state),
         "delivery_reason": workspace.delivery_reason or "",
+        # Customer-facing delivery readiness projection (DELIVERY_PREPARING / DELIVERABLE / READY / …). This is
+        # the SINGLE openability signal the UI should consume; it withholds during provisioning + for CZ.
+        "delivery_readiness": (_ready := _readiness(workspace)),
+        # Convenience booleans derived from the readiness projection, kept as DISTINCT concepts:
+        #  • deliverable = the member may Open MetaTrader NOW (availability) — needed to perform the first broker
+        #    login, so it is TRUE at DELIVERABLE (before any CONNECTED), never gated on broker login;
+        #  • connected   = the broker RemoteApp session is actually up (READY).
+        # A terminal merely existing implies NEITHER — both come from the readiness authority, not host presence.
+        "deliverable": _ready in ("DELIVERY_DELIVERABLE", "DELIVERY_READY"),
+        "connected": _ready == "DELIVERY_READY",
         # "The RemoteApp window is up" — display only, NOT the order-time authority.
         "remoteapp_ready": bool(workspace.remoteapp_ready),
         # Whether a delivery host is assigned at all (bool only — the hostname itself is operator-only).

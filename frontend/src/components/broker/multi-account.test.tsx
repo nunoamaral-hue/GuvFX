@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   getBrokerStatus: vi.fn(),
   getEntitlementSummary: vi.fn(),
+  getDeliveryState: vi.fn(),
   openMt5Desktop: vi.fn(),
   setAccountActive: vi.fn(),
 }));
@@ -23,7 +24,8 @@ vi.mock("@/lib/broker-api", () => api);
 const journeyMock = vi.hoisted(() => ({ fetchJourney: vi.fn() }));
 vi.mock("@/lib/hosted-journey", () => journeyMock);
 vi.mock("next/link", () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  default: ({ children, href, ...rest }: any) => <a href={href} {...rest}>{children}</a>,
 }));
 
 import { AccountCard } from "@/components/broker/AccountCard";
@@ -44,6 +46,8 @@ beforeEach(() => {
   api.getBrokerStatus.mockReset().mockResolvedValue(null);
   api.getEntitlementSummary.mockReset();
   api.openMt5Desktop.mockReset().mockResolvedValue({ url: "https://guac.example/x" });
+  // Hosted delivery signal: deliverable + not-yet-connected by default (terminal ready, awaiting broker login).
+  api.getDeliveryState.mockReset().mockResolvedValue({ account_id: 0, deliverable: true, connected: false, delivery_readiness: "DELIVERY_DELIVERABLE", delivery_state: "NONE", remoteapp_ready: false, node_assigned: true, is_owner: true });
   journeyMock.fetchJourney.mockReset().mockResolvedValue({ ok: false, unavailable: true }); // no banner by default
   api.setAccountActive.mockReset().mockResolvedValue({ ok: true, id: 1, is_active: true });
 });
@@ -80,10 +84,11 @@ describe("AccountCard (C4)", () => {
     expect(screen.queryByRole("link", { name: /myfxbook/i })).not.toBeInTheDocument();
   });
 
-  it("View MT5 calls back with THIS account's id (account-explicit)", async () => {
+  it("traditional account: View MT5 calls onViewMt5 with THIS account's id (account-explicit)", async () => {
     const onViewMt5 = vi.fn();
-    render(<AccountCard account={acct({ id: 77 })} onViewMt5={onViewMt5} />);
-    await userEvent.click(screen.getByRole("button", { name: /open mt5/i }));  // hosted accounts label it "Open MT5"
+    // Traditional (shared-instance) account uses the onViewMt5/desktop-link path.
+    render(<AccountCard account={acct({ id: 77, mt5_instance: 7, readiness_provider: null })} onViewMt5={onViewMt5} />);
+    await userEvent.click(screen.getByRole("button", { name: /view mt5/i }));
     expect(onViewMt5).toHaveBeenCalledWith(77);
   });
 });
@@ -127,7 +132,7 @@ describe("BrokerAccountsContent (C4)", () => {
     await waitFor(() => expect(api.setAccountActive).toHaveBeenCalledWith(2, true));
   });
 
-  it("View MT5 is account-explicit and viewing B never activates/mutates A", async () => {
+  it("hosted Open MT5 is account-explicit (links to THIS account's RemoteApp) and never mutates A", async () => {
     api.listAccounts.mockResolvedValue([
       acct({ id: 1, name: "Alpha", is_active: true }),
       acct({ id: 2, name: "Bravo", is_active: false }),
@@ -135,12 +140,12 @@ describe("BrokerAccountsContent (C4)", () => {
     api.getEntitlementSummary.mockResolvedValue({
       account_mode: "concurrent", active_count: 1, concurrent_limit: 5, owned_count: 2, owned_limit: 5,
     });
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     render(<BrokerAccountsContent />);
-    await userEvent.click(await screen.findByRole("button", { name: /open mt5 for bravo/i }));
-    await waitFor(() => expect(api.openMt5Desktop).toHaveBeenCalledWith(2));  // explicit id, not a guess
-    expect(api.setAccountActive).not.toHaveBeenCalled();  // viewing never mutates active state
-    openSpy.mockRestore();
+    // Hosted accounts open their OWN account-scoped RemoteApp: an account-explicit link, never a .first() guess.
+    const link = await screen.findByRole("link", { name: /open mt5 for bravo/i });
+    expect(link).toHaveAttribute("href", "/trading/terminal-access?account_id=2");
+    expect(api.setAccountActive).not.toHaveBeenCalled();  // opening never mutates active state
+    expect(api.openMt5Desktop).not.toHaveBeenCalled();    // hosted uses the RemoteApp, not the desktop viewer
   });
 
   it("single-account regression: renders one card and degrades header when entitlement fails", async () => {
@@ -152,17 +157,32 @@ describe("BrokerAccountsContent (C4)", () => {
   });
 });
 
+const DELIV = (over: object = {}) => ({ account_id: 1, deliverable: true, connected: false, delivery_readiness: "DELIVERY_DELIVERABLE", delivery_state: "NONE", remoteapp_ready: false, node_assigned: true, is_owner: true, ...over });
+
 describe("AccountCard hosted-awareness (Phase 9)", () => {
-  it("hosted READY account shows 'Terminal ready' + an enabled 'Open MT5' (no infra terms)", () => {
-    render(<AccountCard account={acct({ runtime_ready: true })} onViewMt5={() => {}} />);
-    expect(screen.getByText(/terminal ready/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /open mt5/i })).toBeEnabled();
-    expect(screen.queryByText(/SID|runtime|endpoint|node|slot/i)).not.toBeInTheDocument();
+  it("hosted DELIVERABLE + not connected → 'Ready — log in' + an enabled Open MT5 LINK to its RemoteApp", () => {
+    render(<AccountCard account={acct({ id: 5 })} onViewMt5={() => {}} delivery={DELIV({ deliverable: true, delivery_state: "NONE" })} />);
+    expect(screen.getByText(/ready — log in/i)).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: /open mt5 for/i });   // enabled = a real link (not a disabled button)
+    expect(link).toHaveAttribute("href", "/trading/terminal-access?account_id=5");
+    expect(screen.queryByText(/SID|runtime|endpoint|node|slot/i)).not.toBeInTheDocument();  // no infra terms
   });
 
-  it("hosted PREPARING account shows a member-friendly preparing status and disables Open MT5", () => {
-    render(<AccountCard account={acct({ runtime_ready: false })} onViewMt5={() => {}} />);
+  it("hosted CONNECTED → 'Broker connected' (terminal present alone never implied this)", () => {
+    render(<AccountCard account={acct()} onViewMt5={() => {}} delivery={DELIV({ deliverable: true, connected: true, delivery_readiness: "DELIVERY_READY", delivery_state: "CONNECTED" })} />);
+    expect(screen.getByText(/broker connected/i)).toBeInTheDocument();
+  });
+
+  it("hosted NOT deliverable → preparing status + a DISABLED Open MT5 (no premature login)", () => {
+    render(<AccountCard account={acct()} onViewMt5={() => {}} delivery={DELIV({ deliverable: false })} />);
     expect(screen.getByText(/preparing your trading terminal/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open mt5/i })).toBeDisabled();
+    expect(screen.queryByRole("link", { name: /open mt5/i })).not.toBeInTheDocument();
+  });
+
+  it("hosted but NOT owned (staff read) → Open MT5 is a DISABLED button, never an enabled link", () => {
+    render(<AccountCard account={acct()} onViewMt5={() => {}} delivery={DELIV({ deliverable: true, is_owner: false })} />);
+    expect(screen.queryByRole("link", { name: /open mt5/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /open mt5/i })).toBeDisabled();
   });
 
@@ -170,7 +190,7 @@ describe("AccountCard hosted-awareness (Phase 9)", () => {
     render(<AccountCard account={acct({ mt5_instance: 7, readiness_provider: null })}
                         status={null} statusLoading={false} onViewMt5={() => {}} />);
     expect(screen.getByRole("button", { name: /view mt5/i })).toBeInTheDocument();
-    expect(screen.queryByText(/terminal ready/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/terminal ready|ready — log in|broker connected/i)).not.toBeInTheDocument();
   });
 });
 

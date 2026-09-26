@@ -177,6 +177,56 @@ class DeliverableReadinessTests(TestCase):
             self.assertNotEqual(delivery_readiness(ws), DELIVERY_DELIVERABLE)   # ...but never for Customer Zero
 
     @override_settings(**_ALL_ON)
+    def test_projection_deliverable_and_connected_mirror_readiness(self):
+        # Phase 9: the delivery-state PROJECTION (what the Broker Accounts card consumes) exposes the customer
+        # openability as DISTINCT booleans — deliverable (Open MT5 available, before login) vs connected (session
+        # up) — both derived from delivery_readiness, never from mere host/terminal presence.
+        from hosted_workspace.delivery_read_model import delivery_state_projection
+        ws, acct, _ = _bound()
+        _provisioned(acct)
+        ws.canonical_state = S.WAITING_FOR_LOGIN.value
+        ws.delivery_state = DS.NONE
+        ws.save(update_fields=["canonical_state", "delivery_state"])
+        with mock.patch.dict(os.environ, _GUAC, clear=False), \
+             mock.patch("hosted_workspace.tenant_isolation.customer_zero_account_ids", return_value=frozenset()):
+            proj = delivery_state_projection(ws, staff=False)
+            self.assertEqual(proj["delivery_readiness"], DELIVERY_DELIVERABLE)
+            self.assertTrue(proj["deliverable"])   # Open MT5 available for the FIRST login…
+            self.assertFalse(proj["connected"])    # …but the broker is NOT yet connected
+            ws.delivery_state = DS.CONNECTED
+            ws.save(update_fields=["delivery_state"])
+            proj2 = delivery_state_projection(ws, staff=False)
+            self.assertEqual(proj2["delivery_readiness"], DELIVERY_READY)
+            self.assertTrue(proj2["connected"] and proj2["deliverable"])
+
+    @override_settings(**_ALL_ON)
+    def test_projection_withholds_deliverable_at_provisioning(self):
+        # The exact function that changed must withhold Open MT5 while prep is still at PROVISIONING (even though
+        # the raw mint authority would succeed) — mirrors delivery_readiness's HIGH-fix, through the projection.
+        from hosted_workspace.delivery_read_model import delivery_state_projection
+        ws, acct, _ = _bound()
+        _provisioned(acct)
+        ws.canonical_state = S.PROVISIONING.value
+        ws.delivery_state = DS.NONE
+        ws.save(update_fields=["canonical_state", "delivery_state"])
+        with mock.patch.dict(os.environ, _GUAC, clear=False), \
+             mock.patch("hosted_workspace.tenant_isolation.customer_zero_account_ids", return_value=frozenset()):
+            self.assertTrue(workspace_delivery_ready(ws))          # raw authority WOULD mint…
+            proj = delivery_state_projection(ws, staff=False)
+        self.assertFalse(proj["deliverable"])                      # …but the projection withholds Open MT5
+
+    @override_settings(**_ALL_ON)
+    def test_projection_not_deliverable_without_provisioning(self):
+        from hosted_workspace.delivery_read_model import delivery_state_projection
+        ws, _acct, _ = _bound()   # no AccountProvisioning → not deliverable
+        ws.delivery_state = DS.NONE
+        ws.save(update_fields=["delivery_state"])
+        with mock.patch.dict(os.environ, _GUAC, clear=False):
+            proj = delivery_state_projection(ws, staff=False)
+        self.assertFalse(proj["deliverable"])   # terminal absent/incomplete → Open MT5 withheld
+        self.assertFalse(proj["connected"])
+
+    @override_settings(**_ALL_ON)
     def test_E_non_deliverable_workspace_does_not_project_DELIVERABLE(self):
         # No AccountProvisioning → not deliverable → never DELIVERABLE (stays host-pending EXTERNAL_GATE).
         ws, acct, _ = _bound()
