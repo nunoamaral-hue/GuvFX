@@ -27,6 +27,11 @@ class TradingAccountSerializer(serializers.ModelSerializer):
     # rows short-circuit before it), which is negligible at beta-list scale.
     runtime_ready = serializers.SerializerMethodField()
     runtime_state = serializers.SerializerMethodField()
+    # Phase C4 (multi-account customer view) — secret-safe display fields. ``masked_account_number`` is the
+    # last-4 mask the customer UI shows (raw ``account_number`` stays for existing internal consumers);
+    # ``active_strategy_count`` powers the per-account "assigned strategies" badge (N:M via StrategyAssignment).
+    masked_account_number = serializers.SerializerMethodField()
+    active_strategy_count = serializers.SerializerMethodField()
 
     class Meta:
         model = TradingAccount
@@ -36,18 +41,39 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             "mt5_instance",
             "runtime_ready",
             "runtime_state",
+            "readiness_provider",
             "broker_server",
             "broker_display_name",
             "server_name",
             "broker_name",
             "account_number",
+            "masked_account_number",
+            "active_strategy_count",
             "is_demo",
             "is_active",
+            "myfxbook_url",
+            "myfxbook_system_id",
+            "myfxbook_enabled",
             "created_at",
             "updated_at",
             "password",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "readiness_provider"]
+
+    def get_masked_account_number(self, obj):
+        """Last-4 mask for the customer UI (e.g. ``••••3344``); empty when unset. Never the full number."""
+        raw = str(getattr(obj, "account_number", "") or "").strip()
+        if not raw:
+            return ""
+        return ("•" * 4 + raw[-4:]) if len(raw) > 4 else ("•" * len(raw))
+
+    def get_active_strategy_count(self, obj):
+        """Count of ACTIVE StrategyAssignments on this account (N:M). Uses the prefetched relation when the
+        viewset prefetches ``strategy_assignments`` (no N+1); falls back to a scoped count otherwise."""
+        cache = getattr(obj, "_prefetched_objects_cache", {}) or {}
+        if "strategy_assignments" in cache:
+            return sum(1 for a in obj.strategy_assignments.all() if getattr(a, "is_active", False))
+        return obj.strategy_assignments.filter(is_active=True).count()
 
     def _runtime(self, obj):
         """The account's owned AccountRuntime (reverse OneToOne, prefetchable), or None. Never raises."""

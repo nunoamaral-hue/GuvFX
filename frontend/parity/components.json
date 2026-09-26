@@ -27,6 +27,7 @@
   "src/components/broker/ReplaceCredentialsDialog.tsx",
   "src/components/broker/States.tsx",
   "src/components/broker/StatusBadge.tsx",
+  "src/components/broker/SwitchActiveDialog.tsx",
   "src/components/broker/ValidationHistoryTable.tsx",
   "src/components/broker/ValidationTimelinePanel.tsx",
   "src/components/hosted/HostedMt5RemoteApp.tsx",

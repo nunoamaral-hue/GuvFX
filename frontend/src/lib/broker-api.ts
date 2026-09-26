@@ -4,8 +4,8 @@
  * on 401, and throws the DRF customer-safe `detail` on error). No new backend endpoints. */
 import { apiFetch } from "@/lib/api";
 import type {
-  BrokerAccount, BrokerStatus, DisconnectResult, ReplaceCredentialsResult, ValidationAttempt,
-  ValidationTimeline,
+  BrokerAccount, BrokerStatus, DesktopLinkResult, DisconnectResult, EntitlementSummary,
+  ReplaceCredentialsResult, ValidationAttempt, ValidationTimeline,
 } from "@/types/broker";
 
 const BASE = "/api/trading/accounts";
@@ -84,4 +84,25 @@ export function createAccount(input: {
   name: string; broker_name: string; account_number: string; password: string; is_demo: boolean;
 }): Promise<BrokerAccount> {
   return apiFetch<BrokerAccount>(`${BASE}/`, { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Phase C4 — read-only entitlement summary for the Broker Accounts header ("Active N / limit"). */
+export function getEntitlementSummary(): Promise<EntitlementSummary> {
+  return apiFetch<EntitlementSummary>(`${BASE}/entitlement-summary/`);
+}
+
+/** Phase C4 — activate / deactivate ONE account. The backend applies STANDARD (one-active-per-user) or
+ * CONCURRENT (up-to-limit) semantics ONLY when concurrent enforcement is armed; while DARK it is the exact
+ * legacy plain flip. Toggling active NEVER arms execution. */
+export function setAccountActive(id: number, isActive: boolean): Promise<{ ok: boolean; id: number; is_active: boolean }> {
+  return apiFetch(`${BASE}/${id}/set-active/`, { method: "POST", body: JSON.stringify({ is_active: isActive }) });
+}
+
+/** Phase C4 — account-EXPLICIT "View MT5". Passes the owner-scoped TradingAccount.id so the desktop link is
+ * always for the account the customer clicked (never a `.first()` guess). A cross-user/unknown id 404s on the
+ * backend; viewing account B never mutates account A. */
+export function openMt5Desktop(accountId: number): Promise<DesktopLinkResult> {
+  return apiFetch<DesktopLinkResult>(`/api/mt5/desktop-link/`, {
+    method: "POST", body: JSON.stringify({ account_id: accountId }),
+  });
 }

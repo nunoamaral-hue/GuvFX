@@ -149,6 +149,19 @@ class TradingAccount(models.Model):
         help_text="Skip deals older than this timestamp during trade ingest.",
     )
 
+    # Phase C4 — per-account Myfxbook metadata (customer-configured, MANUAL setup). Display/link only:
+    # NEVER a credential or investor password (those are never stored). Each broker account has its own
+    # Myfxbook page; the UI exposes a "View Myfxbook" link when enabled + a url is set.
+    myfxbook_url = models.URLField(
+        null=True, blank=True,
+        help_text="Public Myfxbook page URL for this broker account (link only; no credentials).")
+    myfxbook_system_id = models.CharField(
+        max_length=64, null=True, blank=True,
+        help_text="Myfxbook system id for this account (identifier only; no credentials).")
+    myfxbook_enabled = models.BooleanField(
+        default=False,
+        help_text="Whether the customer has enabled the Myfxbook link for this account.")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

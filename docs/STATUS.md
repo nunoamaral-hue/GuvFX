@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-09-26 - PHASE C — C4 customer-visible multi-account model DARK — branch
+  `feat/concurrent-accounts-ux`.** Additive, DARK (`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` OFF), NO
+  migration of any protected account, NO money-path, MAGIC READ/ENFORCE untouched. Backend: `TradingAccount`
+  gains 3 Myfxbook METADATA fields (`myfxbook_url`/`myfxbook_system_id`/`myfxbook_enabled`, migration `0017`,
+  all nullable/defaulted, NO credentials); `TradingAccountSerializer` adds `masked_account_number` (last-4)
+  + `active_strategy_count` (owner-scoped N:M) + exposes `readiness_provider`/myfxbook fields; new read-only
+  `entitlement-summary` action (Active N / limit + owned N / limit, `request.user` only); `set_active` beta
+  branch applies STANDARD (one-active-per-user) / CONCURRENT (up-to-limit) semantics ONLY when armed —
+  flag-OFF path is the byte-identical legacy plain flip and NEVER arms execution. `mt5/views.py` View-MT5 is
+  now account-EXPLICIT via `_resolve_launch_account` (owner-scoped `account_id`; cross-user/unknown → 404;
+  no-selector fallback preserved) on both `Mt5DesktopLinkView` + `Mt5LaunchApplyView` — the deferred launch
+  `.first()` is removed. Telegram attribution: `_safe_payload` derives `broker` SERVER-SIDE from the
+  owner-scoped account (never caller-trusted — made structural: caller `broker` is dropped unconditionally,
+  re-set only from the account), notifications render Broker + MASKED account + strategy-from-FK. Frontend:
+  `AccountCard` (strategy badge, Demo/Live, View MT5, Manage strategies, http(s)-only Myfxbook link,
+  Activate/Deactivate), `BrokerAccountsContent` (entitlement header "Active N / limit" vs "only one can
+  trade", account-explicit View MT5, STANDARD switch-confirm modal `SwitchActiveDialog`), broker types +
+  `broker-api` clients (`getEntitlementSummary`/`setAccountActive`/`openMt5Desktop`). 3-agent adversarial
+  review (IDOR + secret/DARK + frontend isolation): all CLEAN, fails-closed, no secret crosses the boundary,
+  DARK confirmed; two LOW items actioned (broker structural guard; client scheme guard) — the raw
+  `account_number` still in the serializer is pre-existing/out-of-scope (owner-scoped; other pages depend on
+  it). Tests: 16 new backend (`trading/tests_c4_multi_account.py`) + 9 new frontend
+  (`multi-account.test.tsx`) + 2 masked notification tests; full backend suite 4736 OK (1 skip), frontend
+  build green. Enforcement stays OFF; awaiting C5 (support@ migration, hard-rollback gate).
+
 - **2026-09-25 - PHASE C (Concurrent Broker Accounts) — C0 collision audit + C1 entitlement model DARK —
   branch `feat/concurrent-accounts-entitlement`.** Product: 1 GuvFX user → N broker accounts → concurrent MT5
   (initial entitlement 5, config-scalable to 10/20/50). **Sponsor decisions: Direction A (KEEP per-account

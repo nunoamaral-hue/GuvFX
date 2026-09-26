@@ -213,16 +213,16 @@ _MAX_ABSOLUTE_AMOUNT = Decimal("1000000000000000")
 _PAYLOAD_ALLOWLIST = {
     CustomerNotification.EventType.CONNECTION_CONFIRMED: set(),
     CustomerNotification.EventType.TRADE_UPDATED: {
-        "strategy", "symbol", "result", "currency", "outcome",
+        "strategy", "broker", "symbol", "result", "currency", "outcome",
         "progress_label", "progress_closed", "progress_total", "account_kind",
         "account_number", "occurred_at",
     },
     CustomerNotification.EventType.TRADE_CLOSED: {
-        "strategy", "symbol", "result", "currency", "outcome", "volume",
+        "strategy", "broker", "symbol", "result", "currency", "outcome", "volume",
         "progress_closed", "progress_total", "account_kind", "account_number", "occurred_at",
     },
-    CustomerNotification.EventType.STRATEGY_ENABLED: {"strategy", "account_kind", "account_number"},
-    CustomerNotification.EventType.STRATEGY_DISABLED: {"strategy", "account_kind", "account_number"},
+    CustomerNotification.EventType.STRATEGY_ENABLED: {"strategy", "broker", "account_kind", "account_number"},
+    CustomerNotification.EventType.STRATEGY_DISABLED: {"strategy", "broker", "account_kind", "account_number"},
     CustomerNotification.EventType.EXECUTION_PROBLEM: {"message_code"},
     CustomerNotification.EventType.WORKSPACE_READY: {"continue_url"},
 }
@@ -380,6 +380,10 @@ def _safe_payload(event_type: str, payload: dict, *, account=None, strategy_assi
             out["progress_label"] = str(payload.get("progress_label") or "")
     # Customer/account identity is never caller-authored. When an event carries these
     # fields, replace them with the owner-scoped durable records before persistence.
+    # Phase C4 — ``broker`` is a customer-identity field: make "never trusted from the caller" STRUCTURAL,
+    # not merely caller-dependent. Drop any caller-supplied broker unconditionally here; it is re-set below
+    # ONLY from the owner-scoped account. With no account, no broker line is emitted at all (fail-closed).
+    out.pop("broker", None)
     if account is not None:
         if "currency" in allowed:
             out["currency"] = _safe_currency(account.account_currency) or "USD"
@@ -391,6 +395,17 @@ def _safe_payload(event_type: str, payload: dict, *, account=None, strategy_assi
                 out["account_number"] = number
             else:
                 out.pop("account_number", None)
+        if "broker" in allowed:
+            # Phase C4 — server-derived from the OWNER-scoped durable account (never trusted from the caller
+            # payload), so a multi-account customer's notification names the right broker. Identifier only.
+            srv = getattr(account, "broker_server", None)
+            broker = str((getattr(srv, "broker_display_name", None) if srv else None)
+                         or (getattr(srv, "server_name", None) if srv else None)
+                         or account.broker_name or "")[:80]
+            if broker:
+                out["broker"] = broker
+            else:
+                out.pop("broker", None)
     if "strategy" in allowed:
         strategy = (
             str(strategy_assignment.strategy.name or "")[:160]
