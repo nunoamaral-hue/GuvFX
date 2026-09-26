@@ -25,6 +25,10 @@ def _user(name):
     UserSubscriptionState.objects.update_or_create(
         user=u, defaults=dict(current_plan=UserSubscriptionState.Plan.BETA,  # beta: max_trading_accounts 10
                               plan_status=UserSubscriptionState.PlanStatus.ACTIVE, viewer_mode=False))
+    # Per-user enforcement scope: grant every test user the per-user activation so the ARMED class (master ON)
+    # enforces them. The DARK class forces the master OFF, so the grant is inert there (master kill wins).
+    from trading.account_entitlement import grant_concurrent_enforcement
+    grant_concurrent_enforcement(u)
     return u
 
 
@@ -37,7 +41,7 @@ def _override(user, capability, value):
                                        is_active=True, expires_at=timezone.now() + timedelta(days=1))
 
 
-@override_settings(**_FLAGS_ON)   # admission passes; enforcement flag OFF (default) => DARK
+@override_settings(CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=False, **_FLAGS_ON)   # master KILL => DARK for all
 class FunnelDarkOnePerUser(TestCase):
     def test_second_distinct_request_returns_the_first(self):
         u = _user("d1")

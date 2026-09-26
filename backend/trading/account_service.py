@@ -85,7 +85,7 @@ def create_customer_account(request, serializer):
                 # armed. DARK by default — while the flag is OFF the legacy cap below runs UNCHANGED, so
                 # production behaviour is byte-identical until Phase C enforcement is explicitly enabled.
                 from trading.account_entitlement import check_can_add_account, enforcement_enabled
-                if enforcement_enabled():
+                if enforcement_enabled(user):
                     check_can_add_account(user)
                 else:
                     ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())

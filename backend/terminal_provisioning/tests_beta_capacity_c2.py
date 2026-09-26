@@ -24,6 +24,10 @@ def _user(n, *, plan=UserSubscriptionState.Plan.PRO):
     u = U.objects.create_user(username=f"c2u{n}", email=f"c2u{n}@x.invalid", password="x")
     UserSubscriptionState.objects.create(user=u, current_plan=plan,
                                          plan_status=UserSubscriptionState.PlanStatus.ACTIVE, viewer_mode=False)
+    # Per-user enforcement scope: grant the per-user activation so ARMED classes (master ON) enforce this user.
+    # DARK classes force the master OFF, so the grant is inert there (master kill wins).
+    from trading.account_entitlement import grant_concurrent_enforcement
+    grant_concurrent_enforcement(u)
     return u
 
 
@@ -44,7 +48,7 @@ def _acct(user, n):
                                          broker_name="B", is_demo=True)
 
 
-@override_settings(BETA_RUNTIMES_ENABLED=True)
+@override_settings(BETA_RUNTIMES_ENABLED=True, CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=False)  # master KILL => DARK
 class DarkPreservesLegacyPerUserOne(TestCase):
     """Flag OFF (default) — the per-user cap is byte-identical to the legacy hard-coded 1, even for a user
     whose entitlement WOULD allow 5 once armed."""
