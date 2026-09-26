@@ -18,7 +18,9 @@ const api = vi.hoisted(() => ({
   setAccountActive: vi.fn(),
 }));
 vi.mock("@/lib/broker-api", () => api);
-vi.mock("next/link", () => ({ default: ({ children, href }: any) => <a href={href}>{children}</a> }));
+vi.mock("next/link", () => ({
+  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
+}));
 
 import { AccountCard } from "@/components/broker/AccountCard";
 import { BrokerAccountsContent } from "@/components/broker/BrokerAccountsContent";
