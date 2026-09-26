@@ -31,6 +31,10 @@ def _user(name, *, plan=UserSubscriptionState.Plan.BETA):
     UserSubscriptionState.objects.update_or_create(
         user=u, defaults=dict(current_plan=plan, plan_status=UserSubscriptionState.PlanStatus.ACTIVE,
                               viewer_mode=False))
+    # Per-user enforcement scope: grant the per-user activation so ARMED classes (master ON via _ARMED)
+    # enforce this user. DARK classes/tests force the master OFF, so the grant is inert there.
+    from trading.account_entitlement import grant_concurrent_enforcement
+    grant_concurrent_enforcement(u)
     return u
 
 
@@ -292,7 +296,8 @@ class SelectorResolvesExactAccount(TestCase):
         self.assertIsNone(_own_workspace(u))
 
 
-@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_WORKSPACE_ONBOARDING_ENABLED="1")
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_WORKSPACE_ONBOARDING_ENABLED="1",
+                   CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=False)   # master KILL => DARK despite per-user grant
 class AddEndpointDark(TestCase):
     """Subsystem visible but Phase-C enforcement OFF (default) — the add endpoint must NOT create a 2nd
     account; a second add returns the caller's existing workspace (exists/200)."""
@@ -312,6 +317,7 @@ class AddEndpointDark(TestCase):
             self.assertEqual(r.status_code, 404)           # invisible while the subsystem is OFF
 
 
+@override_settings(CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=False)   # class default DARK; armed methods override
 class OnboardingAccountResolutionDarkSafe(TestCase):
     """The onboarding milestone account resolver must be DARK-byte-identical: while enforcement is OFF it keeps
     the legacy single-pick even for a multi-TradingAccount user (which is possible TODAY via the Accounts page),

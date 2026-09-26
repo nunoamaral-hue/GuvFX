@@ -103,14 +103,15 @@ def _global_max_active_runtimes() -> int:
 
 
 def _per_user_max_active_runtimes(user) -> int:
-    """Per-user active-runtime cap. Phase C2: when Phase-C enforcement is ARMED
-    (``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED``), this is the user's entitlement concurrent-active limit
-    (STANDARD ⇒ 1, CONCURRENT ⇒ the configured/overridden limit) instead of the hard-coded
-    ``BETA_MAX_ACTIVE_PER_USER``. DARK by default: while the flag is OFF (or on any resolution error) it
-    fails safe to the legacy cap of 1, so behaviour is byte-identical until armed."""
+    """Per-user active-runtime cap. Phase C: when THIS user is per-user enforced
+    (``enforcement_enabled(user)`` = master kill on, default, AND an active ``concurrent_accounts_enforcement``
+    grant), this is the user's entitlement concurrent-active limit (STANDARD ⇒ 1, CONCURRENT ⇒ the
+    configured/overridden limit) instead of the hard-coded ``BETA_MAX_ACTIVE_PER_USER``. Per-user DARK by
+    default: an un-granted user (the whole estate until a customer is granted) — or any resolution error —
+    fails safe to the legacy cap of 1, so behaviour is byte-identical until that user is explicitly armed."""
     try:
         from trading.account_entitlement import effective_concurrent_limit, enforcement_enabled
-        if enforcement_enabled():
+        if enforcement_enabled(user):
             from billing.entitlements import resolve_effective_entitlements
             return int(effective_concurrent_limit(resolve_effective_entitlements(user)))
     except Exception:  # noqa: BLE001 — any resolution error fails safe to the conservative legacy cap

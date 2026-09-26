@@ -184,7 +184,9 @@ class SetActiveStandardConcurrent(TestCase):
 
     @override_settings(CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=True)
     def test_armed_standard_deactivates_the_other(self):
+        from trading.account_entitlement import grant_concurrent_enforcement
         u = _user("s2")   # STANDARD default ⇒ one active per user
+        grant_concurrent_enforcement(u)   # per-user activation (master ON via override_settings)
         a = _acct(u, "111", is_active=True)
         b = _acct(u, "222", is_active=False)
         with mock.patch("trading.views._account_runtime_ready", return_value=True):
@@ -196,7 +198,9 @@ class SetActiveStandardConcurrent(TestCase):
 
     @override_settings(CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=True)
     def test_armed_concurrent_allows_up_to_limit_then_refuses(self):
+        from trading.account_entitlement import grant_concurrent_enforcement
         u = _user("s3")
+        grant_concurrent_enforcement(u)   # per-user activation (master ON via override_settings)
         _override(u, "account_mode", {"value": "concurrent"})
         _override(u, "concurrent_broker_account_limit", {"value": 2})
         a = _acct(u, "111", is_active=True)

@@ -483,11 +483,12 @@ def _resolve_onboarding_account(user, account_id=None):
         if acct is None:
             raise OnboardingStepError("no_broker_account")
         return acct
-    # DARK-SAFE: a user can already hold multiple TradingAccounts today (the normal Accounts page, independent
-    # of Phase-C). So the ambiguity refusal is gated on Phase-C enforcement — while OFF this preserves the
-    # legacy single-pick (oldest) EXACTLY, and only once ARMED does it refuse to guess across N>1.
+    # PER-USER DARK-SAFE: a user can already hold multiple TradingAccounts today (the normal Accounts page,
+    # independent of Phase-C). The ambiguity refusal fires ONLY for a per-user-enforced owner
+    # (``enforcement_enabled(user)`` = master on + that user's active grant). An un-granted user (the estate
+    # by default) keeps the legacy single-pick (oldest) EXACTLY; only a granted user refuses to guess across N>1.
     from trading.account_entitlement import enforcement_enabled
-    if enforcement_enabled() and qs.count() > 1:
+    if enforcement_enabled(user) and qs.count() > 1:
         raise OnboardingStepError("account_selector_required")   # armed + ambiguous — caller must identify
     acct = qs.first()
     if not acct:
@@ -565,7 +566,7 @@ def mark_account_connected(user, request=None, *, account_id=None) -> UserOnboar
         account = active.filter(id=account_id).first()
     else:
         from trading.account_entitlement import enforcement_enabled
-        if enforcement_enabled() and active.count() > 1:
+        if enforcement_enabled(user) and active.count() > 1:
             raise OnboardingStepError("account_selector_required")
         account = active.first()
     if not account:

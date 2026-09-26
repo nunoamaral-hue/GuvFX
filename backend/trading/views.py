@@ -398,15 +398,16 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             # so this flip must succeed instead of the legacy 409. Legacy shared-instance accounts fall
             # through to the unchanged path below.
             if _account_runtime_ready(acc):
-                # Phase C4 (DARK) — apply the entitlement's ACTIVATION semantics ONLY when armed. While
-                # ``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED`` is OFF this is the exact legacy plain-flip
-                # (byte-identical). STANDARD: activating this account atomically deactivates the user's OTHER
-                # active accounts (one-active-per-USER — hosted accounts have mt5_instance=None so the legacy
-                # per-instance rule can't cover them). CONCURRENT: refuse beyond the concurrent-active limit.
-                # This only toggles ``is_active`` — it NEVER arms execution (the layered arm + live-bridge gate
-                # remains the sole order authority).
+                # Phase C — apply the entitlement's ACTIVATION semantics ONLY when this account's OWNER is
+                # per-user enforced (``enforcement_enabled(acc.user)`` = master kill on, default, AND an active
+                # per-user grant). Un-granted owners (the whole estate by default, empty allowlist) take the
+                # exact legacy plain-flip below — byte-identical. STANDARD: activating this account atomically
+                # deactivates the owner's OTHER active accounts (one-active-per-USER — hosted accounts have
+                # mt5_instance=None so the legacy per-instance rule can't cover them). CONCURRENT: refuse beyond
+                # the concurrent-active limit. This only toggles ``is_active`` — it NEVER arms execution (the
+                # layered arm + live-bridge gate remains the sole order authority).
                 from trading.account_entitlement import enforcement_enabled
-                if is_active and enforcement_enabled():
+                if is_active and enforcement_enabled(user):
                     from django.db import transaction as _txn
                     from django.utils import timezone as _tz
                     from rest_framework.exceptions import ValidationError as _DRFValidationError

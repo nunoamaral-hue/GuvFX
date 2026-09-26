@@ -180,14 +180,16 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
         locked_user = get_user_model().objects.select_for_update().get(pk=user.pk)
         owned = (HostedMt5Workspace.objects.filter(trading_account__user=locked_user)
                  .select_related("trading_account"))   # ownership = trading_account.user
-        # Phase C2 — re-scope the one-workspace-per-user funnel to the entitlement model. DARK by default:
-        # while ``CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED`` is OFF the legacy branch runs UNCHANGED (a user
-        # keeps exactly one workspace). While ON, a user may hold up to their OWNED-account entitlement of
-        # workspaces; a re-request for the SAME broker identity is still idempotent (returns that workspace),
-        # and creating a NEW one is bounded by ``check_can_add_account`` (active/tombstone-aware, override-
-        # aware). Per-account SID/runtime isolation is unchanged — this only lifts the count restriction.
+        # Phase C — re-scope the one-workspace-per-user funnel to the entitlement model. PER-USER DARK: a user
+        # gets the multi-workspace branch ONLY when ``enforcement_enabled(locked_user)`` is True — i.e. the
+        # global master kill is on (default) AND that user holds an active ``concurrent_accounts_enforcement``
+        # grant. The allowlist is EMPTY by default, so every user (and the whole estate until a customer is
+        # explicitly granted) keeps exactly ONE workspace — legacy behaviour. For a granted user, a re-request
+        # for the SAME broker identity is still idempotent (returns that workspace); a NEW one is bounded by
+        # ``check_can_add_account`` (active/tombstone/override-aware). Per-account SID/runtime isolation is
+        # unchanged — this only lifts the count restriction, per user.
         from trading.account_entitlement import enforcement_enabled
-        if enforcement_enabled():
+        if enforcement_enabled(locked_user):
             # Idempotency is keyed on the CANONICAL broker identity pair (login, server) — the same pair the
             # DB uniqueness constraints + bind_broker_identity use — so a user may legitimately hold the same
             # login on two different servers, and a re-request returns the workspace for THAT exact identity.

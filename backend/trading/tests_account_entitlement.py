@@ -111,9 +111,14 @@ class ConcurrentActivatePredicate(TestCase):
 
 
 class EnforcementIsDarkByDefault(TestCase):
-    def test_flag_off_by_default(self):
+    def test_no_user_or_ungranted_user_is_off(self):
+        # Per-user gate: with no grant, a user is NOT enforced (empty allowlist by default); and a no-arg
+        # call is always fail-safe False. (Full per-user matrix in tests_per_user_enforcement.py.)
         self.assertFalse(enforcement_enabled())
+        self.assertFalse(enforcement_enabled(_user("darkdefault")))
 
-    @override_settings(CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=True)
-    def test_flag_honours_setting(self):
-        self.assertTrue(enforcement_enabled())
+    def test_granted_user_is_enforced(self):
+        from trading.account_entitlement import grant_concurrent_enforcement
+        u = _user("granted")
+        grant_concurrent_enforcement(u)
+        self.assertTrue(enforcement_enabled(u))
