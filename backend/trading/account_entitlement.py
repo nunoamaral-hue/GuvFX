@@ -121,6 +121,56 @@ def revoke_concurrent_enforcement(user) -> int:
         user=user, capability=ENFORCEMENT_GRANT_CAPABILITY, is_active=True).update(is_active=False)
 
 
+# ---- per-user Broker Accounts UX gate (Phase 9) ---------------------------------------------------
+#: Per-user customer-facing UX activation (an ``EntitlementOverride`` capability). SEPARATE from the
+#: enforcement grant and from entitlement VALUE caps: it controls only which /accounts experience the
+#: customer SEES (new multi-account Broker Accounts UX vs the legacy page). Empty allowlist by default →
+#: every user stays on the legacy experience until explicitly granted. Decoupled from enforcement so UX
+#: can be shown/withheld independently of concurrent activation.
+BROKER_UX_CAPABILITY = "broker_accounts_ux"
+
+
+def user_broker_ux_enabled(user) -> bool:
+    """True iff ``user`` holds an ACTIVE, non-expired ``EntitlementOverride`` granting
+    ``broker_accounts_ux`` (``{"granted": true}``). Empty allowlist by default; fails CLOSED (False) on a
+    missing user or any lookup error — a customer never sees an unfinished experience by accident."""
+    if user is None or not getattr(user, "pk", None):
+        return False
+    try:
+        from django.utils import timezone
+        from admin_ops.models import EntitlementOverride
+        rows = EntitlementOverride.objects.filter(
+            user=user, capability=BROKER_UX_CAPABILITY,
+            is_active=True, expires_at__gt=timezone.now(),
+        ).values_list("override_value", flat=True)
+        return any(isinstance(v, dict) and bool(v.get("granted")) for v in rows)
+    except Exception:  # noqa: BLE001 — a lookup error must never expose unfinished UX
+        return False
+
+
+def grant_broker_ux(user, *, days=365, reason="", created_by=None):
+    """Show the new Broker Accounts UX to ONE user (reversible, idempotent, per-user). Data-only; changes no
+    trading/runtime/strategy state — it only changes which /accounts experience this customer renders."""
+    from datetime import timedelta
+    from django.utils import timezone
+    from admin_ops.models import EntitlementOverride
+    obj, _created = EntitlementOverride.objects.update_or_create(
+        user=user, capability=BROKER_UX_CAPABILITY, is_active=True,
+        defaults={"override_value": {"granted": True},
+                  "expires_at": timezone.now() + timedelta(days=days),
+                  "reason": reason or "Per-user Broker Accounts UX activation (Phase 9)",
+                  "created_by": created_by})
+    return obj
+
+
+def revoke_broker_ux(user) -> int:
+    """Reversible per-user disable of the Broker Accounts UX (rollback of ``grant_broker_ux``). Returns the
+    number of grants deactivated; never row-deletes."""
+    from admin_ops.models import EntitlementOverride
+    return EntitlementOverride.objects.filter(
+        user=user, capability=BROKER_UX_CAPABILITY, is_active=True).update(is_active=False)
+
+
 # ---- counts (tombstone-aware) --------------------------------------------------------------------
 
 def owned_account_count(user, *, exclude_account_id=None) -> int:

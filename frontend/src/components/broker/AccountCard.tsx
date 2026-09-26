@@ -54,6 +54,14 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
   const myfxbookHref = account.myfxbook_url && /^https?:\/\//i.test(account.myfxbook_url)
     ? account.myfxbook_url : null;
   const showMyfxbook = Boolean(account.myfxbook_enabled && myfxbookHref);
+  // Phase 9 — hosted (Provider-B/persistent) accounts have no shared MT5 instance; the runtime IS the
+  // terminal. Show a member-friendly terminal status from runtime readiness (no infra terms), and label the
+  // action "Open MT5". The broker-login journey (waiting-for-login → connected) is guided by the hosted
+  // banner in the list, so the card stays about THIS account's terminal readiness.
+  const isHosted = (account.mt5_instance === null || account.mt5_instance === undefined)
+    && account.readiness_provider === "persistent_workspace";
+  const hostedReady = Boolean(account.runtime_ready);
+  const viewMt5Label = isHosted ? "Open MT5" : "View MT5";
 
   return (
     <div style={card}>
@@ -70,10 +78,14 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
       <div style={{ ...row, marginBottom: 10 }}>
         {statusLoading
           ? <span style={meta} role="status">Checking status…</span>
-          : <>
-              <StatusBadge view={validation} title="Broker connection" />
-              <StatusBadge view={connection} title="Trading account" />
-            </>}
+          : isHosted
+            ? (hostedReady
+                ? <Badge color="green">Terminal ready</Badge>
+                : <Badge color="blue">Preparing your trading terminal…</Badge>)
+            : <>
+                <StatusBadge view={validation} title="Broker connection" />
+                <StatusBadge view={connection} title="Trading account" />
+              </>}
         {/* Phase C4 — assigned-strategies badge (N:M via StrategyAssignment). */}
         <Badge color="gray">{strategyCount === 1 ? "1 strategy" : `${strategyCount} strategies`}</Badge>
         {isActive && <Badge color="green">Trading</Badge>}
@@ -81,9 +93,13 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
 
       {/* WS-C — Current validation state (badge above), Last successful validation, and Latest attempt are
           three DISTINCT concepts; the card keeps them separate (never merged). */}
-      <div style={meta}>{lastValidatedLine(status?.validation_status, status?.validated_at)}</div>
+      {isHosted
+        ? <div style={meta}>{hostedReady
+            ? "Your private MetaTrader terminal is ready. Open MT5 to log in to your broker."
+            : "We're setting up your private MetaTrader terminal. This usually takes a few minutes."}</div>
+        : <div style={meta}>{lastValidatedLine(status?.validation_status, status?.validated_at)}</div>}
       <div style={{ ...row, justifyContent: "space-between", marginTop: 2 }}>
-        <span style={meta}>{latestAttemptLine(status?.latest_attempt, status?.validation_status) || " "}</span>
+        <span style={meta}>{isHosted ? " " : (latestAttemptLine(status?.latest_attempt, status?.validation_status) || " ")}</span>
         <Link href={`/accounts/${account.id}`} style={linkStyle}
               aria-label={`Manage ${account.name || broker}`}>Manage →</Link>
       </div>
@@ -92,9 +108,9 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
       {(onViewMt5 || onSetActive || showMyfxbook) && (
         <div style={{ ...row, marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
           {onViewMt5 && (
-            <button type="button" style={actionBtn} disabled={busy}
+            <button type="button" style={actionBtn} disabled={busy || (isHosted && !hostedReady)}
                     onClick={() => onViewMt5(account.id)}
-                    aria-label={`View MT5 for ${account.name || broker}`}>View MT5</button>
+                    aria-label={`${viewMt5Label} for ${account.name || broker}`}>{viewMt5Label}</button>
           )}
           <Link href={`/accounts/${account.id}`} style={{ ...actionBtn, textDecoration: "none" }}
                 aria-label={`Manage strategies for ${account.name || broker}`}>Manage strategies</Link>

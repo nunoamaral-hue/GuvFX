@@ -29,8 +29,16 @@ class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
-        return Response(serializer.data)
+        data = dict(UserSerializer(request.user).data)
+        # Phase 9 — per-user customer-facing UX capability (additive). Empty allowlist by default ⇒ False for
+        # every user, so the frontend defaults to the legacy experience; granted only for support@ in the POC.
+        # Fails closed (False) so a lookup error never exposes the unfinished multi-account UX.
+        try:
+            from trading.account_entitlement import user_broker_ux_enabled
+            data["broker_accounts_ux"] = user_broker_ux_enabled(request.user)
+        except Exception:  # noqa: BLE001
+            data["broker_accounts_ux"] = False
+        return Response(data)
 
 
 class EmailTokenObtainPairView(TokenObtainPairView):

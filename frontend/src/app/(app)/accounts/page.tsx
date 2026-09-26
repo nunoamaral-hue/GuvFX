@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
 import { BrokerAccountsContent } from "@/components/broker/BrokerAccountsContent";
+import { getBrokerAccountsUxEnabled } from "@/lib/broker-api";
 import { HostedWorkspaceStatus } from "@/components/accounts/HostedWorkspaceStatus";
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { t } from "@/lib/i18n";
@@ -1145,6 +1146,34 @@ export default function AccountsPage() {
   // NEXT_PUBLIC_BROKER_CONNECTIVITY_ENABLED renders <BrokerAccountsContent/> for EVERY user — including Hosted
   // Workspace customers — bypassing the context-aware hosted status experience. The flag is OFF in the Closed
   // Beta, so this is currently unreachable; making BrokerAccountsContent hosted-aware is a post-beta task.
-  if (brokerConnectivityEnabled()) return <BrokerAccountsContent />;
-  return <AccountsContent />;
+  // Phase 9 — per-user UX gate. Global build flag forces the new experience for everyone (dev/staging);
+  // otherwise the experience is chosen PER USER from the `broker_accounts_ux` capability (GET /api/auth/me/),
+  // empty by default ⇒ legacy for every customer, granted only for support@ in the POC. A neutral loader is
+  // shown while the capability resolves so the WRONG experience never flashes (fail-closed to legacy on error).
+  const lang = useLang();
+  const [uxMode, setUxMode] = useState<"loading" | "new" | "legacy">(
+    brokerConnectivityEnabled() ? "new" : "loading",
+  );
+  useEffect(() => {
+    if (brokerConnectivityEnabled()) return;
+    let alive = true;
+    getBrokerAccountsUxEnabled()
+      .then((on) => { if (alive) setUxMode(on ? "new" : "legacy"); })
+      .catch(() => { if (alive) setUxMode("legacy"); });
+    return () => { alive = false; };
+  }, []);
+
+  if (uxMode === "loading") {
+    return (
+      <div style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 1rem" }}>
+        <Card>
+          <div role="status" data-testid="ux-gate-loading"
+               style={{ padding: "1.5rem", textAlign: "center", color: "#8fa0b7" }}>
+            {t(lang, "accounts.loadingWorkspace") || "Loading your accounts…"}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+  return uxMode === "new" ? <BrokerAccountsContent /> : <AccountsContent />;
 }

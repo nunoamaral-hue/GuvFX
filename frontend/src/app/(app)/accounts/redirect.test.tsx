@@ -18,6 +18,8 @@ const { redirect, apiFetch, broker } = vi.hoisted(() => ({
     getAccount: vi.fn().mockResolvedValue({ id: 123, name: "Demo", broker_name: "DemoBroker", account_number: "9001", is_active: true }),
     getValidationHistory: vi.fn().mockResolvedValue([]),
     retryValidation: vi.fn(), testConnection: vi.fn(),
+    getEntitlementSummary: vi.fn().mockResolvedValue(null),
+    getBrokerAccountsUxEnabled: vi.fn().mockResolvedValue(false), // per-user UX gate → legacy by default
   },
 }));
 
