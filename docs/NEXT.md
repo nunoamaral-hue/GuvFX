@@ -1,6 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Phase C (Concurrent Broker Accounts) — C1+C2+C3+C4 DARK merged, C5 next (2026-09-26)
+## ▶ Phase C / WAYOND POC — C4 + per-user enforcement DEPLOYED DARK; support@ at activation boundary (2026-09-26)
+C4 (#409) + per-user enforcement scope (#410) merged AND **deployed to prod DARK/inert**. support@ (user 29)
+entitlement set to **CONCURRENT / limit 5** via reversible EntitlementOverrides (ids 1/2/3), proven inert
+(`enforcement_enabled(29)` still False). **STOPPED at the support@ activation boundary.** The exact single
+mutation to activate: `grant_concurrent_enforcement(user 29)` (one EntitlementOverride row; reversible via
+`revoke_concurrent_enforcement`). **Single next action (Sponsor-gated):** grant support@ per-user enforcement,
+then create Account B via C3 `POST /api/hosted-workspace/accounts/add/` (a NEW Pepperstone DEMO account — acct A
+is IS6) → provisions runtime/SID/endpoint → **WAITING_FOR_LOGIN** (human broker demo login; never a password in
+chat). Then: Account B strategy + magic → arm → 2-account simultaneous + natural-execution + TP/SL cert →
+(separate return) 3→5. RemoteApp isolation CERTIFIED (structural + host icacls); only live 2-terminal coexistence
+is INTERACTIVE_PENDING. Capacity: box safe 12; 6 runtimes today + B = 7 (headroom OK). Do NOT flip the global
+frontend UX flag (whole-site, member-launch gate) or the master kill; do NOT migrate CZ/Brian/Patrick/Nuno.
+
+## ▶ Phase C (Concurrent Broker Accounts) — C1+C2+C3+C4 DARK merged (superseded by the line above) (2026-09-26)
 C1 (entitlement) + C2 (funnel/BETA cap re-scope) + C3 (Add Broker Account API + `.first()` removal) + C4
 (customer-visible multi-account UX/API) all built DARK (`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` OFF; per-account
 SID/magic/pin kept; no migration; no money-path; MAGIC READ/ENFORCE untouched). **C4 shipped:** masked account #

@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-09-26 - WAYOND FAST-TRACK POC — C4 + per-user enforcement DEPLOYED DARK; support@ at activation
+  boundary.** Sponsor fast-track (support@ ONLY → 2 concurrent DEMO accounts). (1) **C4 (#409) merged +
+  C1–C4 DEPLOYED to prod DARK** — prod was behind at #404; pulled main, rebuilt the backend image, applied the
+  single additive-nullable migration `trading 0017` (myfxbook), recreated `guvfx-backend` +
+  `guvfx-mt5-trade-ingest-worker`. Verified inert: `enforcement_enabled()`→False, account 25 intact (magic
+  1000000010), live listener + order workers NOT restarted, API/frontend 200. The one execution-path change in
+  the deploy gap (#405 `DEAL_ENTRY_INOUT` quarantine) is dormant on the all-hedging estate (acct 25 & 33
+  margin_mode=2). Rollback images `rollback-preC4WAYOND` / `rollback-prePERUSER`. Frontend multi-account UX
+  stays behind the OFF global build flag (member-launch gate). (2) **Per-user enforcement scope (#410) merged +
+  DEPLOYED DARK/INERT** — `enforcement_enabled(user)` = master kill (`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED`,
+  default ON; explicit off = kill-all) AND a per-user grant (`concurrent_accounts_enforcement` EntitlementOverride,
+  empty allowlist ⇒ nobody). All 6 call sites user-scoped; `grant_/revoke_concurrent_enforcement` = the
+  reversible activation mutation (no schema change). 17 adversarial tests + 2 clean reviews; full suite 4754 OK;
+  deploy inert (0 grants estate-wide). (3) **support@ entitlement → CONCURRENT/5** via 3 reversible
+  EntitlementOverride rows (account_mode, concurrent_broker_account_limit=5, max_trading_accounts=5); proven
+  inert (`enforcement_enabled(29)` STILL False, zero trading/strategy/magic change). **STOPPED at the support@
+  activation boundary** (before granting per-user enforcement / creating Account B). Exact single activation
+  mutation: `grant_concurrent_enforcement(user 29)`. Account B then via C3 add → human Pepperstone DEMO login
+  (WAITING_FOR_LOGIN). RemoteApp isolation CERTIFIED (structural + host `icacls`); 2-live-terminal coexistence
+  INTERACTIVE_PENDING.
+
 - **2026-09-26 - PHASE C — C4 customer-visible multi-account model DARK — branch
   `feat/concurrent-accounts-ux`.** Additive, DARK (`CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED` OFF), NO
   migration of any protected account, NO money-path, MAGIC READ/ENFORCE untouched. Backend: `TradingAccount`
