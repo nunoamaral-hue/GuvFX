@@ -91,6 +91,18 @@ export function getEntitlementSummary(): Promise<EntitlementSummary> {
   return apiFetch<EntitlementSummary>(`${BASE}/entitlement-summary/`);
 }
 
+/** Phase 9 — per-user Broker Accounts UX capability from GET /api/auth/me/ (additive `broker_accounts_ux`).
+ * Empty allowlist by default ⇒ False for every user (legacy experience); granted per-user (support@ in the
+ * POC). Fails closed (False) so a fetch/auth error never exposes the unfinished multi-account UX. */
+export async function getBrokerAccountsUxEnabled(): Promise<boolean> {
+  try {
+    const me = await apiFetch<{ broker_accounts_ux?: boolean }>(`/api/auth/me/`);
+    return Boolean(me && me.broker_accounts_ux);
+  } catch {
+    return false;
+  }
+}
+
 /** Phase C4 — activate / deactivate ONE account. The backend applies STANDARD (one-active-per-user) or
  * CONCURRENT (up-to-limit) semantics ONLY when concurrent enforcement is armed; while DARK it is the exact
  * legacy plain flip. Toggling active NEVER arms execution. */

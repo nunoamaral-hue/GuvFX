@@ -9,9 +9,30 @@ import { BrokerAccountWizard } from "@/components/broker/BrokerAccountWizard";
 import { SwitchActiveDialog } from "@/components/broker/SwitchActiveDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/broker/States";
 import { toCustomerError } from "@/lib/broker-status";
+import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import type { BrokerAccount, BrokerStatus, EntitlementSummary } from "@/types/broker";
+
+/** Phase 9 — member-friendly copy for the hosted-workspace journey banner (no infrastructure terms). Makes
+ * the WAITING_FOR_LOGIN → Open MT5 → connected → ready journey understandable to a non-technical member. */
+function hostedBanner(journey: HostedJourney): { type: "info"; text: string } | null {
+  switch (journey.phase) {
+    case "WORKSPACE_REQUESTED":
+    case "WORKSPACE_PREPARING":
+      return { type: "info", text: "We're setting up your private MetaTrader terminal. This usually takes a few minutes — you can stay on this page." };
+    case "AWAITING_BROKER_LOGIN":
+      return { type: "info", text: "Your terminal is ready. Open MetaTrader on your broker account and log in to finish connecting — your password is entered securely inside MetaTrader." };
+    case "BROKER_CONNECTED":
+    case "ACCOUNT_CONFIRMATION_REQUIRED":
+      return { type: "info", text: "Connected. Confirm this is your trading account to finish setting it up." };
+    case "ACCOUNT_BOUND":
+    case "WORKSPACE_READY":
+      return { type: "info", text: "Your trading workspace is ready. Choose a strategy and set your risk to start." };
+    default:
+      return null; // NO_WORKSPACE / WORKSPACE_UNAVAILABLE → no banner (accounts list speaks for itself)
+  }
+}
 
 /** WP4.2 broker-accounts LIST body, extended in Phase C4 (DARK) for the multi-account customer view.
  *
@@ -29,6 +50,7 @@ export function BrokerAccountsContent() {
   const [statuses, setStatuses] = useState<Record<number, BrokerStatus | null>>({});
   const [statusLoading, setStatusLoading] = useState(false);
   const [entitlement, setEntitlement] = useState<EntitlementSummary | null>(null);
+  const [journey, setJourney] = useState<HostedJourney | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<{ type: "error" | "info"; message: string } | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -46,6 +68,9 @@ export function BrokerAccountsContent() {
       setAccounts(list);
       // Entitlement summary is best-effort: if it fails, the header degrades to the plain heading.
       getEntitlementSummary().then(setEntitlement).catch(() => setEntitlement(null));
+      // Hosted-workspace journey is best-effort: a hosted customer gets a member-friendly status banner; a
+      // traditional customer (404 → unavailable) simply shows no banner. Never fails the page.
+      fetchJourney().then((r) => setJourney(r.ok ? r.journey : null)).catch(() => setJourney(null));
       setStatusLoading(true);
       const entries = await Promise.all(list.map(async (a) => {
         try { return [a.id, await getBrokerStatus(a.id)] as const; }
@@ -150,6 +175,13 @@ export function BrokerAccountsContent() {
       {notice && (
         <div style={{ marginBottom: 14 }}>
           <Alert type={notice.type}>{notice.message}</Alert>
+        </div>
+      )}
+
+      {/* Phase 9 — hosted-workspace member journey banner (preparing → open MT5 & log in → connected → ready). */}
+      {journey && hostedBanner(journey) && (
+        <div style={{ marginBottom: 14 }} data-testid="hosted-journey-banner">
+          <Alert type="info">{hostedBanner(journey)!.text}</Alert>
         </div>
       )}
 

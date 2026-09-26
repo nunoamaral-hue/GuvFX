@@ -18,6 +18,10 @@ const api = vi.hoisted(() => ({
   setAccountActive: vi.fn(),
 }));
 vi.mock("@/lib/broker-api", () => api);
+// BrokerAccountsContent fetches the hosted-workspace journey (best-effort); mock it as unavailable by default
+// so the tests don't make real calls. Individual tests can override with a journey to assert the banner.
+const journeyMock = vi.hoisted(() => ({ fetchJourney: vi.fn() }));
+vi.mock("@/lib/hosted-journey", () => journeyMock);
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
@@ -40,6 +44,7 @@ beforeEach(() => {
   api.getBrokerStatus.mockReset().mockResolvedValue(null);
   api.getEntitlementSummary.mockReset();
   api.openMt5Desktop.mockReset().mockResolvedValue({ url: "https://guac.example/x" });
+  journeyMock.fetchJourney.mockReset().mockResolvedValue({ ok: false, unavailable: true }); // no banner by default
   api.setAccountActive.mockReset().mockResolvedValue({ ok: true, id: 1, is_active: true });
 });
 
@@ -78,7 +83,7 @@ describe("AccountCard (C4)", () => {
   it("View MT5 calls back with THIS account's id (account-explicit)", async () => {
     const onViewMt5 = vi.fn();
     render(<AccountCard account={acct({ id: 77 })} onViewMt5={onViewMt5} />);
-    await userEvent.click(screen.getByRole("button", { name: /view mt5/i }));
+    await userEvent.click(screen.getByRole("button", { name: /open mt5/i }));  // hosted accounts label it "Open MT5"
     expect(onViewMt5).toHaveBeenCalledWith(77);
   });
 });
@@ -132,7 +137,7 @@ describe("BrokerAccountsContent (C4)", () => {
     });
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     render(<BrokerAccountsContent />);
-    await userEvent.click(await screen.findByRole("button", { name: /view mt5 for bravo/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /open mt5 for bravo/i }));
     await waitFor(() => expect(api.openMt5Desktop).toHaveBeenCalledWith(2));  // explicit id, not a guess
     expect(api.setAccountActive).not.toHaveBeenCalled();  // viewing never mutates active state
     openSpy.mockRestore();
@@ -144,5 +149,52 @@ describe("BrokerAccountsContent (C4)", () => {
     render(<BrokerAccountsContent />);
     expect(await screen.findByText("Solo")).toBeInTheDocument();
     expect(await screen.findByText(/connect and validate the broker accounts/i)).toBeInTheDocument();
+  });
+});
+
+describe("AccountCard hosted-awareness (Phase 9)", () => {
+  it("hosted READY account shows 'Terminal ready' + an enabled 'Open MT5' (no infra terms)", () => {
+    render(<AccountCard account={acct({ runtime_ready: true })} onViewMt5={() => {}} />);
+    expect(screen.getByText(/terminal ready/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open mt5/i })).toBeEnabled();
+    expect(screen.queryByText(/SID|runtime|endpoint|node|slot/i)).not.toBeInTheDocument();
+  });
+
+  it("hosted PREPARING account shows a member-friendly preparing status and disables Open MT5", () => {
+    render(<AccountCard account={acct({ runtime_ready: false })} onViewMt5={() => {}} />);
+    expect(screen.getByText(/preparing your trading terminal/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /open mt5/i })).toBeDisabled();
+  });
+
+  it("traditional account (mt5_instance set) keeps 'View MT5' and is NOT shown hosted status", () => {
+    render(<AccountCard account={acct({ mt5_instance: 7, readiness_provider: null })}
+                        status={null} statusLoading={false} onViewMt5={() => {}} />);
+    expect(screen.getByRole("button", { name: /view mt5/i })).toBeInTheDocument();
+    expect(screen.queryByText(/terminal ready/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("BrokerAccountsContent hosted banner (Phase 9)", () => {
+  it("shows an Open-MT5-and-log-in banner when the workspace is awaiting broker login", async () => {
+    api.listAccounts.mockResolvedValue([acct({ id: 1, name: "Alpha" })]);
+    api.getEntitlementSummary.mockResolvedValue({
+      account_mode: "concurrent", active_count: 0, concurrent_limit: 5, owned_count: 1, owned_limit: 5,
+    });
+    journeyMock.fetchJourney.mockResolvedValue({
+      ok: true, journey: { phase: "AWAITING_BROKER_LOGIN", next_action: "open_mt5_and_log_in" },
+    });
+    render(<BrokerAccountsContent />);
+    expect(await screen.findByTestId("hosted-journey-banner")).toHaveTextContent(/log in/i);
+  });
+
+  it("shows NO banner for a traditional (journey-unavailable) customer", async () => {
+    api.listAccounts.mockResolvedValue([acct({ id: 1, name: "Alpha" })]);
+    api.getEntitlementSummary.mockResolvedValue({
+      account_mode: "standard", active_count: 1, concurrent_limit: 1, owned_count: 1, owned_limit: 2,
+    });
+    journeyMock.fetchJourney.mockResolvedValue({ ok: false, unavailable: true });
+    render(<BrokerAccountsContent />);
+    await screen.findByText("Alpha");
+    expect(screen.queryByTestId("hosted-journey-banner")).not.toBeInTheDocument();
   });
 });
