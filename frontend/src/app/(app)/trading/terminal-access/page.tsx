@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -499,21 +500,21 @@ function ViewerPanel({
 // Main page component
 // ─────────────────────────────────────────────────────────────────────
 
-export default function TerminalAccessPage() {
+function TerminalAccessInner() {
   const lang = useLang();
   // Phase 9 (multi-account) — an optional ``?account_id=`` binds the embedded RemoteApp to EXACTLY that owned
-  // account (e.g. arriving from a Broker Account card's "Open MT5"), instead of auto-detecting the single
-  // hosted account. Read once; the RemoteApp preserves its own owner check. Absent ⇒ legacy auto-detect.
+  // account (e.g. arriving from a Broker Account card's "Open MT5"), instead of auto-detecting the single hosted
+  // account. Read via the App Router ``useSearchParams`` hook — RELIABLE across SSR/hydration/client navigation
+  // (a ``window.location`` memo could resolve empty and silently fall back to auto-detect, which showed the
+  // wrong account). Strict positive int; absent/junk ⇒ undefined ⇒ legacy auto-detect. Owner check preserved
+  // downstream in HostedMt5RemoteApp + the owner-only delivery-connect mint.
+  const searchParams = useSearchParams();
   const remoteAppAccountId = useMemo<number | undefined>(() => {
-    if (typeof window === "undefined") return undefined;
-    try {
-      const raw = new URLSearchParams(window.location.search).get("account_id");
-      // Strict positive integer only ("12abc"/"12.5"/oversized → ignore → auto-detect). Never trust junk.
-      if (!raw || !/^\d{1,18}$/.test(raw)) return undefined;
-      const n = parseInt(raw, 10);
-      return Number.isSafeInteger(n) && n > 0 ? n : undefined;
-    } catch { return undefined; }
-  }, []);
+    const raw = searchParams.get("account_id");
+    if (!raw || !/^\d{1,18}$/.test(raw)) return undefined;
+    const n = parseInt(raw, 10);
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  }, [searchParams]);
   // ── Bindings list state ──
   const [bindings, setBindings] = useState<TerminalBinding[]>([]);
   const [bindingsLoading, setBindingsLoading] = useState(true);
@@ -1149,5 +1150,14 @@ export default function TerminalAccessPage() {
       )}
     </div>
     </LocalizedBetaSurface>
+  );
+}
+
+// Suspense boundary required because TerminalAccessInner reads the URL via useSearchParams (App Router).
+export default function TerminalAccessPage() {
+  return (
+    <Suspense fallback={null}>
+      <TerminalAccessInner />
+    </Suspense>
   );
 }
