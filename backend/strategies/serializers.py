@@ -308,6 +308,16 @@ class StrategySerializer(serializers.ModelSerializer):
 
 
 class StrategyAssignmentSerializer(serializers.ModelSerializer):
+    # Read-only display fields for the account-scoped "Manage strategies" view (member UX). Additive:
+    # ``strategy`` remains the writable PK; these never widen the write surface.
+    strategy_name = serializers.CharField(source="strategy.name", read_only=True)
+    # Current per-leg lot for this assignment (the customer's AssignmentLegSizing override, if any);
+    # None ⇒ no override row ⇒ falls back to the source-global cap. Presentation only.
+    lot_per_leg = serializers.SerializerMethodField()
+
+    def get_lot_per_leg(self, obj):
+        sizing = getattr(obj, "leg_sizing", None)
+        return str(sizing.lot_per_leg) if sizing is not None else None
 
     def validate(self, attrs):
         is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
@@ -323,14 +333,16 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "strategy",
+            "strategy_name",
             "account",
             "is_active",
             "stage",
             "risk_per_trade_override_pct",
+            "lot_per_leg",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at", "strategy_name", "lot_per_leg"]
 
 class StrategyChangeLogSerializer(serializers.ModelSerializer):
     changed_by_email = serializers.EmailField(

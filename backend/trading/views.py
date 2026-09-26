@@ -360,7 +360,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         nothing. STANDARD ⇒ concurrent_limit 1; CONCURRENT ⇒ the configured/overridden limit."""
         from billing.entitlements import resolve_effective_entitlements
         from trading.account_entitlement import (active_account_count, effective_concurrent_limit,
-                                                  effective_owned_limit, owned_account_count)
+                                                  effective_owned_limit, enforcement_enabled,
+                                                  owned_account_count)
         ent = resolve_effective_entitlements(request.user)
         return Response({
             "account_mode": getattr(ent, "account_mode", "standard"),
@@ -368,6 +369,11 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             "concurrent_limit": effective_concurrent_limit(ent),
             "owned_count": owned_account_count(request.user),
             "owned_limit": effective_owned_limit(ent),
+            # Whether the backend will ACTUALLY apply STANDARD/CONCURRENT switch semantics for this
+            # user (master kill on AND a per-user grant). The UI must gate the "the other account
+            # stops trading" STANDARD confirm on THIS, not on account_mode alone — otherwise it would
+            # promise a switch the backend won't perform for an un-enforced owner.
+            "switch_enforced": enforcement_enabled(request.user),
         }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["POST"], url_path="set-active")
@@ -391,50 +397,57 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             is_active = bool(raw)
 
         if not acc.mt5_instance_id:
-            # IPR Area B (C2): a dedicated-runtime (beta) account has no shared MT5 instance — the
-            # runtime IS its terminal. When the runtime is ready, the active flip is a plain state
-            # change: there is no EA-login precondition and no "one-active-per-instance" sibling rule
-            # (the runtime is 1:1 with the account). Self-service arming requires the account be active,
-            # so this flip must succeed instead of the legacy 409. Legacy shared-instance accounts fall
-            # through to the unchanged path below.
-            if _account_runtime_ready(acc):
-                # Phase C — apply the entitlement's ACTIVATION semantics ONLY when this account's OWNER is
-                # per-user enforced (``enforcement_enabled(acc.user)`` = master kill on, default, AND an active
-                # per-user grant). Un-granted owners (the whole estate by default, empty allowlist) take the
-                # exact legacy plain-flip below — byte-identical. STANDARD: activating this account atomically
-                # deactivates the owner's OTHER active accounts (one-active-per-USER — hosted accounts have
-                # mt5_instance=None so the legacy per-instance rule can't cover them). CONCURRENT: refuse beyond
-                # the concurrent-active limit. This only toggles ``is_active`` — it NEVER arms execution (the
-                # layered arm + live-bridge gate remains the sole order authority).
-                from trading.account_entitlement import enforcement_enabled
-                if is_active and enforcement_enabled(user):
-                    from django.db import transaction as _txn
-                    from django.utils import timezone as _tz
-                    from rest_framework.exceptions import ValidationError as _DRFValidationError
-                    from billing.entitlements import AccountMode, resolve_effective_entitlements
-                    from trading.account_entitlement import check_can_activate
-                    with _txn.atomic():
-                        type(user).objects.select_for_update().get(pk=user.pk)   # serialise this user's switches
-                        ent = resolve_effective_entitlements(user)
-                        if str(getattr(ent, "account_mode", AccountMode.STANDARD)) == AccountMode.CONCURRENT:
-                            try:
-                                check_can_activate(user, exclude_account_id=acc.id)
-                            except _DRFValidationError as exc:
-                                detail = exc.detail.get("detail") if isinstance(exc.detail, dict) else exc.detail
-                                return Response({"detail": detail}, status=status.HTTP_409_CONFLICT)
-                        else:  # STANDARD — one active per user; deactivate the others atomically first
-                            (TradingAccount.objects.filter(user=user, is_active=True,
-                                                           disconnected_at__isnull=True)
-                             .exclude(id=acc.id).update(is_active=False, updated_at=_tz.now()))
-                        acc.is_active = True
-                        acc.save(update_fields=["is_active", "updated_at"])
-                    return Response({"ok": True, "id": acc.id, "is_active": acc.is_active},
-                                    status=status.HTTP_200_OK)
-                acc.is_active = is_active
+            # IPR Area B (C2): a dedicated-runtime (beta/hosted) account has no shared MT5 instance — the
+            # runtime IS its terminal. "Active" here == ELIGIBLE FOR AUTOMATED DISPATCH ("Start/Stop
+            # trading"); it NEVER connects/disconnects the broker, starts/stops MT5, creates/deletes the
+            # runtime, or logs in/out. It only toggles ``is_active`` and NEVER arms execution (the layered
+            # arm + live-bridge gate remains the sole order authority).
+            from trading.account_entitlement import enforcement_enabled
+            # STOP TRADING must ALWAYS succeed — a customer can make an account ineligible for new
+            # automated execution even when its runtime is unhealthy. Fail-safe: we may block START when
+            # the runtime isn't ready, but we must NEVER block STOP. Zero active accounts is a valid state
+            # (a customer may stop automated trading on every account).
+            if not is_active:
+                acc.is_active = False
                 acc.save(update_fields=["is_active", "updated_at"])
+                return Response({"ok": True, "id": acc.id, "is_active": False},
+                                status=status.HTTP_200_OK)
+            # START TRADING — requires a ready runtime (readiness is a START precondition only).
+            if not _account_runtime_ready(acc):
+                return Response({"detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
+            # Apply the entitlement's ACTIVATION semantics ONLY when this account's OWNER is per-user
+            # enforced (``enforcement_enabled(user)`` = master kill on, default, AND an active per-user
+            # grant). Un-granted owners (the whole estate by default, empty allowlist) take the plain flip
+            # below — byte-identical. STANDARD: starting this account atomically stops the owner's OTHER
+            # active accounts (one-active-per-USER — hosted accounts have mt5_instance=None so the legacy
+            # per-instance rule can't cover them). CONCURRENT: refuse beyond the concurrent-active limit.
+            if enforcement_enabled(user):
+                from django.db import transaction as _txn
+                from django.utils import timezone as _tz
+                from rest_framework.exceptions import ValidationError as _DRFValidationError
+                from billing.entitlements import AccountMode, resolve_effective_entitlements
+                from trading.account_entitlement import check_can_activate
+                with _txn.atomic():
+                    type(user).objects.select_for_update().get(pk=user.pk)   # serialise this user's switches
+                    ent = resolve_effective_entitlements(user)
+                    if str(getattr(ent, "account_mode", AccountMode.STANDARD)) == AccountMode.CONCURRENT:
+                        try:
+                            check_can_activate(user, exclude_account_id=acc.id)
+                        except _DRFValidationError as exc:
+                            detail = exc.detail.get("detail") if isinstance(exc.detail, dict) else exc.detail
+                            return Response({"detail": detail}, status=status.HTTP_409_CONFLICT)
+                    else:  # STANDARD — one active per user; stop the others atomically first
+                        (TradingAccount.objects.filter(user=user, is_active=True,
+                                                       disconnected_at__isnull=True)
+                         .exclude(id=acc.id).update(is_active=False, updated_at=_tz.now()))
+                    acc.is_active = True
+                    acc.save(update_fields=["is_active", "updated_at"])
                 return Response({"ok": True, "id": acc.id, "is_active": acc.is_active},
                                 status=status.HTTP_200_OK)
-            return Response({"detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
+            acc.is_active = True
+            acc.save(update_fields=["is_active", "updated_at"])
+            return Response({"ok": True, "id": acc.id, "is_active": acc.is_active},
+                            status=status.HTTP_200_OK)
 
         # Block turning off the last active account for this instance
         if (not is_active) and acc.is_active:

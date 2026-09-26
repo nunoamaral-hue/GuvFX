@@ -193,6 +193,48 @@ export function maskAccountNumber(n: string | null | undefined): string {
   return "••••" + s.slice(-4);
 }
 
+/** A hosted account created without an explicit broker name carries the generic infrastructure
+ * placeholder; never surface it to the customer. */
+const GENERIC_ACCOUNT_NAME = "hosted workspace";
+
+type BrokerNamed = {
+  broker_display_name?: string | null;
+  broker_name?: string | null;
+  server_name?: string | null;
+  name?: string | null;
+};
+
+/** Derive a friendly broker name from an authoritative server name when no display name is stored, e.g.
+ * "IS6Technologies-Demo" → "IS6 Technologies", "PepperstoneUK-Demo" → "Pepperstone UK". General (never
+ * hardcodes a broker): strips a trailing environment suffix, then spaces camelCase boundaries. */
+function deriveBrokerFromServer(server: string | null | undefined): string {
+  const base = String(server ?? "").trim().replace(/-(demo|live|real|ecn|pro|std|standard|server\d*|\d+)$/i, "");
+  if (!base) return "";
+  return base
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim();
+}
+
+/** The authoritative customer-facing broker identity for an account. Prefers the stored broker display
+ * name, then a real broker_name (anything other than the generic "Hosted Workspace" placeholder), then a
+ * name derived from the authoritative server name. Presentation only — never mutates stored data. */
+export function brokerLabel(account: BrokerNamed): string {
+  const disp = (account.broker_display_name || "").trim();
+  if (disp) return disp;
+  const bn = (account.broker_name || "").trim();
+  if (bn && bn.toLowerCase() !== GENERIC_ACCOUNT_NAME) return bn;
+  return deriveBrokerFromServer(account.server_name) || bn || "Broker";
+}
+
+/** The account title to show a customer: the account's own name unless it is empty or the generic
+ * "Hosted Workspace" placeholder, in which case fall back to the authoritative broker identity. */
+export function accountTitle(account: BrokerNamed): string {
+  const name = (account.name || "").trim();
+  if (name && name.toLowerCase() !== GENERIC_ACCOUNT_NAME) return name;
+  return brokerLabel(account);
+}
+
 /** Turn a caught error into customer-safe wording. `apiFetch` throws the DRF `detail` (already
  * customer-safe) for most errors, but for field-shaped validation errors it throws `JSON.stringify(obj)`
  * — this flattens that into the plain validation sentences and never shows the customer a raw JSON blob

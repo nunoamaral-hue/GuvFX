@@ -19,6 +19,8 @@
   "src/components/backtests/SessionHeatmap.tsx",
   "src/components/backtests/index.ts",
   "src/components/broker/AccountCard.tsx",
+  "src/components/broker/AccountManageContent.tsx",
+  "src/components/broker/AccountStrategiesContent.tsx",
   "src/components/broker/BrokerAccountDetailContent.tsx",
   "src/components/broker/BrokerAccountWizard.tsx",
   "src/components/broker/BrokerAccountsContent.tsx",

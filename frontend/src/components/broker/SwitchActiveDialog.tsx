@@ -5,6 +5,7 @@ import { Dialog } from "@/components/broker/Dialog";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import type { BrokerAccount } from "@/types/broker";
+import { accountTitle } from "@/lib/broker-status";
 
 /** Phase C4 (DARK) — STANDARD-mode "activate this account" confirmation.
  *
@@ -25,7 +26,7 @@ type Props = {
 
 function label(a: BrokerAccount | null): string {
   if (!a) return "your current account";
-  return a.name || a.broker_display_name || a.broker_name || `Account ${a.id}`;
+  return accountTitle(a) || `Account ${a.id}`;
 }
 
 export const SwitchActiveDialog: React.FC<Props> = ({
@@ -38,7 +39,7 @@ export const SwitchActiveDialog: React.FC<Props> = ({
         Only one account can trade at a time on your plan.
       </Alert>
       <p style={{ color: "#cbd5f5", fontSize: "0.9rem", lineHeight: 1.6, margin: "12px 0 0" }}>
-        Activating <strong>{label(target)}</strong> will stop{" "}
+        Starting trading on <strong>{label(target)}</strong> will stop{" "}
         <strong>{label(currentActive)}</strong> from trading. Your other account stays connected — it just
         won&apos;t place new trades until you switch back.
       </p>
@@ -46,7 +47,7 @@ export const SwitchActiveDialog: React.FC<Props> = ({
       <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <Button type="button" variant="secondary" onClick={close} disabled={busy}>Cancel</Button>
         <Button type="button" onClick={onConfirm} disabled={busy}>
-          {busy ? "Switching…" : `Activate ${label(target)}`}
+          {busy ? "Starting…" : `Start trading on ${label(target)}`}
         </Button>
       </div>
     </Dialog>
