@@ -314,9 +314,10 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         # ``runtime`` (reverse OneToOne AccountRuntime) is prefetched so the serializer's
-        # runtime_ready/runtime_state fields (IPR Area B / C6) add no per-row query.
+        # runtime_ready/runtime_state fields (IPR Area B / C6) add no per-row query. ``hosted_workspace``
+        # (reverse OneToOne) is joined so the new ``trading_state`` field's readiness read adds no N+1.
         qs = TradingAccount.objects.select_related(
-            "user", "broker_server", "mt5_instance", "runtime").all()
+            "user", "broker_server", "mt5_instance", "runtime", "hosted_workspace").all()
         # Phase C4 — prefetch StrategyAssignments so the serializer's active_strategy_count adds no N+1.
         qs = qs.prefetch_related("strategy_assignments")
         if not user.is_staff:
@@ -412,7 +413,28 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
                 acc.save(update_fields=["is_active", "updated_at"])
                 return Response({"ok": True, "id": acc.id, "is_active": False},
                                 status=status.HTTP_200_OK)
-            # START TRADING — requires a ready runtime (readiness is a START precondition only).
+            # START TRADING — managed lifecycle (DARK). When MANAGED_START_TRADING_ENABLED is on, orchestrate
+            # validate → product-promote → ensure Algo capability → arm → commit is_active, and return the
+            # TRUTHFUL trading state (never a false "Trading"). Flag OFF ⇒ ``applies`` is False and the legacy
+            # flip below runs byte-for-byte. Fail-closed: a hard precondition failure returns 409 and does NOT
+            # make the account active.
+            from trading.managed_start import managed_start_trading
+            from rest_framework.exceptions import ValidationError as _DRFValidationError
+            try:
+                _res = managed_start_trading(
+                    acc, user, actor=str(getattr(request.user, "email", "") or ""), request=request)
+            except _DRFValidationError as exc:  # concurrent-active entitlement breach from the managed commit
+                detail = exc.detail.get("detail") if isinstance(exc.detail, dict) else exc.detail
+                return Response({"detail": detail}, status=status.HTTP_409_CONFLICT)
+            if _res.applies:
+                if not _res.ok:
+                    return Response({"detail": _res.detail or "Unable to start trading.",
+                                     "reason": _res.reason, "trading_state": _res.trading_state},
+                                    status=status.HTTP_409_CONFLICT)
+                return Response({"ok": True, "id": acc.id, "is_active": acc.is_active,
+                                 "trading_state": _res.trading_state, "reason": _res.reason},
+                                status=status.HTTP_200_OK)
+            # START TRADING (legacy) — requires a ready runtime (readiness is a START precondition only).
             if not _account_runtime_ready(acc):
                 return Response({"detail": "This account isn't connected to a trading terminal yet. Add and validate your broker credentials to continue."}, status=status.HTTP_409_CONFLICT)
             # Apply the entitlement's ACTIVATION semantics ONLY when this account's OWNER is per-user

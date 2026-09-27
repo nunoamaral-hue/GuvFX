@@ -123,6 +123,21 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
     ? (hostedConnected ? "Connected" : hostedDeliverable ? "Login required" : "Preparing…")
     : (status?.is_active ? "Connected" : status?.disconnected_at ? "Disconnected" : "Login required");
 
+  // Objective E — "Automated trading" reflects the authoritative server-computed trading_state, never
+  // is_active alone (an is_active=True account whose MT5 can't auto-trade must read "Preparing…", not "Trading").
+  const ts = account.trading_state;
+  const tradingFact: { value: string; color: "green" | "gray" | "blue" | "red" | "yellow" } = ts?.label
+    ? {
+        value: ts.label,
+        color: ts.state === "TRADING" ? "green"
+          : ts.state === "PREPARING" ? "blue"
+          : ts.state === "ATTENTION" || ts.state === "BROKER_LOGIN_REQUIRED" ? "red"
+          : "gray",
+      }
+    // Fallback only when the API omitted trading_state: never re-derive a green "Trading" from is_active
+    // alone (the banned Pepperstone pattern) — show a neutral label.
+    : { value: isActive ? "Started" : "Stopped", color: "gray" };
+
   return (
     <div style={wrap}>
       <div style={{ marginBottom: 6 }}>
@@ -143,10 +158,14 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
       <div style={grid}>
         <Fact label="Broker connection" value={connectionLabel} />
         <Fact label="Terminal" value={terminalLabel} />
-        <Fact label="Automated trading" value={isActive ? "Trading" : "Stopped"}
-              badge={isActive ? "green" : "gray"} />
+        <Fact label="Automated trading" value={tradingFact.value} badge={tradingFact.color} />
         <Fact label="Strategies" value={strategyCount === null ? "…" : `${strategyCount} assigned`} />
       </div>
+
+      {/* Objective E — surface the server's actionable guidance for non-trading states (rendered verbatim). */}
+      {ts?.detail && ts.state !== "TRADING" && (
+        <div style={{ color: "#cbd5f5", fontSize: "0.86rem", lineHeight: 1.5, marginTop: 10 }}>{ts.detail}</div>
+      )}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
         {isHosted
@@ -185,7 +204,7 @@ const btnLink: React.CSSProperties = {
   color: "#93c5fd", fontSize: "0.9rem", padding: "8px 14px", cursor: "pointer", textDecoration: "none",
 };
 
-const Fact: React.FC<{ label: string; value: string; badge?: "green" | "gray" }> = ({ label, value, badge }) => (
+const Fact: React.FC<{ label: string; value: string; badge?: "green" | "gray" | "blue" | "red" | "yellow" }> = ({ label, value, badge }) => (
   <div style={{ border: "1px solid rgba(255,255,255,0.09)", borderRadius: 12, padding: "0.8rem 0.9rem", background: "rgba(12,18,40,0.6)" }}>
     <div style={{ fontSize: "0.75rem", color: "#8fa0b7", textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
     <div style={{ marginTop: 6 }}>

@@ -35,6 +35,33 @@ export function connectionView(isActive: boolean, disconnectedAt: string | null 
   return isActive ? { label: "Connected", color: "green" } : { label: "Inactive", color: "gray" };
 }
 
+/** Objective E — the ONE authoritative trading state, rendered VERBATIM from the backend ``trading_state``
+ * projection (label/detail computed server-side from the SAME readiness authority the order-time gate uses).
+ * The UI NEVER derives "Trading" from ``is_active`` alone — that was the Pepperstone bug (is_active=True while
+ * MT5 trade_allowed=False showed "Trading"). ``tradingStateBadge`` returns null for the connection-only states
+ * whose meaning the broker-connection badges already convey, so the trading badge appears only when it adds
+ * information (and, critically, only shows green "Trading" when the account is genuinely execution-ready). */
+export type TradingState = { state?: string; label?: string; detail?: string } | null | undefined;
+
+const TRADING_BADGE_COLOR: Record<string, BadgeColor> = {
+  TRADING: "green",
+  PREPARING: "blue",
+  ATTENTION: "red",
+  TRADING_STOPPED: "gray",
+  BROKER_CONNECTED: "gray",
+  BROKER_LOGIN_REQUIRED: "yellow",
+};
+
+export function tradingStateBadge(ts: TradingState): { label: string; color: BadgeColor } | null {
+  const code = String(ts?.state ?? "").trim();
+  if (!code) return null;
+  // Connection-only states are already shown by the broker-connection badges — don't double up.
+  if (code === "BROKER_CONNECTED" || code === "BROKER_LOGIN_REQUIRED") return null;
+  const label = String(ts?.label ?? "").trim();
+  if (!label) return null;
+  return { label, color: TRADING_BADGE_COLOR[code] ?? "gray" };
+}
+
 /** reason_code → customer-safe message. Unknown codes fall back to a generic line — never the raw code. */
 const REASON: Record<string, string> = {
   demo_ok: "Demo account verified.",

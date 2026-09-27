@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/broker/StatusBadge";
 import type { BrokerAccount, BrokerStatus, DeliveryStateResult } from "@/types/broker";
 import {
   accountTitle, brokerLabel, connectionView, lastValidatedLine, latestAttemptLine, maskAccountNumber,
-  validationStatusView,
+  tradingStateBadge, validationStatusView,
 } from "@/lib/broker-status";
 
 /** WP4.2 — one broker account summary. `status` (from broker/status) is optional: while it loads, or if
@@ -53,6 +53,9 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
   const validation = validationStatusView(status?.validation_status);
   const isActive = status ? status.is_active : account.is_active;
   const connection = connectionView(isActive, status?.disconnected_at);
+  // Objective E — authoritative trading state (server-computed), rendered verbatim; null when a connection
+  // badge already conveys it (BROKER_CONNECTED / BROKER_LOGIN_REQUIRED).
+  const tradingBadge = tradingStateBadge(account.trading_state);
   const strategyCount = account.active_strategy_count ?? 0;
   // Defence-in-depth: only ever render an http(s) Myfxbook link (the backend URLField already restricts
   // schemes, but never render a non-http scheme into an href on the client either).
@@ -108,7 +111,14 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
               </>}
         {/* Phase C4 — assigned-strategies badge (N:M via StrategyAssignment). */}
         <Badge color="gray">{strategyCount === 1 ? "1 strategy" : `${strategyCount} strategies`}</Badge>
-        {isActive && <Badge color="green">Trading</Badge>}
+        {/* Objective E — the truthful trading state, rendered VERBATIM from the backend projection. Never
+            derive "Trading" from is_active: an account can be is_active=True while MT5 cannot auto-trade
+            (trade_allowed=False), which must read "Preparing…"/"Action required", not a false "Trading". */}
+        {tradingBadge && (
+          <span title={account.trading_state?.detail || undefined}>
+            <Badge color={tradingBadge.color}>{tradingBadge.label}</Badge>
+          </span>
+        )}
       </div>
 
       {/* WS-C — Current validation state (badge above), Last successful validation, and Latest attempt are
