@@ -184,6 +184,38 @@ class AuthorizeWorkspaceExecutionTests(TestCase):
         self.assertEqual(res.reason, P.AUTHZ_NOT_READY)
         self.assertIsNone(ws.__class__.objects.get(pk=ws.pk).execution_authorized_at)
 
+    def test_pre_ready_records_authz_but_defers_arm(self):
+        # Managed one-click Start: allow_pre_ready records the customer authorization on a CONNECTED (not yet
+        # EXECUTION_READY) workspace, so the per-minute auto_arm completes the arm once recovery makes it ready.
+        # It must NOT arm early — execution_enabled stays False until EXECUTION_READY.
+        user, acct = _account()
+        ws = _ready_ws(acct, authorized=False, canonical_state=S.CONNECTED, proj_trade_allowed=False,
+                       proj_execution_ready=False)
+        res = P.authorize_workspace_execution(user, ws, allow_pre_ready=True)
+        self.assertTrue(res.ok, res.reason)
+        self.assertEqual(res.reason, P.AUTHZ_OK)
+        ws.refresh_from_db()
+        self.assertIsNotNone(ws.execution_authorized_at)   # authorization durably recorded at click
+        self.assertFalse(ws.execution_enabled)             # NOT armed early (not EXECUTION_READY yet)
+
+    def test_pre_ready_still_requires_connected_and_matched(self):
+        user, acct = _account()
+        ws = _ready_ws(acct, authorized=False, canonical_state=S.CONNECTED, proj_connected=False,
+                       proj_execution_ready=False)
+        res = P.authorize_workspace_execution(user, ws, allow_pre_ready=True)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, P.AUTHZ_NOT_READY)    # identity (connected+matched) still required
+        self.assertIsNone(ws.__class__.objects.get(pk=ws.pk).execution_authorized_at)
+
+    def test_pre_ready_still_requires_confirmed(self):
+        user, acct = _account()
+        ws = _ready_ws(acct, authorized=False, confirmed=False, canonical_state=S.CONNECTED,
+                       proj_execution_ready=False)
+        res = P.authorize_workspace_execution(user, ws, allow_pre_ready=True)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, P.AUTHZ_NOT_CONFIRMED)   # confirm still precedes authorization
+        self.assertIsNone(ws.__class__.objects.get(pk=ws.pk).execution_authorized_at)
+
     def test_refused_for_non_owner(self):
         _owner, acct = _account()
         ws = _ready_ws(acct, authorized=False)

@@ -125,27 +125,59 @@ def _promote_product_assignments(account, active_assignments) -> list:
     return promoted
 
 
-def _commit_active(account, user) -> None:
-    """Flip is_active=True with the EXISTING STANDARD/CONCURRENT entitlement semantics (reuses the same
-    enforcement helpers as the legacy set_active path — no new concurrency rule)."""
+class _StartAbort(Exception):
+    """Internal sentinel: a GOVERNED refusal (confirm/authorize) inside the activation transaction. Raising it
+    rolls the whole transaction back (nothing confirmed/authorized/activated) and is translated to a fail-closed
+    StartResult by the caller. (A CONCURRENT-limit breach raises DRFValidationError instead, which likewise rolls
+    the transaction back and is surfaced by the view as 409.)"""
+    def __init__(self, reason: str, detail: str):
+        self.reason = reason
+        self.detail = detail
+        super().__init__(reason)
+
+
+def _activate_with_authorization(account, user, ws, *, authorizes, actor, request) -> None:
+    """Entitlement-gated activation + (managed) confirm + authorization as ONE atomic unit under the user-row
+    lock, so a CONCURRENT-limit breach or a governed refusal rolls back EVERYTHING (is_active, confirm,
+    authorization). This closes the hole where ``confirm_broker_account`` (which sets is_active itself) could
+    activate + authorize an account that the entitlement check would then reject — leaving a rejected account for
+    the per-minute auto_arm to arm. Raises DRFValidationError (breach) or ``_StartAbort`` (governed refusal);
+    both roll back. Does NO host I/O (capability_recovery/arm run AFTER, outside the lock)."""
     from trading.account_entitlement import enforcement_enabled
-    if not enforcement_enabled(user):
-        account.is_active = True
-        account.save(update_fields=["is_active", "updated_at"])
-        return
-    from billing.entitlements import AccountMode, resolve_effective_entitlements
-    from trading.account_entitlement import check_can_activate
     from trading.models import TradingAccount
+    from hosted_workspace.provisioning import confirm_broker_account, authorize_workspace_execution
     with transaction.atomic():
-        type(user).objects.select_for_update().get(pk=user.pk)
-        ent = resolve_effective_entitlements(user)
-        if str(getattr(ent, "account_mode", AccountMode.STANDARD)) == AccountMode.CONCURRENT:
-            check_can_activate(user, exclude_account_id=account.id)   # raises DRF ValidationError on breach
-        else:
-            (TradingAccount.objects.filter(user=user, is_active=True, disconnected_at__isnull=True)
-             .exclude(id=account.id).update(is_active=False, updated_at=timezone.now()))
-        account.is_active = True
-        account.save(update_fields=["is_active", "updated_at"])
+        # 1) Entitlement-gated activation FIRST, under the user-row lock (same semantics as the legacy path).
+        if enforcement_enabled(user):
+            from billing.entitlements import AccountMode, resolve_effective_entitlements
+            from trading.account_entitlement import check_can_activate
+            type(user).objects.select_for_update().get(pk=user.pk)
+            ent = resolve_effective_entitlements(user)
+            if str(getattr(ent, "account_mode", AccountMode.STANDARD)) == AccountMode.CONCURRENT:
+                check_can_activate(user, exclude_account_id=account.id)   # raises DRFValidationError -> rollback
+            else:  # STANDARD — deactivate siblings atomically with this activation (no transient two-active window)
+                (TradingAccount.objects.filter(user=user, is_active=True, disconnected_at__isnull=True)
+                 .exclude(id=account.id).update(is_active=False, updated_at=timezone.now()))
+        # 2) Managed one-click confirm + authorization, in the SAME transaction (governed refusal -> rollback).
+        if authorizes:
+            if getattr(account, "workspace_confirmed_at", None) is None:
+                cr = confirm_broker_account(user, ws, actor=actor or "managed_start", request=request)
+                if not cr.ok:
+                    raise _StartAbort("not_confirmed",
+                                      "We couldn't confirm your broker account yet. Please try again shortly.")
+                account.refresh_from_db()
+            if getattr(ws, "execution_authorized_at", None) is None:
+                ar = authorize_workspace_execution(user, ws, actor=actor or "managed_start", request=request,
+                                                   allow_pre_ready=True)
+                if not ar.ok:
+                    raise _StartAbort("not_authorized",
+                                      "We couldn't enable automated trading yet. Please try again shortly.")
+                ws.refresh_from_db()
+        # 3) Commit is_active (confirm may already have set it; ensure it + covers the flag-off path).
+        account.refresh_from_db()
+        if account.is_active is not True:
+            account.is_active = True
+            account.save(update_fields=["is_active", "updated_at"])
 
 
 _RUNTIME_FAIL_MESSAGES = {
@@ -235,34 +267,26 @@ def managed_start_trading(account, user, *, actor: str = "", request=None) -> St
         except Exception:  # noqa: BLE001
             return _fail("invalid_sizing", "This strategy's trade size isn't set correctly.")
 
-    # 6) explicit human execution authority (ADR-0047) + onboarding confirm. By default REQUIRED; only when the
-    # separately-gated decision is on does the Start click itself stand in for them (DEMO, human-initiated).
-    if managed_start_authorizes_execution():
-        _fields = []
-        if getattr(account, "workspace_confirmed_at", None) is None:
-            account.workspace_confirmed_at = timezone.now(); _fields.append("workspace_confirmed_at")
-        if _fields:
-            account.save(update_fields=_fields + ["updated_at"])
-        if getattr(ws, "execution_authorized_at", None) is None:
-            from hosted_workspace.provisioning import authorize_workspace_execution
-            authorize_workspace_execution(user, ws, actor=actor or "managed_start", request=request)
-            ws.refresh_from_db(fields=["execution_authorized_at"])
-    else:
+    # 6) explicit human execution authority (ADR-0047) + onboarding confirm + entitlement-gated activation, as
+    # ONE atomic unit (see _activate_with_authorization). capability_recovery is ASYNC, so at click the workspace
+    # is usually CONNECTED (not yet EXECUTION_READY); the managed one-click flow (Sponsor-approved) records
+    # confirm + authorization NOW (authorize with allow_pre_ready) so the per-minute observation cron completes
+    # the arm (auto_arm) once EXECUTION_READY. is_active alone never authorizes an order — the claim/bridge gates
+    # still require the full readiness — so committing while capability is being restored is honest, not a false
+    # "Trading" (the read-model reports PREPARING until genuinely ready). Default (flag off): confirm +
+    # authorization must ALREADY exist (checked read-only BEFORE any mutation).
+    authorizes = managed_start_authorizes_execution()
+    if not authorizes:
         if getattr(account, "workspace_confirmed_at", None) is None:
             return _fail("not_confirmed", "Please confirm this is your broker account before starting trading.")
         if getattr(ws, "execution_authorized_at", None) is None:
             return _fail("not_authorized", "Please enable automated trading for this account first.")
+    try:
+        _activate_with_authorization(account, user, ws, authorizes=authorizes, actor=actor, request=request)
+    except _StartAbort as exc:
+        return _fail(exc.reason, exc.detail)   # governed refusal — nothing activated/confirmed/authorized
 
-    # 7) COMMIT is_active (intent) with the existing STANDARD/CONCURRENT entitlement semantics — FIRST, so a
-    # concurrency-limit breach fails closed here (before any promotion) and so the subsequent arm sees
-    # is_active=True (arm_preconditions requires it). is_active alone never authorizes an order — the
-    # claim/bridge gates still require the full readiness — so committing while capability is still being
-    # restored is honest, not a false "Trading" (the read-model reports PREPARING until genuinely ready).
-    # Ordering (commit → promote → arm) also makes promotion atomic w.r.t. a successful activation: a Start
-    # that fails the concurrency check never promotes an assignment to LIVE/AUTO_DEMO.
-    _commit_active(account, user)
-
-    # 8) ensure automated-trading capability (Algo). Account-scoped; reuses the existing recovery mechanism.
+    # 7) ensure automated-trading capability (Algo). Account-scoped; reuses the existing recovery mechanism.
     recovery = {}
     ws.refresh_from_db()
     if ws.proj_trade_allowed is not True:
