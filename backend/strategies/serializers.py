@@ -331,12 +331,15 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
         return str(sizing.lot_per_leg) if sizing is not None else None
 
     def validate(self, attrs):
-        is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
-        account = attrs.get("account", getattr(self.instance, "account", None))
-
-        if is_active and account and not account.is_active:
-            raise serializers.ValidationError("Cannot activate assignment on an inactive TradingAccount.")
-
+        # A StrategyAssignment MAY be created/configured while its TradingAccount is STOPPED (is_active=False)
+        # — a member configures strategies BEFORE starting automated trading (the target member lifecycle).
+        # There is deliberately NO "account must be active" guard here. Zero-dispatch on an inactive account
+        # is enforced at the DISPATCH layer, independently of this write path: the fan-out router filters
+        # account__is_active=True (execution/auto_router._resolve_targets), the schedulers pre-filter it, and
+        # the manual evaluate path is guarded at strategies/signal_engine.run_signal_evaluation (the single
+        # chokepoint for every template engine). A fresh assignment is also stage=TEST / execution_mode=MANUAL
+        # (non-routable until a separate gated promotion). The removed guard blocked the member Add-Strategy
+        # flow on a stopped account while adding zero dispatch safety.
         return attrs
 
     class Meta:
