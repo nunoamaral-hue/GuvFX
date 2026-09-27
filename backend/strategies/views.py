@@ -21,7 +21,8 @@ from .models import (
     StrategyRuntimeEvent,
     seed_default_leg_sizing,
 )
-from .assignment_service import assert_assignment_ownership, initialize_new_assignment
+from .assignment_service import (
+    assert_assignment_ownership, assert_no_duplicate_family, initialize_new_assignment, strategy_family)
 from .serializers import (
     StrategySerializer,
     StrategyAssignmentSerializer,
@@ -712,8 +713,12 @@ class StrategyViewSet(viewsets.ModelViewSet):
             qs = Strategy.objects.filter(is_active=True)
         else:
             qs = Strategy.objects.filter(Q(owner=user) | Q(is_marketplace=True), is_active=True)
-        rows = qs.order_by("name", "id").values("id", "name", "is_marketplace")
-        return Response(list(rows))
+        # Include ONLY id/name/is_marketplace + the family (template_slug) — never the proprietary definition.
+        # ``family`` lets the account picker hide a strategy whose family is already assigned to the account.
+        rows = qs.order_by("name", "id").only("id", "name", "is_marketplace", "filters")
+        data = [{"id": s.id, "name": s.name, "is_marketplace": s.is_marketplace, "family": strategy_family(s)}
+                for s in rows]
+        return Response(data)
 
     def _signal_copy_backing_ids(self, request):
         """AJ#7.2 — the set of Strategy ids that BACK a signal-copy product the caller owns, across every
@@ -1756,6 +1761,9 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
         # AND the strategy. Fail-closed — a foreign strategy on an owned account (or an owned strategy
         # onto a foreign account) is 403, not a silent success. Staff bypass preserved.
         assert_assignment_ownership(user=user, account=account, strategy=strategy)
+        # Legacy-transition guard: never let the SAME strategy family (e.g. the canonical marketplace Wayond
+        # WIM) be assigned onto an account that already runs a legacy copy of that family (double-run). 400.
+        assert_no_duplicate_family(account=account, strategy=strategy)
 
         with transaction.atomic():
             obj = serializer.save()
@@ -1784,6 +1792,12 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
         account = serializer.validated_data.get("account", instance.account)
         strategy = serializer.validated_data.get("strategy", instance.strategy)
         assert_assignment_ownership(user=user, account=account, strategy=strategy)
+        # Same-family double-run guard on the update path too — a PATCH can repoint strategy/account OR
+        # reactivate a row into a second ACTIVE same-family assignment, bypassing the create-time guard.
+        # Only enforce when the RESULT is active (deactivating can never cause a double-run); the guard
+        # excludes this row's own strategy, so a no-op edit never false-clashes.
+        if serializer.validated_data.get("is_active", instance.is_active):
+            assert_no_duplicate_family(account=account, strategy=strategy)
         serializer.save()
 
     def perform_destroy(self, instance):

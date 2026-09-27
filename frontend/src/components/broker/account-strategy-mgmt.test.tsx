@@ -177,6 +177,37 @@ describe("AccountStrategiesContent (Phase 3/4/5)", () => {
     expect(await screen.findByRole("option", { name: "GuvFX Momentum (Marketplace)" })).toBeInTheDocument();
   });
 
+  it("hides a strategy whose FAMILY is already assigned (canonical not offered on a legacy-WIM account)", async () => {
+    broker.getAccount.mockResolvedValue(PEPPERSTONE);
+    // account already runs a legacy WIM (family wayond-wim)
+    asn.listAccountAssignments.mockResolvedValue([
+      { id: 16, strategy: 10, strategy_name: "Wayond WIM", strategy_family: "wayond-wim", account: 35, is_active: true, stage: "LIVE" },
+    ]);
+    // canonical (different id, same family) + an unrelated strategy
+    asn.listAssignableStrategies.mockResolvedValue([
+      { id: 99, name: "Wayond WIM Strategy", is_marketplace: true, family: "wayond-wim" },
+      { id: 77, name: "Momentum X", is_marketplace: true, family: "momentum-x" },
+    ]);
+    render(<AccountStrategiesContent accountId={35} />);
+    expect(await screen.findByRole("option", { name: "Momentum X" })).toBeInTheDocument();
+    // the canonical WIM is NOT offered — its family is already assigned (would double-run)
+    expect(screen.queryByRole("option", { name: "Wayond WIM Strategy" })).not.toBeInTheDocument();
+  });
+
+  it("an INACTIVE same-family assignment does NOT hide the canonical (transition stays possible)", async () => {
+    broker.getAccount.mockResolvedValue(PEPPERSTONE);
+    // legacy WIM present but STOPPED (is_active false) — matches the backend active-only family guard
+    asn.listAccountAssignments.mockResolvedValue([
+      { id: 16, strategy: 10, strategy_name: "Wayond WIM", strategy_family: "wayond-wim", account: 35, is_active: false, stage: "TEST" },
+    ]);
+    asn.listAssignableStrategies.mockResolvedValue([
+      { id: 99, name: "Wayond WIM Strategy", is_marketplace: true, family: "wayond-wim" },
+    ]);
+    render(<AccountStrategiesContent accountId={35} />);
+    // canonical IS offered because the only same-family row is inactive
+    expect(await screen.findByRole("option", { name: "Wayond WIM Strategy" })).toBeInTheDocument();
+  });
+
   it("Configure opens the ASSIGNMENT-specific route (not the global strategy page)", async () => {
     broker.getAccount.mockResolvedValue(PEPPERSTONE);
     asn.listAccountAssignments.mockResolvedValue([

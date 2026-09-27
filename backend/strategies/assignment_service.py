@@ -21,10 +21,42 @@ ONE authoritative place for two concerns the member-launch UX depends on:
 """
 from __future__ import annotations
 
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from strategies.magic_allocation import allocate_magic
 from strategies.models import seed_default_leg_sizing
+
+
+def strategy_family(strategy):
+    """The stable strategy-FAMILY identity — the marketplace ``template_slug`` — which is the SAME across a
+    canonical marketplace strategy and its legacy per-user copies (e.g. every "Wayond WIM" copy shares
+    ``wayond-wim``). Used to prevent a semantically-duplicate assignment of the same family on one account
+    during the legacy transition. Returns None for a strategy with no family (a bespoke/private strategy),
+    in which case only the exact (strategy, account) DB uniqueness applies. NEVER name-string based."""
+    filters = getattr(strategy, "filters", None)
+    if isinstance(filters, dict):
+        slug = filters.get("template_slug")
+        if slug:
+            return str(slug)
+    return None
+
+
+def assert_no_duplicate_family(*, account, strategy) -> None:
+    """During the legacy transition, ONE strategy family may be ACTIVELY assigned per account. Block
+    assigning a DIFFERENT strategy row of the SAME family (e.g. the canonical marketplace Wayond WIM onto an
+    account that already runs a legacy Wayond WIM copy) — which would double-run the same strategy. The exact
+    (strategy, account) duplicate is already blocked by the DB unique constraint; this covers the
+    same-family / different-row case. No family (no template_slug) ⇒ no extra restriction. Fail-closed 400."""
+    from strategies.models import StrategyAssignment
+    fam = strategy_family(strategy)
+    if not fam:
+        return
+    clash = (StrategyAssignment.objects
+             .filter(account=account, is_active=True, strategy__filters__template_slug=fam)
+             .exclude(strategy_id=getattr(strategy, "id", None))
+             .exists())
+    if clash:
+        raise ValidationError("This strategy is already assigned to this account.")
 
 
 def assert_assignment_ownership(*, user, account, strategy) -> None:

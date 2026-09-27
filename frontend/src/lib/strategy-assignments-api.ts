@@ -11,6 +11,9 @@ export type StrategyAssignment = {
   id: number;
   strategy: number;
   strategy_name?: string | null;
+  /** Stable strategy-family id (marketplace template_slug), shared across a canonical strategy and its
+   * legacy copies — used to hide a family already assigned to this account. */
+  strategy_family?: string | null;
   account: number;
   is_active: boolean;
   stage: string;
@@ -19,9 +22,9 @@ export type StrategyAssignment = {
 };
 
 /** A strategy the member may assign to an account: either one they own (private) or a PUBLISHED
- * marketplace strategy (availability, not ownership). `is_marketplace` lets the UI label a published
- * catalogue strategy. */
-export type AvailableStrategy = { id: number; name: string; is_marketplace?: boolean };
+ * marketplace strategy (availability, not ownership). `is_marketplace` labels a published catalogue
+ * strategy; `family` (template_slug) lets the picker hide a family already assigned to the account. */
+export type AvailableStrategy = { id: number; name: string; is_marketplace?: boolean; family?: string | null };
 
 /** Per-assignment position sizing (the authoritative execution control) from the leg-sizing endpoint. */
 export type LegSizing = {
