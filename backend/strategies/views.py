@@ -716,23 +716,23 @@ class StrategyViewSet(viewsets.ModelViewSet):
         # Include ONLY id/name/is_marketplace + the family (template_slug) — never the proprietary definition.
         # ``family`` lets the account picker hide a strategy whose family is already assigned to the account.
         rows = qs.order_by("name", "id").only("id", "name", "is_marketplace", "filters")
-        # ONE logical product per strategy FAMILY (template_slug): during the legacy transition several DB
-        # Strategy rows share family 'wayond-wim' (a legacy per-user copy + the published canonical). Expose
-        # only ONE — preferring the PUBLISHED canonical over an owned legacy copy — so a member never sees two
-        # identically-named options and a NEW assignment always binds the canonical. Strategies with NO family
-        # are never collapsed; dedup is by the stable template_slug, never the display name, so genuinely
-        # different families (or future variants with distinct slugs) stay separate.
-        no_family, by_family = [], {}
+        # Legacy->canonical transition dedup, SCOPED to exactly what the migration needs: when a family
+        # (template_slug) has a PUBLISHED canonical, fold the owned legacy copies of that family INTO the
+        # canonical (expose only the canonical) — so a member never sees two identically-named options and a
+        # NEW assignment binds the canonical. When a family has NO published canonical, keep ALL its rows: two
+        # OWNED same-slug strategies may be genuinely distinct/customized (template engines parameterize from
+        # each strategy's own filters), and per-account double-running is already prevented independently by
+        # assert_no_duplicate_family. Strategies with NO family are never collapsed. Dedup is by the stable
+        # template_slug, never the display name.
+        no_family, groups = [], {}
         for s in rows:
             fam = strategy_family(s)
             item = {"id": s.id, "name": s.name, "is_marketplace": s.is_marketplace, "family": fam}
-            if not fam:
-                no_family.append(item)
-                continue
-            cur = by_family.get(fam)
-            if cur is None or (item["is_marketplace"] and not cur["is_marketplace"]):
-                by_family[fam] = item
-        data = no_family + list(by_family.values())
+            (groups.setdefault(fam, []) if fam else no_family).append(item)
+        data = list(no_family)
+        for items in groups.values():
+            canonicals = [i for i in items if i["is_marketplace"]]
+            data.extend(canonicals if canonicals else items)  # published canonical wins; else keep all owned
         data.sort(key=lambda x: ((x["name"] or "").lower(), x["id"]))
         return Response(data)
 

@@ -274,6 +274,16 @@ class FamilyDedupTests(_Base):
         self.assertIn(f1.id, ids)
         self.assertIn(f2.id, ids)
 
+    def test_two_owned_same_family_no_canonical_both_kept(self):
+        # Adversarial-review fix: dedup only folds owned copies into a PUBLISHED canonical. Two OWNED
+        # same-slug strategies with NO published canonical for that family must BOTH remain assignable
+        # (they may be genuinely distinct/customized; per-account double-run is guarded separately).
+        o1 = Strategy.objects.create(owner=self.userA, name="Tuned A", filters={"template_slug": "custom-fam"})
+        o2 = Strategy.objects.create(owner=self.userA, name="Tuned B", filters={"template_slug": "custom-fam"})
+        ids = [s["id"] for s in self._client(self.userA).get(ASSIGNABLE).data]
+        self.assertIn(o1.id, ids)
+        self.assertIn(o2.id, ids)
+
     def test_assignment_serializer_exposes_family(self):
         c = self._client(self.userA)
         aid = c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json").data["id"]
