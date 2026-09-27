@@ -123,6 +123,44 @@ class RemoveAccountTests(TestCase):
         j.refresh_from_db()
         self.assertEqual(j.status, ExecutionJob.Status.FAILED)   # queued order cancelled, won't dispatch
 
+    def test_beta_runtime_slot_released_on_remove(self):
+        # HIGH review fix: removal must release the BETA runtime capacity slot (HELD -> STOPPED) so the member
+        # can immediately add a replacement (per_user_runtime_cap) and the global pool doesn't leak.
+        from terminal_provisioning.models import AccountRuntime, RuntimeState
+        from terminal_provisioning.beta_capacity import HELD_STATES
+        a = _acct(self.user, "1009")
+        rt = AccountRuntime.objects.create(trading_account=a, cohort=AccountRuntime.Cohort.BETA,
+                                           state=RuntimeState.RUNNING)
+        self.assertIn(rt.state, HELD_STATES)
+        _remove(self.user, a.id)
+        rt.refresh_from_db()
+        self.assertNotIn(rt.state, HELD_STATES)    # released -> STOPPED, frees per-user + global slot
+        self.assertEqual(rt.state, RuntimeState.STOPPED)
+
+    def test_provider_b_remove_without_runtime_ok(self):
+        # Provider-B account (no AccountRuntime) — the beta-slot release is a safe no-op.
+        a = _acct(self.user, "1010")
+        res = _remove(self.user, a.id)
+        self.assertEqual(res.status_code, 200)
+        a.refresh_from_db(); self.assertIsNotNone(a.disconnected_at)
+
+    def test_readd_removed_identity_revives_same_row(self):
+        # MEDIUM review fix: re-adding a REMOVED broker identity revives the same row (keeps history), not a
+        # dead tombstone / unique-constraint 500 / duplicate row.
+        a = _acct(self.user, "4001")
+        _remove(self.user, a.id)
+        a.refresh_from_db(); self.assertIsNotNone(a.disconnected_at)
+        req = APIRequestFactory().post("/api/trading/accounts/",
+                                       {"name": "A", "account_number": "4001", "broker_name": "B",
+                                        "password": "pw", "is_demo": True}, format="json")
+        force_authenticate(req, user=self.user)
+        resp = TradingAccountViewSet.as_view({"post": "create"})(req)
+        self.assertIn(resp.status_code, (200, 201), getattr(resp, "data", None))
+        a.refresh_from_db()
+        self.assertIsNone(a.disconnected_at)       # revived — tombstone cleared
+        self.assertFalse(a.is_active)              # fresh intent
+        self.assertEqual(TradingAccount.objects.filter(user=self.user, account_number="4001").count(), 1)  # no dup
+
     def test_removed_excluded_from_observer_query(self):
         from hosted_workspace.models import HostedMt5Workspace
         a = _acct(self.user, "1008")
@@ -162,4 +200,12 @@ class AssignmentHistorySafeRemovalTests(TestCase):
         a = self._asn()
         ExecutionJob.objects.create(account=self.acct, assignment=a, job_type=ExecutionJob.JobType.PLACE_ORDER,
                                     payload={}, status=ExecutionJob.Status.SUCCESS)
+        self.assertTrue(assignment_has_history(a))
+
+    def test_leg_sizing_history_counts_as_history(self):
+        # Review fix #3: an append-only leg-sizing-history audit row makes the assignment history-bearing, so it
+        # is DEACTIVATED (audit retained), never hard-deleted (which would CASCADE the audit away).
+        from strategies.models import AssignmentLegSizingHistory
+        a = self._asn()
+        AssignmentLegSizingHistory.objects.create(assignment=a, lot_per_leg="0.02", version=1)
         self.assertTrue(assignment_has_history(a))

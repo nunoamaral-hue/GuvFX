@@ -32,10 +32,29 @@ def open_position_count(account) -> int:
     return Trade.objects.filter(account=account, close_time__isnull=True).count()
 
 
+def _release_beta_runtime_slot(account, *, actor: str) -> None:
+    """Release the account's BETA runtime capacity slot (HELD -> STOPPED, a DB-only state change) so removal
+    frees the per-user AND global beta-pool slots — not just the entitlement/owned-account cap. Without this a
+    removed account's runtime stays HELD and blocks the member's replacement (per_user_runtime_cap) and leaks a
+    global pool slot. BETA-only + best-effort; a no-op for Provider-B accounts (no AccountRuntime) and for a
+    runtime already released. The physical MT5/RDP process teardown legitimately remains a host follow-up."""
+    try:
+        from terminal_provisioning.models import AccountRuntime
+        from terminal_provisioning.beta_capacity import release_beta_slot
+        rt = AccountRuntime.objects.filter(
+            trading_account=account, cohort=AccountRuntime.Cohort.BETA).first()
+        if rt is not None:
+            release_beta_slot(rt, reason="account_removed")   # HELD -> STOPPED; frees per-user + global slot
+    except Exception:  # noqa: BLE001 — never let slot release block the removal (tombstone is authoritative)
+        pass
+
+
 def remove_account(account, *, actor: str = "", request=None) -> dict:
-    """Remove (decommission) a broker account, retaining history. Fail-closed on open positions. Idempotent."""
+    """Remove (decommission) a broker account, retaining history. Fail-closed on open positions. Idempotent
+    and race-safe (row-locked re-check)."""
     from execution.models import ExecutionJob
     from trading.broker_connectivity import disconnect_account
+    from trading.models import TradingAccount
 
     if account.disconnected_at is not None:
         return {"removed": True, "already": True, "open_positions": 0}
@@ -48,6 +67,11 @@ def remove_account(account, *, actor: str = "", request=None) -> dict:
 
     ws = getattr(account, "hosted_workspace", None)
     with transaction.atomic():
+        # Row-lock + re-check inside the txn so two concurrent removes don't both run the teardown (idempotent
+        # final state either way, but this avoids a duplicate credential-destroy audit / double work).
+        locked = TradingAccount.objects.select_for_update().get(pk=account.pk)
+        if locked.disconnected_at is not None:
+            return {"removed": True, "already": True, "open_positions": 0}
         # 2) Cancel any PENDING order-opening jobs so nothing already queued dispatches after removal.
         (ExecutionJob.objects
          .filter(account=account, status=ExecutionJob.Status.PENDING,
@@ -71,5 +95,7 @@ def remove_account(account, *, actor: str = "", request=None) -> dict:
                 retire_endpoint(ws, actor=actor or "account_removal")
             except Exception:  # noqa: BLE001
                 pass
+        # 6) Release the BETA runtime capacity slot so the member can immediately add a replacement.
+        _release_beta_runtime_slot(account, actor=actor or "account_removal")
 
     return {"removed": True, "already": False, "open_positions": 0}

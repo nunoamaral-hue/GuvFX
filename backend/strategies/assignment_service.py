@@ -68,7 +68,9 @@ def assignment_has_history(assignment) -> bool:
     OR a broker deal on the account already carrying this assignment's magic (covers a traded assignment whose
     ``Trade.strategy_assignment`` was never stamped, e.g. before dual-write/sweep)."""
     from trading.models import Trade
-    for rel in ("trades", "execution_jobs", "signal_execution_plans"):
+    # Includes the append-only AUDIT relations (runtime_events, leg_sizing_history) that CASCADE-delete with the
+    # row — so an assignment that ever ran or had its sizing changed retains that audit rather than losing it.
+    for rel in ("trades", "execution_jobs", "signal_execution_plans", "runtime_events", "leg_sizing_history"):
         mgr = getattr(assignment, rel, None)
         try:
             if mgr is not None and mgr.exists():
