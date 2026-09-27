@@ -117,11 +117,9 @@ class Command(BaseCommand):
                 raise CommandError(f"TradingAccount id={account_id} not found.")
 
             if create_assignments:
-                if not getattr(account, "is_active", True):
-                    raise CommandError(
-                        f"TradingAccount id={account_id} is inactive. "
-                        "Cannot create assignments on inactive accounts."
-                    )
+                # An assignment MAY be seeded on a STOPPED account (configured-before-Start-Trading model),
+                # consistent with the member API / model.clean(); zero dispatch is enforced at the dispatch
+                # layer (account.is_active in the router/schedulers + run_signal_evaluation), not here.
                 if stage == "LIVE" and not getattr(account, "is_demo", False):
                     raise CommandError(
                         f"TradingAccount id={account_id} is not a demo account. "

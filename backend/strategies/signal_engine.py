@@ -1219,6 +1219,16 @@ def run_signal_evaluation(
             reason="no_active_assignment",
         )
 
+    # Authoritative dispatch kill — NEVER evaluate/dispatch for a STOPPED account, whatever the assignment
+    # or template. This is the SINGLE chokepoint for every engine (TC1/ALTS/SCE/TBP/hybrid): the per-template
+    # evaluators create PLACE_ORDER jobs directly and do not each re-check is_active, and the manual
+    # ``evaluate`` endpoint applies no stage/active filter — so the guard lives here. Schedulers already
+    # pre-filter account.is_active, so this is a no-op for them. Enforces the product invariant "account
+    # inactive → zero automated dispatch regardless of assignment configuration".
+    if not account.is_active:
+        log_signal_rejected(request, strategy.id, account.id, symbol, reason="account_not_active")
+        return SignalResult(ok=False, symbol=symbol, reason="account_not_active")
+
     # Extract config
     filters = strategy.filters or {}
     template_slug = filters.get("template_slug", "")

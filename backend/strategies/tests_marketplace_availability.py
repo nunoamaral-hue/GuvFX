@@ -166,6 +166,56 @@ class SizingIsolationTests(_Base):
         self.assertEqual(self._client(self.userB).get(self._leg(a1)).status_code, 404)
 
 
+# ─────────────────────────── member flow: Add Strategy to a STOPPED account ───────────────────────────
+class InactiveAccountAddStrategyTests(_Base):
+    """Target member lifecycle: a member configures strategies BEFORE Start Trading. Adding a strategy must
+    succeed on an INACTIVE (stopped) account and remain zero-dispatch (the account-level + stage gates are
+    the authoritative execution kills, not an activation guard)."""
+    def _inactive(self, user, num):
+        return TradingAccount.objects.create(
+            user=user, name=num, account_number=num, is_demo=True, is_active=False, broker_name="DemoBroker")
+
+    def test_add_strategy_to_inactive_account_succeeds(self):
+        acc = self._inactive(self.userA, "INACT1")
+        r = self._client(self.userA).post(ASSIGN, {"account": acc.id, "strategy": self.privA.id}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)   # no longer "Cannot activate ... inactive account"
+        acc.refresh_from_db()
+        self.assertFalse(acc.is_active)                   # account stays STOPPED (Add Strategy never starts it)
+
+    def test_added_assignment_is_non_routable_zero_dispatch(self):
+        acc = self._inactive(self.userA, "INACT2")
+        aid = self._client(self.userA).post(ASSIGN, {"account": acc.id, "strategy": self.privA.id}, format="json").data["id"]
+        asn = StrategyAssignment.objects.get(id=aid)
+        # fresh member assignment is stage TEST + execution_mode MANUAL + on an inactive account → the fan-out
+        # (requires stage LIVE + account.is_active) and the signal engine (account_not_active) both exclude it.
+        self.assertEqual(asn.stage, StrategyAssignment.STAGE_TEST)
+        self.assertEqual(asn.execution_mode, StrategyAssignment.ExecutionMode.MANUAL)
+
+    def test_multiple_strategies_on_inactive_account(self):
+        acc = self._inactive(self.userA, "INACT3")
+        s2 = Strategy.objects.create(owner=self.userA, name="Alice Private 2")
+        c = self._client(self.userA)
+        self.assertEqual(c.post(ASSIGN, {"account": acc.id, "strategy": self.privA.id}, format="json").status_code, 201)
+        self.assertEqual(c.post(ASSIGN, {"account": acc.id, "strategy": s2.id}, format="json").status_code, 201)
+        self.assertEqual(StrategyAssignment.objects.filter(account=acc).count(), 2)
+
+    def test_manual_evaluate_refuses_inactive_account_zero_job(self):
+        # Closes the dispatch-on-inactive hole the adversarial review found: the per-template engines (e.g.
+        # TC1) create PLACE_ORDER jobs directly and don't each re-check is_active, and the manual evaluate path
+        # has no stage/active filter. run_signal_evaluation now guards it at the single chokepoint.
+        from strategies.signal_engine import run_signal_evaluation
+        from execution.models import ExecutionJob
+        acc = self._inactive(self.userA, "INACT4")
+        strat = Strategy.objects.create(owner=self.userA, name="TC1", filters={"template_slug": "tc1-engine-v1"})
+        StrategyAssignment.objects.create(
+            strategy=strat, account=acc, is_active=True, stage=StrategyAssignment.STAGE_LIVE)
+        before = ExecutionJob.objects.filter(account=acc).count()
+        res = run_signal_evaluation(None, strat, acc, "XAUUSD", self.userA)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, "account_not_active")
+        self.assertEqual(ExecutionJob.objects.filter(account=acc).count(), before)  # zero dispatch
+
+
 # ─────────────────────────── legacy-transition family dedup (canonical vs legacy) ───────────────────────────
 class FamilyDedupTests(_Base):
     def setUp(self):

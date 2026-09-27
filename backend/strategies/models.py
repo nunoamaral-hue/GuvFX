@@ -369,10 +369,13 @@ class StrategyAssignment(models.Model):
         ]
 
     def clean(self):
-        # Strategy should only be active on an active account
-        if self.is_active and self.account and (not self.account.is_active):
-            from django.core.exceptions import ValidationError
-            raise ValidationError({"is_active": "Cannot activate a strategy on an inactive TradingAccount."})
+        # A StrategyAssignment may be configured while its TradingAccount is STOPPED (members configure
+        # strategies before Start Trading). Zero-dispatch on an inactive account is enforced at the DISPATCH
+        # layer — the fan-out router + schedulers filter account.is_active and the manual evaluate path is
+        # guarded at run_signal_evaluation — not by an activation guard here (see
+        # StrategyAssignmentSerializer.validate). Kept in sync so an admin Save never rejects a row the member
+        # API now legitimately creates.
+        return None
 
     def __str__(self) -> str:
         return f"{self.strategy} -> {self.account}"

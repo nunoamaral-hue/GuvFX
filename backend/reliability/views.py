@@ -146,10 +146,10 @@ class AssignmentSetActiveView(APIView):
         if not getattr(asn, "signal_source", ""):
             return Response({"detail": "not a source-bound assignment"},
                             status=http.HTTP_400_BAD_REQUEST)
-        # Mirror model.clean(): never activate an assignment on an inactive account.
-        if active and asn.account and not getattr(asn.account, "is_active", True):
-            return Response({"detail": "cannot enable on an inactive account"},
-                            status=http.HTTP_409_CONFLICT)
+        # An assignment MAY be active on a STOPPED account (configured-before-Start-Trading model); zero
+        # dispatch is enforced at the dispatch layer (account.is_active in the router/schedulers +
+        # run_signal_evaluation), not by a write-time guard here — kept consistent with the member API
+        # (StrategyAssignmentSerializer.validate) and StrategyAssignment.clean, which no longer block this.
         asn.is_active = active
         asn.save(update_fields=["is_active"])
         try:
