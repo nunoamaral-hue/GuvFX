@@ -148,6 +148,48 @@ def _commit_active(account, user) -> None:
         account.save(update_fields=["is_active", "updated_at"])
 
 
+_RUNTIME_FAIL_MESSAGES = {
+    "workspace_missing": "Your trading terminal isn't ready yet. Please try again shortly.",
+    "broker_not_connected": "Open MT5 and log in to your broker account to start trading.",
+    "account_mismatch": "The terminal is logged into a different account. Log in to this broker account.",
+    "observation_stale": "We're re-checking your terminal. Please try again in a moment.",
+    "terminal_not_ready": "This account isn't connected to a trading terminal yet.",
+}
+
+
+def _runtime_ready_for_start(account, ws):
+    """Provider-aware Start preflight: prove the terminal/runtime is up and the broker is connected + the RIGHT
+    account is logged in — deliberately NOT ``trade_allowed`` (which is EXPECTED False before capability_recovery;
+    requiring it here would make the lifecycle circular). Returns ``(ok, reason_code)``.
+
+    For a Provider-B hosted account (``persistent_workspace``) the runtime IS the tenant's own MT5 terminal,
+    tracked by the certified ``HostedMt5Workspace`` observer projection — ``AccountRuntime`` is legitimately None
+    for these accounts (Accounts 25 and 35 are fully execution-ready with NO AccountRuntime), so the previous
+    gate on ``_account_runtime_ready`` (AccountRuntime RUNNING+heartbeat+BETA) wrongly rejected a genuinely
+    connected hosted account. The authoritative signal is the M3c projection the readiness provider and the
+    truthful trading-state already use: workspace present + ``proj_connected`` + ``proj_account_match`` + a fresh
+    observation. Legacy (non-Provider-B) accounts defer to the AccountRuntime readiness unchanged."""
+    # A tombstoned/disconnected account is never startable — match the certified readiness provider
+    # (execution/readiness.py) and the arm gate (execution/hosted_provisioning.py), which both fail closed on
+    # a non-null disconnected_at. Applied to BOTH branches so a stale-but-fresh disconnected row can't pass.
+    if getattr(account, "disconnected_at", None) is not None:
+        return False, "broker_not_connected"
+    provider = str(getattr(account, "readiness_provider", "") or "")
+    if provider == "persistent_workspace" and not getattr(account, "mt5_instance_id", None):
+        if ws is None:
+            return False, "workspace_missing"
+        if ws.proj_connected is not True:
+            return False, "broker_not_connected"
+        if ws.proj_account_match is not True:
+            return False, "account_mismatch"
+        from execution.readiness import _observation_fresh
+        if not _observation_fresh(ws):
+            return False, "observation_stale"
+        return True, "ok"
+    from trading.views import _account_runtime_ready
+    return (True, "ok") if _account_runtime_ready(account) else (False, "terminal_not_ready")
+
+
 def managed_start_trading(account, user, *, actor: str = "", request=None) -> StartResult:
     """Run the managed Start-Trading lifecycle for ``account``. Fail-closed: on any hard-precondition failure
     the account is NOT made active and an actionable reason is returned. Reuses capability_recovery + arm; never
@@ -157,25 +199,21 @@ def managed_start_trading(account, user, *, actor: str = "", request=None) -> St
     if getattr(account, "mt5_instance_id", None):
         return StartResult(applies=False)             # legacy shared-instance account — caller uses legacy path
     from trading.trading_state import resolve_trading_state
+    ws = getattr(account, "hosted_workspace", None)
 
-    # 1) runtime process ready (existing broker-independent readiness).
-    from trading.views import _account_runtime_ready
-    if not _account_runtime_ready(account):
-        return _fail("terminal_not_ready",
-                     "This account isn't connected to a trading terminal yet.")
-    # 2) DEMO-only programme.
+    # 1) DEMO-only programme.
     if getattr(account, "is_demo", False) is not True:
         return _fail("demo_only", "Automated trading is available for demo accounts in this programme.")
-    ws = getattr(account, "hosted_workspace", None)
-    if ws is None:
-        return _fail("workspace_missing", "Your trading terminal isn't ready yet. Please try again shortly.")
-    # 3) broker connected + right account logged in.
-    if ws.proj_connected is not True:
-        return _fail("broker_not_connected", "Open MT5 and log in to your broker account to start trading.")
-    if ws.proj_account_match is not True:
-        return _fail("account_mismatch",
-                     "The terminal is logged into a different account. Log in to this broker account.")
-    # 4) margin mode capability (hedging required by the product). FAIL-CLOSED: an UNKNOWN/unobserved margin
+    # 2) runtime/broker connected + right account logged in (Provider-aware; NOT trade_allowed). This proves the
+    # tenant's terminal is up and connected to the correct broker account WITHOUT gating on AccountRuntime (which
+    # is legitimately None for Provider-B hosted accounts — the previous defect). trade_allowed is deliberately
+    # NOT required here; it is expected False before capability_recovery (step 8).
+    ok, reason = _runtime_ready_for_start(account, ws)
+    if not ok:
+        return _fail(reason, _RUNTIME_FAIL_MESSAGES.get(reason, "This account isn't ready to start trading yet."))
+    if ws is None:  # defensive — a managed hosted Start needs a workspace for the remaining checks/arm
+        return _fail("workspace_missing", _RUNTIME_FAIL_MESSAGES["workspace_missing"])
+    # 3) margin mode capability (hedging required by the product). FAIL-CLOSED: an UNKNOWN/unobserved margin
     # (proj_margin_mode is None) is NOT proof of hedging, so it must block — matching the B1 canonical rule
     # that only proven HEDGING supports independent same-symbol legs (NETTING/UNKNOWN destroy magic ownership).
     try:
