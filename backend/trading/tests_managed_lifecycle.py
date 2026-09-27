@@ -349,23 +349,86 @@ class ManagedStartTests(TestCase):
         a.refresh_from_db(); self.assertTrue(a.is_active)
 
     @override_settings(MANAGED_START_AUTHORIZES_EXECUTION="1")
-    def test_authorize_gate_on_sets_confirm_and_authorization(self):
+    def test_authorize_gate_on_calls_governed_confirm_and_pre_ready_authorize(self):
+        # With the one-click gate on, Start invokes the GOVERNED confirm + authorize writers (the latter with
+        # allow_pre_ready=True so it records the authorization even while capability_recovery is still async).
+        # Mock both governed writers (admission/cohort internals are exercised by their own suites) and assert
+        # the orchestration calls them with the right arguments and their side-effects land.
         a = self._mk(is_active=False)
-        _ws(a, execution_authorized_at=None)          # unconfirmed + unauthorized
+        _ws(a, canonical_state=S.CONNECTED, proj_trade_allowed=False, proj_execution_ready=False,
+            execution_authorized_at=None)             # unconfirmed + unauthorized + not yet EXECUTION_READY
         _assign(a, _strategy(self.user, marketplace=True))
-        authz = mock.Mock()
+        from hosted_workspace.provisioning import ConfirmResult, AuthorizeResult, CONFIRM_OK, AUTHZ_OK
+
+        def _do_confirm(user, ws, **kw):
+            ta = ws.trading_account; ta.workspace_confirmed_at = timezone.now()
+            ta.save(update_fields=["workspace_confirmed_at"])
+            return ConfirmResult(True, CONFIRM_OK)
 
         def _do_authz(user, ws, **kw):
-            ws.execution_authorized_at = timezone.now()
-            ws.save(update_fields=["execution_authorized_at"])
-        authz.side_effect = _do_authz
+            self.assertTrue(kw.get("allow_pre_ready"))   # managed flow records authorization pre-EXECUTION_READY
+            ws.execution_authorized_at = timezone.now(); ws.save(update_fields=["execution_authorized_at"])
+            return AuthorizeResult(True, AUTHZ_OK)
+        confirm = mock.Mock(side_effect=_do_confirm)
+        authz = mock.Mock(side_effect=_do_authz)
+        rec = mock.Mock(return_value={"enabled": True, "outcome": "relaunched"})
         with self._runtime_ready(), self._no_arm(), \
-             mock.patch("hosted_workspace.provisioning.authorize_workspace_execution", authz):
+             mock.patch("hosted_workspace.provisioning.confirm_broker_account", confirm), \
+             mock.patch("hosted_workspace.provisioning.authorize_workspace_execution", authz), \
+             mock.patch("hosted_workspace.capability_recovery.recover_capability_for_account", rec):
             r = self._start(a)
         a.refresh_from_db()
-        self.assertIsNotNone(a.workspace_confirmed_at)   # Start performed the confirm
-        authz.assert_called_once()                        # Start performed the ADR-0047 authorization
-        self.assertTrue(r.ok)
+        confirm.assert_called_once()
+        authz.assert_called_once()
+        self.assertIsNotNone(a.workspace_confirmed_at)   # governed confirm ran
+        self.assertTrue(r.ok)                            # is_active committed (PREPARING until async arm completes)
+
+    @override_settings(MANAGED_START_AUTHORIZES_EXECUTION="1")
+    def test_concurrency_breach_leaves_nothing_activated_or_authorized(self):
+        # A CONCURRENT-limit breach is checked FIRST inside the atomic block, before confirm/authorize, so a
+        # rejected Start leaves the account NOT confirmed / NOT authorized / NOT active — nothing for auto_arm.
+        a = self._mk(is_active=False)
+        _ws(a, canonical_state=S.CONNECTED, proj_trade_allowed=False, proj_execution_ready=False,
+            execution_authorized_at=None)
+        _assign(a, _strategy(self.user, marketplace=True))
+        from rest_framework.exceptions import ValidationError as VErr
+        with self._runtime_ready(), self._no_arm(), \
+             mock.patch("trading.account_entitlement.enforcement_enabled", return_value=True), \
+             mock.patch("billing.entitlements.resolve_effective_entitlements",
+                        return_value=mock.Mock(account_mode="concurrent")), \
+             mock.patch("trading.account_entitlement.check_can_activate",
+                        side_effect=VErr({"detail": "limit reached"})):
+            with self.assertRaises(VErr):
+                self._start(a)                            # breach propagates to the view (409)
+        a.refresh_from_db()
+        self.assertFalse(a.is_active)                     # not activated
+        self.assertIsNone(a.workspace_confirmed_at)       # not confirmed
+        self.assertIsNone(a.hosted_workspace.execution_authorized_at)   # not authorized
+
+    @override_settings(MANAGED_START_AUTHORIZES_EXECUTION="1")
+    def test_authorize_refusal_rolls_back_confirm_and_activation(self):
+        # If confirm succeeds (setting is_active + confirmed) but authorize then refuses, the WHOLE atomic unit
+        # rolls back — no half-confirmed/activated account is left for the per-minute auto_arm to complete.
+        a = self._mk(is_active=False)
+        _ws(a, canonical_state=S.CONNECTED, proj_trade_allowed=False, proj_execution_ready=False,
+            execution_authorized_at=None)
+        _assign(a, _strategy(self.user, marketplace=True))
+        from hosted_workspace.provisioning import ConfirmResult, AuthorizeResult, CONFIRM_OK, AUTHZ_NOT_READY
+
+        def _do_confirm(user, ws, **kw):
+            ta = ws.trading_account
+            ta.workspace_confirmed_at = timezone.now(); ta.is_active = True
+            ta.save(update_fields=["workspace_confirmed_at", "is_active"])
+            return ConfirmResult(True, CONFIRM_OK)
+        with self._runtime_ready(), self._no_arm(), \
+             mock.patch("hosted_workspace.provisioning.confirm_broker_account", side_effect=_do_confirm), \
+             mock.patch("hosted_workspace.provisioning.authorize_workspace_execution",
+                        return_value=AuthorizeResult(False, AUTHZ_NOT_READY)):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "not_authorized")
+        a.refresh_from_db()
+        self.assertFalse(a.is_active)                     # confirm's is_active rolled back with the refusal
+        self.assertIsNone(a.workspace_confirmed_at)       # confirm rolled back atomically
 
 
 @override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1",

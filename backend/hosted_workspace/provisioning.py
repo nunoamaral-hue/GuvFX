@@ -424,7 +424,7 @@ def confirm_broker_account(user, workspace, *, actor="", request=None) -> Confir
     return ConfirmResult(True, CONFIRM_OK)
 
 
-def authorize_workspace_execution(user, workspace, *, actor="", request=None) -> AuthorizeResult:
+def authorize_workspace_execution(user, workspace, *, actor="", request=None, allow_pre_ready=False) -> AuthorizeResult:
     """ADR-0047 — the customer's EXPLICIT, durable "Enable automated trading" authorization. This is the ONLY
     writer of ``HostedMt5Workspace.execution_authorized_at`` and the ONLY path by which a hosted workspace may
     ever become armed. It records the authorization, then attempts the certified
@@ -433,9 +433,17 @@ def authorize_workspace_execution(user, workspace, *, actor="", request=None) ->
     Contract (supersedes ADR-0044 Decision 2): MT5 automation CAPABILITY (trade_allowed / EXECUTION_READY) is
     NOT authorization. Reaching EXECUTION_READY alone can NEVER arm — both the arm preconditions and the order
     gate fail closed on NULL authorization. Offered ONLY once the account is CONFIRMED (identity ACK) and the
-    workspace is observed CONNECTED + matched AND canonically EXECUTION_READY, so the customer authorizes a
-    genuinely ready workspace. Owner-scoped (IDOR-safe), idempotent, audited. NEVER accepts a secret; places no
-    order; the live bridge gate remains the sole order authority."""
+    workspace is observed CONNECTED + matched. Owner-scoped (IDOR-safe), idempotent, audited. NEVER accepts a
+    secret; places no order; the live bridge gate remains the sole order authority.
+
+    ``allow_pre_ready`` (managed one-click Start, Sponsor 2026-09-27): by default authorization additionally
+    requires the workspace to be canonically EXECUTION_READY, so a customer authorizes a genuinely-ready
+    workspace. The managed Start flow records the customer's authorization AT THE CLICK while
+    capability_recovery is still restoring EXECUTION_READY ASYNCHRONOUSLY — connected + matched (identity) is
+    still required, but EXECUTION_READY is not, because recording the authorization must not be blocked on an
+    async capability step. This NEVER arms early: the internal arm attempt (and the order gate) still re-prove
+    the FULL conjunction incl. trade_allowed + EXECUTION_READY, so the per-minute ``auto_arm_runner`` completes
+    the arm only once the workspace genuinely reaches EXECUTION_READY."""
     ok, reason = hosted_workspace_admission(user)
     if not ok:
         return AuthorizeResult(False, reason)
@@ -451,10 +459,12 @@ def authorize_workspace_execution(user, workspace, *, actor="", request=None) ->
         acct = ws.trading_account
         if acct.workspace_confirmed_at is None:                       # identity ACK must precede authorization
             return AuthorizeResult(False, AUTHZ_NOT_CONFIRMED)
-        # Authorize ONLY a workspace observed CONNECTED + matched AND canonically EXECUTION_READY. Capability
-        # precedes authorization; "reaching EXECUTION_READY" is never itself the arm — this explicit click is.
-        if (str(ws.canonical_state) != S.EXECUTION_READY
-                or ws.proj_connected is not True or ws.proj_account_match is not True):
+        # Always require observed CONNECTED + matched (identity proven). By default ALSO require canonical
+        # EXECUTION_READY (capability precedes authorization); the managed one-click flow (allow_pre_ready)
+        # records the authorization before the async EXECUTION_READY, arming still gated on the full conjunction.
+        if ws.proj_connected is not True or ws.proj_account_match is not True:
+            return AuthorizeResult(False, AUTHZ_NOT_READY)
+        if not allow_pre_ready and str(ws.canonical_state) != S.EXECUTION_READY:
             return AuthorizeResult(False, AUTHZ_NOT_READY)
         already = ws.execution_authorized_at is not None
         if not already:

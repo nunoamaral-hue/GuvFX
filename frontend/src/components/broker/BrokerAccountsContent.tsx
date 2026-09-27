@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   getBrokerStatus, getDeliveryState, getEntitlementSummary, listAccounts, openMt5Desktop, setAccountActive,
 } from "@/lib/broker-api";
@@ -93,6 +93,23 @@ export function BrokerAccountsContent() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Phase 7 — while any account is "Preparing automated trading" (the managed Start completes ASYNCHRONOUSLY
+  // via the per-minute capability_recovery + auto_arm cycle), poll the account list so the card auto-transitions
+  // PREPARING -> Trading (or Action required) without the member manually refreshing. Bounded to ~3 min
+  // wall-clock (a deadline in a ref, so it never loops forever) and stops as soon as nothing is preparing.
+  const pollDeadlineRef = useRef<number | null>(null);
+  useEffect(() => {
+    const anyPreparing = (accounts || []).some((a) => a.trading_state?.state === "PREPARING");
+    if (!anyPreparing) { pollDeadlineRef.current = null; return; }
+    if (pollDeadlineRef.current === null) pollDeadlineRef.current = Date.now() + 180_000;
+    if (Date.now() > pollDeadlineRef.current) return;   // bound reached — stop polling, leave the last state
+    const id = setTimeout(async () => {
+      try { setAccounts(await listAccounts()); }
+      catch { /* transient — keep the last state; the next tick retries */ }
+    }, 6_000);
+    return () => clearTimeout(id);
+  }, [accounts]);
 
   const isConcurrent = entitlement?.account_mode === "concurrent";
   // Phase 9 — the STANDARD "the other account stops trading" confirm must gate on whether the backend
