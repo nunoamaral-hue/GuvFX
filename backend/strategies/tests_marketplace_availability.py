@@ -253,6 +253,37 @@ class FamilyDedupTests(_Base):
         self.assertEqual(rows[self.canonical.id]["family"], "wayond-wim")
         self.assertIsNone(rows[self.M.id]["family"])   # no template_slug
 
+    def test_assignable_dedups_family_to_canonical(self):
+        # userA owns the LEGACY wayond-wim copy AND the published canonical exists (same family). The picker
+        # must expose exactly ONE wayond-wim option = the canonical (published wins over owned legacy).
+        ids = [s["id"] for s in self._client(self.userA).get(ASSIGNABLE).data]
+        wim = [s for s in self._client(self.userA).get(ASSIGNABLE).data if s["family"] == "wayond-wim"]
+        self.assertEqual(len(wim), 1, "exactly one wayond-wim option")
+        self.assertEqual(wim[0]["id"], self.canonical.id)      # canonical wins
+        self.assertNotIn(self.legacy.id, ids)                  # legacy copy hidden
+        # non-family strategies are NOT collapsed
+        self.assertIn(self.M.id, ids)                          # published, no family
+        self.assertIn(self.privA.id, ids)                      # owned private, no family
+
+    def test_assignable_keeps_distinct_families_with_same_name(self):
+        # Two DIFFERENT families that happen to share a display name must NOT be collapsed (dedup is by
+        # template_slug, never by name).
+        f1 = Strategy.objects.create(owner=self.userA, name="Same Name", filters={"template_slug": "fam-a"})
+        f2 = Strategy.objects.create(owner=self.userA, name="Same Name", filters={"template_slug": "fam-b"})
+        ids = [s["id"] for s in self._client(self.userA).get(ASSIGNABLE).data]
+        self.assertIn(f1.id, ids)
+        self.assertIn(f2.id, ids)
+
+    def test_two_owned_same_family_no_canonical_both_kept(self):
+        # Adversarial-review fix: dedup only folds owned copies into a PUBLISHED canonical. Two OWNED
+        # same-slug strategies with NO published canonical for that family must BOTH remain assignable
+        # (they may be genuinely distinct/customized; per-account double-run is guarded separately).
+        o1 = Strategy.objects.create(owner=self.userA, name="Tuned A", filters={"template_slug": "custom-fam"})
+        o2 = Strategy.objects.create(owner=self.userA, name="Tuned B", filters={"template_slug": "custom-fam"})
+        ids = [s["id"] for s in self._client(self.userA).get(ASSIGNABLE).data]
+        self.assertIn(o1.id, ids)
+        self.assertIn(o2.id, ids)
+
     def test_assignment_serializer_exposes_family(self):
         c = self._client(self.userA)
         aid = c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json").data["id"]

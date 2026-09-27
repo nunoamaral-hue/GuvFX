@@ -716,8 +716,24 @@ class StrategyViewSet(viewsets.ModelViewSet):
         # Include ONLY id/name/is_marketplace + the family (template_slug) — never the proprietary definition.
         # ``family`` lets the account picker hide a strategy whose family is already assigned to the account.
         rows = qs.order_by("name", "id").only("id", "name", "is_marketplace", "filters")
-        data = [{"id": s.id, "name": s.name, "is_marketplace": s.is_marketplace, "family": strategy_family(s)}
-                for s in rows]
+        # Legacy->canonical transition dedup, SCOPED to exactly what the migration needs: when a family
+        # (template_slug) has a PUBLISHED canonical, fold the owned legacy copies of that family INTO the
+        # canonical (expose only the canonical) — so a member never sees two identically-named options and a
+        # NEW assignment binds the canonical. When a family has NO published canonical, keep ALL its rows: two
+        # OWNED same-slug strategies may be genuinely distinct/customized (template engines parameterize from
+        # each strategy's own filters), and per-account double-running is already prevented independently by
+        # assert_no_duplicate_family. Strategies with NO family are never collapsed. Dedup is by the stable
+        # template_slug, never the display name.
+        no_family, groups = [], {}
+        for s in rows:
+            fam = strategy_family(s)
+            item = {"id": s.id, "name": s.name, "is_marketplace": s.is_marketplace, "family": fam}
+            (groups.setdefault(fam, []) if fam else no_family).append(item)
+        data = list(no_family)
+        for items in groups.values():
+            canonicals = [i for i in items if i["is_marketplace"]]
+            data.extend(canonicals if canonicals else items)  # published canonical wins; else keep all owned
+        data.sort(key=lambda x: ((x["name"] or "").lower(), x["id"]))
         return Response(data)
 
     def _signal_copy_backing_ids(self, request):
