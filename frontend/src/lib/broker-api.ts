@@ -86,6 +86,24 @@ export function createAccount(input: {
   return apiFetch<BrokerAccount>(`${BASE}/`, { method: "POST", body: JSON.stringify(input) });
 }
 
+/** Result of adding a HOSTED broker account (Provider-B persistent workspace). No password is involved —
+ * the customer logs into their broker inside MetaTrader after the runtime is provisioned. */
+export type HostedAddResult = { status: "created" | "exists"; trading_account_id: number; workspace_uuid: string };
+
+/** Add a HOSTED broker account through the certified member onboarding path (POST /api/hosted-workspace/
+ * accounts/add/). It creates an intent-only TradingAccount + persistent workspace and the per-account
+ * scheduler provisions ONLY this account (its own Windows identity, runtime, endpoint, RemoteApp). The
+ * broker PASSWORD is NEVER sent here — the customer enters it directly in MetaTrader (Open MT5 → log in).
+ * `expected_server` is stored as the account's broker server identity (used for the execution identity pin),
+ * so pass the broker's real MT5 server name. Owner-scoped + entitlement-bounded on the backend. */
+export function addHostedAccount(input: {
+  broker_name: string; expected_login: string; expected_server: string; is_demo: boolean;
+}): Promise<HostedAddResult> {
+  return apiFetch<HostedAddResult>(`/api/hosted-workspace/accounts/add/`, {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
 /** Phase C4 — read-only entitlement summary for the Broker Accounts header ("Active N / limit"). */
 export function getEntitlementSummary(): Promise<EntitlementSummary> {
   return apiFetch<EntitlementSummary>(`${BASE}/entitlement-summary/`);
