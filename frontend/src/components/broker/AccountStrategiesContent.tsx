@@ -62,7 +62,14 @@ export function AccountStrategiesContent({ accountId }: { accountId: number }) {
   // — the backend rejects a duplicate (strategy, account) pair).
   const assignable = useMemo(() => {
     const taken = new Set((assignments || []).map((a) => a.strategy));
-    return available.filter((s) => !taken.has(s.id));
+    // Also hide any strategy whose FAMILY (template_slug) is ACTIVELY assigned to this account — so the
+    // canonical marketplace strategy is never offered on an account that already runs a legacy copy of it
+    // (double-run). Matches the backend family guard EXACTLY (active-only): an INACTIVE same-family row must
+    // NOT hide the canonical, so the legacy→canonical transition stays possible through the picker.
+    const takenFamilies = new Set(
+      (assignments || []).filter((a) => a.is_active)
+        .map((a) => a.strategy_family).filter((f): f is string => Boolean(f)));
+    return available.filter((s) => !taken.has(s.id) && !(s.family && takenFamilies.has(s.family)));
   }, [assignments, available]);
 
   const onAdd = useCallback(async () => {

@@ -315,9 +315,16 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
     # Read-only display fields for the account-scoped "Manage strategies" view (member UX). Additive:
     # ``strategy`` remains the writable PK; these never widen the write surface.
     strategy_name = serializers.CharField(source="strategy.name", read_only=True)
+    # Stable strategy-FAMILY identity (marketplace template_slug), shared across a canonical strategy and its
+    # legacy copies — lets the account picker hide a family already assigned to the account. None ⇒ bespoke.
+    strategy_family = serializers.SerializerMethodField()
     # Current per-leg lot for this assignment (the customer's AssignmentLegSizing override, if any);
     # None ⇒ no override row ⇒ falls back to the source-global cap. Presentation only.
     lot_per_leg = serializers.SerializerMethodField()
+
+    def get_strategy_family(self, obj):
+        from strategies.assignment_service import strategy_family
+        return strategy_family(obj.strategy)
 
     def get_lot_per_leg(self, obj):
         sizing = getattr(obj, "leg_sizing", None)
@@ -338,6 +345,7 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
             "id",
             "strategy",
             "strategy_name",
+            "strategy_family",
             "account",
             "is_active",
             "stage",
@@ -346,7 +354,7 @@ class StrategyAssignmentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at", "strategy_name", "lot_per_leg"]
+        read_only_fields = ["created_at", "updated_at", "strategy_name", "strategy_family", "lot_per_leg"]
 
 class StrategyChangeLogSerializer(serializers.ModelSerializer):
     changed_by_email = serializers.EmailField(

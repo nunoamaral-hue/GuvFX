@@ -67,9 +67,11 @@ class AvailabilityTests(_Base):
         # A published strategy the caller does NOT own must expose only its catalogue identity, never its
         # proprietary definition (entry/exit rules, indicators, etc.).
         row = next(s for s in self._client(self.userB).get(ASSIGNABLE).data if s["id"] == self.M.id)
-        self.assertEqual(set(row.keys()), {"id", "name", "is_marketplace"})
+        # Only catalogue identity — id/name/is_marketplace + the family slug (a stable family id, NOT
+        # proprietary logic). The full filters object and all definition fields must NOT appear.
+        self.assertEqual(set(row.keys()), {"id", "name", "is_marketplace", "family"})
         for leaked in ("entry_rules", "tp_rules", "sl_rules", "entry_logic", "exit_logic",
-                       "indicator_blocks", "filters", "magic_number"):
+                       "indicator_blocks", "filters", "magic_number", "signal_source", "parser_profile"):
             self.assertNotIn(leaked, row)
 
     def test_owner_scoped_list_still_private(self):
@@ -162,3 +164,70 @@ class SizingIsolationTests(_Base):
         a1 = cA.post(ASSIGN, {"account": self.a1.id, "strategy": self.M.id}, format="json").data["id"]
         # B cannot read/write A's assignment sizing
         self.assertEqual(self._client(self.userB).get(self._leg(a1)).status_code, 404)
+
+
+# ─────────────────────────── legacy-transition family dedup (canonical vs legacy) ───────────────────────────
+class FamilyDedupTests(_Base):
+    def setUp(self):
+        super().setUp()
+        # A canonical PUBLISHED strategy and a LEGACY per-user copy that share the SAME family (template_slug).
+        self.canonical = Strategy.objects.create(
+            owner=self.provider, name="Wayond WIM Strategy", is_marketplace=True,
+            filters={"template_slug": "wayond-wim", "signal_source": "ti_signals"})
+        self.legacy = Strategy.objects.create(
+            owner=self.userA, name="Wayond WIM Strategy", filters={"template_slug": "wayond-wim"})
+
+    def test_cannot_assign_same_family_twice_on_one_account(self):
+        c = self._client(self.userA)
+        self.assertEqual(c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json").status_code, 201)
+        # canonical shares the family → assigning it to the SAME account is a graceful 400 (already assigned)
+        dup = c.post(ASSIGN, {"account": self.a1.id, "strategy": self.canonical.id}, format="json")
+        self.assertEqual(dup.status_code, 400, dup.content)
+
+    def test_same_family_allowed_on_a_different_account(self):
+        c = self._client(self.userA)
+        c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json")
+        # a different account with no WIM family → canonical is assignable
+        r = c.post(ASSIGN, {"account": self.a2.id, "strategy": self.canonical.id}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_family_less_strategy_not_restricted(self):
+        c = self._client(self.userA)
+        c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json")
+        # M has no template_slug → no family restriction → coexists with the WIM family on the same account
+        r = c.post(ASSIGN, {"account": self.a1.id, "strategy": self.M.id}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_assignable_exposes_family(self):
+        rows = {s["id"]: s for s in self._client(self.userA).get(ASSIGNABLE).data}
+        self.assertEqual(rows[self.canonical.id]["family"], "wayond-wim")
+        self.assertIsNone(rows[self.M.id]["family"])   # no template_slug
+
+    def test_assignment_serializer_exposes_family(self):
+        c = self._client(self.userA)
+        aid = c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json").data["id"]
+        row = next(r for r in c.get(f"{ASSIGN}?account={self.a1.id}").data if r["id"] == aid)
+        self.assertEqual(row["strategy_family"], "wayond-wim")
+
+    def test_patch_repoint_to_same_family_blocked(self):
+        # The update path must enforce the same guard — a PATCH repointing onto a same-family strategy
+        # would otherwise create a second active family assignment (double-run) bypassing the create guard.
+        c = self._client(self.userA)
+        c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json")  # legacy WIM active
+        f = Strategy.objects.create(owner=self.userA, name="Plain")  # family-less
+        n = c.post(ASSIGN, {"account": self.a1.id, "strategy": f.id}, format="json").data["id"]
+        r = c.patch(f"{ASSIGN}{n}/", {"strategy": self.canonical.id}, format="json")  # repoint → same family
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_patch_reactivate_into_same_family_blocked(self):
+        c = self._client(self.userA)
+        c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json")  # legacy active
+        inactive = StrategyAssignment.objects.create(account=self.a1, strategy=self.canonical, is_active=False)
+        r = c.patch(f"{ASSIGN}{inactive.id}/", {"is_active": True}, format="json")  # reactivate same family
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_patch_deactivate_never_blocked_by_family(self):
+        c = self._client(self.userA)
+        aid = c.post(ASSIGN, {"account": self.a1.id, "strategy": self.legacy.id}, format="json").data["id"]
+        r = c.patch(f"{ASSIGN}{aid}/", {"is_active": False}, format="json")  # stopping is always allowed
+        self.assertEqual(r.status_code, 200, r.content)
