@@ -32,6 +32,10 @@ class TradingAccountSerializer(serializers.ModelSerializer):
     # ``active_strategy_count`` powers the per-account "assigned strategies" badge (N:M via StrategyAssignment).
     masked_account_number = serializers.SerializerMethodField()
     active_strategy_count = serializers.SerializerMethodField()
+    # Objective E — the ONE authoritative, truthful trading-state the card renders verbatim (never derived
+    # client-side from ``is_active`` alone). Composed from the same readiness authority the order-time gate
+    # uses, so the UI can never show "Trading" where the server would refuse an order. Pure read.
+    trading_state = serializers.SerializerMethodField()
 
     class Meta:
         model = TradingAccount
@@ -49,6 +53,7 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             "account_number",
             "masked_account_number",
             "active_strategy_count",
+            "trading_state",
             "is_demo",
             "is_active",
             "myfxbook_url",
@@ -90,6 +95,15 @@ class TradingAccountSerializer(serializers.ModelSerializer):
     def get_runtime_state(self, obj):
         rt = self._runtime(obj)
         return rt.state if rt is not None else None
+
+    def get_trading_state(self, obj):
+        """The authoritative customer-facing trading state ({state, label, detail}). Pure read; never raises
+        — a failure degrades to a safe non-"Trading" placeholder rather than breaking the account list."""
+        from trading.trading_state import resolve_trading_state
+        try:
+            return resolve_trading_state(obj)
+        except Exception:  # noqa: BLE001 — display must fail safe, never show a false "Trading"
+            return {"state": "PREPARING", "label": "Preparing automated trading", "detail": ""}
 
     def validate(self, attrs):
         broker_server = attrs.get("broker_server") or getattr(self.instance, "broker_server", None)

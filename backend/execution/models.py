@@ -284,6 +284,16 @@ class ExecutionJob(models.Model):
             reason = order_creation_kill_reason()
             if reason:
                 raise ExecutionKillSwitchEngaged(reason)
+        # Phase 6 Stop-Trading kill (defense-in-depth): refuse creating a NEW automated order-opening job for a
+        # STOPPED account at the single boundary NO creation path can bypass, so account-level Stop is the
+        # authoritative immediate kill even if an upstream filter is missed. Only when the account is
+        # EXPLICITLY is_active=False (never blocks an active account, e.g. the certified Account-25 path).
+        # Excludes trade-management job types, so open positions keep being managed/closed after Stop.
+        if (self._state.adding and self.job_type in ACCOUNT_STOPPED_BLOCKED_JOB_TYPES
+                and _stop_trading_account_gate_enabled()):
+            acc = getattr(self, "account", None)
+            if acc is not None and getattr(acc, "is_active", True) is False:
+                raise ExecutionAccountStopped(getattr(acc, "id", None))
         # WP1B/WP2 (ADR-0029): broker-validation execution gate at the MODEL layer — the single
         # authoritative boundary NO creation path can bypass (services, promotion, schedulers,
         # create_place_order_job, PLACE_TEST_ORDER, retry/recovery, future sites). On INSERT of a
@@ -405,6 +415,40 @@ class ExecutionKillSwitchEngaged(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(f"execution kill switch engaged: {reason}")
+
+
+# Stop-Trading kill (Phase 6): job types whose CREATION opens a NEW automated GuvFX order and must therefore
+# be refused for a STOPPED account (``TradingAccount.is_active=False``). Deliberately EXCLUDES every
+# trade-management type (CLOSE_TRADE / MODIFY_POSITION / SYNC_POSITIONS) and PLACE_ORDER_SHADOW — Stop halts
+# NEW entries only; it must NEVER orphan management/closure of already-open positions. PLACE_TEST_ORDER is a
+# manual customer demo action (already is_active-gated at its view), not automated dispatch — excluded.
+ACCOUNT_STOPPED_BLOCKED_JOB_TYPES = (
+    ExecutionJob.JobType.OPEN_TRADE,
+    ExecutionJob.JobType.PLACE_ORDER,
+)
+
+
+class ExecutionAccountStopped(Exception):
+    """Raised when a NEW automated order-opening ExecutionJob is created for a STOPPED account
+    (``is_active=False``). The account-level Stop is the authoritative immediate kill for new entries; this is
+    the single-boundary defense-in-depth that guarantees it even if a future creation seam forgets its own
+    upstream ``is_active`` filter. Does NOT affect trade-management jobs on open positions."""
+
+    def __init__(self, account_id):
+        self.account_id = account_id
+        super().__init__(f"account stopped: trading is not active for account {account_id}")
+
+
+def _stop_trading_account_gate_enabled() -> bool:
+    """Phase 6 Stop-kill gate. DEFAULT ON (the account-level Stop should be authoritative); set
+    ``STOP_TRADING_ACCOUNT_GATE_ENABLED`` to a falsey value (0/false/off/no) to roll back to the pre-Phase-6
+    behaviour where ``is_active`` was enforced only by the upstream automated-path filters."""
+    import os
+    from django.conf import settings as _s
+    val = getattr(_s, "STOP_TRADING_ACCOUNT_GATE_ENABLED", None)
+    if val is None:
+        val = os.getenv("STOP_TRADING_ACCOUNT_GATE_ENABLED", "1")
+    return str(val).strip().lower() not in ("0", "false", "off", "no", "")
 
 
 def order_creation_kill_reason():

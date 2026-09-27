@@ -98,6 +98,92 @@ def _safe_call(ex, method_name, *args, **kwargs) -> dict:
         return {"ok": False, "reason": "host_error"}
 
 
+def _recover_one_workspace(ws, now, *, resolve, gate_onboarding, actor) -> str:
+    """Attempt recovery for ONE already-projected candidate workspace (CONNECTED + connected + matched +
+    trade_allowed=False). ACCOUNT-SCOPED by construction: it resolves the executor for THIS account's id +
+    rdp_host and only ever calls ``apply_autotrading_config``/``relaunch_terminal`` against THIS account's own
+    windows identity + runtime_root — never another account's runtime, session, common.ini, or broker login.
+    Returns a stable outcome code the callers translate into their summaries. Shared by the global pass and
+    the account-scoped entry point so there is exactly ONE recovery mechanism."""
+    account = getattr(ws, "trading_account", None)
+    if account is None:
+        return "errors"
+    # Onboarding gate: do not disrupt a just-authenticated, still-unconfirmed tenant (fresh-beta UX).
+    if gate_onboarding and getattr(account, "workspace_confirmed_at", None) is None:
+        return "skipped_onboarding"
+    # Demo-only wall + freshness (a stale projection is not acted on — the observer must be current).
+    if getattr(account, "is_demo", False) is not True or not _observation_fresh(ws):
+        return "skipped_not_ready"
+    # Loop-safety pre-filter (cheap check before locking).
+    if not _attempt_allowed(ws, now):
+        return "skipped_cooldown"
+    # Need a delivering node (rdp_host) to reach the host executor.
+    node = getattr(ws, "execution_node", None) or getattr(account, "terminal_node", None)
+    rdp_host = str(getattr(node, "rdp_host", "") or "").strip()
+    if not rdp_host:
+        return "skipped_not_ready"
+    ex = resolve(account.id, rdp_host)
+    if ex is None:                                     # DARK / unarmed host executor — burn no attempt
+        return "skipped_no_executor"
+    # Server-derived identity + paths (DB-only, idempotent).
+    from terminal_provisioning import services as prov_services
+    try:
+        prov = prov_services.provision(account, actor=None)
+    except Exception:  # noqa: BLE001
+        return "errors"
+    username, runtime_root = prov.windows_username, prov.runtime_root
+    # CLAIM the attempt atomically (stamp + increment) BEFORE the host I/O — the loop-safety anchor.
+    if not _claim_attempt(ws.pk, now):
+        return "skipped_cooldown"
+    # 1) Re-assert the certified automation config (AllowLiveTrading=1 / Enabled=1). Capability only.
+    r1 = _safe_call(ex, "apply_autotrading_config", runtime_root, rdp_host=rdp_host)
+    if not _ok(r1):
+        return "config_failed"                         # do NOT relaunch if the config re-assert failed
+    # 2) Graceful, tenant-only relaunch so MT5 re-reads Enabled=1 with the account already connected.
+    r2 = _safe_call(ex, "relaunch_terminal", username, runtime_root, rdp_host=rdp_host)
+    if _ok(r2):
+        logger.info("capability_recovery: reasserted config + relaunched account=%s (attempt %s)",
+                    account.id, ws.capability_recovery_count)
+        return "relaunched"
+    return "relaunch_failed"
+
+
+def recover_capability_for_account(account_id, *, actor: str = SOURCE, executor_resolver=None,
+                                   bypass_onboarding_gate: bool = False) -> dict:
+    """ACCOUNT-SCOPED capability recovery — run the SAME bounded, loop-safe recovery for ONE account only.
+    Used by the managed Start-Trading lifecycle and by an operator-authorized single-account recovery. Reuses
+    ``_recover_one_workspace`` (NO second mechanism). Still DARK unless BOTH flags are on. Never touches any
+    other account. Returns a secret-free per-account summary.
+
+    ``bypass_onboarding_gate`` skips ONLY the fresh-beta onboarding hold (for a caller that holds an explicit
+    human authorization for THIS specific account, e.g. the operator Account-35 recovery or the managed Start
+    lifecycle which has just confirmed the account); every other gate — reserved-id, candidate projection,
+    demo-only, freshness, bound/cooldown, executor availability, atomic claim — still applies unchanged."""
+    base = {"enabled": False, "account_id": account_id, "outcome": "disabled"}
+    if not (hosted_persistent_mt5_enabled() and hosted_capability_recovery_enabled()):
+        return base
+    if account_id in _RESERVED_ACCOUNT_IDS:
+        return {**base, "enabled": True, "outcome": "reserved"}
+    now = timezone.now()
+    resolve = executor_resolver or (lambda acc_id, rdp_host: resolve_host_executor(
+        account_id=acc_id, rdp_host=rdp_host))
+    from hosted_workspace.flags import hosted_bounded_observation_enabled
+    gate_onboarding = hosted_bounded_observation_enabled() and not bypass_onboarding_gate
+    try:
+        ws = (HostedMt5Workspace.objects
+              .select_related("trading_account", "execution_node")
+              .get(trading_account_id=account_id))
+    except HostedMt5Workspace.DoesNotExist:
+        return {**base, "enabled": True, "outcome": "no_workspace"}
+    # Candidate projection (identical to the global pass) — act ONLY on the stuck CONNECTED+matched state.
+    if (str(ws.canonical_state) != str(S.CONNECTED) or ws.proj_connected is not True
+            or ws.proj_account_match is not True or ws.proj_trade_allowed is not False):
+        return {**base, "enabled": True, "outcome": "not_a_candidate",
+                "canonical_state": str(ws.canonical_state), "proj_trade_allowed": ws.proj_trade_allowed}
+    outcome = _recover_one_workspace(ws, now, resolve=resolve, gate_onboarding=gate_onboarding, actor=actor)
+    return {**base, "enabled": True, "outcome": outcome}
+
+
 def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=None) -> dict:
     """One capability-recovery pass over every stuck workspace. DARK unless master + recovery flags on.
     Idempotent + loop-safe + fail-open per workspace. Returns a secret-free summary. Arms nothing; places no
@@ -133,58 +219,28 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
     gate_onboarding = hosted_bounded_observation_enabled()
     for ws in qs:
         candidates += 1
-        account = getattr(ws, "trading_account", None)
-        if account is None:
-            errors += 1
-            continue
-        # Onboarding gate: do not disrupt a just-authenticated, still-unconfirmed tenant (see above).
-        if gate_onboarding and getattr(account, "workspace_confirmed_at", None) is None:
+        # Delegate to the shared, account-scoped step; aggregate its outcome into the identical summary.
+        outcome = _recover_one_workspace(ws, now, resolve=resolve, gate_onboarding=gate_onboarding, actor=actor)
+        if outcome == "skipped_onboarding":
             skipped_onboarding += 1
-            continue
-        # Demo-only wall + freshness (a stale projection is not acted on — the observer must be current).
-        if getattr(account, "is_demo", False) is not True or not _observation_fresh(ws):
+        elif outcome == "skipped_not_ready":
             skipped_not_ready += 1
-            continue
-        # Loop-safety pre-filter (cheap check before locking).
-        if not _attempt_allowed(ws, now):
+        elif outcome == "skipped_cooldown":
             skipped_cooldown += 1
-            continue
-        # Need a delivering node (rdp_host) to reach the host executor.
-        node = getattr(ws, "execution_node", None) or getattr(account, "terminal_node", None)
-        rdp_host = str(getattr(node, "rdp_host", "") or "").strip()
-        if not rdp_host:
-            skipped_not_ready += 1
-            continue
-        ex = resolve(account.id, rdp_host)
-        if ex is None:                                 # DARK / unarmed host executor — burn no attempt
+        elif outcome == "skipped_no_executor":
             skipped_no_executor += 1
-            continue
-        # Server-derived identity + paths (DB-only, idempotent).
-        from terminal_provisioning import services as prov_services
-        try:
-            prov = prov_services.provision(account, actor=None)
-        except Exception:  # noqa: BLE001
+        elif outcome == "config_failed":
+            attempted += 1
             errors += 1
-            continue
-        username, runtime_root = prov.windows_username, prov.runtime_root
-        # CLAIM the attempt atomically (stamp + increment) BEFORE the host I/O — the loop-safety anchor.
-        if not _claim_attempt(ws.pk, now):
-            skipped_cooldown += 1
-            continue
-        attempted += 1
-        # 1) Re-assert the certified automation config (AllowLiveTrading=1 / Enabled=1). Capability only.
-        r1 = _safe_call(ex, "apply_autotrading_config", runtime_root, rdp_host=rdp_host)
-        if not _ok(r1):
+        elif outcome == "relaunch_failed":
+            attempted += 1
+            config_reasserted += 1
             errors += 1
-            continue                                   # do NOT relaunch if the config re-assert failed
-        config_reasserted += 1
-        # 2) Graceful, tenant-only relaunch so MT5 re-reads Enabled=1 with the account already connected.
-        r2 = _safe_call(ex, "relaunch_terminal", username, runtime_root, rdp_host=rdp_host)
-        if _ok(r2):
+        elif outcome == "relaunched":
+            attempted += 1
+            config_reasserted += 1
             relaunched += 1
-            logger.info("capability_recovery: reasserted config + relaunched account=%s (attempt %s)",
-                        account.id, ws.capability_recovery_count)
-        else:
+        else:  # "errors" (account missing / provision failure)
             errors += 1
 
     return {"enabled": True, "candidates": candidates, "attempted": attempted,

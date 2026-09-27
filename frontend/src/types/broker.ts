@@ -19,6 +19,10 @@ export type BrokerAccount = {
   active_strategy_count?: number;
   /** Phase C4 — Provider-A vs Provider-B (persistent workspace) readiness provider; presentation only. */
   readiness_provider?: string | null;
+  /** Objective E — the authoritative, truthful trading state computed server-side (rendered verbatim; the UI
+   * never derives "Trading" from is_active). state ∈ {TRADING, PREPARING, TRADING_STOPPED, BROKER_CONNECTED,
+   * BROKER_LOGIN_REQUIRED, ATTENTION}. */
+  trading_state?: { state: string; label: string; detail: string } | null;
   /** Hosted (Provider-B/beta) accounts have no shared MT5 instance; the runtime IS the terminal. */
   mt5_instance?: number | null;
   runtime_ready?: boolean;
