@@ -148,7 +148,10 @@ class ManagedStartTests(TestCase):
         self._n += 1
         return _acct(self.user, self._n, **kw)
 
-    def _runtime_ready(self, val=True):
+    def _runtime_ready(self, val=False):
+        # Default FALSE on purpose: the Provider-B preflight must NOT depend on AccountRuntime (Accounts 25/35/36
+        # have none). Patching _account_runtime_ready=False proves the workspace-projection path stands alone —
+        # and if the fix were reverted to gate on AccountRuntime, these tests would fail (no longer masked).
         return mock.patch("trading.views._account_runtime_ready", return_value=val)
 
     def _no_arm(self):
@@ -164,12 +167,79 @@ class ManagedStartTests(TestCase):
         a = self._mk(is_active=False); _ws(a); _confirm(a)
         self.assertFalse(self._start(a).applies)
 
-    def test_terminal_not_ready_blocked(self):
-        a = self._mk(is_active=False); _ws(a); _confirm(a)
+    def test_provider_b_no_accountruntime_passes_preflight_and_enters_recovery(self):
+        # THE PRODUCTION DEFECT (Account 36): a Provider-B hosted account has NO AccountRuntime, but its
+        # workspace is connected+matched+fresh. Start must PASS the runtime preflight (not gate on AccountRuntime)
+        # and ENTER capability recovery because trade_allowed=False (expected before recovery).
+        a = self._mk(is_active=False)
+        _ws(a, canonical_state=S.CONNECTED, proj_trade_allowed=False, proj_execution_ready=False)  # connected, fresh
+        _confirm(a)
+        _assign(a, _strategy(self.user, marketplace=True))
+        self.assertFalse(hasattr(a, "runtime") and a.runtime)   # no AccountRuntime (Provider-B)
+        rec = mock.Mock(return_value={"enabled": True, "outcome": "relaunched"})
+        # _account_runtime_ready deliberately False (AccountRuntime absent) — must NOT block the Provider-B path.
+        with mock.patch("trading.views._account_runtime_ready", return_value=False), self._no_arm(), \
+             mock.patch("hosted_workspace.capability_recovery.recover_capability_for_account", rec):
+            r = self._start(a)
+        self.assertTrue(r.applies and r.ok, r.reason)           # passed preflight despite no AccountRuntime
+        rec.assert_called_once()                                 # entered capability recovery
+        self.assertEqual(r.trading_state["state"], PREPARING)   # trade_allowed still False → truthful PREPARING
+
+    def test_stale_observation_blocked(self):
+        # Runtime preflight fails CLOSED when the observation is stale (broker connectivity unproven).
+        from django.utils import timezone as _tz
+        a = self._mk(is_active=False)
+        _ws(a, last_decision_at=_tz.now() - _tz.timedelta(seconds=3600))  # stale
+        _confirm(a)
         with self._runtime_ready(False):
             r = self._start(a)
-        self.assertTrue(r.applies); self.assertFalse(r.ok); self.assertEqual(r.reason, "terminal_not_ready")
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "observation_stale")
         a.refresh_from_db(); self.assertFalse(a.is_active)
+
+    def test_provider_b_no_workspace_blocked(self):
+        a = self._mk(is_active=False)          # Provider-B, NO workspace created
+        with self._runtime_ready(False):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "workspace_missing")
+        a.refresh_from_db(); self.assertFalse(a.is_active)
+
+    def test_disconnected_account_blocked(self):
+        from django.utils import timezone as _tz
+        a = self._mk(is_active=False); _ws(a); _confirm(a)
+        a.disconnected_at = _tz.now(); a.save(update_fields=["disconnected_at"])
+        with self._runtime_ready(False):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "broker_not_connected")
+        a.refresh_from_db(); self.assertFalse(a.is_active)
+
+    def test_terminal_not_ready_blocked_legacy_provider(self):
+        # A non-Provider-B (legacy) account with no AccountRuntime falls through to _account_runtime_ready and
+        # is blocked terminal_not_ready — covers the legacy branch + reason (was previously uncovered).
+        a = self._mk(is_active=False, readiness_provider="temporary_validation")
+        with self._runtime_ready(False):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "terminal_not_ready")
+        a.refresh_from_db(); self.assertFalse(a.is_active)
+
+    def test_unobserved_connected_blocked(self):
+        # RULE 11 negative control: an UNOBSERVED (None) proj_connected must fail closed (is not True catches None).
+        a = self._mk(is_active=False); _ws(a, proj_connected=None); _confirm(a)
+        with self._runtime_ready(False):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "broker_not_connected")
+
+    def test_unobserved_match_blocked(self):
+        a = self._mk(is_active=False); _ws(a, proj_account_match=None); _confirm(a)
+        with self._runtime_ready(False):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "account_mismatch")
+
+    def test_unobserved_margin_blocked(self):
+        a = self._mk(is_active=False); _ws(a, proj_margin_mode=None); _confirm(a)
+        _assign(a, _strategy(self.user, marketplace=True))
+        with self._runtime_ready(False):
+            r = self._start(a)
+        self.assertFalse(r.ok); self.assertEqual(r.reason, "margin_mode")
 
     def test_not_demo_blocked(self):
         a = self._mk(is_active=False, is_demo=False); _ws(a); _confirm(a)
