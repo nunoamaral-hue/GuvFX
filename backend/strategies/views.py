@@ -695,6 +695,26 @@ class StrategyViewSet(viewsets.ModelViewSet):
             qs = qs.filter(owner=user)
         return qs
 
+    @action(detail=False, methods=["get"], url_path="assignable")
+    def assignable(self, request):
+        """Strategies the caller may ASSIGN to one of their own broker accounts: the ones they OWN PLUS any
+        PUBLISHED marketplace strategy. AVAILABILITY (read), deliberately WIDER than ownership — but it NEVER
+        widens edit/delete authority (``get_queryset`` stays owner-scoped for CRUD).
+
+        Returns ONLY a minimal projection (id / name / is_marketplace): a published strategy the caller does
+        NOT own must expose its catalogue identity for the picker, never its proprietary DEFINITION (entry/
+        exit rules, indicators, etc.). The bypass flag is ``is_superuser`` — the SAME flag
+        ``assert_assignment_ownership`` and ``get_queryset`` use — so the picker only ever offers strategies
+        that assignment creation will actually accept. Active strategies only; fail-closed to own+published."""
+        from django.db.models import Q
+        user = request.user
+        if user.is_superuser:
+            qs = Strategy.objects.filter(is_active=True)
+        else:
+            qs = Strategy.objects.filter(Q(owner=user) | Q(is_marketplace=True), is_active=True)
+        rows = qs.order_by("name", "id").values("id", "name", "is_marketplace")
+        return Response(list(rows))
+
     def _signal_copy_backing_ids(self, request):
         """AJ#7.2 — the set of Strategy ids that BACK a signal-copy product the caller owns, across every
         distinct signal-copy source. Used by My Strategies to render such a row HONESTLY (a neutral "Automated"
@@ -1767,8 +1787,8 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
         serializer.save()
 
     def perform_destroy(self, instance):
-        # Defense-in-depth: removal requires ownership of BOTH the assignment's account and its strategy
-        # (get_queryset already scopes reads by strategy owner; this also asserts the account owner).
+        # Defense-in-depth: removal is authorized by assignability (own the account AND own-or-published
+        # strategy). get_queryset already scopes reads by ACCOUNT owner; this re-asserts before delete.
         assert_assignment_ownership(
             user=self.request.user, account=instance.account, strategy=instance.strategy)
         instance.delete()
@@ -1777,8 +1797,13 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         user = self.request.user
 
+        # An assignment is the customer's when it lives on THEIR account — scope by account owner, NOT by
+        # strategy owner. This is required for the marketplace model: an assignment of a PUBLISHED strategy
+        # (owned by the provider, not the customer) still belongs to the customer's account and must be
+        # visible/manageable by them. For a customer's own-private-strategy assignment both scopes coincide
+        # (create already asserts account ownership), so this never widens cross-account visibility.
         if not user.is_superuser:
-            qs = qs.filter(strategy__owner=user)
+            qs = qs.filter(account__user=user)
 
         strategy_id = self.request.query_params.get("strategy")
         account_id = self.request.query_params.get("account")

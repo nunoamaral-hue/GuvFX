@@ -127,8 +127,12 @@ class StrategySerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "is_signal_copy_backed",
+            # Marketplace publication (availability). READ-ONLY: a member can never self-publish — it is set
+            # only by a governed path (admin / seed). Exposed so the UI can label a published catalogue
+            # strategy vs a private one.
+            "is_marketplace",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "is_signal_copy_backed"]
+        read_only_fields = ["id", "created_at", "updated_at", "is_signal_copy_backed", "is_marketplace"]
 
     def create(self, validated_data):
         owner = self.context["request"].user
