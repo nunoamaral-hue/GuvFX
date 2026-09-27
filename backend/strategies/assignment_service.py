@@ -59,6 +59,28 @@ def assert_no_duplicate_family(*, account, strategy) -> None:
         raise ValidationError("This strategy is already assigned to this account.")
 
 
+def assignment_has_history(assignment) -> bool:
+    """True when the assignment has ANY execution/trading history that must be preserved on removal — i.e. its
+    identity (immutable magic + attribution + append-only audit) is depended on. Used by the history-safe
+    "Remove Strategy": a True result means DEACTIVATE (retain), False means a hard delete is safe.
+
+    History = any Trade / ExecutionJob / SignalExecutionPlan referencing this assignment (reverse relations),
+    OR a broker deal on the account already carrying this assignment's magic (covers a traded assignment whose
+    ``Trade.strategy_assignment`` was never stamped, e.g. before dual-write/sweep)."""
+    from trading.models import Trade
+    for rel in ("trades", "execution_jobs", "signal_execution_plans"):
+        mgr = getattr(assignment, rel, None)
+        try:
+            if mgr is not None and mgr.exists():
+                return True
+        except Exception:  # noqa: BLE001 — a missing reverse accessor must never crash the removal path
+            pass
+    magic = getattr(assignment, "magic_number", None)
+    if magic and Trade.objects.filter(account_id=assignment.account_id, magic_number=magic).exists():
+        return True
+    return False
+
+
 def assert_assignment_ownership(*, user, account, strategy) -> None:
     """Fail-closed authorization for creating/repointing/removing a StrategyAssignment.
 

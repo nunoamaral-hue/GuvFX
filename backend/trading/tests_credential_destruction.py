@@ -67,37 +67,40 @@ class PerformDestroyWiringTests(TestCase):
         self.user = U.objects.create_user(username="pd", email="pd@x.invalid", password="x")
         self.factory = APIRequestFactory()
 
-    def test_delete_account_destroys_and_audits_credential(self):
+    def test_delete_account_via_api_is_blocked_405(self):
+        # History-safety: the hard-delete API path is now CLOSED (destroy -> 405). A DELETE must not remove the
+        # row, must not destroy the credential (destroy short-circuits before perform_destroy), and must not
+        # write a CREDENTIAL_DESTROYED audit. Member removal goes through the history-retaining tombstone, which
+        # DOES destroy the credential (covered in tests_account_removal + tests_broker_connectivity).
         acct = _acct(self.user, number="55446633")
         acct_id = acct.id
+        original_ct = acct.password_enc
         req = self.factory.delete(f"/api/accounts/{acct_id}/")
         force_authenticate(req, user=self.user)
         resp = TradingAccountViewSet.as_view({"delete": "destroy"})(req, pk=acct_id)
-        self.assertEqual(resp.status_code, 204)
-        self.assertFalse(TradingAccount.objects.filter(id=acct_id).exists())   # row gone
-        # the destruction evidence survives the row deletion (append-only audit)
-        audit = AuditEvent.objects.get(event_type="CREDENTIAL_DESTROYED", entity_id=str(acct_id))
-        self.assertEqual(audit.metadata["account_number_suffix"], "****6633")
+        self.assertEqual(resp.status_code, 405)                                # hard-delete refused
+        self.assertTrue(TradingAccount.objects.filter(id=acct_id).exists())    # row RETAINED
+        acct.refresh_from_db()
+        self.assertEqual(acct.password_enc, original_ct)                       # credential untouched
+        self.assertEqual(AuditEvent.objects.filter(
+            event_type="CREDENTIAL_DESTROYED", entity_id=str(acct_id)).count(), 0)
 
-    def test_refused_delete_rolls_back_destruction_and_audit(self):
-        # The load-bearing safety claim: deleting an account with a PROTECTed AccountProvisioning is
-        # refused, and the credential clear + its DESTROYED audit roll back with it (no partial
-        # destruction). Locks in behaviour a future edit could silently break.
-        from django.db.models import ProtectedError
+    def test_delete_blocked_even_for_provisioned_account(self):
+        # A fully-provisioned account (PROTECTed AccountProvisioning) is also refused at 405 — the closed API
+        # path never reaches the ORM, so provisioning + credential + row all survive intact.
         from terminal_provisioning.models import AccountProvisioning
-
         acct = _acct(self.user, number="77665544")
         original_ct = acct.password_enc
         AccountProvisioning.objects.create(
             trading_account=acct, windows_username="guvfx_u_prot", runtime_root="C:/GuvFX/accounts/prot")
         req = self.factory.delete(f"/api/accounts/{acct.id}/")
         force_authenticate(req, user=self.user)
-        with self.assertRaises(ProtectedError):
-            TradingAccountViewSet.as_view({"delete": "destroy"})(req, pk=acct.id)
+        resp = TradingAccountViewSet.as_view({"delete": "destroy"})(req, pk=acct.id)
+        self.assertEqual(resp.status_code, 405)
         acct.refresh_from_db()
-        self.assertTrue(TradingAccount.objects.filter(id=acct.id).exists())   # account survived
-        self.assertEqual(acct.password_enc, original_ct)                       # clear rolled back
-        self.assertEqual(AuditEvent.objects.filter(                           # no durable audit row
+        self.assertTrue(TradingAccount.objects.filter(id=acct.id).exists())
+        self.assertEqual(acct.password_enc, original_ct)
+        self.assertEqual(AuditEvent.objects.filter(
             event_type="CREDENTIAL_DESTROYED", entity_id=str(acct.id)).count(), 0)
 
 

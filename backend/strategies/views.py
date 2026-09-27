@@ -22,7 +22,8 @@ from .models import (
     seed_default_leg_sizing,
 )
 from .assignment_service import (
-    assert_assignment_ownership, assert_no_duplicate_family, initialize_new_assignment, strategy_family)
+    assert_assignment_ownership, assert_no_duplicate_family, assignment_has_history, initialize_new_assignment,
+    strategy_family)
 from .serializers import (
     StrategySerializer,
     StrategyAssignmentSerializer,
@@ -1821,6 +1822,17 @@ class StrategyAssignmentViewSet(viewsets.ModelViewSet):
         # strategy). get_queryset already scopes reads by ACCOUNT owner; this re-asserts before delete.
         assert_assignment_ownership(
             user=self.request.user, account=instance.account, strategy=instance.strategy)
+        # HISTORY-SAFE removal: an assignment with ANY execution/trading history must RETAIN its identity
+        # (its immutable magic + the attribution that Trade/ExecutionJob/SignalExecutionPlan rows carry, and
+        # its append-only AssignmentLegSizingHistory/StrategyRuntimeEvent audit which CASCADE with the row) —
+        # so it is DEACTIVATED, not hard-deleted. Only a never-traded / TEST-only assignment (no dependent
+        # history) may be hard-deleted. Trade.strategy_assignment is SET_NULL by design (no row loss either
+        # way); the point here is to preserve ATTRIBUTION + audit, not to prevent orphaning.
+        if assignment_has_history(instance):
+            if instance.is_active:
+                instance.is_active = False
+                instance.save(update_fields=["is_active", "updated_at"])
+            return
         instance.delete()
 
     def get_queryset(self):

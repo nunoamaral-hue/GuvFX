@@ -29,6 +29,8 @@ export type BrokerAccount = {
   runtime_state?: string | null;
   is_demo: boolean;
   is_active: boolean;
+  /** Removed/decommissioned (tombstoned) — the account list hides these; history is retained server-side. */
+  is_removed?: boolean;
   /** Phase C4 — customer-supplied public Myfxbook page link + optional system id (NO credentials, ever). */
   myfxbook_url?: string | null;
   myfxbook_system_id?: string | null;

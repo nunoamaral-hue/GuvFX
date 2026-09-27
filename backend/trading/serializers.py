@@ -36,6 +36,8 @@ class TradingAccountSerializer(serializers.ModelSerializer):
     # client-side from ``is_active`` alone). Composed from the same readiness authority the order-time gate
     # uses, so the UI can never show "Trading" where the server would refuse an order. Pure read.
     trading_state = serializers.SerializerMethodField()
+    # Removed/decommissioned tombstone (disconnected_at set): the card list hides these from the active view.
+    is_removed = serializers.SerializerMethodField()
 
     class Meta:
         model = TradingAccount
@@ -54,6 +56,7 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             "masked_account_number",
             "active_strategy_count",
             "trading_state",
+            "is_removed",
             "is_demo",
             "is_active",
             "myfxbook_url",
@@ -104,6 +107,11 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             return resolve_trading_state(obj)
         except Exception:  # noqa: BLE001 — display must fail safe, never show a false "Trading"
             return {"state": "PREPARING", "label": "Preparing automated trading", "detail": ""}
+
+    def get_is_removed(self, obj):
+        """True when the account has been removed/decommissioned (tombstoned via disconnected_at). The Broker
+        Accounts list hides these from the active view; history is retained server-side."""
+        return getattr(obj, "disconnected_at", None) is not None
 
     def validate(self, attrs):
         broker_server = attrs.get("broker_server") or getattr(self.instance, "broker_server", None)

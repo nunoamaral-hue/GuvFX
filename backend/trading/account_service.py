@@ -90,7 +90,11 @@ def create_customer_account(request, serializer):
                 else:
                     ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
                     limit = min(10, ent.max_trading_accounts)
-                    if TradingAccount.objects.filter(user=user).count() >= limit:
+                    # Count only LIVE (non-tombstoned) accounts so a removed/decommissioned account
+                    # (disconnected_at set) releases its owned slot immediately — matching the tombstone-aware
+                    # armed path (owned_account_count) and the active counts. Without this filter a removed
+                    # account would still consume the cap on the estate-default (un-enforced) path.
+                    if TradingAccount.objects.filter(user=user, disconnected_at__isnull=True).count() >= limit:
                         raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
                 serializer.save(user=user, mt5_instance=None, is_active=False)
     except IntegrityError:

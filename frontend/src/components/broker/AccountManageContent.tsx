@@ -10,7 +10,7 @@ import { Dialog } from "@/components/broker/Dialog";
 import { ErrorState, LoadingState } from "@/components/broker/States";
 import {
   getAccount, getBrokerStatus, getBrokerAccountsUxEnabled, getDeliveryState, getEntitlementSummary,
-  openMt5Desktop, setAccountActive,
+  openMt5Desktop, removeAccount, setAccountActive,
 } from "@/lib/broker-api";
 import { listAccountAssignments } from "@/lib/strategy-assignments-api";
 import { accountTitle, brokerLabel, maskAccountNumber, toCustomerError } from "@/lib/broker-status";
@@ -35,6 +35,7 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
   const [notice, setNotice] = useState<{ type: "error" | "info"; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmStart, setConfirmStart] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   // PER-USER gate (matches /accounts). Non-granted users have no business on this new surface → /accounts.
   useEffect(() => {
@@ -81,6 +82,18 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
       setNotice({ type: "error", message: toCustomerError(err, "We couldn't update this account.") });
     } finally { setBusy(false); }
   }, [accountId, load]);
+
+  const doRemove = useCallback(async () => {
+    setBusy(true); setNotice(null);
+    try {
+      await removeAccount(accountId);
+      router.push("/accounts");   // removed account is hidden from the list; return there
+    } catch (err) {
+      // 409 = open trades (or other guarded refusal) — keep the member on the page with the actionable message.
+      setConfirmRemove(false);
+      setNotice({ type: "error", message: toCustomerError(err, "We couldn't remove this account.") });
+    } finally { setBusy(false); }
+  }, [accountId, router]);
 
   // Start/Stop = automated-trading eligibility. STOP is always allowed. START on a STANDARD-enforced plan,
   // when another account is already trading, is a switch → confirm first (the other one stops).
@@ -180,6 +193,10 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
         {showMyfxbook && (
           <a href={myfxbookHref as string} target="_blank" rel="noopener noreferrer" style={btnLink}>View on Myfxbook ↗</a>
         )}
+        <Button variant="secondary" onClick={() => setConfirmRemove(true)} disabled={busy}
+                style={{ marginLeft: "auto", color: "#fca5a5", borderColor: "rgba(252,165,165,0.4)" }}>
+          Remove account
+        </Button>
       </div>
 
       <Dialog open={confirmStart} onClose={() => { if (!busy) setConfirmStart(false); }} title="Switch trading account" busy={busy}>
@@ -191,6 +208,27 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
         <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button type="button" variant="secondary" onClick={() => setConfirmStart(false)} disabled={busy}>Cancel</Button>
           <Button type="button" onClick={() => void doSetActive(true)} disabled={busy}>{busy ? "Starting…" : "Start trading"}</Button>
+        </div>
+      </Dialog>
+
+      <Dialog open={confirmRemove} onClose={() => { if (!busy) setConfirmRemove(false); }} title={`Remove ${title}?`} busy={busy}>
+        <p style={{ color: "#cbd5f5", fontSize: "0.9rem", lineHeight: 1.6, margin: 0 }}>
+          Removing <strong>{masked}</strong> will:
+        </p>
+        <ul style={{ color: "#cbd5f5", fontSize: "0.9rem", lineHeight: 1.7, margin: "8px 0 0", paddingLeft: 18 }}>
+          <li>stop automated trading on this account;</li>
+          <li>remove it from your Broker Accounts and free up a slot for another account;</li>
+          <li>keep your GuvFX trading history.</li>
+        </ul>
+        <p style={{ color: "#8fa0b7", fontSize: "0.85rem", lineHeight: 1.6, margin: "10px 0 0" }}>
+          Your broker account itself is not deleted at the broker. If you still have open trades, close them in MT5 first.
+        </p>
+        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button type="button" variant="secondary" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</Button>
+          <Button type="button" onClick={() => void doRemove()} disabled={busy}
+                  style={{ color: "#fca5a5", borderColor: "rgba(252,165,165,0.4)" }}>
+            {busy ? "Removing…" : "Remove account"}
+          </Button>
         </div>
       </Dialog>
     </div>

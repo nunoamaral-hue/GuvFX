@@ -190,6 +190,9 @@ export function BrokerAccountsContent() {
         : "Only one account can trade at a time")
     : "Connect and validate the broker accounts your strategies trade on.";
 
+  // Removed/decommissioned accounts are hidden from the active Broker Accounts view (history retained server-side).
+  const visibleAccounts = accounts ? accounts.filter((a) => !a.is_removed) : null;
+
   return (
     <div style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 1rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
@@ -199,7 +202,7 @@ export function BrokerAccountsContent() {
             {entitlementLine}
           </p>
         </div>
-        {accounts && accounts.length > 0 && <Button onClick={() => setWizardOpen(true)}>Add account</Button>}
+        {visibleAccounts && visibleAccounts.length > 0 && <Button onClick={() => setWizardOpen(true)}>Add account</Button>}
       </div>
 
       {notice && (
@@ -219,11 +222,11 @@ export function BrokerAccountsContent() {
         ? <ErrorState message={error} onRetry={() => void load()} />
         : accounts === null
           ? <LoadingState label="Loading broker accounts…" />
-          : accounts.length === 0
+          : !visibleAccounts || visibleAccounts.length === 0
             ? <EmptyState action={<Button onClick={() => setWizardOpen(true)}>Add account</Button>} />
             : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
-                {accounts.map((a) => (
+                {visibleAccounts.map((a) => (
                   <AccountCard key={a.id} account={a} status={statuses[a.id]}
                     statusLoading={statusLoading && !(a.id in statuses)}
                     delivery={deliveries[a.id]}
