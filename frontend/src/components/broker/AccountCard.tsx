@@ -114,7 +114,11 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
         {/* Objective E — the truthful trading state, rendered VERBATIM from the backend projection. Never
             derive "Trading" from is_active: an account can be is_active=True while MT5 cannot auto-trade
             (trade_allowed=False), which must read "Preparing…"/"Action required", not a false "Trading". */}
-        {tradingBadge && <Badge color={tradingBadge.color}>{tradingBadge.label}</Badge>}
+        {tradingBadge && (
+          <span title={account.trading_state?.detail || undefined}>
+            <Badge color={tradingBadge.color}>{tradingBadge.label}</Badge>
+          </span>
+        )}
       </div>
 
       {/* WS-C — Current validation state (badge above), Last successful validation, and Latest attempt are

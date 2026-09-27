@@ -175,8 +175,14 @@ def managed_start_trading(account, user, *, actor: str = "", request=None) -> St
     if ws.proj_account_match is not True:
         return _fail("account_mismatch",
                      "The terminal is logged into a different account. Log in to this broker account.")
-    # 4) margin mode capability (hedging required by the product).
-    if ws.proj_margin_mode is not None and int(ws.proj_margin_mode) != _HEDGING:
+    # 4) margin mode capability (hedging required by the product). FAIL-CLOSED: an UNKNOWN/unobserved margin
+    # (proj_margin_mode is None) is NOT proof of hedging, so it must block — matching the B1 canonical rule
+    # that only proven HEDGING supports independent same-symbol legs (NETTING/UNKNOWN destroy magic ownership).
+    try:
+        margin_is_hedging = ws.proj_margin_mode is not None and int(ws.proj_margin_mode) == _HEDGING
+    except (TypeError, ValueError):
+        margin_is_hedging = False
+    if not margin_is_hedging:
         return _fail("margin_mode", "This strategy requires a hedging account. Please use a hedging demo account.")
     # 5) at least one active, correctly-sized strategy.
     from strategies.models import StrategyAssignment, effective_lot_per_leg
@@ -209,8 +215,14 @@ def managed_start_trading(account, user, *, actor: str = "", request=None) -> St
         if getattr(ws, "execution_authorized_at", None) is None:
             return _fail("not_authorized", "Please enable automated trading for this account first.")
 
-    # 7) product-driven promotion (server-derived; safe modes only).
-    promoted = _promote_product_assignments(account, active_assignments)
+    # 7) COMMIT is_active (intent) with the existing STANDARD/CONCURRENT entitlement semantics — FIRST, so a
+    # concurrency-limit breach fails closed here (before any promotion) and so the subsequent arm sees
+    # is_active=True (arm_preconditions requires it). is_active alone never authorizes an order — the
+    # claim/bridge gates still require the full readiness — so committing while capability is still being
+    # restored is honest, not a false "Trading" (the read-model reports PREPARING until genuinely ready).
+    # Ordering (commit → promote → arm) also makes promotion atomic w.r.t. a successful activation: a Start
+    # that fails the concurrency check never promotes an assignment to LIVE/AUTO_DEMO.
+    _commit_active(account, user)
 
     # 8) ensure automated-trading capability (Algo). Account-scoped; reuses the existing recovery mechanism.
     recovery = {}
@@ -221,14 +233,15 @@ def managed_start_trading(account, user, *, actor: str = "", request=None) -> St
                                                   bypass_onboarding_gate=True)
         ws.refresh_from_db()
 
-    # 9) arm (existing gate; only succeeds when genuinely ready — trade_allowed + EXECUTION_READY + authorized).
+    # 9) product-driven promotion (server-derived; safe modes only) — after commit so it never runs on a
+    # concurrency-rejected Start.
+    promoted = _promote_product_assignments(account, active_assignments)
+
+    # 10) arm (existing gate; only succeeds when genuinely ready — is_active + trade_allowed + EXECUTION_READY +
+    # authorized). Runs AFTER commit so a genuinely-ready fresh Start arms synchronously and reads TRADING.
+    account.refresh_from_db()
     from execution.hosted_provisioning import arm_hosted_workspace_execution
     arm = arm_hosted_workspace_execution(account, actor=actor or "managed_start", request=request)
-
-    # 10) commit is_active (intent) with the existing entitlement semantics. is_active alone never authorizes an
-    # order — the claim/bridge gates still require the full readiness — so committing while capability is still
-    # being restored is honest, not a false "Trading" (the read-model reports PREPARING until genuinely ready).
-    _commit_active(account, user)
 
     account.refresh_from_db()
     state = resolve_trading_state(account)

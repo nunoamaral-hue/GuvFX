@@ -74,10 +74,17 @@ def resolve_trading_state(account) -> dict:
 
     ws = getattr(account, "hosted_workspace", None)
 
-    # TRADING is decided by the SAME authority the order-time gate uses (full conjunction, fail-closed).
+    # TRADING is decided by the SAME authorities the order path uses, so the UI can never claim "Trading"
+    # where the server would refuse an order: the creation-gate readiness conjunction AND the final-dispatch
+    # gate (broker health/pause). evaluate_dispatch_gate is TRANSPARENT (allowed=True) while its flag is off,
+    # so this reduces to the readiness provider in the current posture and additionally honours health/pause
+    # once that gate is armed. Any error fails closed to not-eligible (never a false "Trading").
     try:
         from execution.readiness import PersistentWorkspaceProvider
         eligible = bool(PersistentWorkspaceProvider().evaluate(account).eligible)
+        if eligible:
+            from execution.broker_gate import evaluate_dispatch_gate
+            eligible = bool(evaluate_dispatch_gate(account).allowed)
     except Exception:  # noqa: BLE001
         eligible = False
 

@@ -314,9 +314,10 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         # ``runtime`` (reverse OneToOne AccountRuntime) is prefetched so the serializer's
-        # runtime_ready/runtime_state fields (IPR Area B / C6) add no per-row query.
+        # runtime_ready/runtime_state fields (IPR Area B / C6) add no per-row query. ``hosted_workspace``
+        # (reverse OneToOne) is joined so the new ``trading_state`` field's readiness read adds no N+1.
         qs = TradingAccount.objects.select_related(
-            "user", "broker_server", "mt5_instance", "runtime").all()
+            "user", "broker_server", "mt5_instance", "runtime", "hosted_workspace").all()
         # Phase C4 — prefetch StrategyAssignments so the serializer's active_strategy_count adds no N+1.
         qs = qs.prefetch_related("strategy_assignments")
         if not user.is_staff:

@@ -50,7 +50,9 @@ RECOVERY_COOLDOWN_S = 300
 # (which rewrites common.ini) NOR relaunch_terminal is ever called for them. Customer Zero (account 1) and the
 # account-18 reference/control workspace are both SACRED (AJ#6.x acceptance invariant); account 18 is a demo
 # account, so the is_demo wall does NOT protect it — it must be reserved by explicit identity, symmetric with
-# Customer Zero. Defence in depth: the signed executor and the .ps1 also refuse these ids.
+# Customer Zero. Defence in depth: the signed executor and the .ps1 also refuse Customer Zero (account 1); for
+# account 18 the guards here (the DB-level exclude on the global pass + the coerced check on the account-scoped
+# entry + the DB-derived check in _recover_one_workspace) are the reserving layer.
 _RESERVED_ACCOUNT_IDS = frozenset({1, 18})
 
 
@@ -108,6 +110,11 @@ def _recover_one_workspace(ws, now, *, resolve, gate_onboarding, actor) -> str:
     account = getattr(ws, "trading_account", None)
     if account is None:
         return "errors"
+    # Defense-in-depth reserved-id guard on the DB-derived int id, so BOTH entry points refuse a reserved
+    # identity regardless of the caller's arg type (the global pass already excludes them at the DB level; the
+    # signed executor/.ps1 refuse only account 1, so this is the ONLY application-layer backstop for account 18).
+    if getattr(account, "id", None) in _RESERVED_ACCOUNT_IDS:
+        return "skipped_reserved"
     # Onboarding gate: do not disrupt a just-authenticated, still-unconfirmed tenant (fresh-beta UX).
     if gate_onboarding and getattr(account, "workspace_confirmed_at", None) is None:
         return "skipped_onboarding"
@@ -162,6 +169,13 @@ def recover_capability_for_account(account_id, *, actor: str = SOURCE, executor_
     base = {"enabled": False, "account_id": account_id, "outcome": "disabled"}
     if not (hosted_persistent_mt5_enabled() and hosted_capability_recovery_enabled()):
         return base
+    # Type-TOTAL reserved-id guard: coerce before the membership test so a string account_id ('1'/'18') can
+    # never bypass it (the global pass excludes reserved ids at the DB level, which coerces; this must match).
+    try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        return {**base, "enabled": True, "outcome": "invalid_account_id"}
+    base["account_id"] = account_id
     if account_id in _RESERVED_ACCOUNT_IDS:
         return {**base, "enabled": True, "outcome": "reserved"}
     now = timezone.now()
@@ -221,9 +235,9 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
         candidates += 1
         # Delegate to the shared, account-scoped step; aggregate its outcome into the identical summary.
         outcome = _recover_one_workspace(ws, now, resolve=resolve, gate_onboarding=gate_onboarding, actor=actor)
-        if outcome == "skipped_onboarding":
+        if outcome in ("skipped_onboarding",):
             skipped_onboarding += 1
-        elif outcome == "skipped_not_ready":
+        elif outcome in ("skipped_not_ready", "skipped_reserved"):  # reserved never occurs here (DB-excluded)
             skipped_not_ready += 1
         elif outcome == "skipped_cooldown":
             skipped_cooldown += 1

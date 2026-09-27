@@ -298,6 +298,107 @@ class ManagedStartTests(TestCase):
         self.assertTrue(r.ok)
 
 
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1",
+                   MANAGED_START_TRADING_ENABLED="1", MANAGED_START_AUTHORIZES_EXECUTION="")
+class RealArmReorderTests(TestCase):
+    """Fix #5 — commit is_active BEFORE arm, so a genuinely-ready fresh Start arms synchronously (arm's
+    precondition requires is_active=True) and reads TRADING, exercising the REAL arm (no mock)."""
+
+    def setUp(self):
+        self.user = U.objects.create_user(username="ra", email="ra@x.invalid", password="x")
+        from execution.models import TerminalNode
+        self.node = TerminalNode.objects.create(hostname="node-test-1")
+
+    def test_ready_start_arms_synchronously_and_trades(self):
+        a = _acct(self.user, 1, is_active=False, terminal_node=self.node)
+        _ws(a, execution_enabled=False, execution_node=self.node)   # ready but NOT yet armed
+        _confirm(a)
+        _assign(a, _strategy(self.user, marketplace=True))
+        from trading.managed_start import managed_start_trading
+        with mock.patch("trading.views._account_runtime_ready", return_value=True):
+            r = managed_start_trading(a, self.user, actor="test")   # REAL arm (not mocked)
+        self.assertTrue(r.ok, r.reason)
+        self.assertTrue(r.armed)                                     # arm succeeded because commit ran first
+        a.refresh_from_db()
+        self.assertTrue(a.is_active)
+        self.assertTrue(a.hosted_workspace.execution_enabled)       # execution_enabled flipped by the real arm
+        self.assertEqual(r.trading_state["state"], TRADING)
+
+
+@override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_CAPABILITY_RECOVERY_ENABLED="1",
+                   HOSTED_BOUNDED_OBSERVATION_ENABLED="1")
+class AccountScopedRecoveryTests(TestCase):
+    """Fix #3 — direct coverage of recover_capability_for_account, including the reserved-id type-total guard."""
+
+    def setUp(self):
+        self.user = U.objects.create_user(username="s", email="s@x.invalid", password="x")
+        self._n = 0
+
+    def _nonreserved_acct(self, **kw):
+        # DB auto-ids can land on 1 or 18 (the production RESERVED ids); a normal test account on a reserved id
+        # would be (correctly) refused as "reserved". Skip those so these tests exercise the intended paths.
+        a = _acct(self.user, self._n, **kw)
+        while a.id in (1, 18):
+            self._n += 1
+            a = _acct(self.user, self._n, **kw)
+        return a
+
+    def _stuck(self, confirmed=True):
+        self._n += 1
+        a = self._nonreserved_acct(is_active=True)
+        _ws(a, canonical_state=S.CONNECTED, proj_trade_allowed=False, proj_execution_ready=False,
+            execution_enabled=False, execution_authorized_at=None)
+        if confirmed:
+            _confirm(a)
+        return a
+
+    def _rec(self, account_id, **kw):
+        from hosted_workspace.capability_recovery import recover_capability_for_account
+        return recover_capability_for_account(account_id, **kw)
+
+    @override_settings(HOSTED_CAPABILITY_RECOVERY_ENABLED="")
+    def test_flags_off_disabled(self):
+        self.assertEqual(self._rec(999)["outcome"], "disabled")
+
+    def test_reserved_int_refused(self):
+        self.assertEqual(self._rec(1)["outcome"], "reserved")
+        self.assertEqual(self._rec(18)["outcome"], "reserved")
+
+    def test_reserved_string_refused(self):
+        # The bug this fixes: a string account_id must NOT bypass the reserved-id guard.
+        self.assertEqual(self._rec("1")["outcome"], "reserved")
+        self.assertEqual(self._rec("18")["outcome"], "reserved")
+
+    def test_invalid_account_id(self):
+        self.assertEqual(self._rec("not-a-number")["outcome"], "invalid_account_id")
+
+    def test_no_workspace(self):
+        self._n = 90
+        a = self._nonreserved_acct(is_active=True)   # no workspace created
+        self.assertEqual(self._rec(a.id)["outcome"], "no_workspace")
+
+    def test_not_a_candidate_when_trade_allowed(self):
+        a = self._stuck()
+        a.hosted_workspace.proj_trade_allowed = True
+        a.hosted_workspace.canonical_state = S.EXECUTION_READY
+        a.hosted_workspace.save(update_fields=["proj_trade_allowed", "canonical_state"])
+        self.assertEqual(self._rec(a.id)["outcome"], "not_a_candidate")
+
+    def test_onboarding_gate_holds_unconfirmed_without_bypass(self):
+        a = self._stuck(confirmed=False)
+        self.assertEqual(self._rec(a.id, executor_resolver=lambda *_: None)["outcome"], "skipped_onboarding")
+
+    def test_bypass_onboarding_gets_past_onboarding_only(self):
+        # Without bypass an unconfirmed stuck account is held at onboarding; WITH bypass it advances past
+        # onboarding to the next real gate (here: no node/executor). Proves bypass skips ONLY the onboarding hold.
+        a = self._stuck(confirmed=False)
+        held = self._rec(a.id, executor_resolver=lambda *_: None)["outcome"]
+        self.assertEqual(held, "skipped_onboarding")
+        advanced = self._rec(a.id, bypass_onboarding_gate=True, executor_resolver=lambda *_: None)["outcome"]
+        self.assertNotEqual(advanced, "skipped_onboarding")   # advanced past onboarding
+        self.assertIn(advanced, ("skipped_not_ready", "skipped_no_executor", "skipped_cooldown"))
+
+
 class StopTradingKillTests(TestCase):
     """Phase 6 — the account-level Stop is the authoritative creation kill for NEW automated entries, while
     open-position management (CLOSE/MODIFY) is never blocked."""
