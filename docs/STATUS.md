@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-09-27 - WAYOND MARKETPLACE AVAILABILITY + ASSIGNMENT-SCOPED RISK UX (P1 member launch).** Fixes the
+  two product-model issues Nuno found: (Issue 1) marketplace strategies were filtered by OWNERSHIP not
+  availability — support@ saw only its own "Wayond WIM" copy #10 because the account picker used owner-scoped
+  `listMyStrategies`, and "Wayond WIM" exists as 3 per-user copies (#8 nuno/#10 support@/#15 beta); (Issue 2)
+  Configure opened the global strategy definition, not the account-specific assignment config. **Backend:**
+  additive `Strategy.is_marketplace` (bool, default False, db_index, migration `0015` add-with-default → #8/#10/#15
+  all PRIVATE, #10/#16 untouched; READ-ONLY in serializer so no self-publish); `assert_assignment_ownership` now
+  allows a strategy that the user OWNS **or** that is PUBLISHED (`is_marketplace`) — account ownership stays
+  strict (foreign account always denied); `StrategyAssignmentViewSet.get_queryset` scoped by `account__user` (an
+  assignment belongs to the account owner, so a published-strategy assignment is visible/manageable); new
+  read-only `StrategyViewSet.assignable` action (own + published) for the picker; **StrategyViewSet CRUD stays
+  owner-scoped → a customer can't edit a published definition (Phase 10, already enforced, verified).** Authoritative
+  sizing = `AssignmentLegSizing.lot_per_leg` via the existing `PUT /api/strategies/assignments/<id>/leg-sizing/`
+  (0.40 = SignalSourceConfig split; risk_% NON-authoritative → not exposed). **Frontend:** account picker uses
+  `assignable` (own + published, `is_marketplace` label); NEW assignment-specific route
+  `/accounts/[id]/strategies/[assignmentId]` → `AssignmentConfigContent` (strategy name + broker identity +
+  status + real per-assignment lot control, shows Account 35's actual 0.01, not a blank global risk field);
+  Configure now points there (not `/strategies/[id]`). Tests: `strategies/tests_marketplace_availability` (13) +
+  `tests_assignment_ownership` updated; frontend `account-strategy-mgmt` (+config/availability). 393 backend OK;
+  build/parity/eslint green. **GOVERNANCE: mechanism only — I did NOT publish any prod strategy (Phase 2 "do not
+  auto-publish"); publishing Wayond WIM is a governed one-liner surfaced for Nuno.** Watcher still armed READ-ONLY.
+
 - **2026-09-26 - WAYOND ACCOUNT-SCOPED STRATEGY MANAGEMENT + MEMBER UX (P1 member launch).** Fixes the
   production issues Nuno found (Manage no-op / Manage reload / implicit strategy assignment / Activate-Deactivate
   ambiguity) + closes an assignment-API IDOR asymmetry. **Backend:** (1) `strategies/assignment_service.py`

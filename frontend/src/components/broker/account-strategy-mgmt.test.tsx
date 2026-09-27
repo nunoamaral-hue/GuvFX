@@ -7,9 +7,14 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { accountTitle, brokerLabel } from "@/lib/broker-status";
 
-const nav = vi.hoisted(() => ({ replace: vi.fn() }));
+// A STABLE router object (Next's real useRouter is memoized) so effects depending on `router` don't
+// re-run every render — an unstable mock would reset controlled inputs mid-typing.
+const nav = vi.hoisted(() => {
+  const replace = vi.fn();
+  return { replace, router: { push: () => {}, replace, refresh: () => {} } };
+});
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: nav.replace, refresh: vi.fn() }),
+  useRouter: () => nav.router,
   useParams: () => ({ id: "35" }),
   redirect: vi.fn(),
 }));
@@ -31,14 +36,18 @@ vi.mock("@/lib/broker-api", () => broker);
 
 const asn = vi.hoisted(() => ({
   listAccountAssignments: vi.fn(),
-  listMyStrategies: vi.fn(),
+  listAssignableStrategies: vi.fn(),
   createAssignment: vi.fn(),
   removeAssignment: vi.fn(),
+  getAssignment: vi.fn(),
+  getLegSizing: vi.fn(),
+  setLegSizing: vi.fn(),
 }));
 vi.mock("@/lib/strategy-assignments-api", () => asn);
 
 import { AccountManageContent } from "@/components/broker/AccountManageContent";
 import { AccountStrategiesContent } from "@/components/broker/AccountStrategiesContent";
+import { AssignmentConfigContent } from "@/components/broker/AssignmentConfigContent";
 
 const HOSTED_IS6 = {
   id: 25, name: "Hosted Workspace", broker_name: "Hosted Workspace", broker_display_name: "",
@@ -60,7 +69,7 @@ beforeEach(() => {
   broker.getDeliveryState.mockResolvedValue({ account_id: 35, deliverable: true, connected: false, delivery_readiness: "DELIVERY_DELIVERABLE", delivery_state: "NONE", remoteapp_ready: false, node_assigned: true, is_owner: true });
   broker.getEntitlementSummary.mockResolvedValue({ account_mode: "concurrent", active_count: 2, concurrent_limit: 5, owned_count: 2, owned_limit: 5, switch_enforced: true });
   asn.listAccountAssignments.mockResolvedValue([]);
-  asn.listMyStrategies.mockResolvedValue([]);
+  asn.listAssignableStrategies.mockResolvedValue([]);
 });
 
 // ─────────────────────────── Phase 11 — broker naming ───────────────────────────
@@ -110,7 +119,7 @@ describe("AccountStrategiesContent (Phase 3/4/5)", () => {
     asn.listAccountAssignments.mockResolvedValue([
       { id: 16, strategy: 10, strategy_name: "Wayond WIM", account: 35, is_active: true, stage: "LIVE", lot_per_leg: "0.01" },
     ]);
-    asn.listMyStrategies.mockResolvedValue([{ id: 10, name: "Wayond WIM" }, { id: 20, name: "Momentum X" }]);
+    asn.listAssignableStrategies.mockResolvedValue([{ id: 10, name: "Wayond WIM" }, { id: 20, name: "Momentum X" }]);
     render(<AccountStrategiesContent accountId={35} />);
     // assigned list shows the strategy name + its sizing
     expect(await screen.findByText("Wayond WIM")).toBeInTheDocument();
@@ -125,7 +134,7 @@ describe("AccountStrategiesContent (Phase 3/4/5)", () => {
   it("Add strategy binds the chosen strategy to THIS account only", async () => {
     broker.getAccount.mockResolvedValue(PEPPERSTONE);
     asn.listAccountAssignments.mockResolvedValue([]);
-    asn.listMyStrategies.mockResolvedValue([{ id: 20, name: "Momentum X" }]);
+    asn.listAssignableStrategies.mockResolvedValue([{ id: 20, name: "Momentum X" }]);
     asn.createAssignment.mockResolvedValue({ id: 99, strategy: 20, account: 35, is_active: true, stage: "TEST" });
     render(<AccountStrategiesContent accountId={35} />);
     await screen.findByRole("option", { name: "Momentum X" });
@@ -157,5 +166,65 @@ describe("AccountStrategiesContent (Phase 3/4/5)", () => {
     expect(await screen.findByText("Wayond WIM")).toBeInTheDocument();
     expect(screen.getByText("Momentum X")).toBeInTheDocument();
     expect(screen.getByText("Mean Reversion")).toBeInTheDocument();
+  });
+
+  it("offers PUBLISHED strategies the member does not own (availability, not ownership)", async () => {
+    broker.getAccount.mockResolvedValue(PEPPERSTONE);
+    asn.listAccountAssignments.mockResolvedValue([]);
+    // a published marketplace strategy the member does not own is offered to add
+    asn.listAssignableStrategies.mockResolvedValue([{ id: 99, name: "GuvFX Momentum (Marketplace)", is_marketplace: true }]);
+    render(<AccountStrategiesContent accountId={35} />);
+    expect(await screen.findByRole("option", { name: "GuvFX Momentum (Marketplace)" })).toBeInTheDocument();
+  });
+
+  it("Configure opens the ASSIGNMENT-specific route (not the global strategy page)", async () => {
+    broker.getAccount.mockResolvedValue(PEPPERSTONE);
+    asn.listAccountAssignments.mockResolvedValue([
+      { id: 16, strategy: 10, strategy_name: "Wayond WIM", account: 35, is_active: true, stage: "LIVE", lot_per_leg: "0.01" },
+    ]);
+    render(<AccountStrategiesContent accountId={35} />);
+    const cfg = await screen.findByRole("link", { name: /configure/i });
+    expect(cfg).toHaveAttribute("href", "/accounts/35/strategies/16");   // assignment-scoped, not /strategies/10
+  });
+});
+
+// ─────────────────────────── Phase 7/9/11 — assignment-specific Configure ───────────────────────────
+describe("AssignmentConfigContent (assignment-specific Configure)", () => {
+  const LEG = {
+    assignment_id: 16, lot_per_leg: "0.01", is_override: true, default_lot_per_leg: "0.01",
+    min: "0.01", step: "0.01", max: "0.40", source_cap: "0.40", max_legs: 3, applies_to_live_execution: true,
+    note: "Sets the lot size for EACH position Wayond opens.",
+  };
+  beforeEach(() => {
+    broker.getAccount.mockResolvedValue(PEPPERSTONE);
+    asn.getAssignment.mockResolvedValue({ id: 16, strategy: 10, strategy_name: "Wayond WIM", account: 35, is_active: true, stage: "LIVE" });
+    asn.getLegSizing.mockResolvedValue(LEG);
+    asn.setLegSizing.mockResolvedValue({ ...LEG, lot_per_leg: "0.02" });
+  });
+
+  it("shows the strategy name, broker identity, status, and the REAL 0.01 assignment sizing", async () => {
+    render(<AssignmentConfigContent accountId={35} assignmentId={16} />);
+    expect(await screen.findByRole("heading", { name: "Wayond WIM" })).toBeInTheDocument();
+    expect(screen.getByText(/Pepperstone · PepperstoneUK-Demo/)).toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
+    // the sizing input reflects the assignment's actual 0.01 — not a blank global risk field
+    expect((screen.getByLabelText(/position size per trade leg/i) as HTMLInputElement).value).toBe("0.01");
+  });
+
+  it("saving a new size PUTs to THIS assignment only", async () => {
+    render(<AssignmentConfigContent accountId={35} assignmentId={16} />);
+    const user = userEvent.setup();
+    const input = await screen.findByLabelText(/position size per trade leg/i);
+    await user.clear(input);
+    await user.type(input, "0.02");
+    await waitFor(() => expect(input).toHaveValue("0.02"));
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(asn.setLegSizing).toHaveBeenCalledWith(16, "0.02"));
+  });
+
+  it("redirects to the strategies list when the assignment is not on this account", async () => {
+    asn.getAssignment.mockResolvedValue({ id: 16, strategy: 10, strategy_name: "Wayond WIM", account: 999, is_active: true, stage: "LIVE" });
+    render(<AssignmentConfigContent accountId={35} assignmentId={16} />);
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/accounts/35/strategies"));
   });
 });

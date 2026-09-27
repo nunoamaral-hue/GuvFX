@@ -9,8 +9,8 @@ import { Alert } from "@/components/ui/Alert";
 import { EmptyState, ErrorState, LoadingState } from "@/components/broker/States";
 import { getAccount, getBrokerAccountsUxEnabled } from "@/lib/broker-api";
 import {
-  createAssignment, listAccountAssignments, listMyStrategies, removeAssignment,
-  type MyStrategy, type StrategyAssignment,
+  createAssignment, listAccountAssignments, listAssignableStrategies, removeAssignment,
+  type AvailableStrategy, type StrategyAssignment,
 } from "@/lib/strategy-assignments-api";
 import { accountTitle, brokerLabel, maskAccountNumber, toCustomerError } from "@/lib/broker-status";
 import type { BrokerAccount } from "@/types/broker";
@@ -25,7 +25,7 @@ export function AccountStrategiesContent({ accountId }: { accountId: number }) {
   const [gate, setGate] = useState<"loading" | "new" | "legacy">("loading");
   const [account, setAccount] = useState<BrokerAccount | null>(null);
   const [assignments, setAssignments] = useState<StrategyAssignment[] | null>(null);
-  const [myStrategies, setMyStrategies] = useState<MyStrategy[]>([]);
+  const [available, setAvailable] = useState<AvailableStrategy[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<{ type: "error" | "info"; message: string } | null>(null);
   const [selected, setSelected] = useState<string>("");
@@ -43,14 +43,14 @@ export function AccountStrategiesContent({ accountId }: { accountId: number }) {
   const load = useCallback(async () => {
     setError("");
     try {
-      const [acc, asn, mine] = await Promise.all([
+      const [acc, asn, avail] = await Promise.all([
         getAccount(accountId),
         listAccountAssignments(accountId),
-        listMyStrategies().catch(() => [] as MyStrategy[]),
+        listAssignableStrategies().catch(() => [] as AvailableStrategy[]),
       ]);
       setAccount(acc);
       setAssignments(asn);
-      setMyStrategies(mine);
+      setAvailable(avail);
     } catch (err) {
       setError(toCustomerError(err, "We couldn't load this account's strategies."));
     }
@@ -62,8 +62,8 @@ export function AccountStrategiesContent({ accountId }: { accountId: number }) {
   // — the backend rejects a duplicate (strategy, account) pair).
   const assignable = useMemo(() => {
     const taken = new Set((assignments || []).map((a) => a.strategy));
-    return myStrategies.filter((s) => !taken.has(s.id));
-  }, [assignments, myStrategies]);
+    return available.filter((s) => !taken.has(s.id));
+  }, [assignments, available]);
 
   const onAdd = useCallback(async () => {
     const sid = parseInt(selected, 10);
@@ -132,7 +132,7 @@ export function AccountStrategiesContent({ accountId }: { accountId: number }) {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <Link href={`/strategies/${a.strategy}`} style={btnLink}>Configure</Link>
+                  <Link href={`/accounts/${account.id}/strategies/${a.id}`} style={btnLink}>Configure</Link>
                   <Button variant="secondary" onClick={() => void onRemove(a)} disabled={busy}>Remove</Button>
                 </div>
               </div>
@@ -146,9 +146,9 @@ export function AccountStrategiesContent({ accountId }: { accountId: number }) {
         </h2>
         {assignable.length === 0
           ? <p style={meta}>
-              {myStrategies.length === 0
-                ? <>You don&apos;t have any strategies yet. <Link href="/strategies/marketplace" style={{ color: "#93c5fd" }}>Browse the marketplace</Link> to get one.</>
-                : "All your strategies are already assigned to this account."}
+              {available.length === 0
+                ? <>No strategies are available to add yet. <Link href="/strategies/marketplace" style={{ color: "#93c5fd" }}>Browse the marketplace</Link>.</>
+                : "Every available strategy is already assigned to this account."}
             </p>
           : (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>

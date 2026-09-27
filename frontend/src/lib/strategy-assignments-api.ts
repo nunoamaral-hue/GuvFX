@@ -18,20 +18,56 @@ export type StrategyAssignment = {
   lot_per_leg?: string | null;
 };
 
-/** A strategy the member owns and may assign to an account (from GET /api/strategies/strategies/). */
-export type MyStrategy = { id: number; name: string };
+/** A strategy the member may assign to an account: either one they own (private) or a PUBLISHED
+ * marketplace strategy (availability, not ownership). `is_marketplace` lets the UI label a published
+ * catalogue strategy. */
+export type AvailableStrategy = { id: number; name: string; is_marketplace?: boolean };
+
+/** Per-assignment position sizing (the authoritative execution control) from the leg-sizing endpoint. */
+export type LegSizing = {
+  assignment_id: number;
+  lot_per_leg: string;
+  is_override: boolean;
+  default_lot_per_leg: string;
+  min: string;
+  step: string;
+  max: string;
+  source_cap: string;
+  max_legs: number;
+  applies_to_live_execution: boolean;
+  note: string;
+};
 
 const ASSIGNMENTS = "/api/strategies/assignments/";
-const STRATEGIES = "/api/strategies/strategies/";
+const ASSIGNABLE = "/api/strategies/strategies/assignable/";
 
 /** Assignments for ONE explicit account (owner-scoped + IDOR-safe on the backend). */
 export async function listAccountAssignments(accountId: number): Promise<StrategyAssignment[]> {
   return (await apiFetch<StrategyAssignment[]>(`${ASSIGNMENTS}?account=${accountId}`)) || [];
 }
 
-/** Strategies the current member owns (the "Add strategy" picker source). */
-export async function listMyStrategies(): Promise<MyStrategy[]> {
-  return (await apiFetch<MyStrategy[]>(STRATEGIES)) || [];
+/** One assignment by id (owner-scoped; used by the assignment-config page). */
+export function getAssignment(id: number): Promise<StrategyAssignment> {
+  return apiFetch<StrategyAssignment>(`${ASSIGNMENTS}${id}/`);
+}
+
+/** Strategies AVAILABLE to assign — the member's own PLUS published marketplace strategies (availability,
+ * not ownership). This is the "Add strategy" picker source. */
+export async function listAssignableStrategies(): Promise<AvailableStrategy[]> {
+  return (await apiFetch<AvailableStrategy[]>(ASSIGNABLE)) || [];
+}
+
+/** GET the authoritative per-assignment sizing (lot per leg + bounds + member copy). */
+export function getLegSizing(assignmentId: number): Promise<LegSizing> {
+  return apiFetch<LegSizing>(`${ASSIGNMENTS}${assignmentId}/leg-sizing/`);
+}
+
+/** PUT a new per-assignment lot per leg. Affects ONLY this assignment's future signals (never siblings,
+ * other users, or open positions); the backend clamps to the operator source cap and versions the change. */
+export function setLegSizing(assignmentId: number, lotPerLeg: string): Promise<LegSizing> {
+  return apiFetch<LegSizing>(`${ASSIGNMENTS}${assignmentId}/leg-sizing/`, {
+    method: "PUT", body: JSON.stringify({ lot_per_leg: lotPerLeg }),
+  });
 }
 
 /** Bind a strategy to THIS account (a NEW StrategyAssignment; sibling accounts are never touched). The

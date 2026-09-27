@@ -138,6 +138,17 @@ class Strategy(models.Model):
 
     is_active = models.BooleanField(default=True)
 
+    # Marketplace PUBLICATION (distinct from ownership and from is_active). When True, this Strategy is a
+    # published catalogue definition ASSIGNABLE by any eligible customer to their own broker account — the
+    # customer never owns it and can never edit it (StrategyViewSet stays owner-scoped for writes). Default
+    # False (PRIVATE): every existing strategy is unaffected. NEVER inferred from is_active; set only by a
+    # governed path (admin / seed), never self-served by a member (read-only in the serializer).
+    is_marketplace = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Published to the GuvFX marketplace — assignable by any eligible customer (not owned/editable by them).",
+    )
+
     sizing_mode = models.CharField(
         max_length=32,
         choices=SIZING_MODE_CHOICES,

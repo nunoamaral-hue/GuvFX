@@ -28,20 +28,26 @@ from strategies.models import seed_default_leg_sizing
 
 
 def assert_assignment_ownership(*, user, account, strategy) -> None:
-    """Fail-closed: require ``user`` to own BOTH ``account`` and ``strategy``.
+    """Fail-closed authorization for creating/repointing/removing a StrategyAssignment.
 
-    The bypass is ``is_superuser`` — deliberately the SAME flag the viewset's ``get_queryset`` uses to
-    scope reads (``if not user.is_superuser``), so write authority never exceeds read authority. (A
-    staff-but-not-superuser account is scoped like any member on reads, so it must also own both axes on
-    writes — otherwise it could repoint an assignment it can see onto an account it does not own.)
-    Callers pass the resolved model instances (not ids), so this never widens a queryset.
+    Rule (WAYOND marketplace packet): the user MUST own the target ``account``, AND the ``strategy`` must
+    be ASSIGNABLE to them — i.e. they OWN it (a private strategy) OR it is PUBLISHED to the marketplace
+    (``is_marketplace``). A published strategy is assignable without being owned; it never becomes
+    customer-owned and (because ``StrategyViewSet`` stays owner-scoped for writes) can never be edited by
+    the assignee. TradingAccount ownership is NEVER relaxed — a foreign account is always denied.
+
+    Matrix: own account + own private → ALLOW; own account + published → ALLOW; own account + foreign
+    private → DENY; foreign account + anything → DENY (account checked first). Bypass on ``is_superuser``
+    (the same flag ``get_queryset`` uses to scope reads). Callers pass resolved instances, not ids.
     """
     if getattr(user, "is_superuser", False):
         return
     if getattr(account, "user_id", None) != user.id:
         raise PermissionDenied("You do not own this trading account.")
-    if getattr(strategy, "owner_id", None) != user.id:
-        raise PermissionDenied("You do not own this strategy.")
+    owns_strategy = getattr(strategy, "owner_id", None) == user.id
+    published = bool(getattr(strategy, "is_marketplace", False))
+    if not (owns_strategy or published):
+        raise PermissionDenied("This strategy isn't available to assign to your account.")
 
 
 def initialize_new_assignment(assignment):
