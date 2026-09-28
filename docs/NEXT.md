@@ -1,17 +1,21 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Member launch — PR C windowless launcher: repo complete, host install pending (2026-09-28)
-PR B (#426) merged `d30a713` + deployed (frontend `sha256:088952…39adb3`); 25/35/36 unchanged. PR C
-(`fix/launcher-windowless-shell`) makes the launcher GUI-subsystem so the member never sees the black
-`LAUNCH-VERDICT` console — proven on host off the live path (GUI build = subsystem 2; hardened gate rejects the
-live console binary). **Single next action:** open the PR C PR; on green CI, do the host install in this ORDER
-(no provisioning window): (1) push the updated `Verify-GuvfxNativeLauncher.ps1` to the daemon script library +
-re-pin the stage manifest; (2) rebuild the live `C:\GuvFX\launcher\guvfx_launch.exe` via `Build-GuvfxLauncher.ps1`,
-capture the OLD exe + manifest + AppLocker rule as rollback artefacts, install the GUI exe, re-pin
-`.guvfx_launcher_manifest` (installed build's SHA) + the AppLocker FileHashRule, re-assert the ACL; (3) deploy the
-backend gate. Then visual acceptance: Open MT5 on 35/36 (and 25) → MT5 appears, NO shell. Then PR D (Taurex
-preseed). Do NOT alter 25/35/36 strategy/magic/sizing/broker; MAGIC READ/ENFORCE OFF; DB rotation = maintenance
-window only.
+## ▶ Member launch — PR C CERTIFIED; PR D Taurex preseed (git done, prod v2 activation pending) (2026-09-28)
+PR B (#426, `d30a713`) + PR C (#427, `6ded665`) both merged/deployed. **PR C `PR_C_WINDOWLESS_LAUNCHER_CERTIFIED`**
+(host launcher GUI subsystem 2, `C1A97266…`; manifest+AppLocker+ACL re-pinned; backend gate `292e33d4`; Sponsor
+visual PASS on 35+36). **PR D (`feat/broker-preseed-taurex`):** Taurex `servers.dat` captured credential-free from
+Account 36 (`23fd33b8…`, 47384B, login `830227146` absent), DEMO-only tests added (`broker_catalogue/tests.py`,
+26 pass), runbook `docs/operations/hosted-workspace/TAUREX_CATALOGUE_PRESEED_2026-09-28.md`. **Prod v2 activation HELD (Sponsor 2026-09-28): "harden first".** PR #428 merges (tests+docs only); the live
+catalogue is NOT touched. **Single next action:** run the **Broker-Catalogue Hardening packet** (spun-off task
+`task_8a84d0a1`; see `docs/KNOWN_ISSUES.md` P2 broker-catalogue): manifest covers the `servers` list, post-activation
+immutability, byte-content sanitiser wired into build/activate, activation host-attestation + carried-over-SHA guard,
+single-APPROVED build binding, server-name uniqueness. THEN activate Taurex v2 per the runbook (stage
+`versions/v2/{pepperstone,is6,taurex}`, register+staff-approve `*/v2`, build v2, `activate --label v2
+--require-certified`; rollback = re-activate v1). Taurex candidate staged (inert) at
+`C:\GuvFX\catalogue\_candidates\taurex\servers.dat` (`23fd33b8…`). Until activation, Taurex-Demo accounts fall back
+to native discovery (no breakage). Broker inventory — VERIFIED: IS6Technologies-Demo, IS6Technologies-Live,
+PepperstoneUK-Demo, Taurex-Demo; rest NEEDS_CAPTURE (no server ids invented). DB/Django/GUAC secret rotation =
+maintenance window only. MAGIC READ/ENFORCE OFF; estate 25/35/36 untouched.
 
 
 ## ▶ Phase C / WAYOND POC — support@ TWO concurrent DEMO accounts LIVE; natural-signal cert pending (2026-09-26)

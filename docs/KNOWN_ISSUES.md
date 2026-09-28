@@ -2,17 +2,47 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟠 P1 MEMBER-VISIBLE (recorded 2026-09-28, PR C) — launcher console shell (fix in repo; host install pending)
+## 🟡 P2 BROKER CATALOGUE (recorded 2026-09-28, PR D adversarial review) — mechanism-hardening gaps (pre-existing, affect V1 too)
 
-*What:* clicking "Open MT5" for a launcher-armed account (30/31/33/34/35/36) shows a black console window with
+The PR-D Taurex adversarial review confirmed pre-existing gaps in the broker-catalogue **mechanism** (they apply
+equally to the live V1 Pepperstone/IS6, are not introduced by adding Taurex, and fixing them is a shared-gate
+change — a dedicated Broker-Catalogue Hardening packet, not an in-passing edit). *Impact:* all are defence-in-depth
+against operator error / admin mutation; none makes a correctly-registered artefact unsafe, and every runtime
+failure path already falls back to native discovery. Findings + fixes:
+- **[HIGH]** `CatalogueArtefact.servers` is not folded into `manifest_sha256` and not validated — a wrong
+  `servers_intended` (e.g. a `-Live` server on a demo artefact, or a cross-broker server) silently mis-scopes
+  resolution. Fix: validate `servers` at build + fold the sorted list into `compute_manifest_sha`.
+- **[HIGH]** `CatalogueArtefact` is mutable after activation (`admin.py` only marks `created_at` readonly; no
+  save-guard; `manifest_sha256` never re-verified at resolution). Fix: readonly admin + save-guard for non-DRAFT +
+  re-verify manifest at `resolve_broker_preseed`.
+- **[HIGH]** No byte-content sanitiser in the build/activate path (only path-based `scan_forbidden`). Fix: a stdlib
+  content sanitiser (byte + entropy scan) wired into build/activate, verdict pinned to the artefact SHA.
+- **[MEDIUM]** `build_catalogue_version` is last-write-wins across duplicate approval rows for `(broker_id, ref)`.
+  Fix: select the single APPROVED row.
+- **[MEDIUM]** `activate_catalogue_version` performs no host byte-staging attestation and no carried-over-SHA guard.
+  Fix: fail-closed host read-back precondition; assert carried-over brokers keep their prior-ACTIVE SHA.
+- **[MEDIUM]** No cross-artefact server-name uniqueness (first-match resolution). Fix: reject duplicate server names
+  across a version.
+
+Compensating controls for the Taurex add are recorded in
+`docs/operations/hosted-workspace/TAUREX_CATALOGUE_PRESEED_2026-09-28.md` (demo-only metadata reviewed at the staff
+gate; expanded byte+entropy credential-free scan; manual host read-back attestation before activation).
+
+## ✅ RESOLVED (2026-09-28, PR C #427 CERTIFIED) — launcher console shell
+
+*Was:* clicking "Open MT5" for a launcher-armed account (30/31/33/34/35/36) showed a black console window with
 `LAUNCH-VERDICT reuse <id>` in front of MT5. *Root cause (PROVEN from the host artefact, RULE 11):* the deployed
-`C:\GuvFX\launcher\guvfx_launch.exe` (built 2026-08-24, hash `CE209728…`) is PE **subsystem 3=CONSOLE**; the repo
-source has been the windowless `/target:winexe` + Event-Log design since commit `180538f` but the host binary was
-never rebuilt. *Impact:* cosmetic/trust only — no security effect (exit code + Event Log unaffected). Account 25
-is unaffected (its RemoteApp points at its own terminal64 directly, never the launcher). *Fix:* PR C
-(`fix/launcher-windowless-shell`) rebuilds the same source GUI-subsystem, re-pins manifest + AppLocker, and adds a
-`subsystem_is_gui` fail-closed gate so a console launcher can never be re-certified. **Repo complete + host-validated
-off the live path; the live host install + visual acceptance are pending (see NEXT.md).**
+`C:\GuvFX\launcher\guvfx_launch.exe` (built 2026-08-24, `CE209728…`) was PE **subsystem 3=CONSOLE**; the repo
+source had been the windowless `/target:winexe` + Event-Log design since commit `180538f` but the host binary was
+never rebuilt. Account 25 was never affected (RemoteApp → its own terminal64 directly). *Fix (merged `6ded665`,
+host-installed + certified):* rebuilt the same source GUI-subsystem (installed `C1A97266…`, **subsystem 2=GUI**);
+re-pinned manifest + AppLocker (added exact-hash rule `GuvFX-NativeLauncher-GUI` `0x2D8A2893…`, old kept for
+rollback); re-asserted ACL; added a `subsystem_is_gui` fail-closed gate (`Verify-GuvfxNativeLauncher.ps1` +
+`slot_preparation`) so a console launcher can never be re-certified. All 6 verify checks true for 35/36; negative
+tests pass; **Sponsor human visual acceptance PASS on 35 (Pepperstone) and 36 (Taurex)** — MT5 opens with no
+shell. Rollback artefacts in `C:\GuvFX\launcher\_rollback_prc\`. *Residual note:* on a currently-held pre-fix
+session the old console persists until the session is fully closed and reopened (verified with the Sponsor);
+fresh launches are windowless immediately.
 
 ## 🔴 SECURITY (recorded 2026-09-28) — prod DB / Django SECRET_KEY / GUAC secrets exposed to a session transcript
 
