@@ -1,12 +1,12 @@
 # Taurex broker preseed — governed capture + v2 catalogue activation (PR D, 2026-09-28)
 
-> **STATUS: production activation HELD (Sponsor decision, 2026-09-28) — "harden first".** The capture +
-> credential-free proof + DEMO-only test coverage are complete and merged, but the v1→v2 activation below is
-> **NOT executed**: the mandated adversarial review flagged pre-existing catalogue-mechanism gaps (see "Deferred
-> hardening" + `docs/KNOWN_ISSUES.md`). The **Broker-Catalogue Hardening packet runs first**; then this activation
-> proceeds. Until then, Taurex-Demo accounts fall back to native MT5 discovery (~5 min) — no breakage. The
-> credential-free candidate is staged (read-only, inert, not in any active version) at
-> `C:\GuvFX\catalogue\_candidates\taurex\servers.dat` (sha `23fd33b8…`) as evidence for the hardening packet.
+> **STATUS: v2 ACTIVE (2026-09-28) — `PR_D_TAUREX_PRESEED_HARDENED_AND_ACTIVE`.** After the Broker-Catalogue
+> Hardening merged+deployed (#429 `9f38cbb`; mig 0002+0003; v1 re-stamped strong), Taurex was rebuilt through the
+> HARDENED pipeline and activated: fresh bound sanitiser verdicts, fresh v2 approvals (staff-approved), host bytes
+> staged at `versions/v2/{pepperstone,is6,taurex}` with read-back attestation, build v2 (manifest `839a194a…`),
+> `activate --label v2 --require-certified`. **v2 ACTIVE (algo servers_v2), v1 RETIRED (rollback_to=v1).**
+> Taurex-Demo now preseeds for new provisioning; Taurex-Live → native (DEMO-only); Pepperstone/IS6 preserved;
+> unknown → native. Estate 25/35/36 unchanged. Rollback: `rollback_catalogue_version --to v1`.
 
 Adds **Taurex / Taurex-Demo** to the broker catalogue so a NEW Taurex-Demo hosted account preseeds the broker
 discovery `servers.dat` on first launch (instead of a ~5-minute native discovery). Data-driven: **no backend

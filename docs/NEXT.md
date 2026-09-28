@@ -5,18 +5,17 @@ PR B (#426, `d30a713`) + PR C (#427, `6ded665`) both merged/deployed. **PR C `PR
 (host launcher GUI subsystem 2, `C1A97266…`; manifest+AppLocker+ACL re-pinned; backend gate `292e33d4`; Sponsor
 visual PASS on 35+36). **PR D (`feat/broker-preseed-taurex`):** Taurex `servers.dat` captured credential-free from
 Account 36 (`23fd33b8…`, 47384B, login `830227146` absent), DEMO-only tests added (`broker_catalogue/tests.py`,
-26 pass), runbook `docs/operations/hosted-workspace/TAUREX_CATALOGUE_PRESEED_2026-09-28.md`. **Prod v2 activation HELD (Sponsor 2026-09-28): "harden first".** PR #428 merged `201b910` (tests+docs only); live
-catalogue untouched. **Broker-Catalogue Hardening implemented** on `feat/broker-catalogue-hardening` (manifest covers
-bytes+servers+size, immutable active versions, content sanitiser gate, approval byte-binding, single-APPROVED build,
-server-name uniqueness, `--attest-host` + carried-over guard, `rollback_catalogue_version`; 47 tests; backward-compat
-with live v1). **Single next action:** open the hardening PR; on green CI + adversarial-clean, merge + deploy backend;
-THEN Taurex v2 through the HARDENED pipeline (fresh sanitiser + approval; stage `versions/v2/{pepperstone,is6,taurex}`;
-`build v2`; `activate --label v2 --attest-host --require-certified`; verify Taurex-Demo resolves + rollback anchor=v1).
-Wire the machine-level `--attest-host` transport at activation time. Taurex candidate staged (inert) at
-`C:\GuvFX\catalogue\_candidates\taurex\servers.dat` (`23fd33b8…`). 40-broker roadmap:
-`docs/operations/hosted-workspace/BROKER_CATALOGUE_40_ROADMAP.md` (VERIFIED Taurex/Pepperstone/IS6; rest
-NEEDS_CAPTURE). DB/Django/GUAC secret rotation = maintenance window only. MAGIC READ/ENFORCE OFF; estate 25/35/36
-untouched.
+26 pass), runbook `docs/operations/hosted-workspace/TAUREX_CATALOGUE_PRESEED_2026-09-28.md`. **Hardening MERGED+DEPLOYED (#429 `9f38cbb`, backend `63189ae8`, mig 0002+0003; v1 re-stamped strong, no prod break)
+and TAUREX v2 ACTIVE** = `PR_D_TAUREX_PRESEED_HARDENED_AND_ACTIVE` (v2 ACTIVE algo servers_v2 manifest `839a194a…`;
+v1 RETIRED rollback_to=v1; Taurex-Demo preseeds, Live→native, Pepperstone/IS6 preserved; estate 25/35/36 unchanged).
+**Single next action:** begin the 40-broker capture programme in waves per
+`docs/operations/hosted-workspace/BROKER_CATALOGUE_40_ROADMAP.md` — Wave 1 = brokers with authoritative evidence +
+imminent member demand; capture on a disposable runtime → `sanitise_broker_artefact` (bound verdict) → staff-approve
+`<broker>/v3` (+ re-approve pepperstone/is6/taurex `/v3` to carry them) → stage `versions/v3/...` → build v3 →
+`activate --label v3 --require-certified` (one version per wave, not per broker). Rollback any version:
+`rollback_catalogue_version --to <label>`. Residual catalogue follow-ups (Amber): HMAC-sign manifest, DB-trigger
+immutability, real machine-level `--attest-host` transport. DB/Django/GUAC secret rotation = maintenance window only.
+MAGIC READ/ENFORCE OFF; no server ids invented.
 
 
 ## ▶ Phase C / WAYOND POC — support@ TWO concurrent DEMO accounts LIVE; natural-signal cert pending (2026-09-26)
