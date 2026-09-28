@@ -20,9 +20,26 @@ The PR-D adversarial review's pre-existing broker-catalogue **mechanism** gaps a
   guards carried-over brokers; atomic activation transaction; `rollback_catalogue_version` restores a RETIRED version.
 - **server-name uniqueness** — build + activate reject a server claimed by two artefacts.
 
-47 broker_catalogue tests (incl. the packet's activation/mutation/sanitiser/collision/attestation/rollback matrix).
-The remaining host-side item — the production machine-level attestation transport wiring for `--attest-host` — is
-finalized at Taurex v2 activation time (documented in the runbook).
+48 broker_catalogue tests (incl. the packet's activation/mutation/sanitiser/collision/attestation/rollback matrix).
+
+## 🔵 P3 BROKER CATALOGUE (recorded 2026-09-28, hardening adversarial review) — residual defense-in-depth (full-trust actor)
+
+The catalogue hardening's remaining findings are all behind the DB-write / shell trust boundary (management commands
+are shell-only; `approvals.decide` is `is_staff`-gated) — i.e. a full-trust actor, not a remote vuln. Tracked for a
+follow-up (some need an Amber/ADR decision):
+- **[FOLLOW-UP] HMAC/sign the manifest** with a key held OUTSIDE the DB, so recomputation alone cannot forge
+  `verify_version_integrity`. Today the manifest is a plain (unkeyed) SHA-256 — it detects accidental/partial drift
+  (docstrings corrected to say exactly this), not a DB-write forger. Needs an out-of-DB key decision (ADR).
+- **[FOLLOW-UP] DB-level immutability** (trigger/constraint rejecting UPDATE/DELETE of a non-DRAFT version's
+  artefacts) — the model `save()` guard covers the ORM path but not raw `QuerySet.update()`/`bulk_update`.
+- **[FOLLOW-UP] Real `--attest-host` transport** — implement `attest_broker_artefact` on the signed host executor +
+  wire `_attest_executor()`. Until then `--attest-host` fails closed (not a silent no-op); without it, activation
+  relies on consumption-time read-back verification. Finalized at Taurex v2 activation time.
+- **[LOW] `.ps1` reparse-point check** on the preseed destination `config` dir (bytes are SHA-bound + fresh-runtime
+  only, so low risk).
+Fixed in-branch: sanitiser verdict bound to exact bytes (H1), activation artefact locking (M1), manifest covers
+host_relpath/artefact_ref (M2), legacy re-stamp + strong-algo-required verification (M3, migration 0003),
+server-ownership guard (M4), rollback gate parity (M5).
 
 ## ✅ RESOLVED (2026-09-28, PR C #427 CERTIFIED) — launcher console shell
 

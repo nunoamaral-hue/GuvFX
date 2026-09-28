@@ -56,6 +56,10 @@ class Command(BaseCommand):
             src = appr or sorted(by_broker[broker_id], key=lambda a: a.id)[0]   # bind identity even while pending
             meta = src.metadata or {}
             servers = [str(s).strip() for s in (meta.get("servers_intended") or meta.get("servers") or []) if str(s).strip()]
+            # Each server must actually belong to this broker (no cross-broker/foreign server -> mis-routed preseed).
+            own = S.server_ownership_problems(broker_id, servers)
+            if own:
+                raise CommandError(f"REFUSED: {broker_id} server ownership: {own}")
             # Server-name uniqueness across the whole version (case-insensitive) — no two brokers may claim a server.
             for s in servers:
                 low = s.lower()

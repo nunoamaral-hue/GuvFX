@@ -120,3 +120,24 @@ def scan_artefact(data: bytes, *, identity_terms: Iterable[str] = ()) -> dict:
 def scan_file(path: str, *, identity_terms: Iterable[str] = ()) -> dict:
     with open(path, "rb") as fh:
         return scan_artefact(fh.read(), identity_terms=identity_terms)
+
+
+def recompute_evidence_sha(verdict: dict) -> str:
+    """Recompute a verdict's ``evidence_sha256`` from its own core fields — the same canonicalisation ``scan_artefact``
+    uses — so a caller can prove the verdict is an internally-consistent scan output, not hand-typed JSON."""
+    core = {k: (verdict or {}).get(k) for k in ("passed", "version", "size_bytes", "sha256", "identity_hits", "entropy")}
+    return hashlib.sha256(json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def verify_verdict(verdict: dict, *, expected_sha256: str) -> bool:
+    """True iff ``verdict`` is a genuine PASS scan bound to EXACTLY the expected bytes: it declares ``passed`` True,
+    its ``sha256`` equals the approved artefact SHA (so a clean verdict from other bytes cannot be reused), and its
+    ``evidence_sha256`` recomputes from its own core (so ``{"passed": true}`` cannot simply be hand-typed). This
+    replaces trusting operator free-text. BOUNDED: it still cannot prove the operator scanned for the RIGHT identity
+    terms — that is the heuristic's inherent limit (see ``scan_artefact``'s note)."""
+    if not isinstance(verdict, dict) or verdict.get("passed") is not True:
+        return False
+    if str(verdict.get("sha256", "")).lower() != str(expected_sha256 or "").lower():
+        return False
+    ev = str(verdict.get("evidence_sha256", "")).lower()
+    return bool(ev) and ev == recompute_evidence_sha(verdict).lower()

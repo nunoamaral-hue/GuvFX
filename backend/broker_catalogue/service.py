@@ -132,19 +132,34 @@ def resolve_broker_preseed(account) -> PreseedPlan:
                        sha256=sha, host_relpath=art.host_relpath, catalogue_version=version.label)
 
 
-def _legacy_manifest(version: CatalogueVersion) -> str:
-    """The shipped v1 algo — aggregate over (broker_id, sha256) pairs only. Kept byte-identical so already-ACTIVE
-    legacy versions (manifest_algo == "") continue to verify. Do NOT change this."""
-    parts = sorted(f"{a.broker_id}:{norm_sha(a.sha256)}" for a in version.artefacts.all())
+def _arts(version, artefacts):
+    """Use an explicitly-supplied (locked) artefact list when given, else read the version's artefacts. Callers in a
+    mutating transaction pass a ``select_for_update`` list so the bytes stamped are exactly the bytes validated (no
+    TOCTOU between the gate reads and the manifest stamp)."""
+    return list(artefacts) if artefacts is not None else list(version.artefacts.all())
+
+
+def _legacy_manifest(version, artefacts=None) -> str:
+    """The shipped v1 algo — aggregate over (broker_id, sha256) pairs only. Kept byte-identical so an already-ACTIVE
+    legacy version (manifest_algo == "") still recomputes to its stored value. Do NOT change this. NOTE: this is a
+    weak scheme — it does NOT cover servers/size — so a legacy version's routing is not tamper-evident; legacy
+    versions are re-stamped to the strong algo by migration 0003 and refused by verify_version_integrity."""
+    parts = sorted(f"{a.broker_id}:{norm_sha(a.sha256)}" for a in _arts(version, artefacts))
     return hashlib.sha256(("\n".join(parts)).encode("utf-8")).hexdigest()
 
 
-def _strong_manifest(version: CatalogueVersion) -> str:
-    """The hardened algo — binds, per artefact, broker_id + sha256 + sorted servers + size + kind + sanitisation,
-    so a servers-list / size / sanitisation change (not only a byte change) alters the manifest. Deterministic:
-    fields are canonicalised and artefacts are sorted by broker_id (no filesystem/query-order dependence)."""
+def _strong_manifest(version, artefacts=None) -> str:
+    """The hardened algo — binds, per artefact, broker_id + sha256 + sorted servers + size + kind + sanitisation +
+    host_relpath + artefact_ref, so any routing-relevant change (not only a byte change) alters the manifest.
+    Deterministic: fields are canonicalised and artefacts are sorted by broker_id (no query-order dependence).
+
+    Tamper-evidence scope: this is a plain (UNKEYED) SHA-256 over the version's own DB rows. It reliably detects
+    ACCIDENTAL or PARTIAL drift (e.g. an artefact edited without re-stamping the manifest). It is NOT a
+    cryptographic barrier against an actor with DB write who recomputes the manifest to match mutated rows — that
+    actor is already at full trust (the DB is the trust boundary). Signing the manifest with an out-of-DB key is a
+    tracked follow-up."""
     rows = []
-    for a in version.artefacts.all():
+    for a in _arts(version, artefacts):
         servers = "|".join(sorted(str(s).strip().lower() for s in (a.servers or [])))
         rows.append("\x1f".join([
             "broker=" + str(a.broker_id),
@@ -153,36 +168,57 @@ def _strong_manifest(version: CatalogueVersion) -> str:
             "size=" + str(int(a.size_bytes or 0)),
             "kind=" + str(a.artefact_kind or ""),
             "sanitised=" + str(a.sanitisation_result or ""),
+            "host_relpath=" + str(a.host_relpath or ""),
+            "ref=" + str(a.artefact_ref or ""),
         ]))
     body = "\n".join(sorted(rows))
     return hashlib.sha256((MANIFEST_ALGO + "\x1e" + body).encode("utf-8")).hexdigest()
 
 
-def compute_manifest_sha(version: CatalogueVersion, algo: Optional[str] = None) -> str:
-    """Deterministic aggregate manifest hash for a version, tamper-evident as a whole. ``algo`` selects the scheme;
-    when None it defaults to the strong current algo (for NEW builds). Verification passes the version's stored
-    ``manifest_algo`` so a legacy (v1) version recomputes under the legacy algo and keeps verifying."""
+def compute_manifest_sha(version: CatalogueVersion, algo: Optional[str] = None, artefacts=None) -> str:
+    """Deterministic aggregate manifest hash for a version. ``algo`` selects the scheme (defaults to the strong
+    current algo for NEW builds); pass ``artefacts`` (a locked list) to bind exactly the validated rows."""
     use = MANIFEST_ALGO if algo is None else algo
     if use == MANIFEST_ALGO:
-        return _strong_manifest(version)
-    return _legacy_manifest(version)   # "" / legacy
+        return _strong_manifest(version, artefacts)
+    return _legacy_manifest(version, artefacts)   # "" / legacy
 
 
-def verify_version_integrity(version: CatalogueVersion) -> bool:
-    """True iff the version's stored ``manifest_sha256`` still matches a recompute under its own ``manifest_algo``.
-    Detects any post-activation mutation of an artefact's identity/SHA/servers/size (e.g. a direct DB edit)."""
+def verify_version_integrity(version: CatalogueVersion, artefacts=None) -> bool:
+    """True iff the version carries the STRONG manifest algo AND its stored ``manifest_sha256`` recomputes to match.
+    A legacy ('' / weaker) algo is REFUSED (fail-closed): it is servers/size-blind, and it is also the target of a
+    downgrade attack, so an ACTIVE version must be strong (migration 0003 re-stamps any legacy version). This detects
+    accidental/partial post-activation drift; it is not a barrier against a full-trust DB-write actor (see
+    _strong_manifest)."""
+    if (version.manifest_algo or "") != MANIFEST_ALGO:
+        return False
     stored = norm_sha(version.manifest_sha256)
     if not _SHA_RE.fullmatch(stored):
         return False
-    return compute_manifest_sha(version, algo=(version.manifest_algo or "")) == stored
+    return compute_manifest_sha(version, algo=MANIFEST_ALGO, artefacts=artefacts) == stored
 
 
-def duplicate_server_names(version: CatalogueVersion) -> list:
+def server_ownership_problems(broker_id: str, servers) -> list:
+    """Servers whose (alnum-normalised) name does not contain the (alnum-normalised) ``broker_id`` — a cross-broker /
+    foreign claim that would mis-route preseed (e.g. listing 'PepperstoneUK-Demo' under broker_id 'taurex'). Returns
+    human-readable problems (empty = ok). Deliberately lenient on demo/live suffix (scope is the servers list's job)."""
+    bid = re.sub(r"[^a-z0-9]", "", str(broker_id or "").lower())
+    problems = []
+    for s in (servers or []):
+        low = str(s).strip().lower()
+        if not low:
+            continue
+        if bid and bid not in re.sub(r"[^a-z0-9]", "", low):
+            problems.append(f"server '{s}' does not belong to broker '{broker_id}'")
+    return problems
+
+
+def duplicate_server_names(version: CatalogueVersion, artefacts=None) -> list:
     """Server names claimed by MORE THAN ONE artefact in the version (case-insensitive). A non-empty result means
     ambiguous resolution / catalogue poisoning and MUST fail activation. Deterministic (sorted)."""
     from collections import Counter
     counts = Counter()
-    for a in version.artefacts.all():
+    for a in _arts(version, artefacts):
         for s in {str(x).strip().lower() for x in (a.servers or []) if str(x).strip()}:
             counts[s] += 1
     return sorted(name for name, n in counts.items() if n > 1)

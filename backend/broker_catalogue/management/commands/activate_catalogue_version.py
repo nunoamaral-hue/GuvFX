@@ -21,13 +21,18 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from broker_catalogue import sanitiser as SAN
 from broker_catalogue import service as S
 from broker_catalogue.models import CatalogueVersion
 
 
 # Injection seam for host byte-staging attestation (Phase 7). Returns an object with
-# ``attest_broker_artefact(host_relpath, expected_sha256) -> {"ok": bool, "verified_sha256": str}`` or None when no
-# attestation transport is configured. Overridden in tests; wired to the signed host executor at activation time.
+# ``attest_broker_artefact(host_relpath, expected_sha256) -> {"ok": bool, "verified_sha256": str}`` or None.
+# STATUS: no production attestation transport is wired yet (the signed host executor has no attest primitive), so
+# ``--attest-host`` FAILS CLOSED until it is implemented — it is NOT a silent no-op. When ``--attest-host`` is NOT
+# passed, activation performs no host-byte check and relies on consumption-time read-back verification
+# (broker_catalogue.preseed + Preseed-GuvfxBrokerArtefact.ps1). Wiring a real machine-level attest primitive is a
+# tracked follow-up (see docs/KNOWN_ISSUES.md).
 def _attest_executor():
     return None
 
@@ -55,7 +60,9 @@ class Command(BaseCommand):
                 self.stdout.write(f"[catalogue] {label} already ACTIVE"); return
             if version.status != CatalogueVersion.Status.DRAFT:
                 raise CommandError(f"version {label} is {version.status}; only a DRAFT can be activated")
-            arts = list(version.artefacts.all().order_by("broker_id"))
+            # Lock the artefact rows (M1): the manifest stamped below is computed from THIS exact validated list, so a
+            # concurrent committed artefact mutation cannot slip between the gate reads and the stamp.
+            arts = list(version.artefacts.select_for_update().order_by("broker_id"))
             if not arts:
                 raise CommandError(f"version {label} has no artefacts")
 
@@ -65,16 +72,16 @@ class Command(BaseCommand):
                 raise CommandError(f"REFUSED: unapproved artefact(s): {unapproved}. "
                                    f"Human approval (approvals app) required for each exact SHA before activation.")
 
-            # Gate 2 — machine sanitiser PASS + approval binds exact bytes/size/servers (no drift approval->artefact).
+            # Gate 2 — the machine sanitiser verdict must be a genuine PASS bound to the EXACT approved bytes (not
+            # operator free-text): verify_verdict requires passed + sha256==artefact SHA + a self-consistent evidence
+            # hash. Also cross-check the approval's size/servers against the artefact, and that each server actually
+            # belongs to this broker (no cross-broker/foreign server that would mis-route preseed).
             for a in arts:
-                appr = S.approved_row_for(a)                       # by identity, not the FK link
+                appr = S.approved_row_for(a)                       # by identity (kind, ref, exact SHA)
                 meta = (appr.metadata or {}) if appr else {}
-                san = meta.get("sanitiser") or {}
-                if san.get("passed") is not True:
-                    raise CommandError(f"REFUSED: {a.broker_id} has no machine sanitiser PASS "
-                                       f"(metadata.sanitiser.passed) — run sanitise_broker_artefact + re-approve.")
-                if appr and S.norm_sha(appr.sha256) != S.norm_sha(a.sha256):
-                    raise CommandError(f"REFUSED: {a.broker_id} artefact SHA != approval SHA (byte drift).")
+                if not SAN.verify_verdict(meta.get("sanitiser") or {}, expected_sha256=a.sha256):
+                    raise CommandError(f"REFUSED: {a.broker_id} sanitiser verdict is not a valid PASS bound to the "
+                                       f"approved bytes — run sanitise_broker_artefact on the exact artefact + re-approve.")
                 m_size = meta.get("size_bytes")
                 if m_size is not None and int(m_size) != int(a.size_bytes or 0):
                     raise CommandError(f"REFUSED: {a.broker_id} size {a.size_bytes} != approval size {m_size}.")
@@ -83,9 +90,12 @@ class Command(BaseCommand):
                     if sorted(str(s).strip().lower() for s in m_servers) != \
                        sorted(str(s).strip().lower() for s in (a.servers or [])):
                         raise CommandError(f"REFUSED: {a.broker_id} servers != approval servers_intended.")
+                own = S.server_ownership_problems(a.broker_id, a.servers)
+                if own:
+                    raise CommandError(f"REFUSED: {a.broker_id} server ownership: {own}")
 
-            # Gate 3 — deterministic, unambiguous routing: no server name claimed by two artefacts.
-            dups = S.duplicate_server_names(version)
+            # Gate 3 — deterministic, unambiguous routing: no server name claimed by two artefacts (locked list).
+            dups = S.duplicate_server_names(version, artefacts=arts)
             if dups:
                 raise CommandError(f"REFUSED: server name(s) claimed by multiple artefacts: {dups}")
 
@@ -130,10 +140,10 @@ class Command(BaseCommand):
                 version.rollback_to = prev
             version.status = CatalogueVersion.Status.ACTIVE
             version.activated_at = now
-            version.manifest_algo = S.MANIFEST_ALGO                       # new versions use the strong algo
-            version.manifest_sha256 = S.compute_manifest_sha(version)     # strong manifest (covers servers/size/etc.)
+            version.manifest_algo = S.MANIFEST_ALGO                                   # new versions use the strong algo
+            version.manifest_sha256 = S.compute_manifest_sha(version, artefacts=arts)  # stamp the VALIDATED locked list
             version.save(update_fields=["status", "activated_at", "manifest_algo", "manifest_sha256", "rollback_to"])
-            if not S.verify_version_integrity(version):                   # self-check the stamp round-trips
+            if not S.verify_version_integrity(version, artefacts=arts):               # self-check the stamp round-trips
                 raise CommandError("REFUSED: post-stamp manifest self-verification failed (integrity bug).")
         self.stdout.write(f"[catalogue] ACTIVATED {label} algo={version.manifest_algo} "
                           f"manifest_sha256={version.manifest_sha256} artefacts={[a.broker_id for a in arts]}")

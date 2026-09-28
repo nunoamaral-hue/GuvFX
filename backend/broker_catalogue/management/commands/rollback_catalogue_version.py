@@ -33,12 +33,18 @@ class Command(BaseCommand):
                 self.stdout.write(f"[catalogue] {label} already ACTIVE"); return
             if target.status != CatalogueVersion.Status.RETIRED:
                 raise CommandError(f"REFUSED: {label} is {target.status}; rollback re-activates a RETIRED version only")
-            if not S.verify_version_integrity(target):
-                raise CommandError(f"REFUSED: {label} failed manifest integrity — will not re-activate a tampered version")
-            arts = list(target.artefacts.all())
+            arts = list(target.artefacts.select_for_update().order_by("broker_id"))
+            # Integrity (requires the STRONG algo — a legacy/weaker version is refused, closing the downgrade path).
+            if not S.verify_version_integrity(target, artefacts=arts):
+                raise CommandError(f"REFUSED: {label} failed manifest integrity / non-strong algo — "
+                                   f"will not re-activate a tampered or legacy version")
             unapproved = [a.broker_id for a in arts if not S.artefact_is_approved(a)]
             if unapproved:
                 raise CommandError(f"REFUSED: {label} has unapproved artefact(s): {unapproved}")
+            # Parity with activation: re-check unambiguous routing on the version being restored.
+            dups = S.duplicate_server_names(target, artefacts=arts)
+            if dups:
+                raise CommandError(f"REFUSED: {label} has server name(s) claimed by multiple artefacts: {dups}")
             now = timezone.now()
             cur = CatalogueVersion.objects.select_for_update().filter(
                 status=CatalogueVersion.Status.ACTIVE).first()

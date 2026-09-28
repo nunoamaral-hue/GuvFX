@@ -17,10 +17,21 @@ from trading.models import BrokerServer, TradingAccount
 from approvals.models import ArtefactApproval
 from broker_catalogue import service as S
 from broker_catalogue import preseed as P
+from broker_catalogue import sanitiser as SAN
 from broker_catalogue.models import CatalogueArtefact, CatalogueVersion
 
 U = get_user_model()
 _n = 0
+
+
+def _sanv(sha, passed=True):
+    """A machine sanitiser verdict BOUND to `sha` with a self-consistent evidence hash (what activation now requires
+    via SAN.verify_verdict). passed=False yields a FAIL verdict."""
+    v = {"passed": passed, "version": "sanitiser_v1", "size_bytes": 0, "sha256": str(sha).lower(),
+         "identity_hits": [] if passed else [{"term_masked": "x***", "encoding": "ascii"}],
+         "entropy": {"windows": 0, "max_bits_per_byte": 0.0, "windows_over_7_5": 0}}
+    v["evidence_sha256"] = SAN.recompute_evidence_sha(v)
+    return v
 
 PEP_SHA = "afd6d65b43b5df4575d766f31af2972ce3677808897588d09495f0b85d072c6b"
 IS6_SHA = "db013e27ad0d5a633bc5fcddb14b7c3450467b6ccfaa81d5e02a95dffd48c414"
@@ -75,8 +86,7 @@ def _version(active=True):
 
 def _approve(kind, ref, sha, sanitiser_passed=True, **meta):
     md = dict(meta)
-    if sanitiser_passed:
-        md.setdefault("sanitiser", {"passed": True, "version": "sanitiser_v1", "evidence_sha256": "e" * 64})
+    md.setdefault("sanitiser", _sanv(sha, sanitiser_passed))
     return ArtefactApproval.objects.create(artefact_kind=kind, artefact_ref=ref, sha256=sha,
                                            status=ArtefactApproval.Status.APPROVED, metadata=md)
 
@@ -326,10 +336,6 @@ _HB = "b" * 64
 _HC = "c" * 64
 
 
-def _san(passed=True):
-    return {"passed": passed, "version": "sanitiser_v1", "evidence_sha256": "e" * 64}
-
-
 def _draft(label, brokers):
     """A DRAFT version with the given [(broker, sha, [servers], size)] artefacts (created while DRAFT)."""
     v = CatalogueVersion.objects.create(label=label, status=CatalogueVersion.Status.DRAFT)
@@ -346,7 +352,7 @@ def _approve_full(broker, label, sha, servers, size, sanitiser_passed=True):
         artefact_kind="broker_servers_dat", artefact_ref=f"{broker}/{label}", sha256=sha,
         status=ArtefactApproval.Status.APPROVED,
         metadata={"broker": broker.title(), "servers_intended": servers, "size_bytes": size,
-                  "sanitiser": _san(sanitiser_passed)})
+                  "sanitiser": _sanv(sha, sanitiser_passed)})
 
 
 @override_settings(APPROVALS_ENABLED="1")
@@ -381,12 +387,14 @@ class ManifestIntegrityTests(TestCase):
         self.assertFalse(S.verify_version_integrity(CatalogueVersion.objects.get(label="m3")))
 
     def test_deterministic_and_order_independent(self):
-        # The strong manifest does not include the version label and sorts artefacts, so the SAME broker
-        # set/bytes/servers/size yields the SAME manifest regardless of insertion order.
-        a = _draft("da", [("aa", _HA, ["AA-Demo"], 10), ("bb", _HB, ["BB-Demo"], 20)])
-        b = _draft("db", [("bb", _HB, ["BB-Demo"], 20), ("aa", _HA, ["AA-Demo"], 10)])   # inserted reversed
-        self.assertEqual(S.compute_manifest_sha(a), S.compute_manifest_sha(a))            # stable
-        self.assertEqual(S.compute_manifest_sha(a), S.compute_manifest_sha(b))            # order-independent
+        # The strong manifest sorts artefact rows, so it is independent of artefact query/insertion order and stable
+        # across recomputes. (It DOES bind host_relpath/artefact_ref, which carry the label — intentional.)
+        v = _draft("da", [("aa", _HA, ["AA-Demo"], 10), ("bb", _HB, ["BB-Demo"], 20)])
+        arts = list(v.artefacts.all())
+        m1 = S.compute_manifest_sha(v, artefacts=arts)
+        m2 = S.compute_manifest_sha(v, artefacts=list(reversed(arts)))
+        self.assertEqual(m1, m2)                                # order-independent
+        self.assertEqual(m1, S.compute_manifest_sha(v))         # stable / matches default read
 
 
 @override_settings(APPROVALS_ENABLED="1")
@@ -429,16 +437,24 @@ class ActivationGateHardeningTests(TestCase):
             call_command("activate_catalogue_version", "--label", "z1")
 
     def test_server_collision_blocks_activation(self):
-        # Two brokers claim the same server name -> ambiguous routing -> activation refused (Gate 3).
+        # Two brokers both legitimately own (name-prefix) the same server -> ambiguous routing -> refused (Gate 3).
+        # "ab" and "cd" are each a substring of "abcddemo", so both pass the ownership guard, isolating the collision.
         v = CatalogueVersion.objects.create(label="c1", status=CatalogueVersion.Status.DRAFT)
-        for b, sha in (("x", _HA), ("y", _HB)):
-            CatalogueArtefact.objects.create(version=v, broker_id=b, display_name=b, servers=["Same-Demo"],
+        for b, sha in (("ab", _HA), ("cd", _HB)):
+            CatalogueArtefact.objects.create(version=v, broker_id=b, display_name=b, servers=["Ab-Cd-Demo"],
                                              artefact_ref=f"{b}/c1", sha256=sha, size_bytes=1,
                                              host_relpath=f"versions/c1/{b}/servers.dat")
-        _approve_full("x", "c1", _HA, ["Same-Demo"], 1)
-        _approve_full("y", "c1", _HB, ["Same-Demo"], 1)
+        _approve_full("ab", "c1", _HA, ["Ab-Cd-Demo"], 1)
+        _approve_full("cd", "c1", _HB, ["Ab-Cd-Demo"], 1)
         with self.assertRaises(CommandError):
             call_command("activate_catalogue_version", "--label", "c1")
+
+    def test_foreign_server_blocks_activation(self):
+        # A server that does NOT belong to the broker (cross-broker/foreign) -> refused (server-ownership guard).
+        _draft("f1", [("taurex", _HA, ["Pepperstone-Demo"], 100)])
+        _approve_full("taurex", "f1", _HA, ["Pepperstone-Demo"], 100)
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "f1")
 
     def test_carried_over_broker_sha_change_blocked(self):
         _draft("v1", [("taurex", _HA, ["Taurex-Demo"], 100)])
@@ -529,7 +545,7 @@ class BuildHardeningTests(TestCase):
         ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b1", sha256=_HA,
                                         status=ArtefactApproval.Status.APPROVED,
                                         metadata={"servers_intended": ["Taurex-Demo"], "size_bytes": 1,
-                                                  "sanitiser": _san()})
+                                                  "sanitiser": _sanv(_HA)})
         ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b1", sha256=_HB,
                                         status=ArtefactApproval.Status.PENDING, metadata={})
         call_command("build_catalogue_version", "--label", "b1")
@@ -542,19 +558,20 @@ class BuildHardeningTests(TestCase):
         from django.db import IntegrityError, transaction
         ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b2", sha256=_HA,
                                         status=ArtefactApproval.Status.APPROVED,
-                                        metadata={"servers_intended": ["Taurex-Demo"], "sanitiser": _san()})
+                                        metadata={"servers_intended": ["Taurex-Demo"], "sanitiser": _sanv(_HA)})
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b2",
                                                 sha256=_HB, status=ArtefactApproval.Status.APPROVED, metadata={})
 
     def test_build_refuses_cross_broker_server_collision(self):
-        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="x/b3", sha256=_HA,
+        # "ab" and "cd" both own "abcddemo" (name-prefix), isolating the cross-broker collision guard from ownership.
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="ab/b3", sha256=_HA,
                                         status=ArtefactApproval.Status.APPROVED,
-                                        metadata={"servers_intended": ["Same-Demo"], "sanitiser": _san()})
-        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="y/b3", sha256=_HB,
+                                        metadata={"servers_intended": ["Ab-Cd-Demo"], "sanitiser": _sanv(_HA)})
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="cd/b3", sha256=_HB,
                                         status=ArtefactApproval.Status.APPROVED,
-                                        metadata={"servers_intended": ["Same-Demo"], "sanitiser": _san()})
+                                        metadata={"servers_intended": ["Ab-Cd-Demo"], "sanitiser": _sanv(_HB)})
         with self.assertRaises(CommandError):
             call_command("build_catalogue_version", "--label", "b3")
 

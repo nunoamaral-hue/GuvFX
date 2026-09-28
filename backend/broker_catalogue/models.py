@@ -87,10 +87,12 @@ class CatalogueArtefact(models.Model):
         indexes = [models.Index(fields=["broker_id"], name="broker_catalogue_broker_idx")]
 
     def save(self, *args, **kwargs):
-        # IMMUTABILITY (model-layer, not convention): an artefact may only be created or updated while its version
-        # is DRAFT. Once the version is ACTIVE or RETIRED its artefact set is frozen — identity/SHA/servers/
-        # host_relpath/approval cannot change — so a live catalogue cannot silently mutate. Any update requires a
-        # NEW version. Enforced with a fresh status read (never a stale in-memory version).
+        # IMMUTABILITY (model-layer): an artefact may only be created or updated via the ORM ``save()`` path while
+        # its version is DRAFT; once the version is ACTIVE/RETIRED, ``save()`` refuses. Any update requires a NEW
+        # version. SCOPE: this guards the ``save()``/``update_or_create`` path only — a raw ``QuerySet.update()`` /
+        # ``bulk_update`` (a full-trust DB-write actor) bypasses it; a DB-level trigger closing that is a tracked
+        # follow-up, and resolution re-verifies the manifest as a second line of defence. Fresh status read (never
+        # a stale in-memory version).
         if self.version_id is not None:
             status = (CatalogueVersion.objects.filter(pk=self.version_id)
                       .values_list("status", flat=True).first())
