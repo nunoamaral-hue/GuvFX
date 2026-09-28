@@ -82,6 +82,42 @@ class StopTradingTests(TestCase):
         with mock.patch(READY, return_value=True):
             r = self.client.post(_url(self.acc), {"is_active": False}, format="json")
         self.assertEqual(r.status_code, 200, r.content)
+
+    def test_stop_preserves_workspace_arm_and_does_not_suppress_autoarm(self):
+        # STOP must NOT operator-disarm the workspace: is_active=False is the authoritative execution kill, and
+        # setting auto_arm_suppressed=True would permanently block the async auto-arm that a later managed START
+        # relies on (Stop->Start would stick is_active=True/execution_enabled=False). So the arm is left untouched.
+        from hosted_workspace.models import HostedMt5Workspace
+        ws = HostedMt5Workspace.objects.create(
+            trading_account=self.acc, execution_enabled=True, auto_arm_suppressed=False)
+        r = self.client.post(_url(self.acc), {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json().get("trading_state"), "STOPPED")
+        ws.refresh_from_db()
+        self.assertTrue(ws.execution_enabled)           # arm untouched (Stop->Start stays trivially reversible)
+        self.assertFalse(ws.auto_arm_suppressed)        # auto-arm NOT suppressed -> async re-arm still works
+        self.acc.refresh_from_db(); self.assertFalse(self.acc.is_active)   # is_active is the authoritative kill
+
+    def test_stop_fails_pending_order_jobs(self):
+        # A PLACE_ORDER queued just before STOP must not dispatch afterwards — STOP fails PENDING order jobs.
+        from execution.models import ExecutionJob
+        job = ExecutionJob.objects.create(
+            account=self.acc, job_type=ExecutionJob.JobType.PLACE_ORDER, status=ExecutionJob.Status.PENDING)
+        other_status = ExecutionJob.objects.create(
+            account=self.acc, job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=ExecutionJob.Status.PENDING)
+        r = self.client.post(_url(self.acc), {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ExecutionJob.Status.FAILED)
+        self.assertEqual(job.error_message, "trading_stopped")
+        other_status.refresh_from_db()
+        self.assertEqual(other_status.status, ExecutionJob.Status.PENDING)   # non-order jobs untouched
+
+    def test_stop_idempotent_when_already_stopped(self):
+        self.acc.is_active = False; self.acc.save(update_fields=["is_active"])
+        r = self.client.post(_url(self.acc), {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.acc.refresh_from_db(); self.assertFalse(self.acc.is_active)
         self.assertEqual(TradingAccount.objects.filter(user=self.user, is_active=True).count(), 0)
 
 

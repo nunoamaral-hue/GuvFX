@@ -1,5 +1,31 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-28 — Member account lifecycle (Start/Stop/Remove): reconciled + Stop hardened; capacity/entitlement design
+
+- **Scope / decision.** Reconcile-first packet before the Windows capacity upgrade: complete + certify Start/Stop +
+  Remove. Do NOT raise support@ entitlement to 20 here. Branch `fix/member-lifecycle-stop-hardening` off main `e133e24`.
+- **Verified fact vs assumption.** *Verified:* prod flags make the managed Start lifecycle LIVE
+  (MANAGED_START_TRADING_ENABLED=1 + authorize + persistent-mt5 + observation + capability-recovery all =1), so
+  Start/Stop/trading_state all function (the repo "dark by default" is prod-overridden). Stop = same endpoint,
+  is_active=False is the authoritative kill (new exposure refused at creation + every hosted claim at readiness).
+  Remove (PR #425) is a wired tombstone with open-gate/IDOR/idempotent/entitlement-release/retention; frontend Remove
+  reachable for support@. Entitlement 3/5 via EntitlementOverride. Windows baseline measured read-only. *Assumption/
+  gap:* physical host teardown on Remove is NOT implemented (idle MT5 process persists) — a capacity-prerequisite.
+- **What changed.** ONLY `backend/trading/views.py` `set_active` STOP branch: flip is_active=False first (txn) then
+  sweep queued PLACE_ORDER/OPEN_TRADE to FAILED; trade-management jobs untouched; return trading_state=STOPPED. An
+  adversarial review caught + I REMOVED a disarm-on-Stop attempt (it set auto_arm_suppressed=True, which the async
+  auto-arm a later START relies on skips forever → Stop→Start stuck armed-off). Tests: `tests_set_active_stop` +2.
+- **Deviations from packet.** Remove host teardown, the open-gate live-broker check, and entitlement 5→20 are
+  DOCUMENTED (KNOWN_ISSUES) not implemented — teardown/entitlement are gated behind the Sponsor's capacity upgrade;
+  no destructive Remove of 25/35/36 (Phase F: Sponsor decides on a disposable account). No frontend change (new UX
+  already surfaces trading_state via refetch + 409 detail via toCustomerError).
+- **Exact tests.** `trading.tests_set_active_stop` 9 + `trading.tests_account_removal`; full `trading` = 317.
+- **Commit and branch state.** Branch `fix/member-lifecycle-stop-hardening` off `e133e24` — see Git Status footer.
+  Estate 25/35/36 read-only; entitlement NOT changed; nothing manufactured.
+- **One bounded next action.** PR → CI → merge → deploy; then STOP for the Sponsor's interactive Start/Stop test
+  (pick 25/35/36) and the destructive-Remove decision (disposable 4th account or defer).
+
+
 ## 2026-09-28 — Analytics integrity: equity snapshot ledger (Part A) + broker-time normalisation (Part B)
 
 - **Scope / decision.** Sponsor-authorized stream after the P0 (#432): durable equity ledger + truthful equity

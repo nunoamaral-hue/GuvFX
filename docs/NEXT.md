@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Member account lifecycle — reconciled + Stop hardened; SPONSOR interactive test then capacity upgrade (2026-09-28)
+Start/Stop/Remove reconciled (all work in prod). Stop hardened (fail queued new-exposure jobs + txn ordering; NO
+disarm — an adversarial-caught regression that would have broken Stop→Start). Remove (PR #425) is production-ready
+end-to-end EXCEPT physical host teardown (capacity-prerequisite; KNOWN_ISSUES). Entitlement 3/5; 5→20 = update two
+`EntitlementOverride.override_value` to {value:20} (design only, NOT applied). Windows baseline recorded. Branch
+`fix/member-lifecycle-stop-hardening`. **Single next action:** PR the Stop hardening → CI green → merge → deploy;
+then STOP and hand to the Sponsor: (E) pick one of 25/35/36 and click Stop→Start for interactive certification
+(I certify read-only, don't mutate the estate myself); (F) decide whether to create a disposable 4th account to test
+destructive Remove or defer; (G) upgrade Fasthosts Windows (≥16 vCPU) and I re-measure; (H) then update the two
+override rows 5→20. Entitlement NOT yet changed.
+
 ## ✅ Analytics integrity — equity ledger + broker-time — CERTIFIED + DEPLOYED (2026-09-28) = `EQUITY_LEDGER_LIVE`
 #433 merged `2a26262`; deployed backend+worker `0a479b0` (rollback `rollback-pre433`); migrations trading.0018 +
 analytics.0001 applied; `EQUITY_SNAPSHOT_LEDGER_ENABLED=1` armed + `*/5` cron installed; capturing for 25/35/36

@@ -437,9 +437,34 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             # the runtime isn't ready, but we must NEVER block STOP. Zero active accounts is a valid state
             # (a customer may stop automated trading on every account).
             if not is_active:
-                acc.is_active = False
-                acc.save(update_fields=["is_active", "updated_at"])
-                return Response({"ok": True, "id": acc.id, "is_active": False},
+                # STOP TRADING — authoritative, non-destructive, and reversible. Flip is_active=False FIRST (inside
+                # one txn) so the ExecutionJob.save stop-kill immediately refuses any NEW exposure-opening job
+                # (PLACE_ORDER/OPEN_TRADE), then sweep any already-PENDING exposure-opening job to FAILED so nothing
+                # queued can dispatch. is_active=False is the AUTHORITATIVE execution kill: new exposure is refused
+                # at creation and every hosted claim is refused at readiness (readiness ANDs is_active). We do NOT
+                # call disarm_hosted_workspace_execution here on purpose: that is an OPERATOR-grade action that also
+                # sets auto_arm_suppressed=True, which the async auto-arm cron (that a later managed START relies on
+                # to finish arming once EXECUTION_READY) permanently skips — leaving Stop->Start stuck
+                # is_active=True/execution_enabled=False. Leaving execution_enabled untouched keeps Stop->Start
+                # trivially reversible (same account/assignment/magic/sizing). Trade-MANAGEMENT jobs
+                # (MODIFY_POSITION/CLOSE_TRADE/SYNC_POSITIONS) are deliberately NOT swept; existing broker positions
+                # keep their broker-side SL/TP and are never force-closed by STOP. STOP must ALWAYS succeed, so the
+                # sweep is best-effort. Zero active accounts is a valid state.
+                from django.db import transaction as _txn
+                from django.utils import timezone as _tz
+                with _txn.atomic():
+                    acc.is_active = False
+                    acc.save(update_fields=["is_active", "updated_at"])
+                    try:
+                        from execution.models import ExecutionJob
+                        (ExecutionJob.objects
+                         .filter(account=acc, status=ExecutionJob.Status.PENDING,
+                                 job_type__in=[ExecutionJob.JobType.PLACE_ORDER, ExecutionJob.JobType.OPEN_TRADE])
+                         .update(status=ExecutionJob.Status.FAILED, error_message="trading_stopped",
+                                 finished_at=_tz.now()))
+                    except Exception:  # noqa: BLE001 — never let a job sweep block STOP
+                        pass
+                return Response({"ok": True, "id": acc.id, "is_active": False, "trading_state": "STOPPED"},
                                 status=status.HTTP_200_OK)
             # START TRADING — managed lifecycle (DARK). When MANAGED_START_TRADING_ENABLED is on, orchestrate
             # validate → product-promote → ensure Algo capability → arm → commit is_active, and return the
