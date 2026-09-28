@@ -14,6 +14,30 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - PORTFOLIO DASHBOARD (#431) — MERGED + DEPLOYED + PRODUCTION-CERTIFIED =
+  `MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`.** After the adversarial fixes (entry below), CI went RED on one
+  frontend test (`localization.test.tsx` asserted "Wayond WIM Strategy", which only rendered in the removed "Your
+  Strategies" card — classification C, NOT the localStorage class: CI Node ran 357/358). Fixed by re-sourcing that
+  proper-noun coverage from the new Open Trades panel (mock returns one position attributed to the strategy) — not
+  weakened. Re-verified locally (Node-25 jsdom worked around with `--no-experimental-webstorage`): full frontend
+  suite 358/358, lint 0 errors, build OK. **CI GREEN + CLEAN on `87b63a0`** (backend, frontend, governance,
+  market-data, research). **Merged squash → main `379f000`** (merge commit). **Deployed** to prod: VPS `guvfx-app`
+  pulled `379f000`; rollback images tagged `rollback-pre431` (backend `63189ae8`, frontend `088952`); rebuilt via
+  manual `docker build` (these compose services have `image:` only, NO `build:` — `compose up --build` is a no-op)
+  then `docker compose up -d --force-recreate --no-deps guvfx-backend guvfx-frontend` (workers/listener/postgres
+  untouched). New live images: **backend `187e1f83`, frontend `f9029baa`**; `migrate --check` CLEAN (no migrations
+  in #431); `/api/analytics/portfolio/{summary,open-trades}/` return 401 unauth (routes live), frontend 200.
+  **Phase-24 cert (read-only APIClient as support@ id29 against live data):** ALL scope = 3 accounts (25 IS6/Hosted
+  ••••2587, 35 Pepperstone ••••5672, 36 Taurex ••••7146), USD, equity Σ=142,056.31 == aggregate (balance likewise),
+  metrics independently recomputed MATCH, 3 trading/0 not-trading; per-account scopes return only that account with
+  its own equity (42,036.25 / 50,010.41 / 50,009.65, scope_echo correct) — selector re-scopes everything, no leak;
+  IDOR foreign acct 34 → 404/404; Open Trades count 0 (honest live empty — no positions, none manufactured);
+  POST → 405. **Phase-25 regression:** 25/35/36 identity/servers/TRADING state/assignments (magic 1000000010/16/19,
+  LIVE, active, allocated 25th–27th) intact; workspaces `exec_enabled=True` EXECUTION_READY (authorized Aug17/Sep27);
+  catalogue **v2 ACTIVE** (servers_v2); latest trade id1730 created 05:34/closed 08:48 (before the ~15:00 work);
+  MAGIC SEND/READ/ENFORCE all unset (OFF) — unchanged. Observation-only; no execution/mutation/catalogue/magic/sizing
+  surface touched. Residual follow-ups in KNOWN_ISSUES (legacy balance/balance-ops global-fallback deprecation;
+  per-account read parallelisation; per-account trading-health; real FX feed).
 - **2026-09-28 - PORTFOLIO DASHBOARD (PR #431) — ADVERSARIAL HIGH/MEDIUM FIXES APPLIED (pre-merge).** The
   multi-account portfolio dashboard + live Open Trades (observation-only, `f59b4ee`) went through a Phase-22
   adversarial review that returned 3 HIGH + 6 MEDIUM. All fixed on `feat/portfolio-dashboard` before merge:

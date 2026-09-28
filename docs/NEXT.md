@@ -1,18 +1,11 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Portfolio dashboard (PR #431) — adversarial fixes applied; MERGE → DEPLOY → VERIFY (2026-09-28)
-Multi-account portfolio dashboard + live Open Trades (observation-only). Phase-22 adversarial review returned 3 HIGH
-+ 6 MEDIUM; **all fixed on `feat/portfolio-dashboard` before merge** (H1 currency-honest realized path; H2 scope
-drives the whole dashboard; H3 ALL-scope snapshot from the portfolio aggregate + scope labels; M1 open-P/L
-PARTIAL/STALE propagation; M2 legacy-path server pin on the new positions reader; M3 row cap; M4 loading≠empty; M5
-481–768px breakpoint; M6 state mix + scope-aware Setup). Backend 43 portfolio (+11) + 388 analytics/trading green;
-frontend build + parity + 9 panel tests green (localStorage vitest fails = known Node-v25 GOTCHA, green in CI).
-**Single next action:** commit + push to PR #431; on GREEN CI + adversarial-clean → merge → deploy **frontend AND
-backend** (new read endpoints `analytics/portfolio/summary` + `open-trades`) → Phase-24 production verification
-(support@ ALL-accounts view mathematically correct; per-account 25/35/36; no cross-account contamination; 30s
-refresh) → Phase-25 regression (estate 25/35/36 untouched). Read-only; MAGIC READ/ENFORCE OFF; no execution/mutation
-surface. Residual follow-ups → `docs/KNOWN_ISSUES.md` (legacy balance/balance-ops global-fallback deprecation;
-per-account read parallelisation; per-account trading-health; real FX feed for the realized path).
+## ✅ Portfolio dashboard (#431) — CERTIFIED + DEPLOYED (2026-09-28) = `MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`
+Merged squash → main `379f000`; deployed backend `187e1f83` + frontend `f9029baa` (rollback `rollback-pre431` =
+backend `63189ae8` / frontend `088952`). All 3 HIGH + 6 MEDIUM adversarial findings fixed; CI green on `87b63a0`;
+Phase-24 (support@ ALL=3 accts USD, equity/balance Σ=142,056.31 == aggregate, per-account re-scoping, IDOR 404,
+Open Trades honest empty, POST 405) + Phase-25 (25/35/36 identity/state/magic/sizing/armed intact, catalogue v2
+ACTIVE, MAGIC flags OFF, nothing manufactured) both PASS. Follow-ups tracked in `docs/KNOWN_ISSUES.md`.
 
 ## ▶ Member launch — PR C CERTIFIED; PR D Taurex preseed (git done, prod v2 activation pending) (2026-09-28)
 PR B (#426, `d30a713`) + PR C (#427, `6ded665`) both merged/deployed. **PR C `PR_C_WINDOWLESS_LAUNCHER_CERTIFIED`**

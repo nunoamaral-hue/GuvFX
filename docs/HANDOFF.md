@@ -1,5 +1,35 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-28 — Portfolio dashboard (#431): MERGED + DEPLOYED + CERTIFIED (`MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`)
+
+- **Scope / decision.** Take the multi-account portfolio dashboard + live Open Trades (observation-only) from
+  "adversarial fixes pushed" through CI → merge → production deploy → Phase-24/25 certification. Sponsor authorised
+  the full autonomous flow (green CI is not a stop).
+- **Verified fact vs assumption.** *Verified:* CI RED root cause was a single frontend test asserting a proper-noun
+  ("Wayond WIM Strategy") that only rendered in the removed "Your Strategies" card (classification C, proven from
+  the CI log — 357/358 passed, no `localStorage` error); fixed by re-sourcing it from Open Trades, coverage kept.
+  CI GREEN+CLEAN on `87b63a0`; merged squash `379f000`; deployed backend `187e1f83` / frontend `f9029baa`;
+  `migrate --check` CLEAN. Phase-24 (live APIClient as support@) and Phase-25 (estate) both PASS — figures below.
+  *Assumption:* live Open Trades *populated* rendering is certified by the 9 automated OpenTradesPanel tests (prod
+  currently has 0 open positions; not manufactured, per Sponsor).
+- **What changed (deploy).** VPS `guvfx-app` pulled `379f000`. The prod compose services `guvfx-backend`/
+  `guvfx-frontend` use `image:` with NO `build:` → `docker compose up --build` is a no-op (initial attempt did
+  nothing; caught by comparing running image IDs to anchors). Correct deploy = manual `docker build -t
+  guvfx-prod-guvfx-{backend,frontend}:latest ./{backend,frontend}` then `docker compose up -d --force-recreate
+  --no-deps guvfx-backend guvfx-frontend`. Workers/listener/postgres untouched (trading execution undisturbed).
+- **Deviations from packet.** None on the cert path. M2/M3 residuals (legacy balance/balance-ops global-fallback
+  deprecation; per-account read parallelisation) and per-account trading-health + real FX feed remain follow-ups
+  in `docs/KNOWN_ISSUES.md` (all latent today: USD, hosted per-tenant, small account counts).
+- **Exact tests / cert.** CI all-green on `87b63a0`. Phase-24: ALL scope 3 accts (25/35/36) USD, equity & balance
+  Σ=142,056.31 == aggregate, metrics recomputed MATCH, per-account scopes distinct (42,036.25/50,010.41/50,009.65)
+  no leak, IDOR foreign→404/404, Open Trades count 0 honest empty, POST→405. Phase-25: 25/35/36 identity/servers/
+  TRADING/assignments (magic 1000000010/16/19 LIVE active) intact, workspaces exec_enabled EXECUTION_READY,
+  catalogue v2 ACTIVE, latest trade id1730 (05:34/08:48, pre-work), MAGIC flags OFF.
+- **Commit and branch state.** main `379f000` (squash of #431). Rollback: images `rollback-pre431` (backend
+  `63189ae8`, frontend `088952`) + VPS git anchor `9f38cbb`. Docs updated on main — see Git Status footer.
+- **One bounded next action.** Resume the member-launch 40-broker capture programme (Wave 1) per
+  `docs/operations/hosted-workspace/BROKER_CATALOGUE_40_ROADMAP.md`.
+
 ## 2026-09-28 — Portfolio dashboard (PR #431): adversarial HIGH/MEDIUM fixes applied (pre-merge)
 
 - **Scope / decision.** Multi-account portfolio dashboard + live Open Trades, OBSERVATION-ONLY. Phase-22 adversarial
