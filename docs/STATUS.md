@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - EQUITY LEDGER + BROKER-TIME — MERGED + DEPLOYED + CERTIFIED = `EQUITY_LEDGER_LIVE` /
+  `BROKER_TIME_MECHANISM_READY`.** #433 merged squash → main `2a26262`; deployed backend+worker image `0a479b0`
+  (rollback `rollback-pre433`=`85e0456e`); migrations **trading.0018 + analytics.0001 applied OK**; flag
+  `EQUITY_SNAPSHOT_LEDGER_ENABLED=1` armed (beta.env); `deploy/equity-snapshots/` `*/5` cron installed. Initial
+  capture: created=3 (25/35/36), identity_refused=1 (acct 1 CZ server-mismatch — strict require_server fail-closed,
+  correct). **Phase-G cert (read-only):** snapshots persist for 25/35/36 with correct-account provenance
+  (login+server match), values reconcile to broker (36=50,009.65, 35=50,010.41, 25=42,036.25), account curves
+  SINGLE, **portfolio curve OK with an honest PARTIAL(1/3)→complete(3/3)=142,056.31** progression = the #432 equity;
+  zero duplicate rows. **#432 unchanged** (Daily 282.06, Net −7944.68, win 50.42%, PF 0.794 — independent recompute
+  MATCH); curve endpoint live (401 unauth). **Phase-H regression:** 25/35/36 identity/state/assignments/magic/
+  EXECUTION intact, catalogue v2 ACTIVE, latest trade id1730 unchanged (nothing manufactured), MAGIC flags OFF.
+  Broker-time (Part B) shipped DARK (mechanism + recommendations; no data change). Follow-ups in KNOWN_ISSUES.
 - **2026-09-28 - ANALYTICS INTEGRITY: EQUITY SNAPSHOT LEDGER + BROKER-TIME NORMALISATION (Part A shipped; Part B
   mechanism + recommendations).** Follows the P0 (#432). **Forensic (read-only, real evidence):** MT5 `deal.time`
   is broker SERVER wall-time — every trade's `open_time` is EXACTLY +3.0h ahead of its `created_at` (true-UTC ingest)

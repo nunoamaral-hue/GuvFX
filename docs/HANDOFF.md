@@ -22,10 +22,14 @@
 - **Exact tests.** `analytics.tests_equity_snapshots` 29; `analytics trading` full 425; frontend build + 358 vitest
   (via `--no-experimental-webstorage` for the Node-25 localStorage GOTCHA). Adversarial review: HIGH + 6 MED + 2 LOW
   fixed/documented.
-- **Commit and branch state.** Branch `feat/equity-snapshot-ledger` off `e2e176f` — see Git Status footer. Estate
-  25/35/36 read-only; nothing manufactured.
-- **One bounded next action.** Push + open PR; on green CI → merge → deploy (2 migrations) → install cron + arm
-  `EQUITY_SNAPSHOT_LEDGER_ENABLED=1` → run capture once → Phase-G cert → Phase-H regression.
+- **Commit and branch state.** Merged squash → main `2a26262` (PR #433); deployed backend+worker `0a479b0`
+  (rollback `rollback-pre433`=`85e0456e`); trading.0018 + analytics.0001 applied. Estate read-only; nothing manufactured.
+- **Outcome = `EQUITY_LEDGER_LIVE`.** Flag armed + `*/5` cron installed; Phase-G cert PASS (25/35/36 snapshots,
+  correct provenance, portfolio curve PARTIAL→complete 142,056.31, no dups); #432 numbers unchanged; Phase-H estate
+  regression clean. Broker-time (Part B) DARK mechanism + recommendations; canonical-UTC migration DEFERRED.
+- **One bounded next action.** Let the cron accrue history (curve renders once ≥2 buckets); when the Sponsor wants
+  broker-time activated, establish each server's authoritative IANA zone (`measure_broker_offset` evidence), set
+  `BrokerServer.server_timezone`, then the gated idempotent migration. Otherwise resume the 40-broker capture wave.
 
 ## 2026-09-28 — P0 dashboard financial correctness: stage-filter root cause + adversarial hardening
 
