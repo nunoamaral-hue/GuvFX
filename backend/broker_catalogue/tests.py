@@ -44,8 +44,10 @@ def _account(server_name):
 
 
 def _version(active=True):
-    v = CatalogueVersion.objects.create(
-        label="v1", status=CatalogueVersion.Status.ACTIVE if active else CatalogueVersion.Status.DRAFT)
+    # Build artefacts while the version is DRAFT (the model immutability guard forbids creating/updating an
+    # artefact once the version is ACTIVE/RETIRED), then stamp the manifest + activate so resolution's integrity
+    # re-verification passes.
+    v = CatalogueVersion.objects.create(label="v1", status=CatalogueVersion.Status.DRAFT)
     CatalogueArtefact.objects.create(
         version=v, broker_id="pepperstone", display_name="Pepperstone",
         servers=["PepperstoneUK-Demo", "PepperstoneUK-Live"], artefact_ref="pepperstone/v1",
@@ -63,12 +65,20 @@ def _version(active=True):
         servers=["Taurex-Demo"], artefact_ref="taurex/v1",
         sha256=TAUREX_SHA, size_bytes=47384, host_relpath="versions/v1/taurex/servers.dat",
         sanitisation_result="PASS")
+    if active:
+        v.status = CatalogueVersion.Status.ACTIVE
+        v.manifest_algo = S.MANIFEST_ALGO
+        v.manifest_sha256 = S.compute_manifest_sha(v)
+        v.save(update_fields=["status", "manifest_algo", "manifest_sha256"])
     return v
 
 
-def _approve(kind, ref, sha):
+def _approve(kind, ref, sha, sanitiser_passed=True, **meta):
+    md = dict(meta)
+    if sanitiser_passed:
+        md.setdefault("sanitiser", {"passed": True, "version": "sanitiser_v1", "evidence_sha256": "e" * 64})
     return ArtefactApproval.objects.create(artefact_kind=kind, artefact_ref=ref, sha256=sha,
-                                           status=ArtefactApproval.Status.APPROVED)
+                                           status=ArtefactApproval.Status.APPROVED, metadata=md)
 
 
 class FakeExecutor:
@@ -300,3 +310,277 @@ class ActivationGateTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("activate_catalogue_version", "--label", "v1")
         self.assertIsNone(S.resolve_active_version())
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Catalogue Hardening (generic, for the 40-broker scale) — manifest-covers-bytes, immutability, sanitiser gate,
+# approval byte-binding, server-id uniqueness, deterministic build, activation transaction, rollback.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+from django.core.exceptions import ValidationError                     # noqa: E402
+from django.core.management import call_command                        # noqa: E402
+from django.core.management.base import CommandError                   # noqa: E402
+from broker_catalogue import sanitiser as SAN                          # noqa: E402
+
+_HA = "a" * 64
+_HB = "b" * 64
+_HC = "c" * 64
+
+
+def _san(passed=True):
+    return {"passed": passed, "version": "sanitiser_v1", "evidence_sha256": "e" * 64}
+
+
+def _draft(label, brokers):
+    """A DRAFT version with the given [(broker, sha, [servers], size)] artefacts (created while DRAFT)."""
+    v = CatalogueVersion.objects.create(label=label, status=CatalogueVersion.Status.DRAFT)
+    for broker, sha, servers, size in brokers:
+        CatalogueArtefact.objects.create(
+            version=v, broker_id=broker, display_name=broker.title(), servers=servers,
+            artefact_ref=f"{broker}/{label}", sha256=sha, size_bytes=size,
+            host_relpath=f"versions/{label}/{broker}/servers.dat", sanitisation_result="PASS")
+    return v
+
+
+def _approve_full(broker, label, sha, servers, size, sanitiser_passed=True):
+    ArtefactApproval.objects.create(
+        artefact_kind="broker_servers_dat", artefact_ref=f"{broker}/{label}", sha256=sha,
+        status=ArtefactApproval.Status.APPROVED,
+        metadata={"broker": broker.title(), "servers_intended": servers, "size_bytes": size,
+                  "sanitiser": _san(sanitiser_passed)})
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class ManifestIntegrityTests(TestCase):
+    def test_strong_manifest_covers_servers_and_size(self):
+        v = _draft("m1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        base = S.compute_manifest_sha(v)
+        art = v.artefacts.get(broker_id="taurex")
+        art.servers = ["Taurex-Demo", "Taurex-Live"]; art.save()      # DRAFT -> mutable
+        self.assertNotEqual(base, S.compute_manifest_sha(v))          # servers change -> manifest change
+        art.servers = ["Taurex-Demo"]; art.size_bytes = 200; art.save()
+        self.assertNotEqual(base, S.compute_manifest_sha(v))          # size change -> manifest change
+
+    def test_byte_mutation_after_activation_detected(self):
+        v = _draft("m2", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "m2", _HA, ["Taurex-Demo"], 100)
+        call_command("activate_catalogue_version", "--label", "m2")
+        self.assertTrue(S.verify_version_integrity(S.resolve_active_version()))
+        # Simulate a post-activation DB tamper (bypass the model save-guard with a raw UPDATE).
+        CatalogueArtefact.objects.filter(version__label="m2", broker_id="taurex").update(sha256=_HB)
+        v = CatalogueVersion.objects.get(label="m2")
+        self.assertFalse(S.verify_version_integrity(v))
+        plan = S.resolve_broker_preseed(_account("Taurex-Demo"))
+        self.assertFalse(plan.preseed)
+        self.assertEqual(plan.reason_code, S.PRESEED_MANIFEST_INVALID)
+
+    def test_manifest_field_tamper_detected(self):
+        v = _draft("m3", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "m3", _HA, ["Taurex-Demo"], 100)
+        call_command("activate_catalogue_version", "--label", "m3")
+        CatalogueVersion.objects.filter(label="m3").update(manifest_sha256=_HC)
+        self.assertFalse(S.verify_version_integrity(CatalogueVersion.objects.get(label="m3")))
+
+    def test_deterministic_and_order_independent(self):
+        # The strong manifest does not include the version label and sorts artefacts, so the SAME broker
+        # set/bytes/servers/size yields the SAME manifest regardless of insertion order.
+        a = _draft("da", [("aa", _HA, ["AA-Demo"], 10), ("bb", _HB, ["BB-Demo"], 20)])
+        b = _draft("db", [("bb", _HB, ["BB-Demo"], 20), ("aa", _HA, ["AA-Demo"], 10)])   # inserted reversed
+        self.assertEqual(S.compute_manifest_sha(a), S.compute_manifest_sha(a))            # stable
+        self.assertEqual(S.compute_manifest_sha(a), S.compute_manifest_sha(b))            # order-independent
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class ImmutabilityTests(TestCase):
+    def test_artefact_cannot_be_created_or_changed_on_active_version(self):
+        v = _draft("i1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "i1", _HA, ["Taurex-Demo"], 100)
+        call_command("activate_catalogue_version", "--label", "i1")
+        v = CatalogueVersion.objects.get(label="i1")
+        with self.assertRaises(ValidationError):                       # cannot add an artefact to an ACTIVE version
+            CatalogueArtefact.objects.create(
+                version=v, broker_id="new", display_name="New", servers=["New-Demo"],
+                artefact_ref="new/i1", sha256=_HB, size_bytes=1, host_relpath="versions/i1/new/servers.dat")
+        art = v.artefacts.get(broker_id="taurex")
+        art.servers = ["Taurex-Demo", "Taurex-Live"]
+        with self.assertRaises(ValidationError):                       # cannot mutate an artefact on an ACTIVE version
+            art.save()
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class ActivationGateHardeningTests(TestCase):
+    def test_sanitiser_fail_blocks_activation(self):
+        _draft("s1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "s1", _HA, ["Taurex-Demo"], 100, sanitiser_passed=False)
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "s1")
+        self.assertIsNone(S.resolve_active_version())
+
+    def test_missing_sanitiser_blocks_activation(self):
+        _draft("s2", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/s2",
+                                        sha256=_HA, status=ArtefactApproval.Status.APPROVED, metadata={})
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "s2")
+
+    def test_wrong_size_blocks_activation(self):
+        _draft("z1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "z1", _HA, ["Taurex-Demo"], 999)       # approval size != artefact size
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "z1")
+
+    def test_server_collision_blocks_activation(self):
+        # Two brokers claim the same server name -> ambiguous routing -> activation refused (Gate 3).
+        v = CatalogueVersion.objects.create(label="c1", status=CatalogueVersion.Status.DRAFT)
+        for b, sha in (("x", _HA), ("y", _HB)):
+            CatalogueArtefact.objects.create(version=v, broker_id=b, display_name=b, servers=["Same-Demo"],
+                                             artefact_ref=f"{b}/c1", sha256=sha, size_bytes=1,
+                                             host_relpath=f"versions/c1/{b}/servers.dat")
+        _approve_full("x", "c1", _HA, ["Same-Demo"], 1)
+        _approve_full("y", "c1", _HB, ["Same-Demo"], 1)
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "c1")
+
+    def test_carried_over_broker_sha_change_blocked(self):
+        _draft("v1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "v1", _HA, ["Taurex-Demo"], 100)
+        call_command("activate_catalogue_version", "--label", "v1")
+        _draft("v2", [("taurex", _HB, ["Taurex-Demo"], 100)])          # same broker, DIFFERENT sha
+        _approve_full("taurex", "v2", _HB, ["Taurex-Demo"], 100)
+        with self.assertRaises(CommandError):                          # silent byte change refused
+            call_command("activate_catalogue_version", "--label", "v2")
+        self.assertEqual(S.resolve_active_version().label, "v1")       # previous ACTIVE preserved
+        call_command("activate_catalogue_version", "--label", "v2", "--allow-byte-change")   # explicit override
+        self.assertEqual(S.resolve_active_version().label, "v2")
+
+    def test_partial_activation_preserves_previous_active(self):
+        _draft("p1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "p1", _HA, ["Taurex-Demo"], 100)
+        call_command("activate_catalogue_version", "--label", "p1")
+        # A new DRAFT that will FAIL activation (missing approval) must not disturb the ACTIVE version.
+        _draft("p2", [("taurex", _HB, ["Taurex-Demo"], 100)])
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "p2")
+        self.assertEqual(S.resolve_active_version().label, "p1")
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class HostAttestationTests(TestCase):
+    def _arm(self, verified):
+        from broker_catalogue.management.commands import activate_catalogue_version as A
+
+        class FakeAttest:
+            def attest_broker_artefact(self, host_relpath, expected_sha256):
+                return {"ok": verified is not None, "verified_sha256": verified or ""}
+        return mock.patch.object(A, "_attest_executor", lambda: FakeAttest())
+
+    def test_attest_host_pass(self):
+        _draft("a1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "a1", _HA, ["Taurex-Demo"], 100)
+        with self._arm(_HA):
+            call_command("activate_catalogue_version", "--label", "a1", "--attest-host")
+        self.assertEqual(S.resolve_active_version().label, "a1")
+
+    def test_attest_host_sha_mismatch_blocks(self):
+        _draft("a2", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "a2", _HA, ["Taurex-Demo"], 100)
+        with self._arm(_HB):                                            # host bytes read back a different SHA
+            with self.assertRaises(CommandError):
+                call_command("activate_catalogue_version", "--label", "a2", "--attest-host")
+        self.assertIsNone(S.resolve_active_version())
+
+    def test_attest_host_missing_bytes_blocks(self):
+        _draft("a3", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "a3", _HA, ["Taurex-Demo"], 100)
+        with self._arm(None):                                          # host file missing -> ok False
+            with self.assertRaises(CommandError):
+                call_command("activate_catalogue_version", "--label", "a3", "--attest-host")
+
+    def test_attest_host_without_transport_fails_closed(self):
+        _draft("a4", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "a4", _HA, ["Taurex-Demo"], 100)
+        with self.assertRaises(CommandError):                          # no attestation transport configured
+            call_command("activate_catalogue_version", "--label", "a4", "--attest-host")
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class RollbackTests(TestCase):
+    def test_rollback_restores_previous_active(self):
+        _draft("v1", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        _approve_full("taurex", "v1", _HA, ["Taurex-Demo"], 100)
+        call_command("activate_catalogue_version", "--label", "v1")
+        _draft("v2", [("taurex", _HA, ["Taurex-Demo"], 100), ("is6", _HB, ["IS6Technologies-Demo"], 50)])
+        _approve_full("taurex", "v2", _HA, ["Taurex-Demo"], 100)
+        _approve_full("is6", "v2", _HB, ["IS6Technologies-Demo"], 50)
+        call_command("activate_catalogue_version", "--label", "v2")
+        self.assertEqual(S.resolve_active_version().label, "v2")
+        call_command("rollback_catalogue_version", "--to", "v1")
+        self.assertEqual(S.resolve_active_version().label, "v1")
+
+    def test_rollback_refuses_draft_target(self):
+        # Rollback re-activates a RETIRED version only; a DRAFT target is refused (fail-closed).
+        _draft("v3", [("taurex", _HA, ["Taurex-Demo"], 100)])
+        with self.assertRaises(CommandError):
+            call_command("rollback_catalogue_version", "--to", "v3")
+
+
+class BuildHardeningTests(TestCase):
+    def test_build_binds_single_approved_over_pending_duplicate(self):
+        # Register an APPROVED SHA_A and a PENDING SHA_B for the same ref -> build binds SHA_A (no last-write-wins).
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b1", sha256=_HA,
+                                        status=ArtefactApproval.Status.APPROVED,
+                                        metadata={"servers_intended": ["Taurex-Demo"], "size_bytes": 1,
+                                                  "sanitiser": _san()})
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b1", sha256=_HB,
+                                        status=ArtefactApproval.Status.PENDING, metadata={})
+        call_command("build_catalogue_version", "--label", "b1")
+        art = CatalogueArtefact.objects.get(version__label="b1", broker_id="taurex")
+        self.assertEqual(art.sha256, _HA)
+
+    def test_two_approved_for_same_ref_is_db_prevented(self):
+        # The approvals partial-unique constraint already forbids two APPROVED rows per (kind, ref) — the build's
+        # >1-approved guard is defence-in-depth for a state the DB does not allow to exist.
+        from django.db import IntegrityError, transaction
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b2", sha256=_HA,
+                                        status=ArtefactApproval.Status.APPROVED,
+                                        metadata={"servers_intended": ["Taurex-Demo"], "sanitiser": _san()})
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="taurex/b2",
+                                                sha256=_HB, status=ArtefactApproval.Status.APPROVED, metadata={})
+
+    def test_build_refuses_cross_broker_server_collision(self):
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="x/b3", sha256=_HA,
+                                        status=ArtefactApproval.Status.APPROVED,
+                                        metadata={"servers_intended": ["Same-Demo"], "sanitiser": _san()})
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="y/b3", sha256=_HB,
+                                        status=ArtefactApproval.Status.APPROVED,
+                                        metadata={"servers_intended": ["Same-Demo"], "sanitiser": _san()})
+        with self.assertRaises(CommandError):
+            call_command("build_catalogue_version", "--label", "b3")
+
+
+class SanitiserTests(TestCase):
+    def test_clean_bytes_pass(self):
+        v = SAN.scan_artefact(b"PepperstoneUK-Demo\x00access-server-1.example\x00", identity_terms=["830227146"])
+        self.assertTrue(v["passed"])
+        self.assertEqual(v["identity_hits"], [])
+        self.assertEqual(len(v["sha256"]), 64)
+        self.assertEqual(len(v["evidence_sha256"]), 64)
+
+    def test_login_ascii_detected(self):
+        v = SAN.scan_artefact(b"junk-830227146-more", identity_terms=["830227146"])
+        self.assertFalse(v["passed"])
+        self.assertTrue(any(h["encoding"] == "ascii" for h in v["identity_hits"]))
+
+    def test_login_int32le_detected(self):
+        payload = b"AAAA" + (830227146).to_bytes(4, "little") + b"BBBB"
+        v = SAN.scan_artefact(payload, identity_terms=["830227146"])
+        self.assertFalse(v["passed"])
+
+    def test_email_utf16_detected(self):
+        v = SAN.scan_artefact("x support@guvfx.com y".encode("utf-16-le"), identity_terms=["support@guvfx.com"])
+        self.assertFalse(v["passed"])
+
+    def test_verdict_is_bounded_language(self):
+        v = SAN.scan_artefact(b"clean", identity_terms=[])
+        self.assertIn("does NOT prove", v["note"])

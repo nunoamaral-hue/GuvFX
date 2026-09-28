@@ -14,6 +14,19 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - BROKER CATALOGUE HARDENING (generic, for the Wayond 40-broker scale) + PR D #428 MERGED
+  (activation HELD).** PR D #428 merged `201b910` (Taurex DEMO tests+docs+credential-free proof); **production v2
+  activation HELD (Sponsor: harden first)** → live catalogue stays v1 ACTIVE (only v1, 0 Taurex artefacts/approvals,
+  25/35/36 unchanged) = `PR428_MERGED_ACTIVATION_HELD`. **Hardening (`feat/broker-catalogue-hardening`):** manifest
+  now binds bytes+servers+size+kind+sanitisation (strong algo `servers_v2`, per-version `manifest_algo` keeps legacy
+  v1 `1df73667` verifying → NO prod break); model-layer immutability (artefact save-guard on non-DRAFT + admin
+  readonly + resolution manifest re-verify → native on tamper); reusable content sanitiser (`sanitiser.py`, byte
+  identity scan 8+ encodings + entropy, bounded) wired as an activation gate; approval binds exact sha/size/servers;
+  single-APPROVED build (no last-write-wins); server-name uniqueness (build+activate); atomic activation transaction
+  with `--attest-host` host read-back + `--allow-byte-change` carried-over guard; `rollback_catalogue_version`.
+  47 broker_catalogue tests (full activation/mutation/sanitiser/collision/attestation/rollback matrix) + sanitiser
+  units; migration `0002` (additive `manifest_algo`). 40-broker roadmap: VERIFIED Taurex/Pepperstone/IS6; rest
+  NEEDS_CAPTURE (no ids invented). Then (post-merge) Taurex v2 via the hardened pipeline.
 - **2026-09-28 - PR B (#426) MERGED+DEPLOYED + PR C windowless launcher (member launch).** *PR B (#426, merge
   `d30a713`):* provisioning UX + bounded/single-flight polling + genuine false→true terminal-ready notification +
   deterministic `customer_notifications` health test. Frontend-only prod change (backend diff was TEST-only →

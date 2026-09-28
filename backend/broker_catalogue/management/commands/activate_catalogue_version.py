@@ -1,12 +1,21 @@
-"""activate_catalogue_version — promote a DRAFT catalogue version to ACTIVE (governed, fail-closed).
+"""activate_catalogue_version — promote a DRAFT catalogue version to ACTIVE (governed, atomic, fail-closed).
 
-REFUSES to activate unless EVERY artefact in the version is human-APPROVED for its exact SHA (approvals app).
-This is the promotion gate: it never self-approves and never activates a version containing an unapproved or
-uncertified artefact. Activation retires the previous ACTIVE version (recording ``rollback_to`` so re-activating
-the predecessor is the rollback), and stamps the aggregate manifest SHA. Atomic under a transaction.
+The activation transaction refuses to promote unless EVERY gate passes, so a live catalogue is never partially
+active and never carries an unverified artefact:
+  * every artefact is human-APPROVED for its exact SHA (approvals app);
+  * every artefact's approval carries a machine sanitiser PASS verdict (``metadata.sanitiser.passed``);
+  * the artefact's SHA + size + servers match its approval (approval binds the exact bytes/identity);
+  * no server name is claimed by two artefacts (deterministic, unambiguous routing);
+  * a broker carried over from the outgoing ACTIVE version keeps its SHA (no silent byte change) unless
+    ``--allow-byte-change`` is given;
+  * with ``--attest-host``, the bytes staged on the host at each ``host_relpath`` read back to the approved SHA;
+  * with ``--require-certified``, behavioural ``certification_result == PASS``.
+On success it retires the previous ACTIVE (recording ``rollback_to`` so re-activating the predecessor is the
+rollback) and stamps the aggregate strong-algo manifest. Atomic under a transaction; on any failure the previous
+ACTIVE version remains authoritative.
 
-Usage:  activate_catalogue_version --label v1
-        activate_catalogue_version --label v1 --require-certified   # also require certification_result == PASS
+Usage:  activate_catalogue_version --label v2
+        activate_catalogue_version --label v2 --attest-host --require-certified
 """
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -16,13 +25,24 @@ from broker_catalogue import service as S
 from broker_catalogue.models import CatalogueVersion
 
 
+# Injection seam for host byte-staging attestation (Phase 7). Returns an object with
+# ``attest_broker_artefact(host_relpath, expected_sha256) -> {"ok": bool, "verified_sha256": str}`` or None when no
+# attestation transport is configured. Overridden in tests; wired to the signed host executor at activation time.
+def _attest_executor():
+    return None
+
+
 class Command(BaseCommand):
-    help = "Promote a DRAFT catalogue version to ACTIVE, fail-closed unless every artefact is approved."
+    help = "Promote a DRAFT catalogue version to ACTIVE (atomic, fail-closed; sanitiser + uniqueness + attest gates)."
 
     def add_arguments(self, parser):
         parser.add_argument("--label", required=True)
         parser.add_argument("--require-certified", action="store_true",
                             help="Also require certification_result == PASS for every artefact (behavioural cert).")
+        parser.add_argument("--attest-host", action="store_true",
+                            help="Read back the host-staged bytes and require each SHA == the approved artefact SHA.")
+        parser.add_argument("--allow-byte-change", action="store_true",
+                            help="Permit a carried-over broker's SHA to differ from the outgoing ACTIVE version.")
 
     def handle(self, *args, **opts):
         label = opts["label"]
@@ -33,21 +53,75 @@ class Command(BaseCommand):
                 raise CommandError(f"no such catalogue version: {label}")
             if version.status == CatalogueVersion.Status.ACTIVE:
                 self.stdout.write(f"[catalogue] {label} already ACTIVE"); return
-            arts = list(version.artefacts.all())
+            if version.status != CatalogueVersion.Status.DRAFT:
+                raise CommandError(f"version {label} is {version.status}; only a DRAFT can be activated")
+            arts = list(version.artefacts.all().order_by("broker_id"))
             if not arts:
                 raise CommandError(f"version {label} has no artefacts")
-            # Fail-closed promotion gate: every artefact must be human-approved for its exact SHA.
+
+            # Gate 1 — human approval for the exact SHA of every artefact.
             unapproved = [a.broker_id for a in arts if not S.artefact_is_approved(a)]
             if unapproved:
                 raise CommandError(f"REFUSED: unapproved artefact(s): {unapproved}. "
                                    f"Human approval (approvals app) required for each exact SHA before activation.")
+
+            # Gate 2 — machine sanitiser PASS + approval binds exact bytes/size/servers (no drift approval->artefact).
+            for a in arts:
+                appr = S.approved_row_for(a)                       # by identity, not the FK link
+                meta = (appr.metadata or {}) if appr else {}
+                san = meta.get("sanitiser") or {}
+                if san.get("passed") is not True:
+                    raise CommandError(f"REFUSED: {a.broker_id} has no machine sanitiser PASS "
+                                       f"(metadata.sanitiser.passed) — run sanitise_broker_artefact + re-approve.")
+                if appr and S.norm_sha(appr.sha256) != S.norm_sha(a.sha256):
+                    raise CommandError(f"REFUSED: {a.broker_id} artefact SHA != approval SHA (byte drift).")
+                m_size = meta.get("size_bytes")
+                if m_size is not None and int(m_size) != int(a.size_bytes or 0):
+                    raise CommandError(f"REFUSED: {a.broker_id} size {a.size_bytes} != approval size {m_size}.")
+                m_servers = meta.get("servers_intended") or meta.get("servers")
+                if m_servers is not None:
+                    if sorted(str(s).strip().lower() for s in m_servers) != \
+                       sorted(str(s).strip().lower() for s in (a.servers or [])):
+                        raise CommandError(f"REFUSED: {a.broker_id} servers != approval servers_intended.")
+
+            # Gate 3 — deterministic, unambiguous routing: no server name claimed by two artefacts.
+            dups = S.duplicate_server_names(version)
+            if dups:
+                raise CommandError(f"REFUSED: server name(s) claimed by multiple artefacts: {dups}")
+
             if opts["require_certified"]:
                 uncert = [a.broker_id for a in arts if a.certification_result != "PASS"]
                 if uncert:
                     raise CommandError(f"REFUSED: uncertified artefact(s): {uncert} (behavioural cert not PASS).")
-            # Retire the current ACTIVE (rollback pointer) then activate this one atomically.
+
             prev = CatalogueVersion.objects.select_for_update().filter(
                 status=CatalogueVersion.Status.ACTIVE).first()
+
+            # Gate 4 — carried-over brokers keep their bytes (no silent byte change) unless explicitly allowed.
+            if prev is not None and not opts["allow_byte_change"]:
+                prev_sha = {a.broker_id: S.norm_sha(a.sha256) for a in prev.artefacts.all()}
+                changed = [a.broker_id for a in arts
+                           if a.broker_id in prev_sha and prev_sha[a.broker_id] != S.norm_sha(a.sha256)]
+                if changed:
+                    raise CommandError(f"REFUSED: carried-over broker(s) changed SHA vs ACTIVE {prev.label}: "
+                                       f"{changed}. Re-approve intentionally + pass --allow-byte-change.")
+
+            # Gate 5 — host byte-staging attestation (each host_relpath reads back to the approved SHA).
+            if opts["attest_host"]:
+                ex = _attest_executor()
+                if ex is None:
+                    raise CommandError("REFUSED: --attest-host requested but no attestation transport is configured.")
+                for a in arts:
+                    try:
+                        res = ex.attest_broker_artefact(host_relpath=a.host_relpath,
+                                                        expected_sha256=S.norm_sha(a.sha256))
+                    except Exception:  # noqa: BLE001 — any host error fails the attestation closed
+                        res = {"ok": False}
+                    if not (res and res.get("ok") and
+                            S.norm_sha(res.get("verified_sha256", "")) == S.norm_sha(a.sha256)):
+                        raise CommandError(f"REFUSED: host attestation failed for {a.broker_id} "
+                                           f"(staged bytes at {a.host_relpath} do not match the approved SHA).")
+
             now = timezone.now()
             if prev is not None:
                 prev.status = CatalogueVersion.Status.RETIRED
@@ -56,7 +130,10 @@ class Command(BaseCommand):
                 version.rollback_to = prev
             version.status = CatalogueVersion.Status.ACTIVE
             version.activated_at = now
-            version.manifest_sha256 = S.compute_manifest_sha(version)
-            version.save(update_fields=["status", "activated_at", "manifest_sha256", "rollback_to"])
-        self.stdout.write(f"[catalogue] ACTIVATED {label} manifest_sha256={version.manifest_sha256} "
-                          f"artefacts={[a.broker_id for a in arts]}")
+            version.manifest_algo = S.MANIFEST_ALGO                       # new versions use the strong algo
+            version.manifest_sha256 = S.compute_manifest_sha(version)     # strong manifest (covers servers/size/etc.)
+            version.save(update_fields=["status", "activated_at", "manifest_algo", "manifest_sha256", "rollback_to"])
+            if not S.verify_version_integrity(version):                   # self-check the stamp round-trips
+                raise CommandError("REFUSED: post-stamp manifest self-verification failed (integrity bug).")
+        self.stdout.write(f"[catalogue] ACTIVATED {label} algo={version.manifest_algo} "
+                          f"manifest_sha256={version.manifest_sha256} artefacts={[a.broker_id for a in arts]}")
