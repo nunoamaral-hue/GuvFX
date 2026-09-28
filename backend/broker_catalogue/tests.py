@@ -24,6 +24,9 @@ _n = 0
 
 PEP_SHA = "afd6d65b43b5df4575d766f31af2972ce3677808897588d09495f0b85d072c6b"
 IS6_SHA = "db013e27ad0d5a633bc5fcddb14b7c3450467b6ccfaa81d5e02a95dffd48c414"
+# Taurex catalogue artefact captured (credential-free) from the Account-36 Taurex-Demo environment (PR D). This is
+# the exact SHA256 of the certified servers.dat; DEMO-ONLY scope (servers list is Taurex-Demo, never Taurex-Live).
+TAUREX_SHA = "23fd33b87f3d6b628ba6cb457189e3cd8caa03617a381306e3873b2bba6fd876"
 
 
 def _uniq():
@@ -52,6 +55,13 @@ def _version(active=True):
         version=v, broker_id="is6", display_name="IS6 Technologies",
         servers=["IS6Technologies-Demo", "IS6Technologies-Live"], artefact_ref="is6/v1",
         sha256=IS6_SHA, size_bytes=69032, host_relpath="versions/v1/is6/servers.dat",
+        sanitisation_result="PASS")
+    # PR D — Taurex, DEMO-ONLY: the servers list is Taurex-Demo only (Taurex-Live is deliberately omitted so a Live
+    # account never preseeds a demo-captured file; it falls back to native discovery until Live is separately certified).
+    CatalogueArtefact.objects.create(
+        version=v, broker_id="taurex", display_name="Taurex",
+        servers=["Taurex-Demo"], artefact_ref="taurex/v1",
+        sha256=TAUREX_SHA, size_bytes=47384, host_relpath="versions/v1/taurex/servers.dat",
         sanitisation_result="PASS")
     return v
 
@@ -86,6 +96,16 @@ class ResolutionTests(TestCase):
         _version()
         self.assertIsNone(S.resolve_artefact_for_server("WIMS-Demo"))   # CZ's legacy server is NOT IS6
         self.assertIsNone(S.resolve_artefact_for_server("SomeOther-Demo"))
+
+    def test_taurex_demo_resolves_but_live_does_not(self):
+        # PR D DEMO-only scope: Taurex-Demo maps to the taurex artefact; Taurex-Live must NOT (it is deliberately
+        # absent from the servers list so a Live account never preseeds the demo-captured file).
+        _version()
+        art = S.resolve_artefact_for_server("Taurex-Demo")
+        self.assertIsNotNone(art)
+        self.assertEqual(art.broker_id, "taurex")
+        self.assertEqual(art.servers, ["Taurex-Demo"])
+        self.assertIsNone(S.resolve_artefact_for_server("Taurex-Live"))
 
     def test_no_active_version_resolves_none(self):
         _version(active=False)   # DRAFT, not ACTIVE
@@ -125,6 +145,25 @@ class PreseedPlanTests(TestCase):
         self.assertEqual(plan.reason_code, S.PRESEED_NATIVE_FALLBACK)
         self.assertTrue(plan.fallback_native)
 
+    def test_taurex_demo_approved_is_preseeded(self):
+        _version()
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)
+        plan = S.resolve_broker_preseed(_account("Taurex-Demo"))
+        self.assertTrue(plan.preseed)
+        self.assertEqual(plan.reason_code, S.PRESEED_SUPPORTED)
+        self.assertEqual(plan.broker_id, "taurex")
+        self.assertEqual(plan.sha256, TAUREX_SHA)
+        self.assertEqual(plan.host_relpath, "versions/v1/taurex/servers.dat")
+
+    def test_taurex_live_native_fallback_even_when_demo_approved(self):
+        # A Taurex-Live account must fall back to native discovery (Demo-only scope), never preseed the demo artefact.
+        _version()
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)
+        plan = S.resolve_broker_preseed(_account("Taurex-Live"))
+        self.assertFalse(plan.preseed)
+        self.assertEqual(plan.reason_code, S.PRESEED_NATIVE_FALLBACK)
+        self.assertTrue(plan.fallback_native)
+
 
 class PreseedConsumptionTests(TestCase):
     def test_dark_by_default_no_lookup_no_copy(self):
@@ -148,6 +187,19 @@ class PreseedConsumptionTests(TestCase):
         self.assertEqual(ex.calls[0][2], PEP_SHA)
         self.assertIn("provenance", out)
         self.assertEqual(out["provenance"]["artefact_sha256"], PEP_SHA)
+
+    @override_settings(HOSTED_BROKER_CATALOGUE_ENABLED="1", APPROVALS_ENABLED="1")
+    def test_taurex_approved_artefact_is_copied_and_verified(self):
+        _version()
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)
+        ex = FakeExecutor(ok=True)
+        out = P.run_catalogue_preseed(_account("Taurex-Demo"), executor=ex, rdp_host="h")
+        self.assertTrue(out["preseeded"])
+        self.assertEqual(len(ex.calls), 1)
+        self.assertEqual(ex.calls[0][1], "taurex")
+        self.assertEqual(ex.calls[0][2], TAUREX_SHA)
+        self.assertEqual(ex.calls[0][3], "versions/v1/taurex/servers.dat")
+        self.assertEqual(out["provenance"]["artefact_sha256"], TAUREX_SHA)
 
     @override_settings(HOSTED_BROKER_CATALOGUE_ENABLED="1", APPROVALS_ENABLED="1")
     def test_readback_mismatch_falls_back_native_not_trusted(self):
@@ -194,7 +246,19 @@ class ActivationGateTests(TestCase):
         _version(active=False)
         _approve("broker_servers_dat", "pepperstone/v1", PEP_SHA)
         _approve("broker_servers_dat", "is6/v1", IS6_SHA)
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)   # PR D: version-wide gate needs Taurex approved too
         call_command("activate_catalogue_version", "--label", "v1")
         v = S.resolve_active_version()
         self.assertIsNotNone(v)
         self.assertEqual(len(v.manifest_sha256), 64)
+
+    def test_activation_refused_when_only_taurex_missing(self):
+        # Proves the version-wide gate: pepperstone + is6 approved but Taurex not -> activation must refuse.
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        _version(active=False)
+        _approve("broker_servers_dat", "pepperstone/v1", PEP_SHA)
+        _approve("broker_servers_dat", "is6/v1", IS6_SHA)
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "v1")
+        self.assertIsNone(S.resolve_active_version())

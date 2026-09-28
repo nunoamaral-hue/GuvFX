@@ -31,7 +31,11 @@
   proven: the hardened gate REJECTS the live console binary, `reason=native_launcher_invalid`). Accounts using the
   launcher: 30/31/33/34/35/36; account 25 points at its own terminal64 directly (never showed a shell). No
   security-logic rewrite; all invariants preserved. **DB/Django/GUAC secrets were exposed to the session transcript
-  via `docker compose config` — see rotation item.**
+  via `docker compose config` — see rotation item.** **PR C CERTIFIED 2026-09-28: host-installed (launcher subsystem
+  3→2/GUI, `C1A97266…`; manifest+AppLocker+ACL re-pinned; daemon verify + backend gate `292e33d4` require
+  `subsystem_is_gui`), all 6 verify true for 35/36, negative tests pass, and Sponsor human visual acceptance PASS on
+  Account 35 (Pepperstone) + Account 36 (Taurex) — MT5 opens, no shell → `PR_C_WINDOWLESS_LAUNCHER_CERTIFIED`.
+  Estate 25/35/36 unchanged. Next: PR D Taurex broker preseed.**
 - **2026-09-27 - WAYOND MARKETPLACE AVAILABILITY + ASSIGNMENT-SCOPED RISK UX (P1 member launch).** Fixes the
   two product-model issues Nuno found: (Issue 1) marketplace strategies were filtered by OWNERSHIP not
   availability — support@ saw only its own "Wayond WIM" copy #10 because the account picker used owner-scoped
