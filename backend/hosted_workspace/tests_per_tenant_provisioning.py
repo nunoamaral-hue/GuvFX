@@ -111,6 +111,50 @@ class DispatchPortParamTests(TestCase):
             D._validate_params("ACTIVATE_TENANT_BRIDGE", {"evil": 1})
 
 
+class DispatchPreseedParamTests(TestCase):
+    """PR D — broker-catalogue preseed dispatch (PRESEED_BROKER_ARTEFACT) re-validates the caller-influenced
+    values host-side (defence in depth): 64-lowercase-hex SHA, short broker slug, and a versions-relative
+    host_relpath with no traversal that ends in servers.dat. This closes the previously-untested primary adversarial
+    surface (path traversal / accounts.dat / malformed sha or broker)."""
+
+    _SLOT = {"username": "guvfx_u_44", "runtime_root": r"C:\GuvFX\accounts\44",
+             "terminal_root": r"C:\GuvFX\accounts\44\terminal", "account_id": 44}
+    _SHA = "23fd33b87f3d6b628ba6cb457189e3cd8caa03617a381306e3873b2bba6fd876"
+
+    def _params(self, **kw):
+        base = {"broker_id": "taurex", "expected_sha256": self._SHA,
+                "host_relpath": "versions/v1/taurex/servers.dat"}
+        base.update(kw)
+        return {"params": base}
+
+    def test_op_is_registered_and_covered(self):
+        self.assertIn("PRESEED_BROKER_ARTEFACT", P.HOSTED_OPERATIONS)
+        self.assertIn("PRESEED_BROKER_ARTEFACT", D.OP_PRIMITIVES)
+
+    def test_valid_params_build_confined_args(self):
+        args = D._build_args("PRESEED_BROKER_ARTEFACT", self._SLOT, self._params(), envelope_open=None)
+        self.assertEqual(args["broker_id"], "taurex")
+        self.assertEqual(args["expected_sha256"], self._SHA)
+        self.assertEqual(args["host_relpath"], r"versions\v1\taurex\servers.dat")   # normalised, versions-relative
+        self.assertEqual(args["account_id"], 44)
+
+    def test_host_relpath_traversal_and_wrong_target_rejected(self):
+        for bad in (r"versions\..\..\Windows\servers.dat",   # traversal
+                    r"windows\servers.dat",                    # not under versions\
+                    r"versions\v1\taurex\accounts.dat",        # not servers.dat (would exfil credentials)
+                    r"..\versions\v1\taurex\servers.dat"):     # leading traversal
+            with self.assertRaises(HostProtocolError):
+                D._build_args("PRESEED_BROKER_ARTEFACT", self._SLOT, self._params(host_relpath=bad), envelope_open=None)
+
+    def test_malformed_sha_or_broker_rejected(self):
+        for bad_sha in ("short", "x" * 64, "z" * 64):
+            with self.assertRaises(HostProtocolError):
+                D._build_args("PRESEED_BROKER_ARTEFACT", self._SLOT, self._params(expected_sha256=bad_sha), envelope_open=None)
+        for bad_broker in ("Taurex", "taurex/evil", "a" * 33, "bad broker"):
+            with self.assertRaises(HostProtocolError):
+                D._build_args("PRESEED_BROKER_ARTEFACT", self._SLOT, self._params(broker_id=bad_broker), envelope_open=None)
+
+
 class ExecutorProxyTests(TestCase):
     def test_activate_tenant_bridge_sends_signed_port_param_confined(self):
         from hosted_workspace.host_executor import SignedHostExecutor

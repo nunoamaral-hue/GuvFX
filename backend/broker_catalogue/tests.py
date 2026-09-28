@@ -164,6 +164,21 @@ class PreseedPlanTests(TestCase):
         self.assertEqual(plan.reason_code, S.PRESEED_NATIVE_FALLBACK)
         self.assertTrue(plan.fallback_native)
 
+    def test_wrong_broker_never_receives_taurex_bytes(self):
+        # Cross-broker isolation: with Taurex approved, a Pepperstone account resolves to ITS own artefact (never
+        # the Taurex SHA), and an unknown-broker account never carries a Taurex identity.
+        _version()
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)
+        _approve("broker_servers_dat", "pepperstone/v1", PEP_SHA)
+        pep = S.resolve_broker_preseed(_account("PepperstoneUK-Demo"))
+        self.assertTrue(pep.preseed)
+        self.assertEqual(pep.broker_id, "pepperstone")
+        self.assertNotEqual(pep.sha256, TAUREX_SHA)
+        wims = S.resolve_broker_preseed(_account("WIMS-Demo"))
+        self.assertFalse(wims.preseed)
+        self.assertTrue(wims.fallback_native)
+        self.assertNotEqual(getattr(wims, "broker_id", None), "taurex")
+
 
 class PreseedConsumptionTests(TestCase):
     def test_dark_by_default_no_lookup_no_copy(self):
@@ -228,6 +243,29 @@ class PreseedConsumptionTests(TestCase):
         self.assertFalse(out["preseeded"])
         self.assertTrue(out["fallback_native"])
         self.assertEqual(ex.calls, [])
+
+    @override_settings(HOSTED_BROKER_CATALOGUE_ENABLED="1", APPROVALS_ENABLED="1")
+    def test_executor_unavailable_falls_back_native(self):
+        # Fail-open: a supported+approved account with NO executor still never breaks provisioning.
+        _version()
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)
+        out = P.run_catalogue_preseed(_account("Taurex-Demo"), executor=None, rdp_host="h")
+        self.assertFalse(out["preseeded"])
+        self.assertTrue(out["fallback_native"])
+
+    @override_settings(HOSTED_BROKER_CATALOGUE_ENABLED="1", APPROVALS_ENABLED="1")
+    def test_executor_raise_falls_back_native(self):
+        # Fail-open: a host copy that RAISES is caught and degrades to native discovery (never propagates).
+        _version()
+        _approve("broker_servers_dat", "taurex/v1", TAUREX_SHA)
+
+        class Boom:
+            def preseed_broker_artefact(self, *a, **k):
+                raise RuntimeError("host boom")
+
+        out = P.run_catalogue_preseed(_account("Taurex-Demo"), executor=Boom(), rdp_host="h")
+        self.assertFalse(out["preseeded"])
+        self.assertTrue(out["fallback_native"])
 
 
 @override_settings(APPROVALS_ENABLED="1")

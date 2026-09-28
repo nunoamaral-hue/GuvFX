@@ -20,14 +20,25 @@ coverage in `backend/broker_catalogue/tests.py` + this runbook.
 - **sha256 = `23fd33b87f3d6b628ba6cb457189e3cd8caa03617a381306e3873b2bba6fd876`**
 - source MT5 build: 5.0.0.6073 (golden).
 
-## Credential-free proof (Phase D3)
-- Candidate dir contains only `servers.dat` (no `accounts.dat`/`logs`/`history`/`deals`/`orders`/`positions`/
-  `passwords`/`dpapi`/`origin.txt` path markers) — `forbidden_path_present=False`.
-- Explicit Account-36 login **`830227146` absent** from the bytes (ASCII and UTF-16LE): both `False`.
-- Candidate SHA ≠ `accounts.dat` SHA (`candidate_equals_accounts_dat=False`).
-- `servers.dat` is Class A public broker metadata (opaque server list; identical for every Taurex user).
-- ⇒ **`CREDENTIAL_FREE_PROVEN = True`**. If any check had failed, capture fails closed and the artefact is NOT
-  activated.
+## Credential-free proof (Phase D3) — bounded evidence
+Only `servers.dat` was copied (candidate dir contains only that file; no `accounts.dat`/`logs`/`history` path
+markers — `forbidden_path_present=False`). Expanded byte-scan of the 47384-byte artefact for Account-36 identity:
+- Login **`830227146` absent in ALL of: ASCII, UTF-16LE, UTF-16BE, int32-LE, int32-BE, int64-LE, packed-BCD,
+  zero-padded** (every pattern `present=False`).
+- **`support@guvfx.com`, `guvfx`, `Nuno`, `Nuno A` absent** (ASCII + UTF-16LE); the user's other logins
+  (`62145672`, `1302587`) absent.
+- **Entropy sweep: max 7.3 bits/byte, ZERO 256-byte windows > 7.5** ⇒ no compressed/encrypted (wrapped-secret)
+  region where a DPAPI blob / session token could hide.
+- ⇒ **`CREDENTIAL_FREE_STRENGTHENED = True`** (fail-closed: any hit aborts before activation, per Phase D3).
+
+**Stated limitations (evidence rule).** A decisive cross-user byte-diff (a SECOND independent Taurex account) was
+**NOT** run — creating a production account solely for verification is avoided per the packet's non-destructive
+rule, and no pristine broker-shipped Taurex `servers.dat` was available on the host. User-independence therefore
+rests on: (a) zero Account-36 PII in any encoding + zero high-entropy regions (above); (b) the MT5 architectural
+fact that `config\servers.dat` is the broker's public access-server directory (credentials live in `accounts.dat`,
+never copied); and (c) **precedent** — the already-CERTIFIED IS6 catalogue artefact (`a05ddd55…`) was itself
+captured from a live CONNECTED runtime (support@/acct25), so live-runtime capture is the established, approved
+method, not a novel risk.
 
 ## Amber decisions (recorded)
 1. **Capture source = Account 36 (a live Provider-B acceptance runtime), not a disposable runtime.**
@@ -59,6 +70,34 @@ pepperstone `afd6d65b…` (86592B), is6 `a05ddd55…` (36528B).
 - `resolve_artefact_for_server("Taurex-Demo").broker_id == "taurex"`; `resolve_artefact_for_server("Taurex-Live") is None`.
 - Pepperstone/IS6 still resolve unchanged.
 - Accounts 25/35/36 unaffected (already provisioned; preseed only runs during new `prepare_hosted_slot`).
+
+## Activation attestation (compensating control for the mechanism gaps below)
+`activate_catalogue_version` has no host byte-staging attestation, so before running `activate --label v2`,
+manually confirm on the host that each `versions\v2\{pepperstone,is6,taurex}\servers.dat` exists and its
+`Get-FileHash -SHA256` equals the approved `CatalogueArtefact.sha256` (pep `afd6d65b…`, is6 `a05ddd55…`, taurex
+`23fd33b8…`). Confirm the carried-over pepperstone/is6 v2 bytes are byte-identical to their v1 sources (copy +
+read-back). Do not activate if any SHA differs.
+
+## Deferred hardening — adversarial findings (recommend a dedicated Broker-Catalogue Hardening packet)
+The PR-D adversarial review surfaced **pre-existing** catalogue-mechanism gaps that apply equally to the live V1
+(Pepperstone/IS6) — they are NOT introduced by adding Taurex, and fixing them is a shared-gate change (Amber/Red)
+beyond an additive broker add (architecture rule: no whole-subsystem rewrites per packet). Recorded in
+`docs/KNOWN_ISSUES.md`; compensating controls applied here noted inline:
+- **[HIGH] `servers` list is not SHA-guarded / not in `manifest_sha256`** — a wrong `servers_intended` (e.g. adding
+  `Taurex-Live`) would silently defeat DEMO-only scope. *Compensating control:* Taurex metadata is `["Taurex-Demo"]`
+  only, reviewed at the staff-approve gate; tests assert Demo resolves / Live → None.
+- **[HIGH] `CatalogueArtefact` mutable after activation** (admin editable; no save-guard; `manifest_sha256` never
+  re-verified at resolution). *Fix (hardening packet):* readonly admin + save-guard for non-DRAFT versions +
+  re-verify manifest at resolution.
+- **[HIGH] No byte-content sanitiser in build/activate** — only path-based `scan_forbidden`. *Compensating control:*
+  the expanded byte + entropy scan above, run manually and recorded. *Fix:* a stdlib content sanitiser wired into
+  `build`/`activate`, verdict pinned to the SHA.
+- **[MEDIUM] `build_catalogue_version` last-write-wins across duplicate approval rows** (a later PENDING SHA can
+  clobber an APPROVED one). *Fix:* select the single APPROVED row per `(kind, ref)`.
+- **[MEDIUM] No carried-over-SHA guard** (v2 pep/is6 SHA must equal v1). *Compensating control:* the activation
+  attestation above.
+- **[MEDIUM] No cross-artefact server-name uniqueness** (first-match resolution). *Fix:* reject duplicate server
+  names across a version at build/activate.
 
 ## Rollback
 `activate_catalogue_version --label v1` re-activates v1 (byte-identical prior behaviour). The v2 host bytes and

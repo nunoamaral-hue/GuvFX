@@ -2,6 +2,32 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 P2 BROKER CATALOGUE (recorded 2026-09-28, PR D adversarial review) — mechanism-hardening gaps (pre-existing, affect V1 too)
+
+The PR-D Taurex adversarial review confirmed pre-existing gaps in the broker-catalogue **mechanism** (they apply
+equally to the live V1 Pepperstone/IS6, are not introduced by adding Taurex, and fixing them is a shared-gate
+change — a dedicated Broker-Catalogue Hardening packet, not an in-passing edit). *Impact:* all are defence-in-depth
+against operator error / admin mutation; none makes a correctly-registered artefact unsafe, and every runtime
+failure path already falls back to native discovery. Findings + fixes:
+- **[HIGH]** `CatalogueArtefact.servers` is not folded into `manifest_sha256` and not validated — a wrong
+  `servers_intended` (e.g. a `-Live` server on a demo artefact, or a cross-broker server) silently mis-scopes
+  resolution. Fix: validate `servers` at build + fold the sorted list into `compute_manifest_sha`.
+- **[HIGH]** `CatalogueArtefact` is mutable after activation (`admin.py` only marks `created_at` readonly; no
+  save-guard; `manifest_sha256` never re-verified at resolution). Fix: readonly admin + save-guard for non-DRAFT +
+  re-verify manifest at `resolve_broker_preseed`.
+- **[HIGH]** No byte-content sanitiser in the build/activate path (only path-based `scan_forbidden`). Fix: a stdlib
+  content sanitiser (byte + entropy scan) wired into build/activate, verdict pinned to the artefact SHA.
+- **[MEDIUM]** `build_catalogue_version` is last-write-wins across duplicate approval rows for `(broker_id, ref)`.
+  Fix: select the single APPROVED row.
+- **[MEDIUM]** `activate_catalogue_version` performs no host byte-staging attestation and no carried-over-SHA guard.
+  Fix: fail-closed host read-back precondition; assert carried-over brokers keep their prior-ACTIVE SHA.
+- **[MEDIUM]** No cross-artefact server-name uniqueness (first-match resolution). Fix: reject duplicate server names
+  across a version.
+
+Compensating controls for the Taurex add are recorded in
+`docs/operations/hosted-workspace/TAUREX_CATALOGUE_PRESEED_2026-09-28.md` (demo-only metadata reviewed at the staff
+gate; expanded byte+entropy credential-free scan; manual host read-back attestation before activation).
+
 ## ✅ RESOLVED (2026-09-28, PR C #427 CERTIFIED) — launcher console shell
 
 *Was:* clicking "Open MT5" for a launcher-armed account (30/31/33/34/35/36) showed a black console window with
