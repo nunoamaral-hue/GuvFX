@@ -90,3 +90,20 @@ body {
     text-align: right;
   }
 }
+
+/* Large phones / small tablets (481–768px): the 4-cell account summary is ~540px+ of fixed-width columns and
+   would overflow this range (the stacked grid layout only kicks in at ≤480px). Let the cells wrap into rows of two
+   here so nothing clips or forces horizontal scroll. */
+@media (min-width: 481px) and (max-width: 768px) {
+  .dashboard-account-summary {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .dashboard-account-summary > div {
+    border-right: none !important;
+    min-width: 0 !important;
+    flex: 1 1 45%;
+    padding: 0.55rem 0.9rem !important;
+  }
+}

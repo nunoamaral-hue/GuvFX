@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-28 — Portfolio dashboard (PR #431): adversarial HIGH/MEDIUM fixes applied (pre-merge)
+
+- **Scope / decision.** Multi-account portfolio dashboard + live Open Trades, OBSERVATION-ONLY. Phase-22 adversarial
+  review returned 3 HIGH + 6 MEDIUM; this task applies the fixes on `feat/portfolio-dashboard` (base `f59b4ee`, the
+  pushed PR #431 head) before merge. No new execution/mutation surface; read-only endpoints only.
+- **Verified fact vs assumption.** *Verified:* all 9 findings fixed and covered; backend `analytics.tests_portfolio`
+  = 43 pass (+11 new for H1/M1/M3), `analytics`+`trading` = 388 pass; frontend `npm run build` + parity green;
+  OpenTradesPanel vitest = 9 pass. *Verified environmental:* 6 vitest files fail locally on the known Node-v25 jsdom
+  `localStorage` GOTCHA (in `beforeEach`, before component code; login/support/localization — green in CI). *Not yet
+  run:* PR #431 CI on the new commit; production Phase-24 verification (needs deploy).
+- **What changed (additive).** Backend: `analytics/portfolio.py` (currency-honest realized path — `_partition_usd`,
+  `_trade_currencies_all_usd`, metrics `basis`/`excluded_accounts`, `daily_realized_pnl`→`(value,basis)`,
+  `account_net_pnl`→`float|None`; `portfolio_open_pl` preserves PARTIAL/STALE), `analytics/views_portfolio.py`
+  (open-P/L via `portfolio_open_pl`, row cap `_MAX_OPEN_ROWS`, `truncated`/`stale_accounts`),
+  `analytics/views_trade_history.py` (positions reader legacy-path `require_server` fail-closed).
+  Frontend: `dashboard/page.tsx` (scope-keyed per-account fetches, scope-guarded `perf`/`dailyPnl`, unified `snap`
+  view-model for the Performance Snapshot, ALL-scope from `aggregate.metrics`, scope labels, ALL-scope state mix,
+  scope-aware Setup; removed dead stratPerf/health/stageFor/assignments), `OpenTradesPanel.tsx` (loading≠empty,
+  stale/truncated notes), `globals.css` (481–768px breakpoint), `types/portfolio.ts` (nullable money + basis).
+- **Deviations from packet.** M2 hardened only the NEW positions reader (not the shared balance/balance-ops global
+  path — Customer Zero depends on it; deprecation recorded as a follow-up). M3 bounds the payload (row cap) but keeps
+  reads sequential — full parallelisation deferred (would put ORM on worker threads); recorded as a follow-up.
+  Per-account trading-health and a real FX feed for the realized path are follow-ups. All in `docs/KNOWN_ISSUES.md`.
+- **Exact tests.** `cd backend && .venv/bin/python manage.py test analytics.tests_portfolio` = 43 pass;
+  `… test analytics trading` = 388 pass; `cd frontend && npm run build` = compiled + parity OK;
+  `npx vitest run src/components/dashboard/OpenTradesPanel.test.tsx` = 9 pass.
+- **Commit and branch state.** Branch `feat/portfolio-dashboard`, base `f59b4ee` (pushed PR #431). Fixes committed
+  on top — see Git Status footer. Estate 25/35/36 untouched.
+- **One bounded next action.** Push to PR #431; on GREEN CI → merge → deploy frontend + backend → Phase-24
+  production verification (support@) → Phase-25 regression.
+
 ## 2026-09-28 — Member launch: PR B (#426) merged+deployed; PR C windowless launcher (repo complete, host-validated off live path)
 
 - **Scope / decision.** Member-launch stream. PR B (#426): onboarding provisioning UX + bounded polling + genuine

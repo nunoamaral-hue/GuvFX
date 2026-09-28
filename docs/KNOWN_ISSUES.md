@@ -2,6 +2,29 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔵 P3 PORTFOLIO DASHBOARD (recorded 2026-09-28, PR #431 adversarial review) — residual follow-ups
+
+The blocking HIGH/MEDIUM findings are fixed on `feat/portfolio-dashboard` (see STATUS 2026-09-28). These residuals
+are deferred (latent today: the whole estate is USD and hosted per-tenant, and account counts are small):
+- **[FOLLOW-UP] Deprecate the legacy global-agent READ fallback for balance / balance-ops.** M2 was closed only for
+  the NEW open-positions reader (`_fetch_mt5_open_positions`, `require_server=True` on the legacy path). The
+  pre-existing `_fetch_mt5_account_balance` (:104) and `_fetch_mt5_balance_ops` (:232) still use the login-only
+  firewall on the endpoint-less global path — NOT hardened here because Customer Zero's trade-history depends on that
+  exact path and a blank-server refusal could regress it. Durable fix: make endpoint-less accounts fail closed
+  (stale) so the shared global agent is never read. Preconditions for the leak are narrow (two legacy accounts on
+  different brokers sharing a login); the hosted estate is unaffected.
+- **[FOLLOW-UP] Parallelise per-account live reads.** M3: `build_summary`/`open_positions` read each account's bridge
+  sequentially on the request thread (each urllib GET has a 10s timeout). Bounded today by small account counts + the
+  row cap; at ~20 accounts, parallelise the HTTP GETs (keeping Django ORM on the main thread — the fetchers currently
+  resolve the endpoint via ORM, so naive threading would put ORM on worker threads). Trigger: estate approaching ~20
+  accounts per user.
+- **[FOLLOW-UP] Per-account trading-health.** M6: the header "Trading" availability line is trader-global
+  (`/api/reliability/trading-health/`, no account param); in a specific scope it does not reflect the selected
+  account. Setup/onboarding status IS now scope-aware. A per-account health signal needs a backend contract change.
+- **[FOLLOW-UP] Route realized P&L through a real FX feed.** H1 currently DEGRADES non-USD to PARTIAL (honest, never
+  fabricated). When a vetted FX-rate source exists, route each account's realized net through `to_usd`/`aggregate_usd`
+  like the balance path so non-USD accounts contribute a converted figure instead of being excluded.
+
 ## ✅ RESOLVED (2026-09-28, Broker-Catalogue Hardening) — catalogue mechanism gaps
 
 The PR-D adversarial review's pre-existing broker-catalogue **mechanism** gaps are now closed generically (for the

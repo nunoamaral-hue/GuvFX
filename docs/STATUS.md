@@ -14,6 +14,30 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - PORTFOLIO DASHBOARD (PR #431) — ADVERSARIAL HIGH/MEDIUM FIXES APPLIED (pre-merge).** The
+  multi-account portfolio dashboard + live Open Trades (observation-only, `f59b4ee`) went through a Phase-22
+  adversarial review that returned 3 HIGH + 6 MEDIUM. All fixed on `feat/portfolio-dashboard` before merge:
+  **H1** realized-P&L path is now currency-honest — `portfolio.py` partitions non-USD accounts OUT of the sum and
+  a mixed trade-currency withholds the money block (`basis="PARTIAL"`, `excluded_accounts`), never a
+  mixed-denomination number; `daily_realized_pnl` returns `(value|None, basis)`; `account_net_pnl` returns None
+  when not a trustworthy USD figure. **H2** the scope selector now drives the WHOLE dashboard — per-account
+  Equity/Daily/Performance are fetched by a `[primaryAcct.id]`-keyed effect and trusted only when the result's
+  account id matches the scope, so a non-primary selection can never show the previous account's money. **H3** in
+  ALL scope the Performance Snapshot is computed from `aggregate.metrics` (whole portfolio) and every card is
+  scope-labelled ("Whole portfolio · N accounts · USD, realized" vs "Selected account · realized"). **M1** the
+  top-level floating-P/L aggregate preserves per-account PARTIAL/STALE (`portfolio_open_pl`), surfacing unreadable
+  accounts instead of reporting "USD complete". **M2** the new open-positions reader tightens the identity firewall
+  on the endpoint-less LEGACY global-agent path (`require_server=True` + refuse a missing observed server) —
+  per-tenant reads (the whole certified estate) are byte-identical. **M3** the open-trades payload row list is
+  bounded (`_MAX_OPEN_ROWS=300`, honest `truncated`/`count`). **M4** the panel distinguishes loading from
+  confirmed-empty. **M5** a 481–768px responsive breakpoint stops the account summary overflowing. **M6** ALL scope
+  surfaces the state mix ("N trading · M not trading") and Setup follows the selected account. Dead remnants of the
+  replaced "Your Strategies" card removed (stratPerf/health/stageFor/assignments fetch). Tests: **43** portfolio
+  (+11 new for H1/M1/M3) and **388** analytics+trading green; frontend build + parity green; **9** OpenTradesPanel
+  tests green (352/358 vitest; the 6 fails are the known Node-v25 jsdom `localStorage` GOTCHA, green in CI). Estate
+  25/35/36 untouched (read-only endpoints; no execution/mutation/catalogue/magic/sizing surface). Residual
+  follow-ups → KNOWN_ISSUES (balance/balance-ops legacy global-fallback deprecation; per-account read
+  parallelisation; per-account trading-health).
 - **2026-09-28 - BROKER CATALOGUE HARDENING MERGED+DEPLOYED + TAUREX v2 ACTIVE.** #429 merged `9f38cbb`, backend
   redeployed (`63189ae8`), migrations 0002+0003 applied (0003 re-stamped legacy v1 → strong `servers_v2`; v1
   integrity True, Pepperstone/IS6 still resolve — no prod break). Adversarial 2nd-pass fixed (sanitiser verdict
