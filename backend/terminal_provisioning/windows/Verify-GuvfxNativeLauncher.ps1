@@ -31,10 +31,23 @@ $ALLOW_RULE_PREFIX = "GuvFX-NativeLauncher"
 
 $result = [ordered]@{
   ok = $false; launcher_exists = $false; sha256_matches = $false; acl_safe = $false;
-  applocker_allow_present = $false; runtime_exists = $false; reason = ""
+  applocker_allow_present = $false; runtime_exists = $false; subsystem_is_gui = $false; reason = ""
 }
 function Emit() { $result | ConvertTo-Json -Compress }
 function Fail([string]$why) { $result.ok = $false; $result.reason = $why; Emit; exit 1 }
+
+# PE Optional-Header Subsystem field, read from raw bytes: 2 = WINDOWS_GUI (windowless -- Windows allocates NO
+# console, so the member never sees a black console window in front of MT5), 3 = WINDOWS_CUI (a visible console).
+# Offset = e_lfanew(0x3C) -> PE sig(4) + COFF(20) + Optional-Header offset 68; identical for PE32 and PE32+.
+# Returns the UInt16 subsystem, or -1 when the file is unreadable / not a PE. No mutation (read-only).
+function Get-PESubsystem([string]$path) {
+  try {
+    $b = [System.IO.File]::ReadAllBytes($path)
+    $peOff = [BitConverter]::ToInt32($b, 0x3C)
+    if ($b[$peOff] -ne 0x50 -or $b[$peOff + 1] -ne 0x45) { return -1 }   # 'P','E'
+    return [int][BitConverter]::ToUInt16($b, $peOff + 24 + 68)
+  } catch { return -1 }
+}
 
 # Only Allow ACEs granting a WRITE-class right to a non-admin principal make the launcher tenant-replaceable.
 # Bits: WriteData 0x2, AppendData 0x4, WriteEA 0x10, WriteAttributes 0x100, DeleteChild 0x40, Delete 0x10000,
@@ -104,9 +117,22 @@ try {
   $exe = Join-Path $full "terminal64.exe"
   $result.runtime_exists = (Test-Path -LiteralPath $exe)
 
+  # subsystem_is_gui: the certified launcher MUST be a GUI-subsystem (windowless) exe, else RemoteApp shows the
+  # member a black console window in front of MT5. RULE 11: the subsystem parser is not authoritative until it
+  # reproduces a KNOWN POSITIVE (explorer.exe = GUI/2) AND a KNOWN NEGATIVE (cmd.exe = CUI/3). If either control
+  # is wrong or unreadable the measurement is unproven -> subsystem_is_gui stays $false (fail closed).
+  $GUI = 2; $CUI = 3
+  $ctlGui = Get-PESubsystem (Join-Path $env:SystemRoot "explorer.exe")
+  $ctlCui = Get-PESubsystem (Join-Path $env:SystemRoot "System32\cmd.exe")
+  if ($ctlGui -eq $GUI -and $ctlCui -eq $CUI) {
+    $result.subsystem_is_gui = ((Get-PESubsystem $LAUNCHER) -eq $GUI)
+  } else {
+    $result.subsystem_is_gui = $false   # parser unverified -> unproven -> fail closed (RULE 11)
+  }
+
   $result.ok = $true
   $allTrue = ($result.launcher_exists -and $result.sha256_matches -and $result.acl_safe -and `
-              $result.applocker_allow_present -and $result.runtime_exists)
+              $result.applocker_allow_present -and $result.runtime_exists -and $result.subsystem_is_gui)
   $result.reason = if ($allTrue) { "ok" } else { "native_launcher_invalid" }
   Emit
   exit 0

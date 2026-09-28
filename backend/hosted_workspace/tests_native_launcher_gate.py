@@ -22,9 +22,12 @@ _LGATE_ON = dict(_PREP_ON, HOSTED_NATIVE_LAUNCHER_GATE_ENABLED="1", HOSTED_SLOT_
 _WIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "terminal_provisioning", "windows")
 _VERIFY = os.path.join(_WIN_DIR, "Verify-GuvfxNativeLauncher.ps1")
 _REMOTEAPP = os.path.join(_WIN_DIR, "Set-GuvfxRemoteApp.ps1")
+_LAUNCHER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "deploy", "hosted-launcher")
+_BUILD = os.path.join(_LAUNCHER_DIR, "Build-GuvfxLauncher.ps1")
+_SOURCE_CS = os.path.join(_LAUNCHER_DIR, "GuvfxLaunch.cs")
 
 _ALL_TRUE = dict(launcher_exists=True, sha256_matches=True, acl_safe=True,
-                 applocker_allow_present=True, runtime_exists=True)
+                 applocker_allow_present=True, runtime_exists=True, subsystem_is_gui=True)
 
 
 class LauncherGateFakeExecutor(FakeExecutor):
@@ -58,7 +61,8 @@ class NativeLauncherGateTests(TestCase):
         # One bound workspace reused across sub-cases: each verdict fails closed (slot never advances), so the
         # same ws can be re-prepared (a fresh _bound_ws per iteration would collide on the fixed node hostname).
         ws, _, _ = _bound_ws()
-        for bad in ("launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present", "runtime_exists"):
+        for bad in ("launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present",
+                    "runtime_exists", "subsystem_is_gui"):
             ex = LauncherGateFakeExecutor(verdict={bad: False})
             res = SP.prepare_hosted_slot(ws, executor=ex)
             self.assertFalse(res.prepared, bad)
@@ -122,8 +126,19 @@ class NativeLauncherHostScriptStaticTests(SimpleTestCase):
         for forbidden in ("Start-Process", "Set-Acl", "Remove-Item", "New-Item", "Set-Content",
                           "Stop-Process", "Set-AppLockerPolicy"):
             self.assertNotIn(forbidden, text, f"launcher-verify must be read-only (no '{forbidden}')")
-        for expect in ("launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present", "runtime_exists"):
+        for expect in ("launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present",
+                       "runtime_exists", "subsystem_is_gui"):
             self.assertIn(expect, text)
+
+    def test_verify_script_asserts_gui_subsystem_with_controls(self):
+        # The windowless (GUI-subsystem) assertion is the durable guard against re-certifying a console launcher
+        # (the defect that put a visible black shell in front of MT5). RULE 11: the subsystem parser must be proven
+        # against a known positive (explorer.exe) AND a known negative (cmd.exe) before its verdict is trusted.
+        text = self._read(_VERIFY).decode("ascii")
+        self.assertIn("subsystem_is_gui", text)
+        self.assertIn("Get-PESubsystem", text)
+        self.assertIn("explorer.exe", text)   # positive control (GUI/2)
+        self.assertIn("cmd.exe", text)         # negative control (CUI/3)
 
     def test_remoteapp_has_launcher_arming_branch(self):
         text = self._read(_REMOTEAPP).decode("ascii")
@@ -190,3 +205,35 @@ class NativeLauncherRemoteAppCouplingTests(SimpleTestCase):
         cap = self._capture_verify_remoteapp("0")
         self.assertEqual(cap["op"], "ENSURE_REMOTEAPP")
         self.assertIsNone(cap["params"])
+
+
+class NativeLauncherBuildScriptStaticTests(SimpleTestCase):
+    """The reproducible GUI-subsystem build script exists, is ASCII-only (RULE 9), builds /target:winexe, proves
+    the subsystem parser on controls (RULE 11), and refuses to emit a non-GUI (console) binary. This keeps the host
+    binary reproducible (no undocumented hand-built exe) and makes a silent console build impossible."""
+
+    def _read(self, path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def test_build_script_and_source_present(self):
+        self.assertTrue(os.path.isfile(_BUILD), "Build-GuvfxLauncher.ps1 missing")
+        self.assertTrue(os.path.isfile(_SOURCE_CS), "GuvfxLaunch.cs missing")
+
+    def test_build_script_is_ascii_only(self):
+        self.assertTrue(all(b < 128 for b in self._read(_BUILD)), "Build-GuvfxLauncher.ps1 has non-ASCII bytes")
+
+    def test_build_script_targets_gui_subsystem_and_fails_closed(self):
+        text = self._read(_BUILD).decode("ascii")
+        self.assertIn("/target:winexe", text)                 # GUI subsystem (no console)
+        self.assertIn("built_binary_not_gui_subsystem", text)  # refuses to emit a console binary
+        self.assertIn("explorer.exe", text)                    # RULE 11 positive control
+        self.assertIn("cmd.exe", text)                         # RULE 11 negative control
+
+    def test_source_specifies_windowless_build_and_eventlog(self):
+        # The source is already the windowless design: GUI subsystem + Event Log diagnostics (never stdout), so a
+        # correct rebuild loses no security signal when stdout is discarded.
+        cs = self._read(_SOURCE_CS).decode("utf-8", "replace")
+        self.assertIn("/target:winexe", cs)
+        self.assertIn('EventLog.WriteEntry("GuvFX-Launcher"', cs)
+        self.assertNotIn("Console.Write", cs)   # no stdout verdicts to be lost under the GUI subsystem

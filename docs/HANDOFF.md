@@ -1,5 +1,37 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-28 — Member launch: PR B (#426) merged+deployed; PR C windowless launcher (repo complete, host-validated off live path)
+
+- **Scope / decision.** Member-launch stream. PR B (#426): onboarding provisioning UX + bounded polling + genuine
+  terminal-ready notification + a deterministic health-isolation test. PR C: make the certified single-instance
+  launcher's normal success **invisible** (no member-visible console) while preserving every security invariant —
+  Phase-10 preferred path (rebuild the SAME source GUI-subsystem; no logic rewrite). Branch
+  `fix/launcher-windowless-shell` off main `d30a713`.
+- **Verified fact vs assumption.** *Verified:* #426 CI green on `cded306`; merged squash `d30a713`; deployed
+  frontend image `sha256:088952…39adb3` contains all #426 copy + preserves #424 "Preparing"; Accounts 25/35/36
+  byte-identical pre/post (TRADING/armed/flat, 0 open). *Verified on host (RULE 11 pos/neg controls):* deployed
+  launcher PE subsystem = 3=CONSOLE (the visible-shell root cause); a GUI rebuild = subsystem 2; the hardened
+  verify gate reports `subsystem_is_gui=false` for the live console binary → would fail closed. *Assumption / to
+  do at install:* the FINAL install build's SHA (PE timestamp/MVID is non-deterministic → pin the installed
+  build's own hash, not the temp build's).
+- **What changed (PR C, additive).** `deploy/hosted-launcher/Build-GuvfxLauncher.ps1` (new, reproducible GUI
+  build, RULE 9 ASCII + RULE 11 controls, refuses non-GUI); `Verify-GuvfxNativeLauncher.ps1` (+`subsystem_is_gui`,
+  read-only, controls); `slot_preparation.py` gate requires `subsystem_is_gui` (fail-closed); `host_executor.py`
+  docstring; tests `tests_native_launcher_gate.py` (+build-script + subsystem static tests; 24 pass); README.
+- **Deviations from packet.** None on repo scope. Host install (rebuild live binary + re-pin manifest/AppLocker +
+  re-assert ACL + push updated verify script to daemon library + stage-manifest re-pin) + visual acceptance on
+  Accounts 35/36/25 is the mandatory Phase-12/13/14 host step, done AFTER CI green + merge, with rollback artefacts.
+  **Deploy ORDER (no provisioning window):** push updated host verify script + rebuild/re-pin the GUI binary
+  FIRST, then deploy the backend gate — so a new `prepare_hosted_slot` never sees a gate requiring a field the
+  host script does not yet emit.
+- **Exact tests.** `hosted_workspace.tests_native_launcher_gate` = 24 pass; `hosted_workspace` = 1048 pass; both
+  new PS scripts ParseFile-OK on host (RULE 9); host build emits `subsystem_is_gui=true`; hardened verify vs live
+  console binary = `subsystem_is_gui=false`.
+- **Commit and branch state.** PR B merged `d30a713` (deployed). PR C branch `fix/launcher-windowless-shell` off
+  `d30a713` — see Git Status footer.
+- **One bounded next action.** Open the PR C PR; on green CI, do the host install (order above) + visual acceptance,
+  then continue to PR D (Taurex preseed). DB/Django/GUAC secret rotation stays OPEN (maintenance window).
+
 ## 2026-09-25 — Phase B1: MT5 margin-mode authority + multi-strategy conflict policy (DARK)
 
 - **Scope / decision.** P0 prerequisite for MAGIC_SEND (which stays OFF). Give GuvFX an authoritative

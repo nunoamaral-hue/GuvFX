@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - PR B (#426) MERGED+DEPLOYED + PR C windowless launcher (member launch).** *PR B (#426, merge
+  `d30a713`):* provisioning UX + bounded/single-flight polling + genuine false→true terminal-ready notification +
+  deterministic `customer_notifications` health test. Frontend-only prod change (backend diff was TEST-only →
+  backend NOT redeployed). Frontend rebuilt from the authoritative git checkout `guvfx-app/frontend` (NOT the
+  stale `guvfx-prod/frontend` scratch dir) → image `sha256:088952…39adb3`; rollback image tagged
+  `guvfx-prod-guvfx-frontend:rollback-pr425-7d8bd7c` (`sha256:15ad4b4e…bb6f65`). Accounts 25/35/36 byte-identical
+  pre/post (all TRADING/armed/flat). *PR C (`fix/launcher-windowless-shell`):* the member-visible black
+  "LAUNCH-VERDICT …" console. **Root cause PROVEN from the host artefact (RULE 11 controls):** deployed
+  `C:\GuvFX\launcher\guvfx_launch.exe` (built 2026-08-24, hash `CE209728…`, matches manifest) is PE subsystem
+  **3=CONSOLE**; the source was already the windowless (`/target:winexe` + Event Log) design since commit
+  `180538f` but was never rebuilt. Fix: rebuild the SAME source GUI-subsystem (proven on host: `subsystem=2`,
+  new file SHA `C9608C6F…`, AppLocker hash `0xC64F784B…`), re-pin manifest + AppLocker; add reproducible
+  `deploy/hosted-launcher/Build-GuvfxLauncher.ps1` (fails closed on non-GUI); harden `Verify-GuvfxNativeLauncher.ps1`
+  + `slot_preparation` gate with `subsystem_is_gui` (fail-closed → a console launcher can never be re-certified;
+  proven: the hardened gate REJECTS the live console binary, `reason=native_launcher_invalid`). Accounts using the
+  launcher: 30/31/33/34/35/36; account 25 points at its own terminal64 directly (never showed a shell). No
+  security-logic rewrite; all invariants preserved. **DB/Django/GUAC secrets were exposed to the session transcript
+  via `docker compose config` — see rotation item.**
 - **2026-09-27 - WAYOND MARKETPLACE AVAILABILITY + ASSIGNMENT-SCOPED RISK UX (P1 member launch).** Fixes the
   two product-model issues Nuno found: (Issue 1) marketplace strategies were filtered by OWNERSHIP not
   availability — support@ saw only its own "Wayond WIM" copy #10 because the account picker used owner-scoped
