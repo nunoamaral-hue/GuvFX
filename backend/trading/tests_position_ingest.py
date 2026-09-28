@@ -45,6 +45,28 @@ class BuildPositionsFromDeals(TestCase):
         self.assertEqual(len(pos), 1)
         self.assertIsNone(pos[0]["close_time"])              # fail-closed to OPEN, no premature outcome
 
+    def test_duplicate_deal_ticket_is_not_double_counted(self):
+        # A paginated/overlapping snapshot repeats the SAME OUT deal (ticket 11). Profit/commission/swap/volume
+        # must be counted ONCE, not doubled (financial-correctness guard: else acct nets would inflate).
+        out = _deal(ticket="11", entry=1, time=1_700_000_600, price="4435.0", profit="5.39",
+                    commission="0.20", swap="0.10", volume="0.01")
+        deals = [_deal(ticket="10", entry=0, price="4431.0", profit="0", volume="0.01"), out, dict(out)]
+        pos = build_positions_from_deals(deals)
+        self.assertEqual(len(pos), 1)
+        p = pos[0]
+        self.assertEqual(p["profit"], Decimal("5.39"))        # NOT 10.78
+        self.assertEqual(p["commission"], Decimal("0.20"))    # NOT 0.40
+        self.assertEqual(p["swap"], Decimal("0.10"))
+        self.assertEqual(p["volume"], Decimal("0.01"))        # IN volume once; close still detected
+
+    def test_deals_without_ticket_are_kept(self):
+        # Dedup keys on ticket; deals lacking a ticket cannot be de-duplicated and must all be retained.
+        deals = [_deal(ticket=None, entry=0, price="4431.0", profit="0"),
+                 _deal(ticket=None, entry=1, price="4435.0", profit="4.00")]
+        pos = build_positions_from_deals(deals)
+        self.assertEqual(len(pos), 1)
+        self.assertEqual(pos[0]["profit"], Decimal("4.00"))
+
     def test_deals_grouped_by_position_id(self):
         deals = [
             _deal(position_id="A", ticket="1", entry=0), _deal(position_id="A", ticket="2", entry=1, profit="1"),

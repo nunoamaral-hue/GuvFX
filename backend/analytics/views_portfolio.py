@@ -48,7 +48,19 @@ def _positions_fetcher(account):
 
 
 class PortfolioSummaryView(APIView):
-    """Portfolio (ALL) or single-account summary: per-account balance/equity/state + USD aggregate + metrics."""
+    """Portfolio (ALL) or single-account summary: per-account balance/equity/state + USD aggregate + metrics.
+
+    Member-facing financial definitions (documented; reconciled to broker truth 2026-09-28):
+    * Daily PnL   = realized broker P/L (profit+commission+swap) of positions CLOSED today (UTC day; see
+                    ``daily_realized_pnl``). Deposits/withdrawals are broker BALANCE deals, never Trades, so they
+                    contribute 0.
+    * Net PnL     = LIFETIME realized trading P/L across the scope's closed trades.
+    * Win Rate / Profit Factor / Expectancy / Max Drawdown = computed from the underlying BROKER-TRADE (roundtrip)
+                    set, per ``portfolio_metrics`` (a multi-leg TI signal counts as its individual broker trades,
+                    consistent with the trade-history endpoint the estate already uses).
+    ``stage="ALL"`` applies NO source_stage filter — the P0 fix: source_stage is a comment-tag classifier, not a
+    performance dimension, and real trades are UNKNOWN, so filtering by "LIVE" wrongly reported $0.
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -56,7 +68,7 @@ class PortfolioSummaryView(APIView):
         payload, err = PF.build_summary(
             request.user, scope,
             fetch_balance=_balance_fetcher, fetch_positions=_positions_fetcher,
-            rate_source=_rate_source(), stage="LIVE")
+            rate_source=_rate_source(), stage="ALL")
         if err is not None:
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
         return Response(payload)

@@ -630,6 +630,19 @@ def build_positions_from_deals(deals: list[dict]) -> list[dict]:
     positions = []
     for pid, dl in by_pos.items():
         try:
+            # Drop repeats of the SAME MT5 deal so a paginated/overlapping snapshot cannot double-count a position's
+            # volume/profit/commission/swap (financial-correctness guard; mirrors
+            # trading.position_ingest._dedup_deals_by_ticket — identity (ticket, entry); keep the two builders in sync).
+            _seen = set(); _dl = []
+            for _d in dl:
+                _tk = _d.get("ticket")
+                _key = (str(_tk), str(_d.get("entry"))) if _tk is not None else None
+                if _key is not None:
+                    if _key in _seen:
+                        continue
+                    _seen.add(_key)
+                _dl.append(_d)
+            dl = _dl
             ins = [d for d in dl if _deal_entry_type(d) == _DEAL_ENTRY_IN]
             outs = [d for d in dl if _deal_entry_type(d) in (_DEAL_ENTRY_OUT, _DEAL_ENTRY_OUT_BY)]
             inouts = [d for d in dl if _deal_entry_type(d) == _DEAL_ENTRY_INOUT]

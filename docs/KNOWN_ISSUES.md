@@ -2,6 +2,39 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 P2 DASHBOARD FINANCIAL ANALYTICS (recorded 2026-09-28, P0 stage-filter fix + adversarial review) — follow-ups
+
+The P0 (dashboard reported $0 Daily/Net/WinRate despite real broker profits) is FIXED: the portfolio analytics
+filtered `Trade.source_stage='LIVE'` but real broker-ingested trades are `UNKNOWN` (a comment-tag classifier, not a
+performance dimension) — now defaults to `ALL` (matches the trade-history endpoint). Broker↔GuvFX↔balance
+reconciled (acct36 9.65, acct35 10.41, acct25 -7963.75; $50k deposits are MT5 BALANCE deals, excluded). The
+adversarial review's remaining findings are all LATENT (no impact on today's reconciled numbers) and tracked here:
+
+- **[FOLLOW-UP, platform-wide] Broker-time stored as UTC.** `trading.position_ingest.deal_time_to_utc` (and the
+  worker copy) do `utcfromtimestamp(deal.time)` with NO offset, so `Trade.close_time` is broker SERVER wall time
+  (broker ≈ UTC+3) mislabeled UTC. The dashboard's Daily window (`close_time__date == timezone.now().date()`, UTC)
+  therefore mixes a true-UTC "now" with broker-time close_time and can bucket a trade a day off within ~3h of
+  midnight. Mid-day trades (the norm) are unaffected; today's numbers are correct. The root fix (store true UTC at
+  ingest + backfill migration, or anchor every analytics window to a single documented frame) is platform-wide
+  (affects all `close_time` readers) and needs a Sponsor decision on the member-facing frame: **recommend the
+  broker-trading-day frame** (what the stored data already is; most defensible for FX P&L) or member-local (needs
+  per-member tz). NOT changed under this P0 (per "surface before changing").
+- **[FOLLOW-UP] Member-local (UK/BST) Daily.** No `timezone.activate`; Daily is a UTC calendar date. If the product
+  wants the member's local day, resolve/activate the member tz before the window. Decision pending with the above.
+- **[FOLLOW-UP] Win-rate breakeven rule differs across screens.** Dashboard `portfolio_metrics` treats net==0 as
+  breakeven (not a win, kept in total); `views_trade_history.observed_stats` counts pnl>=0 as a win; `DailyPnlView`
+  excludes breakeven from the denominator. Same account can show different win rates on different screens. Canonical
+  rule = the dashboard's (net>0 win / net<0 loss / net==0 breakeven). Aligning the established screens changes
+  numbers members already see, so it is a separate change (breakeven trades are rare in FX → low practical impact).
+- **[FOLLOW-UP] Merge the two `build_positions_from_deals` copies.** The dedup guard is now applied to BOTH
+  `trading/position_ingest.py` and the inline copy in `mt5_trade_ingest_worker.py`, but they remain two
+  implementations; collapse the worker onto the shared builder so future fixes have one surface.
+- **[FOLLOW-UP] Portfolio equity curve (Phase 22 verdict = `EQUITY_CURVE_REQUIRES_SNAPSHOT_LEDGER`).** ALL-scope
+  shows an honest placeholder ("per-account equity curves are on each account's page"), not a fabricated curve. A
+  truthful combined intraday equity curve needs a durable per-account equity-snapshot ledger (GuvFX has none).
+  Specific-account scope already shows a real per-account curve from trade-history. Do not synthesize a portfolio
+  curve until the snapshot ledger exists.
+
 ## 🔵 P3 PORTFOLIO DASHBOARD (recorded 2026-09-28, PR #431 adversarial review) — residual follow-ups
 
 The blocking HIGH/MEDIUM findings are fixed on `feat/portfolio-dashboard` (see STATUS 2026-09-28). These residuals

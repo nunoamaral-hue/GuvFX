@@ -1,5 +1,35 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-28 — P0 dashboard financial correctness: stage-filter root cause + adversarial hardening
+
+- **Scope / decision.** Sponsor P0: ALL-accounts dashboard showed Daily/Net/WinRate = $0 despite real Taurex closed
+  trades (~9.65). Diagnose-first (read-only), fix the generic pipeline, adversarial review, PR → CI → deploy →
+  reconcile. Branch `fix/dashboard-financial-stage-filter` off main `379f000`.
+- **Verified fact vs assumption.** *Verified (read-only prod):* the trades ARE ingested (acct36 Trade 1722/23/24 =
+  1.19+3.07+5.39 = 9.65; acct35 10.41; acct25 -7963.75 lifetime); broker deal-history read straight from each
+  identity-firewalled bridge reconciles broker↔GuvFX↔balance; $50k deposits are MT5 BALANCE deals (excluded). ROOT
+  CAUSE proven: analytics filtered `source_stage='LIVE'` but real trades are `UNKNOWN` (only 2 LIVE rows estate-wide)
+  → $0. NOT timezone (today's trades mid-day) and NOT an ingestion gap. *Assumption:* non-USD/duplicate/boundary
+  cases are latent (no such data today) — fixed defensively + tested, not observed live.
+- **What changed.** `analytics/portfolio.py` + `views_portfolio.py`: stage default → `ALL` (no source_stage filter);
+  realized path uses OBSERVED snapshot currency (`observed_nonusd_ids`/`observed_usd`) so a non-USD account degrades
+  to PARTIAL instead of summing as USD (H-CURRENCY); `("close_time","id")` deterministic drawdown ordering; member
+  financial definitions documented. `trading/position_ingest.py` + `mt5_trade_ingest_worker.py`: deal-ticket dedup
+  (identity `(ticket, entry)`) in BOTH `build_positions_from_deals` copies (M-DEDUP). Tests added:
+  analytics.tests_portfolio (stage regression incl. 9.65 fixture, observed-currency, drawdown determinism),
+  trading.tests_position_ingest (duplicate deal not double-counted).
+- **Deviations from packet.** Timezone (broker-time-stored-as-UTC + member-local day), win-rate breakeven
+  cross-screen alignment, builder-copy merge, and the portfolio equity curve (verdict
+  `EQUITY_CURVE_REQUIRES_SNAPSHOT_LEDGER`) are DOCUMENTED as follow-ups, not changed here — they are latent
+  (no impact on today's reconciled numbers) and/or platform-wide/product decisions the Sponsor asked to surface
+  before changing. See `docs/KNOWN_ISSUES.md`.
+- **Exact tests.** `analytics.tests_portfolio trading.tests_position_ingest trading.tests_trade_ingest` = 74 pass;
+  `analytics trading` full = 396 pass.
+- **Commit and branch state.** Branch `fix/dashboard-financial-stage-filter` off `379f000` — see Git Status footer.
+  Estate 25/35/36 read-only; nothing manufactured.
+- **One bounded next action.** Push, open the PR; on green CI → merge → deploy backend → read-only production
+  reconciliation (broker vs dashboard for 25/35/36).
+
 ## 2026-09-28 — Portfolio dashboard (#431): MERGED + DEPLOYED + CERTIFIED (`MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`)
 
 - **Scope / decision.** Take the multi-account portfolio dashboard + live Open Trades (observation-only) from
