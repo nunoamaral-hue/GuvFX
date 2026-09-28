@@ -164,7 +164,12 @@ class ConnectionIsolationTests(CustomerTelegramTestBase):
         self.assertEqual(health["worker_last_cycle_state"], "ACTIVE")
         self.assertIsNotNone(health["worker_last_heartbeat_at"])
         self.assertLessEqual(health["worker_heartbeat_age_seconds"], 1)
-        rendered = json.dumps(health)
+        # The health payload must not LEAK recipient chat ids. Scan every field EXCEPT the ISO timestamp
+        # fields (``*_at``): a heartbeat timestamp's microseconds can coincidentally contain a chat-id
+        # substring (e.g. "...10.022231..." contains "222"), a false positive that is not a leak and made
+        # this assertion time-flaky. Timestamps are not a recipient-id leak vector; every remaining field is a
+        # count/enum/bool, so the leak check stays strict without the timestamp false positive.
+        rendered = json.dumps({k: v for k, v in health.items() if not k.endswith("_at")})
         self.assertNotIn("111", rendered)
         self.assertNotIn("222", rendered)
 

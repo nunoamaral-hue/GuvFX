@@ -191,11 +191,16 @@ describe("AccountCard hosted-awareness (Phase 9)", () => {
     expect(screen.getByText(/broker connected/i)).toBeInTheDocument();
   });
 
-  it("hosted NOT deliverable → preparing status + a DISABLED Open MT5 (no premature login)", () => {
+  it("hosted NOT deliverable → setting-up status + a DISABLED Open MT5 (no premature login)", () => {
     render(<AccountCard account={acct()} onViewMt5={() => {}} delivery={DELIV({ deliverable: false })} />);
-    expect(screen.getByText(/preparing your trading terminal/i)).toBeInTheDocument();
+    expect(screen.getByText(/setting up your trading terminal/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /open mt5/i })).toBeDisabled();
     expect(screen.queryByRole("link", { name: /open mt5/i })).not.toBeInTheDocument();
+  });
+
+  it("hosted NOT deliverable + longRunning → friendly 'taking longer' copy (member never stuck on 'preparing')", () => {
+    render(<AccountCard account={acct()} onViewMt5={() => {}} delivery={DELIV({ deliverable: false })} longRunning />);
+    expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
   });
 
   it("hosted but NOT owned (staff read) → Open MT5 is a DISABLED button, never an enabled link", () => {

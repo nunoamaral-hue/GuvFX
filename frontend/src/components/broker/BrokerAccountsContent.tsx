@@ -8,7 +8,7 @@ import { AccountCard } from "@/components/broker/AccountCard";
 import { BrokerAccountWizard } from "@/components/broker/BrokerAccountWizard";
 import { SwitchActiveDialog } from "@/components/broker/SwitchActiveDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/broker/States";
-import { toCustomerError } from "@/lib/broker-status";
+import { brokerLabel, toCustomerError } from "@/lib/broker-status";
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
@@ -63,6 +63,8 @@ export function BrokerAccountsContent() {
 
   const load = useCallback(async () => {
     setError("");
+    setReadyToast(null);       // clear any prior ready toast on an explicit (re)load
+    refetchGenRef.current++;   // supersede any in-flight poll refetch so it can't commit over this fresh load
     setAccounts(null);
     try {
       const list = await listAccounts();
@@ -94,22 +96,76 @@ export function BrokerAccountsContent() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Phase 7 — while any account is "Preparing automated trading" (the managed Start completes ASYNCHRONOUSLY
-  // via the per-minute capability_recovery + auto_arm cycle), poll the account list so the card auto-transitions
-  // PREPARING -> Trading (or Action required) without the member manually refreshing. Bounded to ~3 min
-  // wall-clock (a deadline in a ref, so it never loops forever) and stops as soon as nothing is preparing.
+  const isHostedAcct = useCallback((a: BrokerAccount) =>
+    (a.mt5_instance === null || a.mt5_instance === undefined) && a.readiness_provider === "persistent_workspace",
+  []);
+
+  // Lightweight live refetch (accounts + per-account delivery) used by the bounded poll, so both the
+  // provisioning lifecycle (Setting up -> Ready to log in -> Broker connected) and the managed-Start
+  // trading state (Preparing -> Trading) auto-advance without a manual page refresh.
+  const refetchGenRef = useRef(0);
+  const refetchLive = useCallback(async () => {
+    const gen = ++refetchGenRef.current;   // single-flight token: a superseded refetch never commits stale state
+    let list: BrokerAccount[];
+    try { list = await listAccounts(); } catch { return; }   // transient — keep last state, next tick retries
+    if (gen !== refetchGenRef.current) return;               // a newer refetch/load started — drop this one
+    setAccounts(list);
+    const deliv = await Promise.all(list.map(async (a) => {
+      try {
+        const d = await getDeliveryState(a.id);
+        // Preserve a known-good (deliverable) signal if this fetch blanked it (transient) — don't regress a
+        // ready terminal's card to "setting up", and don't churn the toast baseline off a blip.
+        return [a.id, d ?? (deliveries[a.id]?.deliverable ? deliveries[a.id] : d)] as const;
+      } catch {
+        return [a.id, deliveries[a.id] ?? null] as const;
+      }
+    }));
+    if (gen !== refetchGenRef.current) return;               // superseded before the delivery commit
+    setDeliveries((prev) => ({ ...prev, ...Object.fromEntries(deliv) }));
+  }, [deliveries]);
+
+  // Phase 5/7 — poll while any account is still PROVISIONING (hosted, not yet deliverable) OR "Preparing
+  // automated trading" (managed Start completing async), so the card auto-transitions without a manual refresh.
+  // Bounded to ~3 min wall-clock (a deadline ref, so it never loops forever); stops when everything is stable.
   const pollDeadlineRef = useRef<number | null>(null);
+  const [longRunning, setLongRunning] = useState(false);
   useEffect(() => {
-    const anyPreparing = (accounts || []).some((a) => a.trading_state?.state === "PREPARING");
-    if (!anyPreparing) { pollDeadlineRef.current = null; return; }
+    const list = (accounts || []).filter((a) => !a.is_removed);
+    const anyProvisioning = list.some((a) => isHostedAcct(a) && !deliveries[a.id]?.deliverable);
+    const anyPreparing = list.some((a) => a.trading_state?.state === "PREPARING");
+    if (!anyProvisioning && !anyPreparing) { pollDeadlineRef.current = null; setLongRunning(false); return; }
     if (pollDeadlineRef.current === null) pollDeadlineRef.current = Date.now() + 180_000;
-    if (Date.now() > pollDeadlineRef.current) return;   // bound reached — stop polling, leave the last state
-    const id = setTimeout(async () => {
-      try { setAccounts(await listAccounts()); }
-      catch { /* transient — keep the last state; the next tick retries */ }
-    }, 6_000);
+    if (Date.now() > pollDeadlineRef.current) { setLongRunning(true); return; }  // bound reached — friendly state
+    const id = setTimeout(() => { void refetchLive(); }, 6_000);
     return () => clearTimeout(id);
-  }, [accounts]);
+  }, [accounts, deliveries, isHostedAcct, refetchLive]);
+
+  // Phase 6 — one-shot "your terminal is ready" toast on a GENUINE deliverable false->true transition. The
+  // baseline is a forward-carried accumulator (never wiped by a transient accounts=null render) that records
+  // ONLY accounts whose delivery signal is KNOWN, and fires only on a strict recorded-false -> true edge — so
+  // it never fires on first load or on a load()-triggered refetch (where deliverable was already true), and
+  // never for a removed account. Uses a DEDICATED toast slot, separate from the error `notice`, so the two
+  // never clobber each other.
+  const deliverableSeenRef = useRef<Record<number, boolean>>({});
+  const [readyToast, setReadyToast] = useState<string | null>(null);
+  useEffect(() => {
+    const next = { ...deliverableSeenRef.current };
+    const ready: BrokerAccount[] = [];
+    for (const a of (accounts || [])) {
+      if (a.is_removed) continue;                 // never toast for a removed account
+      const d = deliveries[a.id];
+      if (d == null) continue;                    // delivery not yet known — don't record/compare (unknown != false)
+      const now = Boolean(d.deliverable);
+      if (now && next[a.id] === false) ready.push(a);   // strict KNOWN-false -> true edge (first-load is undefined)
+      next[a.id] = now;                           // carry the known state forward
+    }
+    deliverableSeenRef.current = next;
+    if (ready.length === 1) {
+      setReadyToast(`Your ${brokerLabel(ready[0])} trading terminal is ready. Open MT5 to log in.`);
+    } else if (ready.length > 1) {
+      setReadyToast(`${ready.length} of your trading terminals are ready. Open MT5 to log in.`);
+    }
+  }, [accounts, deliveries]);
 
   const isConcurrent = entitlement?.account_mode === "concurrent";
   // Phase 9 — the STANDARD "the other account stops trading" confirm must gate on whether the backend
@@ -211,6 +267,14 @@ export function BrokerAccountsContent() {
         </div>
       )}
 
+      {/* PR B — dedicated "terminal ready" toast slot (separate from the error `notice` so the two never
+          clobber each other); dismissible, one-shot per genuine provisioning completion. */}
+      {readyToast && (
+        <div style={{ marginBottom: 14 }}>
+          <Alert type="info">{readyToast}</Alert>
+        </div>
+      )}
+
       {/* Phase 9 — hosted-workspace member journey banner (preparing → open MT5 & log in → connected → ready). */}
       {journey && hostedBanner(journey) && (
         <div style={{ marginBottom: 14 }} data-testid="hosted-journey-banner">
@@ -229,7 +293,7 @@ export function BrokerAccountsContent() {
                 {visibleAccounts.map((a) => (
                   <AccountCard key={a.id} account={a} status={statuses[a.id]}
                     statusLoading={statusLoading && !(a.id in statuses)}
-                    delivery={deliveries[a.id]}
+                    delivery={deliveries[a.id]} longRunning={longRunning}
                     onViewMt5={handleViewMt5} onSetActive={handleSetActive} busy={busyId === a.id} />
                 ))}
               </div>
