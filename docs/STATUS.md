@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - BROKER CATALOGUE HARDENING MERGED+DEPLOYED + TAUREX v2 ACTIVE.** #429 merged `9f38cbb`, backend
+  redeployed (`63189ae8`), migrations 0002+0003 applied (0003 re-stamped legacy v1 → strong `servers_v2`; v1
+  integrity True, Pepperstone/IS6 still resolve — no prod break). Adversarial 2nd-pass fixed (sanitiser verdict
+  bound to bytes, artefact locking, host_relpath/ref in manifest, reject-legacy, server-ownership, rollback parity).
+  **Taurex rebuilt through the hardened pipeline and activated** = `PR_D_TAUREX_PRESEED_HARDENED_AND_ACTIVE`: fresh
+  bound sanitiser verdicts (login 830227146 absent 8 encodings), fresh v2 approvals (staff id2), host `versions/v2/*`
+  staged + read-back attested, deterministic build (manifest `839a194a…`), `activate --label v2 --require-certified`.
+  **v2 ACTIVE (algo servers_v2, integrity True, rollback_to=v1); v1 RETIRED.** Taurex-Demo preseeds for new
+  provisioning; Taurex-Live→native (DEMO-only); Pepperstone/IS6 preserved; unknown→native. Estate 25/35/36
+  armed/flat/unchanged (asn/magic/sizing/broker intact); catalogue activation caused no terminal restart. Residual
+  follow-ups (Amber): HMAC manifest, DB-trigger immutability, real `--attest-host` transport. 40-broker programme =
+  waves (roadmap).
 - **2026-09-28 - BROKER CATALOGUE HARDENING (generic, for the Wayond 40-broker scale) + PR D #428 MERGED
   (activation HELD).** PR D #428 merged `201b910` (Taurex DEMO tests+docs+credential-free proof); **production v2
   activation HELD (Sponsor: harden first)** → live catalogue stays v1 ACTIVE (only v1, 0 Taurex artefacts/approvals,
