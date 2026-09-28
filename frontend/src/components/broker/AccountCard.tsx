@@ -30,6 +30,9 @@ type Props = {
   delivery?: DeliveryStateResult | null;
   /** Disables this card's action buttons while a parent-owned action is in flight. */
   busy?: boolean;
+  /** PR B — provisioning has exceeded the bounded normal window; show a friendly "taking longer" message
+   * instead of leaving the member on a plain "setting up" state indefinitely. */
+  longRunning?: boolean;
 };
 
 const card: React.CSSProperties = {
@@ -44,7 +47,7 @@ const actionBtn: React.CSSProperties = {
   color: "#93c5fd", fontSize: "0.82rem", padding: "4px 10px", cursor: "pointer",
 };
 
-export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, onViewMt5, onSetActive, delivery, busy }) => {
+export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, onViewMt5, onSetActive, delivery, busy, longRunning }) => {
   const broker = brokerLabel(account);
   const title = accountTitle(account);
   const server = account.server_name || "";
@@ -101,7 +104,7 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
           ? <span style={meta} role="status">Checking status…</span>
           : isHosted
             ? (!hostedDeliverable
-                ? <Badge color="blue">Preparing your trading terminal…</Badge>
+                ? <Badge color="blue">{longRunning ? "Still setting up…" : "Setting up terminal"}</Badge>
                 : hostedConnected
                   ? <Badge color="green">Broker connected</Badge>
                   : <Badge color="yellow">Ready — log in in MT5</Badge>)
@@ -125,10 +128,12 @@ export const AccountCard: React.FC<Props> = ({ account, status, statusLoading, o
           three DISTINCT concepts; the card keeps them separate (never merged). */}
       {isHosted
         ? <div style={meta}>{!hostedDeliverable
-            ? "We're setting up your private MetaTrader terminal. This usually takes a few minutes."
+            ? (longRunning
+                ? "Setup is taking longer than expected. You can keep using GuvFX — we'll keep checking and let you know when it's ready."
+                : "We're setting up your trading terminal. This usually takes a few minutes. You can continue using GuvFX while we prepare it — we'll let you know when it's ready.")
             : hostedConnected
               ? "Connected to your broker. Open MT5 anytime to view your terminal."
-              : "Your terminal is ready. Open MT5 and log in to your broker to finish connecting."}</div>
+              : "Your trading terminal is ready. Open MT5 and log in to your broker."}</div>
         : <div style={meta}>{lastValidatedLine(status?.validation_status, status?.validated_at)}</div>}
       <div style={{ ...row, justifyContent: "space-between", marginTop: 2 }}>
         <span style={meta}>{isHosted ? " " : (latestAttemptLine(status?.latest_attempt, status?.validation_status) || " ")}</span>
