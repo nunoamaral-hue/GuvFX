@@ -25,10 +25,14 @@
   before changing. See `docs/KNOWN_ISSUES.md`.
 - **Exact tests.** `analytics.tests_portfolio trading.tests_position_ingest trading.tests_trade_ingest` = 74 pass;
   `analytics trading` full = 396 pass.
-- **Commit and branch state.** Branch `fix/dashboard-financial-stage-filter` off `379f000` — see Git Status footer.
-  Estate 25/35/36 read-only; nothing manufactured.
-- **One bounded next action.** Push, open the PR; on green CI → merge → deploy backend → read-only production
-  reconciliation (broker vs dashboard for 25/35/36).
+- **Commit and branch state.** Merged squash → main `202acab` (PR #432); deployed backend+worker image `85e0456e`
+  (rollback `rollback-pre432`=`187e1f83`); no migration. Estate 25/35/36 read-only; nothing manufactured.
+- **Outcome = `DASHBOARD_FINANCIAL_ANALYTICS_BROKER_RECONCILED`.** Production reconciled read-only: 36=+9.65 (exact
+  broker match), 35=+10.41, 25=-7964.74, Daily +282.06, Net -7944.68 (independent recompute MATCH); regression clean
+  (estate/magic/catalogue v2/MAGIC-OFF unchanged, latest trade id1730 unchanged).
+- **One bounded next action.** Resume the member-launch 40-broker capture programme (Wave 1). Financial-analytics
+  follow-ups (timezone frame, win-rate cross-screen, builder merge, equity-curve snapshot ledger) tracked in
+  KNOWN_ISSUES for a later dedicated packet.
 
 ## 2026-09-28 — Portfolio dashboard (#431): MERGED + DEPLOYED + CERTIFIED (`MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`)
 

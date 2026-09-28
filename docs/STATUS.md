@@ -14,6 +14,17 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - P0 DASHBOARD FINANCIAL CORRECTNESS — MERGED + DEPLOYED + BROKER-RECONCILED =
+  `DASHBOARD_FINANCIAL_ANALYTICS_BROKER_RECONCILED`.** #432 merged squash → main `202acab`; deployed backend +
+  ingest worker (rebuilt `guvfx-prod-guvfx-backend`, new image `85e0456e`, rollback `rollback-pre432`=`187e1f83`;
+  recreated `guvfx-backend` + `guvfx-mt5-trade-ingest-worker`, both on the new image; frontend untouched;
+  `migrate --check` CLEAN — no migrations). **Production reconciliation (read-only, support@):** ALL scope now shows
+  per-account net 25=-7964.74 / 35=+10.41 / 36=**+9.65** (was all $0), Daily realized **+282.06** (262.00+10.41+9.65),
+  Net PnL -7944.68 (independent recompute MATCH), 480 trades 50.42% win / PF 0.794, equity Σ=142,056.31==aggregate;
+  Taurex 36 reconciles EXACTLY to the broker terminal (1.19+3.07+5.39=9.65, balance 50,009.65). Per-account scopes
+  distinct (474/3/3), IDOR 404, Open Trades honest empty, POST 405. **Regression:** 25/35/36 identity/state/
+  assignments/magic (1000000010/16/19)/EXECUTION_READY intact, catalogue v2 ACTIVE, latest trade id1730 unchanged
+  (nothing manufactured), MAGIC flags OFF. Follow-ups (latent) tracked in KNOWN_ISSUES.
 - **2026-09-28 - P0 DASHBOARD FINANCIAL CORRECTNESS — stage-filter root cause fixed + adversarial hardening.**
   Sponsor reported the ALL-accounts dashboard showing Daily/Net PnL/WinRate = $0 despite the Taurex terminal showing
   3 closed XAUUSD trades (≈9.65, balance 50,009.65). **Diagnosed (read-only), not cosmetically patched.** ROOT

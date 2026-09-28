@@ -1,15 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ P0 dashboard financial correctness — stage-filter fix; PR → CI → DEPLOY → RECONCILE (2026-09-28)
-Root cause of the "$0 despite real broker profits" P0: portfolio analytics filtered `Trade.source_stage='LIVE'` but
-real broker-ingested trades are `UNKNOWN`. Fixed to default `ALL` (matches trade-history). Broker↔GuvFX↔balance
-reconciled (36=9.65, 35=10.41, 25=-7963.75; $50k deposits are BALANCE deals, excluded). Adversarial review also
-fixed: H-CURRENCY (realized path uses observed snapshot currency), M-DEDUP (deal-ticket dedup both builders),
-M-DRAWDOWN (deterministic order). 396 backend tests green. Branch `fix/dashboard-financial-stage-filter`.
-**Single next action:** push + open PR; on GREEN CI → merge → deploy backend (analytics only; no migration) →
-read-only production reconciliation (broker vs dashboard for 25/35/36). Follow-ups (latent) in KNOWN_ISSUES:
-broker-time daily window (platform-wide), member-local daily, win-rate cross-screen, builder merge, equity-curve
-snapshot ledger.
+## ✅ P0 dashboard financial correctness — CERTIFIED + DEPLOYED (2026-09-28) = `DASHBOARD_FINANCIAL_ANALYTICS_BROKER_RECONCILED`
+Root cause: portfolio analytics filtered `Trade.source_stage='LIVE'` but real broker-ingested trades are `UNKNOWN` →
+$0. Fixed to default `ALL`. #432 merged `202acab`; deployed backend+worker (`85e0456e`, rollback `rollback-pre432`).
+Production reconciled: 36=+9.65 (exact), 35=+10.41, 25=-7964.74, Daily +282.06, Net -7944.68; estate 25/35/36
+untouched, catalogue v2 ACTIVE, MAGIC OFF, nothing manufactured. Adversarial fixes: H-CURRENCY (observed snapshot
+currency), M-DEDUP (deal-ticket dedup both builders), M-DRAWDOWN (deterministic order). Follow-ups (latent) in
+`docs/KNOWN_ISSUES.md`: broker-time daily window (platform-wide), member-local daily, win-rate cross-screen, builder
+merge, portfolio equity curve = REQUIRES_SNAPSHOT_LEDGER.
 
 ## ✅ Portfolio dashboard (#431) — CERTIFIED + DEPLOYED (2026-09-28) = `MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`
 Merged squash → main `379f000`; deployed backend `187e1f83` + frontend `f9029baa` (rollback `rollback-pre431` =
