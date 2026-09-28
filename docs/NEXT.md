@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Analytics integrity — equity ledger + broker-time; PR → CI → DEPLOY → MIGRATE → CERT (2026-09-28)
+Part A (equity snapshot ledger + truthful account/portfolio curves) built backend-only + DARK
+(`EQUITY_SNAPSHOT_LEDGER_ENABLED`); Part B (broker-time) = proof + `BrokerServer.server_timezone` mechanism (DST-aware,
+DARK) + `measure_broker_offset` + recommendations (canonical-UTC migration + Daily-window DEFERRED pending authoritative
+per-broker IANA tz). Migrations: `analytics/0001` (AccountEquitySnapshot), `trading/0018` (server_timezone). Adversarial
+HIGH+6 MED+2 LOW all fixed. 425 backend + 358 frontend tests green. Branch `feat/equity-snapshot-ledger`.
+**Single next action:** push + open PR; on GREEN CI → merge → deploy backend (both migrations) → install the
+`deploy/equity-snapshots/` cron + arm `EQUITY_SNAPSHOT_LEDGER_ENABLED=1` → run `capture_equity_snapshots` once →
+Phase-G cert (snapshots persist for 25/35/36, correct-account provenance, no dup, curve one-point/BUILDING behavior,
+#432 metrics unchanged) → Phase-H estate regression. Follow-ups (KNOWN_ISSUES): canonical-UTC migration (needs
+authoritative tz), pipeline-B zero-attach source, historical FX, floating-credit, drawdown split.
+
 ## ✅ P0 dashboard financial correctness — CERTIFIED + DEPLOYED (2026-09-28) = `DASHBOARD_FINANCIAL_ANALYTICS_BROKER_RECONCILED`
 Root cause: portfolio analytics filtered `Trade.source_stage='LIVE'` but real broker-ingested trades are `UNKNOWN` →
 $0. Fixed to default `ALL`. #432 merged `202acab`; deployed backend+worker (`85e0456e`, rollback `rollback-pre432`).

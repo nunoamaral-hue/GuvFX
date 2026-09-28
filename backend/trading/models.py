@@ -21,6 +21,17 @@ class BrokerServer(models.Model):
     aliases = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
 
+    # Broker-server timezone policy for canonical UTC conversion of MT5 deal timestamps (deal.time is broker
+    # SERVER wall-time, not UTC — proven 2026-09-28: open_time == created_at + broker offset). An IANA zone name
+    # (e.g. "Europe/Bucharest") lets a DST-aware converter turn broker wall-time into true UTC across seasons —
+    # NOT a fixed offset. DEFAULT BLANK / UNSET: until an operator sets an AUTHORITATIVE zone per server, no
+    # conversion is applied and existing timestamps are preserved (data.md; packet B3/B5 — do not guess an offset,
+    # do not rewrite history). See analytics/broker_time.py and `measure_broker_offset`.
+    server_timezone = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="IANA timezone of the broker trading server (e.g. Europe/Bucharest). Blank = unset/unverified; "
+                  "no timestamp conversion is applied until set.")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

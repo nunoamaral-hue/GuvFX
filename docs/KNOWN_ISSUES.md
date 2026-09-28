@@ -2,6 +2,38 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 P2 EQUITY LEDGER + BROKER-TIME (recorded 2026-09-28) — decisions & follow-ups
+
+Part A (equity snapshot ledger + curves) shipped backend-only + DARK. Part B (broker-time) ships a DARK mechanism +
+recommendations; no data change. Decisions and residuals:
+
+- **[DECISION] Broker-time canonical-UTC storage — DEFERRED.** Proven: MT5 `deal.time` is broker SERVER wall-time
+  (all three brokers UTC+3 now), stored via `utcfromtimestamp` with no offset. The DST-aware IANA tz per broker is
+  NOT authoritatively knowable from the bridge (it doesn't expose `server_timezone`; +3 now could be +2 in winter).
+  Per packet B3/B5, history is NOT migrated and the ingest conversion is NOT changed. Mechanism is in place:
+  `BrokerServer.server_timezone` (IANA, blank=unset→no conversion) + `analytics/broker_time.py` (DST-aware, fail-safe)
+  + `measure_broker_offset` (evidence). **To activate:** establish each server's authoritative IANA zone (confirm the
+  DST rule, not just the current offset), set `server_timezone`, then wire an idempotent per-broker migration with
+  before/after audit counts (never altering profit/volume/symbol/ticket/magic/ownership).
+- **[DECISION] Daily reporting window — KEPT STABLE.** `daily_realized_pnl` still uses the UTC calendar date on the
+  (broker-time) close_time. Recommend the **broker-trading-day** frame (what the stored data already is; most
+  defensible for FX) or member-local day (needs per-member tz) — a product decision, surfaced not changed. #432
+  reconciled numbers unaffected (mid-day trades).
+- **[FOLLOW-UP] Snapshot source pipeline.** Capture currently reuses the on-demand identity-firewalled account read
+  (attach to the persistent terminal — not a new terminal/login). The zero-attach ideal is to extend the persistent
+  capability observer (`run_hosted_observations` / `run_observer.py`, host-side) to carry balance/equity and persist
+  from its existing every-minute cycle. Deferred (host-side change).
+- **[FOLLOW-UP] Snapshot floating_pnl is `equity − balance`** (approx; OVERSTATES by broker credit; the bridge
+  account snapshot exposes neither credit nor a direct floating figure). Exact for the current credit-free demo
+  estate. The Open-Trades panel is the authoritative floating source. Add a bridge credit/profit field to make it
+  exact.
+- **[FOLLOW-UP] Historical FX for non-USD equity curves.** FX is USD-identity only; a non-USD account's portfolio
+  curve points are honestly PARTIAL. A point-in-time historical FX source (seam: `portfolio_fx.FxRateSource`) is
+  needed before non-USD historical equity can be shown in USD.
+- **[FOLLOW-UP] Merge the two `build_positions_from_deals` copies** (carried from #432).
+- **[FOLLOW-UP] Equity/realized drawdown.** #432 Max Drawdown is realized-trade peak-to-trough. Once the ledger has
+  data, consider ALSO exposing an observed-equity drawdown (label the two distinctly); do not silently change #432's.
+
 ## 🟠 P2 DASHBOARD FINANCIAL ANALYTICS (recorded 2026-09-28, P0 stage-filter fix + adversarial review) — follow-ups
 
 The P0 (dashboard reported $0 Daily/Net/WinRate despite real broker profits) is FIXED: the portfolio analytics

@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - ANALYTICS INTEGRITY: EQUITY SNAPSHOT LEDGER + BROKER-TIME NORMALISATION (Part A shipped; Part B
+  mechanism + recommendations).** Follows the P0 (#432). **Forensic (read-only, real evidence):** MT5 `deal.time`
+  is broker SERVER wall-time — every trade's `open_time` is EXACTLY +3.0h ahead of its `created_at` (true-UTC ingest)
+  across IS6/Pepperstone/Taurex → all UTC+3 now; `time_msc`/`server_time` not exposed by the bridge; DST-aware IANA
+  tz NOT authoritatively knowable from the bridge. Two observation pipelines mapped (on-demand financial read vs a
+  host-side capability observer with no financial fields). **Part A (built, backend-only, additive):** new
+  `analytics.AccountEquitySnapshot` (Decimal, indexed, unique(account, observed_at); mig `analytics/0001`);
+  `analytics/equity_snapshots.py` (identity-verified + throttled + `select_for_update`-serialised capture;
+  account + portfolio equity curves with freshness-windowed PARTIAL/STALE, bisect lookup, snapshot-native-currency
+  FX, no interpolation, BUILDING/SINGLE/OK/PARTIAL states); `capture_equity_snapshots` command DARK behind
+  `EQUITY_SNAPSHOT_LEDGER_ENABLED` (reuses the identity-firewalled read; `deploy/equity-snapshots/` cron); new
+  `GET /api/analytics/portfolio/equity-curve/?scope=` (IDOR-safe, bounded `days` window); frontend curve replaces the
+  ALL-scope placeholder (snapshot curve when ≥2 pts, else per-account fallback, else "history is building"). **Part B
+  (mechanism DARK + recommendations, NO data change):** `BrokerServer.server_timezone` IANA field (mig
+  `trading/0018`, blank=unset→no conversion); `analytics/broker_time.py` DST-aware converter (fail-safe when unset,
+  fold=0 fall-back documented); `measure_broker_offset` evidence command. **Decisions:** canonical-UTC storage
+  DEFERRED (needs authoritative per-broker IANA tz — do not rewrite history); Daily-window KEPT STABLE (recommend
+  broker-trading-day frame); drawdown stays realized-trade (recommend adding equity-drawdown once the ledger fills);
+  historical FX = USD-only (non-USD curve points PARTIAL). **Adversarial review** (5 dims): HIGH (curve used the
+  never-populated account currency → non-USD summed as USD) + 6 MEDIUM + 2 LOW all fixed/documented. Tests: analytics
+  equity 29 + full analytics+trading **425** green; frontend build + 358 vitest green. Estate 25/35/36 read-only
+  untouched; nothing manufactured. Branch `feat/equity-snapshot-ledger`.
 - **2026-09-28 - P0 DASHBOARD FINANCIAL CORRECTNESS — MERGED + DEPLOYED + BROKER-RECONCILED =
   `DASHBOARD_FINANCIAL_ANALYTICS_BROKER_RECONCILED`.** #432 merged squash → main `202acab`; deployed backend +
   ingest worker (rebuilt `guvfx-prod-guvfx-backend`, new image `85e0456e`, rollback `rollback-pre432`=`187e1f83`;

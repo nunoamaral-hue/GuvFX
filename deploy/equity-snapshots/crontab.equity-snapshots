@@ -1,0 +1,6 @@
+# Equity snapshot ledger — durable per-account equity/balance time-series for truthful equity curves.
+# Captures one AccountEquitySnapshot per account every ~5 minutes, reusing the identity-firewalled account read
+# (attach to the already-running per-tenant terminal — NOT a new terminal/login). Idempotent/throttled (~4.5min)
+# so an overlapping run never double-writes. DARK: the command no-ops unless EQUITY_SNAPSHOT_LEDGER_ENABLED=1 in the
+# backend container env. Observation-only; never places/modifies an order.
+*/5 * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py capture_equity_snapshots >> /var/log/guvfx/equity_snapshots.log 2>&1 # guvfx-equity-snapshots
