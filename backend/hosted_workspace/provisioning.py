@@ -178,8 +178,10 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
         # Serialise this user's requests so a duplicate/concurrent request cannot make two workspaces for
         # the SAME identity (and, while DARK, cannot make a second workspace at all).
         locked_user = get_user_model().objects.select_for_update().get(pk=user.pk)
-        owned = (HostedMt5Workspace.objects.filter(trading_account__user=locked_user)
-                 .select_related("trading_account"))   # ownership = trading_account.user
+        owned = (HostedMt5Workspace.objects
+                 .filter(trading_account__user=locked_user, trading_account__disconnected_at__isnull=True)
+                 .select_related("trading_account"))   # ownership = trading_account.user; exclude tombstoned
+        # (a removed/decommissioned account releases its slot and is never returned as an existing workspace)
         # Phase C — re-scope the one-workspace-per-user funnel to the entitlement model. PER-USER DARK: a user
         # gets the multi-workspace branch ONLY when ``enforcement_enabled(locked_user)`` is True — i.e. the
         # global master kill is on (default) AND that user holds an active ``concurrent_accounts_enforcement``

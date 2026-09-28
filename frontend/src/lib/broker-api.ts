@@ -128,6 +128,13 @@ export function setAccountActive(id: number, isActive: boolean): Promise<{ ok: b
   return apiFetch(`${BASE}/${id}/set-active/`, { method: "POST", body: JSON.stringify({ is_active: isActive }) });
 }
 
+/** Member "Remove account" — a history-retaining decommission (tombstone). Stops trading, frees the entitlement
+ * slot, and keeps trading history; fails (409) if the account has open trades. The broker account itself is not
+ * deleted at the broker. */
+export function removeAccount(id: number): Promise<{ ok: boolean; id: number; removed: boolean; already: boolean }> {
+  return apiFetch(`${BASE}/${id}/remove/`, { method: "POST" });
+}
+
 /** Phase 9 — the AUTHORITATIVE per-account hosted delivery signal (owner-scoped, IDOR-safe, account-explicit).
  * `deliverable` gates the "Open MT5" button (availability, not connection); `delivery_state` reports the broker
  * session/connection lifecycle. Returns null on 404 (traditional account / dark / no workspace) or any error. */

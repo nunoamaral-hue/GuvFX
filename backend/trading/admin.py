@@ -12,6 +12,12 @@ class BrokerServerAdmin(admin.ModelAdmin):
 
 @admin.register(TradingAccount)
 class TradingAccountAdmin(admin.ModelAdmin):
-    list_display = ("name", "user", "account_number", "broker_server", "broker_name", "is_demo", "is_active", "created_at")
+    list_display = ("name", "user", "account_number", "broker_server", "broker_name", "is_demo", "is_active", "disconnected_at", "created_at")
     list_filter = ("is_demo", "is_active")
     search_fields = ("name", "account_number", "broker_name", "broker_server__server_name", "user__email")
+
+    def has_delete_permission(self, request, obj=None):
+        # History-safety: a hard delete CASCADE-destroys immutable Trade/attribution history. Removal must go
+        # through the history-retaining tombstone (customer "Remove account" / the audited operator purge), not
+        # admin bulk-delete. Disable the admin delete path entirely.
+        return False

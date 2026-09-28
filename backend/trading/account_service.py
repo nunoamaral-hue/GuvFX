@@ -28,6 +28,31 @@ already-existing account.
 from __future__ import annotations
 
 
+def _revive_tombstoned_account(account, serializer):
+    """Re-add of a REMOVED (tombstoned) broker identity = REVIVE the same row in place, keeping its retained
+    history, rather than returning the dead tombstone or hitting the all-rows identity unique constraint. Clears
+    the tombstone, resets to fresh intent (is_active=False, validation NEVER), and re-applies the newly submitted
+    credential. Row-locked + idempotent. Returns the revived instance."""
+    from django.db import transaction
+    from trading.crypto import encrypt_password
+    from trading.models import TradingAccount
+
+    raw_password = serializer.validated_data.get("password") if serializer is not None else None
+    with transaction.atomic():
+        locked = TradingAccount.objects.select_for_update().get(pk=account.pk)
+        if locked.disconnected_at is None:
+            return locked   # a concurrent re-add already revived it
+        locked.disconnected_at = None
+        locked.is_active = False
+        locked.validation_status = TradingAccount.ValidationStatus.NEVER
+        fields = ["disconnected_at", "is_active", "validation_status", "updated_at"]
+        if raw_password:
+            locked.password_enc = encrypt_password(raw_password)
+            fields.append("password_enc")
+        locked.save(update_fields=fields)
+        return locked
+
+
 def create_customer_account(request, serializer):
     """Create (or idempotently return) a customer's TradingAccount via the single ADR-0021 contract.
 
@@ -61,9 +86,15 @@ def create_customer_account(request, serializer):
     if broker_server is None and not broker_name:
         raise ValidationError({"broker": "Select a broker server or enter a broker name."})
 
-    # Fast path (no lock): an identical prior submission returns the SAME account (idempotent).
+    # Fast path (no lock): an identical prior submission returns the SAME account (idempotent). A REMOVED
+    # (tombstoned) match is REVIVED (re-add of a previously-removed broker identity), not returned dead.
     existing = _find_existing_account(user, acct_no, broker_server, broker_name)
     if existing is not None:
+        if existing.disconnected_at is not None:
+            revived = _revive_tombstoned_account(existing, serializer)
+            serializer.instance = revived
+            _maybe_enqueue_beta_provisioning(user, revived)
+            return revived, True
         serializer.instance = existing
         _maybe_enqueue_beta_provisioning(user, existing)   # idempotent re-drive of provisioning
         return existing, False
@@ -78,8 +109,12 @@ def create_customer_account(request, serializer):
             type(user).objects.select_for_update().get(pk=user.pk)   # cap serialisation only
             locked = _find_existing_account(user, acct_no, broker_server, broker_name)
             if locked is not None:
-                serializer.instance = locked   # a concurrent identical submission just won — reuse it
-                created = False
+                if locked.disconnected_at is not None:
+                    serializer.instance = _revive_tombstoned_account(locked, serializer)
+                    created = True   # a removed identity re-added = revived (fresh intent), not idempotent no-op
+                else:
+                    serializer.instance = locked   # a concurrent identical submission just won — reuse it
+                    created = False
             else:
                 # Phase C: config-driven owned-account cap (override-aware, active/tombstone-correct) once
                 # armed. DARK by default — while the flag is OFF the legacy cap below runs UNCHANGED, so
@@ -90,7 +125,11 @@ def create_customer_account(request, serializer):
                 else:
                     ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
                     limit = min(10, ent.max_trading_accounts)
-                    if TradingAccount.objects.filter(user=user).count() >= limit:
+                    # Count only LIVE (non-tombstoned) accounts so a removed/decommissioned account
+                    # (disconnected_at set) releases its owned slot immediately — matching the tombstone-aware
+                    # armed path (owned_account_count) and the active counts. Without this filter a removed
+                    # account would still consume the cap on the estate-default (un-enforced) path.
+                    if TradingAccount.objects.filter(user=user, disconnected_at__isnull=True).count() >= limit:
                         raise ValidationError({"detail": f"Broker-account limit reached (maximum {limit})."})
                 serializer.save(user=user, mt5_instance=None, is_active=False)
     except IntegrityError:
@@ -99,6 +138,13 @@ def create_customer_account(request, serializer):
         winner = _find_existing_account(user, acct_no, broker_server, broker_name)
         if winner is None:
             raise   # a different integrity error (not the account-identity race) — surface it
+        if winner.disconnected_at is not None:
+            # The all-rows identity unique constraint forced a same-identity INSERT onto the tombstone — revive
+            # it (re-add of a removed identity) rather than returning the dead row.
+            revived = _revive_tombstoned_account(winner, serializer)
+            serializer.instance = revived
+            _maybe_enqueue_beta_provisioning(user, revived)
+            return revived, True
         serializer.instance = winner
         _maybe_enqueue_beta_provisioning(user, winner)
         return winner, False

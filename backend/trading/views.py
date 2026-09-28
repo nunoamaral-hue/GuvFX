@@ -339,6 +339,18 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             destroy_customer_credential(instance, actor="account-delete", request=self.request)
             super().perform_destroy(instance)
 
+    def destroy(self, request, *args, **kwargs):
+        # History-safety: a hard DELETE CASCADE-destroys immutable Trade/attribution history (and would
+        # nullify strategy attribution) for any account without a PROTECTed provisioning row. Member "Remove
+        # account" MUST use the history-RETAINING tombstone (the `remove` action). Refuse the destructive path
+        # for everyone via the API — a decommission that needs a genuine row purge is an audited operator step.
+        from rest_framework.response import Response
+        from rest_framework import status
+        return Response(
+            {"detail": "Deleting an account isn't supported. Use Remove account, which stops trading and "
+                       "frees the slot while keeping your trading history."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
     def perform_create(self, serializer):
         # ADR-0021 — the ONE canonical creation contract lives in ``trading.account_service``. Both this
         # ViewSet and ``AddAccountWithMt5LoginView`` delegate to it, so there is exactly one creation
@@ -376,6 +388,22 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             # promise a switch the backend won't perform for an un-enforced owner.
             "switch_enforced": enforcement_enabled(request.user),
         }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["POST"], url_path="remove")
+    def remove(self, request, pk=None):
+        """Member "Remove account" — a history-RETAINING decommission (tombstone), owner-scoped by
+        get_object. Fail-closed on open positions (must be closed first). Stops execution, releases the
+        entitlement slot immediately, and retains all trading/attribution history. Idempotent."""
+        acc = self.get_object()          # owner-scoped via get_queryset (IDOR-safe)
+        from trading.account_removal import remove_account
+        from rest_framework.exceptions import ValidationError as _VErr
+        try:
+            res = remove_account(acc, actor=str(getattr(request.user, "email", "") or ""), request=request)
+        except _VErr as exc:
+            detail = exc.detail.get("detail") if isinstance(exc.detail, dict) else exc.detail
+            return Response({"detail": detail}, status=status.HTTP_409_CONFLICT)
+        return Response({"ok": True, "id": acc.id, "removed": True, "already": res.get("already", False)},
+                        status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["POST"], url_path="set-active")
     def set_active(self, request, pk=None):

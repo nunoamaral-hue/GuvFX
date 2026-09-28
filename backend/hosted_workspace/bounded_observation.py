@@ -94,6 +94,9 @@ def run_bounded_observation_cycle(*, combined_fn=None, correlation_id: str = "",
     # Pre-load with the relations the observe reads (trading_account / execution_node) so the pooled observe
     # threads never touch the DB (they do pure signed HTTP); all DB writes stay on the caller thread below.
     qs = HostedMt5Workspace.objects.select_related("trading_account", "execution_node")
+    # Skip removed/decommissioned accounts (tombstoned via disconnected_at) — a removed account must consume
+    # no ongoing observation/polling. History is retained; it is simply no longer observed.
+    qs = qs.filter(trading_account__disconnected_at__isnull=True)
     if only_states is not None:
         qs = qs.filter(canonical_state__in=list(only_states))
     workspaces = list(qs.all())
