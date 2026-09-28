@@ -18,6 +18,7 @@ fails closed / falls back to native discovery otherwise. Nothing here mutates th
 """
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -30,9 +31,14 @@ class CatalogueVersion(models.Model):
 
     label = models.CharField(max_length=32, unique=True)   # e.g. "v1"
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.DRAFT, db_index=True)
-    # Aggregate manifest hash over the version's (broker_id, sha256) set — a single value that changes if any
-    # artefact changes, so an active version is tamper-evident as a whole. Computed by the service on activation.
+    # Aggregate manifest hash over the version's artefacts — a single value that changes if any artefact changes,
+    # so an active version is tamper-evident as a whole. Computed by the service on activation.
     manifest_sha256 = models.CharField(max_length=64, blank=True, default="")
+    # The manifest algorithm used for THIS version (so a stronger algo can be introduced without breaking already-
+    # ACTIVE versions). "" = legacy (broker_id:sha256 pairs only — the shipped v1). MANIFEST_ALGO on the service is
+    # the current strong algo, which also binds each artefact's servers/size/kind/sanitisation, so a servers-list or
+    # size mutation (not just a byte change) is detected. Verification recomputes using THIS field's algo.
+    manifest_algo = models.CharField(max_length=32, blank=True, default="")
     rollback_to = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="superseded_by")
     notes = models.CharField(max_length=200, blank=True, default="")
@@ -79,6 +85,21 @@ class CatalogueArtefact(models.Model):
             models.UniqueConstraint(fields=["version", "broker_id"], name="broker_catalogue_one_artefact_per_broker"),
         ]
         indexes = [models.Index(fields=["broker_id"], name="broker_catalogue_broker_idx")]
+
+    def save(self, *args, **kwargs):
+        # IMMUTABILITY (model-layer): an artefact may only be created or updated via the ORM ``save()`` path while
+        # its version is DRAFT; once the version is ACTIVE/RETIRED, ``save()`` refuses. Any update requires a NEW
+        # version. SCOPE: this guards the ``save()``/``update_or_create`` path only — a raw ``QuerySet.update()`` /
+        # ``bulk_update`` (a full-trust DB-write actor) bypasses it; a DB-level trigger closing that is a tracked
+        # follow-up, and resolution re-verifies the manifest as a second line of defence. Fresh status read (never
+        # a stale in-memory version).
+        if self.version_id is not None:
+            status = (CatalogueVersion.objects.filter(pk=self.version_id)
+                      .values_list("status", flat=True).first())
+            if status is not None and status != CatalogueVersion.Status.DRAFT:
+                raise ValidationError(
+                    f"CatalogueArtefact is immutable: version {self.version_id} is {status}, not DRAFT")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"CatalogueArtefact({self.broker_id}@{self.version.label}, {self.sha256[:12]})"

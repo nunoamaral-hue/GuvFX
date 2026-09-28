@@ -2,31 +2,44 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 P2 BROKER CATALOGUE (recorded 2026-09-28, PR D adversarial review) — mechanism-hardening gaps (pre-existing, affect V1 too)
+## ✅ RESOLVED (2026-09-28, Broker-Catalogue Hardening) — catalogue mechanism gaps
 
-The PR-D Taurex adversarial review confirmed pre-existing gaps in the broker-catalogue **mechanism** (they apply
-equally to the live V1 Pepperstone/IS6, are not introduced by adding Taurex, and fixing them is a shared-gate
-change — a dedicated Broker-Catalogue Hardening packet, not an in-passing edit). *Impact:* all are defence-in-depth
-against operator error / admin mutation; none makes a correctly-registered artefact unsafe, and every runtime
-failure path already falls back to native discovery. Findings + fixes:
-- **[HIGH]** `CatalogueArtefact.servers` is not folded into `manifest_sha256` and not validated — a wrong
-  `servers_intended` (e.g. a `-Live` server on a demo artefact, or a cross-broker server) silently mis-scopes
-  resolution. Fix: validate `servers` at build + fold the sorted list into `compute_manifest_sha`.
-- **[HIGH]** `CatalogueArtefact` is mutable after activation (`admin.py` only marks `created_at` readonly; no
-  save-guard; `manifest_sha256` never re-verified at resolution). Fix: readonly admin + save-guard for non-DRAFT +
-  re-verify manifest at `resolve_broker_preseed`.
-- **[HIGH]** No byte-content sanitiser in the build/activate path (only path-based `scan_forbidden`). Fix: a stdlib
-  content sanitiser (byte + entropy scan) wired into build/activate, verdict pinned to the artefact SHA.
-- **[MEDIUM]** `build_catalogue_version` is last-write-wins across duplicate approval rows for `(broker_id, ref)`.
-  Fix: select the single APPROVED row.
-- **[MEDIUM]** `activate_catalogue_version` performs no host byte-staging attestation and no carried-over-SHA guard.
-  Fix: fail-closed host read-back precondition; assert carried-over brokers keep their prior-ACTIVE SHA.
-- **[MEDIUM]** No cross-artefact server-name uniqueness (first-match resolution). Fix: reject duplicate server names
-  across a version.
+The PR-D adversarial review's pre-existing broker-catalogue **mechanism** gaps are now closed generically (for the
+40-broker scale), backward-compatible with the live v1 (legacy manifest algo preserved → v1 keeps verifying):
+- **manifest covers bytes+metadata** — `compute_manifest_sha` strong algo (`servers_v2`) binds broker_id + sha256 +
+  sorted servers + size + kind + sanitisation; a servers/size mutation (not only a byte change) alters the manifest.
+  Per-version `manifest_algo` keeps legacy v1 verifying; `resolve_broker_preseed` re-verifies integrity and falls
+  back native on mismatch.
+- **immutable active versions** — `CatalogueArtefact.save()` model-layer guard refuses create/update once the version
+  is non-DRAFT; admin fields readonly for non-DRAFT; resolution re-verifies the manifest.
+- **content sanitiser** — `broker_catalogue/sanitiser.py` (byte identity scan in 8+ encodings + entropy sweep,
+  bounded language) + `sanitise_broker_artefact` command; activation requires `metadata.sanitiser.passed==True`.
+- **approval binds exact bytes** — activation cross-checks artefact sha/size/servers against the approval.
+- **single-APPROVED build** — `build_catalogue_version` selects the one APPROVED row per broker (no last-write-wins).
+- **host attestation** — `activate --attest-host` reads back each staged SHA (fail-closed); `--allow-byte-change`
+  guards carried-over brokers; atomic activation transaction; `rollback_catalogue_version` restores a RETIRED version.
+- **server-name uniqueness** — build + activate reject a server claimed by two artefacts.
 
-Compensating controls for the Taurex add are recorded in
-`docs/operations/hosted-workspace/TAUREX_CATALOGUE_PRESEED_2026-09-28.md` (demo-only metadata reviewed at the staff
-gate; expanded byte+entropy credential-free scan; manual host read-back attestation before activation).
+48 broker_catalogue tests (incl. the packet's activation/mutation/sanitiser/collision/attestation/rollback matrix).
+
+## 🔵 P3 BROKER CATALOGUE (recorded 2026-09-28, hardening adversarial review) — residual defense-in-depth (full-trust actor)
+
+The catalogue hardening's remaining findings are all behind the DB-write / shell trust boundary (management commands
+are shell-only; `approvals.decide` is `is_staff`-gated) — i.e. a full-trust actor, not a remote vuln. Tracked for a
+follow-up (some need an Amber/ADR decision):
+- **[FOLLOW-UP] HMAC/sign the manifest** with a key held OUTSIDE the DB, so recomputation alone cannot forge
+  `verify_version_integrity`. Today the manifest is a plain (unkeyed) SHA-256 — it detects accidental/partial drift
+  (docstrings corrected to say exactly this), not a DB-write forger. Needs an out-of-DB key decision (ADR).
+- **[FOLLOW-UP] DB-level immutability** (trigger/constraint rejecting UPDATE/DELETE of a non-DRAFT version's
+  artefacts) — the model `save()` guard covers the ORM path but not raw `QuerySet.update()`/`bulk_update`.
+- **[FOLLOW-UP] Real `--attest-host` transport** — implement `attest_broker_artefact` on the signed host executor +
+  wire `_attest_executor()`. Until then `--attest-host` fails closed (not a silent no-op); without it, activation
+  relies on consumption-time read-back verification. Finalized at Taurex v2 activation time.
+- **[LOW] `.ps1` reparse-point check** on the preseed destination `config` dir (bytes are SHA-bound + fresh-runtime
+  only, so low risk).
+Fixed in-branch: sanitiser verdict bound to exact bytes (H1), activation artefact locking (M1), manifest covers
+host_relpath/artefact_ref (M2), legacy re-stamp + strong-algo-required verification (M3, migration 0003),
+server-ownership guard (M4), rollback gate parity (M5).
 
 ## ✅ RESOLVED (2026-09-28, PR C #427 CERTIFIED) — launcher console shell
 

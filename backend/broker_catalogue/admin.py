@@ -16,3 +16,10 @@ class CatalogueArtefactAdmin(admin.ModelAdmin):
                     "certification_result", "approval_id")
     list_filter = ("broker_id", "version")
     readonly_fields = ("created_at",)
+
+    def get_readonly_fields(self, request, obj=None):
+        # Immutability in the admin: once the artefact's version is not DRAFT, every field is readonly (the model
+        # save-guard enforces this at the data layer too — this just avoids presenting an editable-looking form).
+        if obj is not None and getattr(obj.version, "status", None) != CatalogueVersion.Status.DRAFT:
+            return [f.name for f in self.model._meta.fields]
+        return self.readonly_fields
