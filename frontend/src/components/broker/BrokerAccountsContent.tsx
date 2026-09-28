@@ -63,6 +63,8 @@ export function BrokerAccountsContent() {
 
   const load = useCallback(async () => {
     setError("");
+    setReadyToast(null);       // clear any prior ready toast on an explicit (re)load
+    refetchGenRef.current++;   // supersede any in-flight poll refetch so it can't commit over this fresh load
     setAccounts(null);
     try {
       const list = await listAccounts();
@@ -101,15 +103,25 @@ export function BrokerAccountsContent() {
   // Lightweight live refetch (accounts + per-account delivery) used by the bounded poll, so both the
   // provisioning lifecycle (Setting up -> Ready to log in -> Broker connected) and the managed-Start
   // trading state (Preparing -> Trading) auto-advance without a manual page refresh.
+  const refetchGenRef = useRef(0);
   const refetchLive = useCallback(async () => {
+    const gen = ++refetchGenRef.current;   // single-flight token: a superseded refetch never commits stale state
     let list: BrokerAccount[];
     try { list = await listAccounts(); } catch { return; }   // transient — keep last state, next tick retries
+    if (gen !== refetchGenRef.current) return;               // a newer refetch/load started — drop this one
     setAccounts(list);
     const deliv = await Promise.all(list.map(async (a) => {
-      try { return [a.id, await getDeliveryState(a.id)] as const; }
-      catch { return [a.id, deliveries[a.id] ?? null] as const; }
+      try {
+        const d = await getDeliveryState(a.id);
+        // Preserve a known-good (deliverable) signal if this fetch blanked it (transient) — don't regress a
+        // ready terminal's card to "setting up", and don't churn the toast baseline off a blip.
+        return [a.id, d ?? (deliveries[a.id]?.deliverable ? deliveries[a.id] : d)] as const;
+      } catch {
+        return [a.id, deliveries[a.id] ?? null] as const;
+      }
     }));
-    setDeliveries(Object.fromEntries(deliv));
+    if (gen !== refetchGenRef.current) return;               // superseded before the delivery commit
+    setDeliveries((prev) => ({ ...prev, ...Object.fromEntries(deliv) }));
   }, [deliveries]);
 
   // Phase 5/7 — poll while any account is still PROVISIONING (hosted, not yet deliverable) OR "Preparing
@@ -128,22 +140,31 @@ export function BrokerAccountsContent() {
     return () => clearTimeout(id);
   }, [accounts, deliveries, isHostedAcct, refetchLive]);
 
-  // Phase 6 — one-shot "your terminal is ready" toast on the deliverable false->true transition (never on the
-  // first load, never duplicated across poll ticks). Uses the same in-app notice surface as the rest of the page.
-  const deliverableSeenRef = useRef<Record<number, boolean> | null>(null);
+  // Phase 6 — one-shot "your terminal is ready" toast on a GENUINE deliverable false->true transition. The
+  // baseline is a forward-carried accumulator (never wiped by a transient accounts=null render) that records
+  // ONLY accounts whose delivery signal is KNOWN, and fires only on a strict recorded-false -> true edge — so
+  // it never fires on first load or on a load()-triggered refetch (where deliverable was already true), and
+  // never for a removed account. Uses a DEDICATED toast slot, separate from the error `notice`, so the two
+  // never clobber each other.
+  const deliverableSeenRef = useRef<Record<number, boolean>>({});
+  const [readyToast, setReadyToast] = useState<string | null>(null);
   useEffect(() => {
-    const cur: Record<number, boolean> = {};
-    for (const a of (accounts || [])) cur[a.id] = Boolean(deliveries[a.id]?.deliverable);
-    const prev = deliverableSeenRef.current;
-    if (prev) {
-      for (const a of (accounts || [])) {
-        if (cur[a.id] && !prev[a.id]) {   // became deliverable this tick
-          setNotice({ type: "info", message: `Your ${brokerLabel(a)} trading terminal is ready. Open MT5 to log in.` });
-          break;
-        }
-      }
+    const next = { ...deliverableSeenRef.current };
+    const ready: BrokerAccount[] = [];
+    for (const a of (accounts || [])) {
+      if (a.is_removed) continue;                 // never toast for a removed account
+      const d = deliveries[a.id];
+      if (d == null) continue;                    // delivery not yet known — don't record/compare (unknown != false)
+      const now = Boolean(d.deliverable);
+      if (now && next[a.id] === false) ready.push(a);   // strict KNOWN-false -> true edge (first-load is undefined)
+      next[a.id] = now;                           // carry the known state forward
     }
-    deliverableSeenRef.current = cur;
+    deliverableSeenRef.current = next;
+    if (ready.length === 1) {
+      setReadyToast(`Your ${brokerLabel(ready[0])} trading terminal is ready. Open MT5 to log in.`);
+    } else if (ready.length > 1) {
+      setReadyToast(`${ready.length} of your trading terminals are ready. Open MT5 to log in.`);
+    }
   }, [accounts, deliveries]);
 
   const isConcurrent = entitlement?.account_mode === "concurrent";
@@ -243,6 +264,14 @@ export function BrokerAccountsContent() {
       {notice && (
         <div style={{ marginBottom: 14 }}>
           <Alert type={notice.type}>{notice.message}</Alert>
+        </div>
+      )}
+
+      {/* PR B — dedicated "terminal ready" toast slot (separate from the error `notice` so the two never
+          clobber each other); dismissible, one-shot per genuine provisioning completion. */}
+      {readyToast && (
+        <div style={{ marginBottom: 14 }}>
+          <Alert type="info">{readyToast}</Alert>
         </div>
       )}
 
