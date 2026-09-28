@@ -34,7 +34,6 @@ import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 // ─── Types ───
 type Strategy = { id: number; name: string; symbol_universe?: string; is_active?: boolean };
 type Account = { id: number; name: string; broker_name?: string; account_number?: string; is_active?: boolean };
-type Assignment = { strategy_id: number; account_id: number; stage?: string };
 type ObservedStats = { total_trades: number; win_rate_pct: number; max_drawdown_pct: number; net_pnl_total: number; longest_loss_streak?: number; wins?: number; losses?: number };
 type BalancePoint = { balance_after_trade: number; net_pnl_money?: number };
 type Perf = { mt5_balance_current?: number | null; mt5_equity_current?: number | null; currency?: string; observed_stats?: ObservedStats; balance_series?: BalancePoint[] };
@@ -353,9 +352,11 @@ export default function DashboardPage() {
   }, [scope]);
   // Only trust the summary when it belongs to the current scope (guards the scope-change window).
   const portfolioForScope = portfolio && String(portfolio.scope) === String(scope) ? portfolio : null;
-  const [dailyPnl, setDailyPnl] = useState<number | null>(null);
-  // Per-strategy 30D stats from the existing daily-pnl endpoint (totals only)
-  const [stratPerf, setStratPerf] = useState<Record<number, { net_pnl: number; win_rate: number; trades: number }>>({});
+  // Per-account performance (trade-history) and today's realized P/L. Each result carries the account id it
+  // describes, so a scope change can never briefly show the previous account's numbers (H2): they are trusted
+  // below only when acctId === the scoped primary account.
+  const [perfState, setPerfState] = useState<{ acctId: number; data: Perf | null } | null>(null);
+  const [dailyState, setDailyState] = useState<{ acctId: number; value: number | null } | null>(null);
   // Opportunity Radar — cross-market rows from the existing strategy-selection endpoint
   const [radarRows, setRadarRows] = useState<{ sym: string; category: string; catColor: "green" | "blue" | "gray" | "red" | "yellow"; note: string; conf: string; confLevel: number }[]>([]);
 
@@ -366,8 +367,6 @@ export default function DashboardPage() {
   }, []);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [perf, setPerf] = useState<Perf | null>(null);
   const [normFlag, setNormFlag] = useState<string | null>(null);
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [bootLoaded, setBootLoaded] = useState(false);
@@ -378,12 +377,39 @@ export default function DashboardPage() {
   // account that has no runtime yet). Keyed on `accounts` so it re-fetches when the primary changes.
   type AcctStatus = { overall?: string; stages?: { key: string; label: string; state: string; detail?: string }[] };
   const [acctStatus, setAcctStatus] = useState<AcctStatus | null>(null);
+
+  // ── Scope resolution (H2) ── A specific scope selects THAT owned account as the primary for every per-account
+  // card; ALL scope keeps a default primary for the few cards that still need one, while the header, summary and
+  // Performance Snapshot show the whole portfolio. Declared here so the scope-keyed effects below can depend on it.
+  const scopedAcct = scope !== "ALL" ? accounts.find((a) => String(a.id) === scope) : undefined;
+  const primaryAcct = scopedAcct || accounts.find((a) => a.is_active) || accounts[0];
+  const isAll = scope === "ALL";
+
+  // Setup/onboarding status follows the SELECTED account (M6), not always the boot primary.
   useEffect(() => {
-    const primary = accounts.find((a) => a.is_active) || accounts[0];
-    if (!primary?.id) return;   // no primary yet — leave state as-is (never a synchronous setState here)
-    apiFetch<AcctStatus>(`/api/onboarding/account-status/?account_id=${primary.id}`, {})
+    const id = primaryAcct?.id;
+    if (!id) return;   // no primary yet — leave state as-is (never a synchronous setState here)
+    apiFetch<AcctStatus>(`/api/onboarding/account-status/?account_id=${id}`, {})
       .then((s) => setAcctStatus(s || null)).catch(() => setAcctStatus(null));
-  }, [accounts]);
+  }, [primaryAcct?.id]);
+
+  // Per-account performance + today's realized P/L for the SELECTED account (H2). Keyed on the scoped primary so a
+  // scope change refetches; each result is tagged with its account id and trusted only for that account below, so a
+  // non-primary selection never shows the previous account's money.
+  useEffect(() => {
+    const id = primaryAcct?.id;
+    if (!id) return;
+    apiFetch<Perf>(`/api/analytics/trade-history/?account_id=${id}`, {})
+      .then((p) => { setPerfState({ acctId: id, data: p || null }); setSyncedAt(new Date()); })
+      .catch(() => { setPerfState({ acctId: id, data: null }); setSyncedAt(new Date()); });
+    apiFetch<{ series?: { date: string; net_pnl: number }[] }>(`/api/analytics/daily-pnl/?account_id=${id}&days=1`, {})
+      .then((d) => {
+        const today = new Date().toISOString().slice(0, 10);
+        const row = (d?.series || []).find((s) => s.date === today);
+        setDailyState({ acctId: id, value: row ? row.net_pnl : 0 });
+      })
+      .catch(() => setDailyState({ acctId: id, value: null }));
+  }, [primaryAcct?.id]);
 
   const [options, setOptions] = useState<string[]>([]);
   const [symbol, setSymbol] = useState("");
@@ -404,13 +430,12 @@ export default function DashboardPage() {
   // ── Boot (fast reads) ──
   useEffect(() => {
     (async () => {
-      const [strats, accts, asn, attr] = await Promise.all([
+      const [strats, accts, attr] = await Promise.all([
         apiFetch<Strategy[]>("/api/strategies/strategies/", {}).catch(() => []),
         apiFetch<Account[]>("/api/trading/accounts/", {}).catch(() => []),
-        apiFetch<Assignment[]>("/api/strategies/assignments/", {}).catch(() => []),
         apiFetch<{ ok: boolean; normalisation_attribution?: Record<string, { avg_max_drawdown: number; observation_count: number }> }>("/api/backtests/feature-attribution/?min_count=3", {}).catch(() => null),
       ]);
-      setStrategies(strats || []); setAccounts(accts || []); setAssignments(asn || []);
+      setStrategies(strats || []); setAccounts(accts || []);
       // Best-effort personalization (AuthGate already validated the session)
       apiFetch<{ first_name?: string }>("/api/auth/me/", {})
         .then((me) => { if (me?.first_name?.trim()) setFirstName(me.first_name.trim()); })
@@ -453,24 +478,9 @@ export default function DashboardPage() {
           .catch(() => { /* radar row simply absent */ });
       });
 
-      const primary = (accts || []).find((a) => a.is_active) || (accts || [])[0];
-      if (primary) {
-        apiFetch<Perf>(`/api/analytics/trade-history/?account_id=${primary.id}`, {}).then((p) => { setPerf(p); setSyncedAt(new Date()); }).catch(() => setSyncedAt(new Date()));
-        // Today's PnL from the existing daily aggregation endpoint (UTC day of close_time)
-        apiFetch<{ series?: { date: string; net_pnl: number }[] }>(`/api/analytics/daily-pnl/?account_id=${primary.id}&days=1`, {})
-          .then((d) => {
-            const today = new Date().toISOString().slice(0, 10);
-            const row = (d?.series || []).find((s) => s.date === today);
-            setDailyPnl(row ? row.net_pnl : 0);
-          })
-          .catch(() => setDailyPnl(null));
-        // 30D per-strategy stats for the Your Strategies card (max 3, existing endpoint)
-        (strats || []).slice(0, 3).forEach((s) => {
-          apiFetch<{ totals?: { net_pnl: number; win_rate: number; trades: number } }>(`/api/analytics/daily-pnl/?account_id=${primary.id}&strategy_id=${s.id}&days=30`, {})
-            .then((d) => { if (d?.totals) setStratPerf((prev) => ({ ...prev, [s.id]: d.totals! })); })
-            .catch(() => { /* placeholders remain */ });
-        });
-      } else setSyncedAt(new Date());
+      // Per-account performance / daily P&L are fetched by the scope-keyed effect above (so they follow the
+      // selected account, not just the boot primary — H2). Stamp an initial "Updated" time here.
+      setSyncedAt(new Date());
     })();
   }, []);
 
@@ -486,40 +496,62 @@ export default function DashboardPage() {
   }, [symbol]);
 
   // ── Derived: performance ──
-  // When a specific account scope is selected, it is the primary account for the per-account cards; ALL scope keeps
-  // the default primary for cards that still need a single account, while the header/summary shows the portfolio.
-  const scopedAcct = scope !== "ALL" ? accounts.find((a) => String(a.id) === scope) : undefined;
-  const primaryAcct = scopedAcct || accounts.find((a) => a.is_active) || accounts[0];
-  const isAll = scope === "ALL";
+  // Trust per-account data only when it belongs to the currently scoped account, so the scope-change window never
+  // shows the previous account's money (H2). `scopedAcct`/`primaryAcct`/`isAll` are computed above the effects.
+  const perf = perfState && perfState.acctId === primaryAcct?.id ? perfState.data : null;
+  const dailyPnl = dailyState && dailyState.acctId === primaryAcct?.id ? dailyState.value : null;
   const stats = perf?.observed_stats;
   const series = perf?.balance_series || [];
   const equitySeries = series.map((p) => p.balance_after_trade);
   const pnls = series.map((p) => (typeof p.net_pnl_money === "number" ? p.net_pnl_money : 0));
-  const netPnl = stats?.net_pnl_total ?? null;
-  const equityRef = perf?.mt5_equity_current ?? perf?.mt5_balance_current ?? null;
-  const rising = equitySeries.length > 1 && equitySeries[equitySeries.length - 1] >= equitySeries[0];
 
+  // Per-account (specific-scope) base figures.
+  const acctNetPnl = stats?.net_pnl_total ?? null;
+  const equityRef = perf?.mt5_equity_current ?? perf?.mt5_balance_current ?? null;
   // Profit factor + expectancy derived from per-trade PnL (no raw metric shown unlabelled)
   const grossWin = pnls.filter((v) => v > 0).reduce((a, b) => a + b, 0);
   const lossArr = pnls.filter((v) => v < 0);
   const grossLoss = Math.abs(lossArr.reduce((a, b) => a + b, 0));
-  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : null);
+  const acctProfitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : null);
   const avgLoss = lossArr.length ? grossLoss / lossArr.length : 0;
-  const expMoney = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : null;
-  const expR = avgLoss > 0 && expMoney != null ? expMoney / avgLoss : null;
-  const pctOfEquity = netPnl != null && equityRef ? (netPnl / equityRef) * 100 : null;
+  const acctExpMoney = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : null;
+  const acctExpR = avgLoss > 0 && acctExpMoney != null ? acctExpMoney / avgLoss : null;
+
+  // ── Performance Snapshot source (H3) ── ALL scope = the WHOLE-PORTFOLIO realized metrics (from the underlying
+  // trade set, currency-honest — never the boot primary's stats mislabelled as portfolio); a specific account = that
+  // account's observed trade-history. One view-model so the strip renders identically from either source.
+  const aggM = isAll ? (portfolioForScope?.aggregate.metrics ?? null) : null;
+  const snap = {
+    loaded: isAll ? !!portfolioForScope : !!perf,
+    netPnl: isAll ? (aggM?.net_pnl_total ?? null) : acctNetPnl,
+    winRatePct: isAll ? (aggM?.win_rate_pct ?? null) : (stats?.win_rate_pct ?? null),
+    wins: isAll ? (aggM?.wins ?? null) : (stats?.wins ?? null),
+    losses: isAll ? (aggM?.losses ?? null) : (stats?.losses ?? null),
+    totalTrades: isAll ? (aggM?.total_trades ?? null) : (stats?.total_trades ?? null),
+    profitFactor: isAll ? (aggM ? (aggM.profit_factor_infinite ? Infinity : aggM.profit_factor) : null) : acctProfitFactor,
+    ddPct: isAll ? null : (stats?.max_drawdown_pct ?? null),                          // % only exists per-account
+    ddMoney: isAll ? (aggM?.max_drawdown_money ?? null) : null,                       // money for the portfolio
+    expMoney: isAll ? (aggM?.expectancy ?? null) : acctExpMoney,
+    expR: isAll ? null : acctExpR,
+    currency: isAll ? "" : (perf?.currency || ""),                                    // "" -> "$" (USD portfolio)
+    equity: isAll ? (portfolioForScope?.aggregate.equity_usd.total_usd ?? null) : equityRef,
+    series: isAll ? [] as number[] : equitySeries,
+    partial: isAll ? (aggM?.basis === "PARTIAL") : false,
+  };
+
+  const netPnl = snap.netPnl;
+  const rising = snap.series.length > 1 ? snap.series[snap.series.length - 1] >= snap.series[0] : (netPnl != null && netPnl >= 0);
+  const pctOfEquity = netPnl != null && snap.equity ? (netPnl / snap.equity) * 100 : null;
 
   const trend = netPnl == null ? { label: "No data", color: "#64748b", badge: "gray" as const, icon: "minus" }
     : netPnl > 0 && rising ? { label: "Improving", color: "#86efac", badge: "green" as const, icon: "trending-up" }
     : netPnl < 0 ? { label: "Needs Attention", color: "#fca5a5", badge: "red" as const, icon: "trending-down" }
     : { label: "Stable", color: "#fbbf24", badge: "yellow" as const, icon: "minus" };
 
-  const pfLabel = profitFactor == null ? null : profitFactor === Infinity || profitFactor >= 1.3 ? { t: "Good", c: "#86efac" } : profitFactor >= 1.0 ? { t: "Moderate", c: "#fbbf24" } : { t: "Low", c: "#fca5a5" };
-  const ddLabel = stats ? (stats.max_drawdown_pct < 10 ? { t: "Low", c: "#86efac" } : stats.max_drawdown_pct < 25 ? { t: "Moderate", c: "#fbbf24" } : { t: "High", c: "#fca5a5" }) : null;
-  const expLabel = expMoney == null ? null : expMoney >= 0 ? { t: "Positive", c: "#86efac" } : { t: "Negative", c: "#fca5a5" };
-  const wrLabel = stats ? (stats.win_rate_pct >= 50 ? { c: "#86efac" } : { c: "#fbbf24" }) : null;
-
-  const stageFor = (sid: number) => assignments.find((a) => a.strategy_id === sid)?.stage;
+  const pfLabel = snap.profitFactor == null ? null : snap.profitFactor === Infinity || snap.profitFactor >= 1.3 ? { t: "Good", c: "#86efac" } : snap.profitFactor >= 1.0 ? { t: "Moderate", c: "#fbbf24" } : { t: "Low", c: "#fca5a5" };
+  const ddLabel = snap.ddPct != null ? (snap.ddPct < 10 ? { t: "Low", c: "#86efac" } : snap.ddPct < 25 ? { t: "Moderate", c: "#fbbf24" } : { t: "High", c: "#fca5a5" }) : null;
+  const expLabel = snap.expMoney == null ? null : snap.expMoney >= 0 ? { t: "Positive", c: "#86efac" } : { t: "Negative", c: "#fca5a5" };
+  const wrLabel = snap.winRatePct != null ? (snap.winRatePct >= 50 ? { c: "#86efac" } : { c: "#fbbf24" }) : null;
 
   // ── Derived: Market Focus ──
   const ms = selection?.market_state;
@@ -541,13 +573,6 @@ export default function DashboardPage() {
   const hasEvent = !!newsImpact || ms?.current_state === "NEWS_SHOCK";
 
   const setupComplete = strategies.length > 0 && accounts.length > 0;
-
-  function health(s: Strategy): { t: string; c: "green" | "yellow" | "gray" } {
-    const stage = stageFor(s.id);
-    if (!s.is_active) return { t: "Idle", c: "gray" };
-    if (stage === "LIVE") return { t: "Good", c: "green" };
-    return { t: "Fair", c: "yellow" };
-  }
 
   return (
     <LocalizedBetaSurface lang={lang}>
@@ -585,8 +610,12 @@ export default function DashboardPage() {
             })()}
             {isAll ? (
               <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>
-                {portfolioForScope ? `${portfolioForScope.account_count} broker accounts · ${portfolioForScope.trading_count} trading`
-                                   : "All accounts"}
+                {portfolioForScope ? (() => {
+                  // M6: surface the state MIX across the portfolio, not just how many are trading (a stopped or
+                  // preparing account must not be invisible). "not trading" = every account whose state is not TRADING.
+                  const notTrading = portfolioForScope.account_count - portfolioForScope.trading_count;
+                  return `${portfolioForScope.account_count} broker accounts · ${portfolioForScope.trading_count} trading${notTrading > 0 ? ` · ${notTrading} not trading` : ""}`;
+                })() : "All accounts"}
               </div>
             ) : primaryAcct && (
               <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>
@@ -597,9 +626,10 @@ export default function DashboardPage() {
                 })}
               </div>
             )}
-            {acctStatus && (() => {
-              // TB-4: the truthful onboarding→ready state for the primary account — works for a beta
-              // account with no reliability snapshot (where the trading-health line above stays UNKNOWN).
+            {!isAll && acctStatus && (() => {
+              // TB-4: the truthful onboarding→ready state for the SELECTED account — works for a beta account with
+              // no reliability snapshot (where the trading-health line above stays UNKNOWN). Hidden in ALL scope
+              // (a single account's setup must not be shown as if it were the whole portfolio's — M6).
               const stages = acctStatus.stages || [];
               const pending = stages.find((s) => s.state !== "HEALTHY" && s.state !== "RUNNING");
               const label = acctStatus.overall === "HEALTHY" ? "Active" : localizeBackendCustomerText(lang, pending?.label || "Setting up", "account-stage");
@@ -647,6 +677,16 @@ export default function DashboardPage() {
           <span><i className="ti ti-gauge" aria-hidden="true" style={{ marginRight: 6 }} />How am I doing?</span>
           <Link href="/trading/trade-history" style={{ fontSize: "0.7rem", color: "#4ab3ff", textTransform: "none", fontWeight: 400, textDecoration: "none" }}>Detailed performance →</Link>
         </div>
+        {/* H3: label WHOSE performance this is — the whole portfolio (ALL) vs the single selected account (shown in
+            the header above) — so portfolio-wide figures are never read as one account's, nor one account's as the
+            portfolio's. Localised so the JA view leaks no English. */}
+        <div style={{ fontSize: "0.66rem", color: "#64748b", marginTop: -4, marginBottom: 8 }}>
+          {isAll
+            ? (lang === "ja"
+                ? `ポートフォリオ全体${portfolioForScope ? ` · ${portfolioForScope.account_count}口座` : ""} · USD・確定${snap.partial ? "（USD以外の口座を除外）" : ""}`
+                : `Whole portfolio${portfolioForScope ? ` · ${portfolioForScope.account_count} account${portfolioForScope.account_count === 1 ? "" : "s"}` : ""} · USD, realized${snap.partial ? " · partial (non-USD accounts excluded)" : ""}`)
+            : (lang === "ja" ? "選択した口座 · 確定損益" : "Selected account · realized")}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
           {/* Trend — emotional anchor (inline, still dominant) */}
           <div style={{ minWidth: 165, paddingRight: "1.4rem", borderRight: "1px solid rgba(255,255,255,0.045)" }}>
@@ -655,24 +695,25 @@ export default function DashboardPage() {
               <i className={`ti ti-${trend.icon}`} aria-hidden="true" style={{ marginRight: 5 }} />{trend.label}
             </div>
             <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 2, whiteSpace: "nowrap" }}>
-              {netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, perf?.currency), stats?.total_trades) : "No observed trades yet"}
+              {netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, snap.currency), snap.totalTrades ?? undefined)
+                : snap.loaded ? "No observed trades yet" : "Loading…"}
             </div>
           </div>
 
           {/* Secondary metrics — dense strip */}
           <div style={{ flex: 1, minWidth: 300, display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
-            <MetricTile label="Net PnL" value={<span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, perf?.currency)}</span>} sub={pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined} />
-            <MetricTile label="Win Rate" value={stats ? `${stats.win_rate_pct}%` : "—"} sub={stats ? `${stats.wins ?? "—"}W / ${stats.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
-            <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={profitFactor == null ? "—" : profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
-            <MetricTile label="Max Drawdown" value={stats ? `${stats.max_drawdown_pct}%` : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
-            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={expMoney == null ? "—" : expR != null ? `${expR >= 0 ? "+" : ""}${expR.toFixed(2)}R` : money(lang, expMoney, perf?.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
+            <MetricTile label="Net PnL" value={<span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, snap.currency)}</span>} sub={pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined} />
+            <MetricTile label="Win Rate" value={snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={snap.wins != null || snap.losses != null ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
+            <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={snap.profitFactor == null ? "—" : snap.profitFactor === Infinity ? "∞" : snap.profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
+            <MetricTile label="Max Drawdown" value={snap.ddPct != null ? `${snap.ddPct}%` : snap.ddMoney != null ? money(lang, snap.ddMoney, snap.currency) : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
+            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, snap.expMoney, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
           </div>
 
-          {/* Equity curve — compact context */}
+          {/* Equity curve — compact context (per-account observed series; the portfolio view has no single curve) */}
           <div style={{ width: 250, minWidth: 200, paddingLeft: "1.4rem", borderLeft: "1px solid rgba(255,255,255,0.045)" }}>
             <div style={{ ...microLabel, fontSize: "0.64rem", marginBottom: 4 }}>Equity Curve (Observed)</div>
-            {equitySeries.length > 1 ? <Sparkline values={equitySeries} color={trend.color} w={230} h={42} />
-              : <div style={{ ...muted, fontSize: "0.68rem" }}>{t(lang, "legal.microDisclaimer")}</div>}
+            {snap.series.length > 1 ? <Sparkline values={snap.series} color={trend.color} w={230} h={42} />
+              : <div style={{ ...muted, fontSize: "0.68rem" }}>{isAll ? "Per-account equity curves are on each account's page." : t(lang, "legal.microDisclaimer")}</div>}
           </div>
         </div>
       </div>

@@ -100,6 +100,26 @@ describe("OpenTradesPanel", () => {
     expect(screen.getByText(/reconnecting/)).toBeTruthy();         // restrained stale indicator
   });
 
+  it("distinguishes loading from a confirmed-empty result (M4)", async () => {
+    let resolve: (v: OpenTradesResult) => void = () => {};
+    api.apiFetch.mockImplementation(() => new Promise<OpenTradesResult>((r) => { resolve = r; }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText("Loading positions…")).toBeTruthy());
+    expect(screen.queryByText("No open trades")).toBeNull();      // never assert empty before the fetch resolves
+    resolve(result([]));                                          // confirmed empty
+    await waitFor(() => expect(screen.getByText("No open trades")).toBeTruthy());
+    expect(screen.queryByText("Loading positions…")).toBeNull();
+  });
+
+  it("surfaces unreachable accounts and a capped row list (M1/M3)", async () => {
+    const many = Array.from({ length: 300 }, (_, i) => trade({ position_id: `1:${i}`, ticket: i }));
+    api.apiFetch.mockResolvedValue(result(many, { count: 400, truncated: true, stale_accounts: [7, 9] }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText(/400 open/)).toBeTruthy());   // full count, not the capped 300
+    expect(screen.getByText(/2 accounts not reachable/)).toBeTruthy();
+    expect(screen.getByText(/Showing 300 of 400/)).toBeTruthy();
+  });
+
   it("ignores a stale-scope response after the scope changes", async () => {
     let resolveAll: (v: OpenTradesResult) => void = () => {};
     api.apiFetch.mockImplementation((path: string) => {

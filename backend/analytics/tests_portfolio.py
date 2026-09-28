@@ -42,12 +42,14 @@ def _acct(user, broker="Pepperstone", number=None, active=True, removed=False, c
     return a
 
 
-def _closed_trade(account, net, when=None, stage="LIVE"):
+def _closed_trade(account, net, when=None, stage="LIVE", profit_currency=None,
+                  commission_currency=None, swap_currency=None):
     when = when or timezone.now()
     return Trade.objects.create(
         account=account, ticket=_uniq(), symbol="XAUUSD", side="BUY", volume=1,
         open_time=when - timedelta(hours=1), close_time=when, open_price=1, close_price=2,
-        profit=net, commission=0, swap=0, source_stage=stage)
+        profit=net, commission=0, swap=0, source_stage=stage,
+        profit_currency=profit_currency, commission_currency=commission_currency, swap_currency=swap_currency)
 
 
 # ── FX layer ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -140,6 +142,53 @@ class MetricsTests(TestCase):
         _closed_trade(a1, 7); _closed_trade(a2, 100)
         self.assertEqual(PF.portfolio_metrics([a1])["net_pnl_total"], 7.0)
 
+    def test_all_usd_basis_is_usd_no_exclusions(self):
+        u = _user("m6"); a = _acct(u)
+        _closed_trade(a, 10)
+        m = PF.portfolio_metrics([a])
+        self.assertEqual(m["basis"], "USD"); self.assertEqual(m["excluded_accounts"], [])
+
+
+# ── Currency-honest realized path (H1): never sum mixed denominations ─────────────────────────────────────────
+class RealizedCurrencyHonestyTests(TestCase):
+    def test_non_usd_account_excluded_and_partial(self):
+        u = _user("h1")
+        usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(usd, 10); _closed_trade(usd, 10)
+        _closed_trade(gbp, 999)                                   # must NOT be summed with the USD account
+        m = PF.portfolio_metrics([usd, gbp])
+        self.assertEqual(m["basis"], "PARTIAL")
+        self.assertEqual(m["excluded_accounts"], [gbp.id])
+        self.assertEqual(m["net_pnl_total"], 20.0)               # only the USD account, never 1019
+        self.assertEqual(m["total_trades"], 2)                   # GBP account's trades excluded from the sum
+
+    def test_mixed_trade_currency_withholds_money_keeps_count(self):
+        u = _user("h2"); a = _acct(u, currency="USD")
+        # A trade whose commission is in a different currency than profit: _net would sum mixed denominations.
+        _closed_trade(a, 10, profit_currency="USD", commission_currency="EUR")
+        m = PF.portfolio_metrics([a])
+        self.assertEqual(m["basis"], "PARTIAL")
+        self.assertEqual(m["total_trades"], 1)                   # count is currency-agnostic
+        self.assertIsNone(m["net_pnl_total"]); self.assertIsNone(m["win_rate_pct"])   # money/classified withheld
+
+    def test_daily_realized_returns_value_and_basis(self):
+        u = _user("h3"); a = _acct(u, currency="USD")
+        _closed_trade(a, 5)
+        val, basis = PF.daily_realized_pnl([a])
+        self.assertEqual(val, 5.0); self.assertEqual(basis, "USD")
+
+    def test_daily_realized_partial_when_non_usd(self):
+        u = _user("h4")
+        usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(usd, 5); _closed_trade(gbp, 7)
+        val, basis = PF.daily_realized_pnl([usd, gbp])
+        self.assertEqual(val, 5.0); self.assertEqual(basis, "PARTIAL")   # gbp excluded, not summed
+
+    def test_account_net_pnl_none_for_non_usd(self):
+        u = _user("h5"); gbp = _acct(u, currency="GBP")
+        _closed_trade(gbp, 50)
+        self.assertIsNone(PF.account_net_pnl(gbp))               # never a mixed/unconverted figure
+
 
 # ── Scope / ownership (IDOR) ──────────────────────────────────────────────────────────────────────────────────
 class ScopeTests(TestCase):
@@ -230,6 +279,26 @@ class OpenTradesTests(TestCase):
         _, per = PF.open_positions([a1, a2], fetch_positions=fetch, rate_source=FX.NullFxRateSource())
         self.assertEqual(per[a1.id]["open_pl_usd"], 10.0); self.assertEqual(per[a2.id]["open_pl_usd"], -4.0)
 
+    def test_top_level_open_pl_marks_stale_partial(self):
+        # M1: a total that dropped an unreadable account is PARTIAL and surfaces that account — never "USD complete".
+        u = _user("o6"); ok = _acct(u); down = _acct(u)
+        fetch = _fake_positions({ok.id: [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1,
+                                          "profit": 10.0, "magic": 0}]})   # down returns None (stale)
+        _, per = PF.open_positions([ok, down], fetch_positions=fetch, rate_source=FX.NullFxRateSource())
+        agg, stale = PF.portfolio_open_pl(per, FX.NullFxRateSource())
+        self.assertEqual(agg.total_usd, 10.0); self.assertEqual(agg.basis, "PARTIAL")
+        self.assertEqual(stale, [down.id])
+        self.assertIn(down.id, [x["account_id"] for x in agg.unconverted])
+
+    def test_top_level_open_pl_currency_partial(self):
+        # M1: a non-USD position with no rate degrades the TOTAL to PARTIAL (not summed as if USD).
+        u = _user("o7"); a = _acct(u, currency="GBP")
+        fetch = _fake_positions({a.id: [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1,
+                                         "profit": 5.0, "magic": 0}]})
+        _, per = PF.open_positions([a], fetch_positions=fetch, rate_source=FX.NullFxRateSource())
+        agg, stale = PF.portfolio_open_pl(per, FX.NullFxRateSource())
+        self.assertEqual(agg.basis, "PARTIAL"); self.assertEqual(agg.total_usd, 0.0)
+
 
 # ── build_summary (aggregation incl. stopped accounts) ───────────────────────────────────────────────────────
 class SummaryTests(TestCase):
@@ -265,6 +334,16 @@ class SummaryTests(TestCase):
         agg = payload["aggregate"]["balance_usd"]
         self.assertEqual(agg["total_usd"], 1000.0); self.assertEqual(agg["basis"], "PARTIAL")
 
+    def test_summary_carries_daily_basis_and_stale_accounts(self):
+        u = _user("b4"); a = _acct(u)
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: {"balance": 1, "equity": 1, "currency": "USD"},
+                                      fetch_positions=_fake_positions({a.id: []}),   # healthy: reachable, no positions
+                                      rate_source=FX.NullFxRateSource())
+        self.assertEqual(payload["aggregate"]["daily_realized_pnl_basis"], "USD")
+        self.assertEqual(payload["stale_accounts"], [])           # reachable -> nothing dropped
+        self.assertIn("metrics", payload["aggregate"])
+        self.assertEqual(payload["aggregate"]["metrics"]["basis"], "USD")
+
 
 # ── Endpoints (ownership + default scope) ────────────────────────────────────────────────────────────────────
 class ViewTests(TestCase):
@@ -290,7 +369,10 @@ class ViewTests(TestCase):
     def test_open_trades_default_ok(self):
         r = self.c.get("/api/analytics/portfolio/open-trades/")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["reporting_currency"], "USD")
+        body = r.json()
+        self.assertEqual(body["reporting_currency"], "USD")
+        self.assertFalse(body["truncated"])                       # M3: honest row-cap flag, false at normal sizes
+        self.assertIn("stale_accounts", body)
 
     def test_endpoints_are_get_only_no_mutation(self):
         # Observation-only: POST must not be accepted (no execution/mutation surface on these endpoints).

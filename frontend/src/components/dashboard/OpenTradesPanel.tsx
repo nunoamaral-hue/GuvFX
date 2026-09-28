@@ -25,7 +25,11 @@ const STR = {
   open: { en: (n: number) => `${n} open`, ja: (n: number) => `${n} 件` },
   floating: { en: "Floating P/L", ja: "含み損益" },
   none: { en: "No open trades", ja: "オープン取引はありません" },
+  loading: { en: "Loading positions…", ja: "ポジションを読み込み中…" },
+  unavailable: { en: "Positions unavailable", ja: "ポジションを取得できません" },
   partial: { en: "partial", ja: "一部" },
+  staleAccts: { en: (n: number) => `${n} account${n === 1 ? "" : "s"} not reachable`, ja: (n: number) => `${n}口座が取得不可` },
+  showing: { en: (x: number, y: number) => `Showing ${x} of ${y}`, ja: (x: number, y: number) => `${y}件中${x}件を表示` },
   updated: { en: (s: number) => `Updated ${s}s ago`, ja: (s: number) => `${s}秒前に更新` },
   reconnecting: { en: "reconnecting", ja: "再接続中" },
   waiting: { en: "…", ja: "…" },
@@ -112,12 +116,18 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
   const trades: OpenTrade[] = data?.trades ?? [];
   const floating = data?.open_pl_usd;
   const agoSec = updatedAt ? Math.max(0, Math.round((Date.now() - updatedAt) / 1000)) : null;
+  // M4: never-loaded (mount / just after a scope change) is NOT the same as a confirmed empty result.
+  const loading = data === null && !stale;                 // fetch in flight, nothing to show yet
+  const failedFirst = data === null && stale;              // first fetch for this scope failed, no prior data
+  const fullCount = data?.count ?? trades.length;          // full open count (list may be capped server-side)
+  const staleAccts = data?.stale_accounts?.length ?? 0;    // accounts whose positions could not be read (M1)
+  const truncated = !!data?.truncated;                     // row list capped (M3)
 
   return (
     <div style={card} data-testid="open-trades-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
         <div style={{ color: "#e9f4ff", fontSize: "0.95rem", fontWeight: 600 }}>{STR.title[L]}</div>
-        <div style={meta}>{STR.open[L](trades.length)}</div>
+        <div style={meta}>{STR.open[L](fullCount)}</div>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
         <div style={meta}>
@@ -136,7 +146,11 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
 
       {/* Fixed height ~5 rows; the list scrolls internally so the page never jumps on refresh. */}
       <div style={{ maxHeight: 230, overflowY: "auto" }} data-testid="open-trades-list">
-        {trades.length === 0 ? (
+        {loading ? (
+          <div style={{ ...meta, padding: "18px 0", textAlign: "center" }}>{STR.loading[L]}</div>
+        ) : failedFirst ? (
+          <div style={{ ...meta, padding: "18px 0", textAlign: "center" }}>{STR.unavailable[L]}</div>
+        ) : trades.length === 0 ? (
           <div style={{ ...meta, padding: "18px 0", textAlign: "center" }}>{STR.none[L]}</div>
         ) : (
           trades.map((t) => (
@@ -159,6 +173,13 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
           ))
         )}
       </div>
+      {(staleAccts > 0 || truncated) && (
+        <div style={{ ...meta, marginTop: 6 }}>
+          {staleAccts > 0 ? STR.staleAccts[L](staleAccts) : ""}
+          {staleAccts > 0 && truncated ? " · " : ""}
+          {truncated ? STR.showing[L](trades.length, fullCount) : ""}
+        </div>
+      )}
     </div>
   );
 };

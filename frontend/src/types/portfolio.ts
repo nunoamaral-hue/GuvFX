@@ -31,9 +31,10 @@ export type OpenTradesResult = {
   reporting_currency: "USD";
   scope: string;
   generated_at: string;
-  count: number;
+  count: number;                 // full number of open positions (the floating-P/L total covers all of them)
+  truncated?: boolean;           // true when the row list was capped server-side (count still reflects the full set)
   open_pl_usd: UsdAggregate;
-  stale_accounts: number[];
+  stale_accounts: number[];      // accounts whose live positions could not be read (excluded from the total)
   trades: OpenTrade[];
 };
 
@@ -47,10 +48,22 @@ export type PortfolioAccountRow = {
   trading_state: { state: string | null; label: string | null };
   balance_native: number | null;
   equity_native: number | null;
-  net_pnl: number;
+  net_pnl: number | null;        // null when the account's realized P&L cannot be reported as a trustworthy USD figure
   open_count: number;
   open_pl_usd: number | null;
   stale: boolean;
+};
+
+/** Portfolio realized-performance metrics. Monetary/classified fields are null when the money `basis` is PARTIAL
+ *  (a non-USD account excluded, or a mixed-currency trade) — never a mixed-denomination sum. Counts stay valid. */
+export type PortfolioMetrics = {
+  total_trades: number;
+  wins: number | null; losses: number | null; breakeven: number | null;
+  win_rate_pct: number | null; profit_factor: number | null; profit_factor_infinite: boolean;
+  expectancy: number | null; net_pnl_total: number | null;
+  gross_profit: number | null; gross_loss: number | null;
+  max_drawdown_money: number | null; breakeven_rule: string;
+  basis: "USD" | "PARTIAL"; excluded_accounts: number[];
 };
 
 export type PortfolioSummary = {
@@ -59,17 +72,14 @@ export type PortfolioSummary = {
   generated_at: string;
   account_count: number;
   trading_count: number;
+  stale_accounts: number[];
   accounts: PortfolioAccountRow[];
   aggregate: {
     balance_usd: UsdAggregate;
     equity_usd: UsdAggregate;
     open_pl_usd: UsdAggregate;
-    daily_realized_pnl_usd: number;
-    metrics: {
-      total_trades: number; wins: number; losses: number; breakeven: number;
-      win_rate_pct: number; profit_factor: number | null; profit_factor_infinite: boolean;
-      expectancy: number; net_pnl_total: number; gross_profit: number; gross_loss: number;
-      max_drawdown_money: number; breakeven_rule: string;
-    };
+    daily_realized_pnl_usd: number | null;      // null when non-USD/mixed; basis states it
+    daily_realized_pnl_basis: "USD" | "PARTIAL";
+    metrics: PortfolioMetrics;
   };
 };

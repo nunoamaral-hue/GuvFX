@@ -58,6 +58,50 @@ def _net(t: Trade) -> float:
     return float((t.profit or 0) + (t.commission or 0) + (t.swap or 0))
 
 
+def _account_is_usd(account) -> bool:
+    return FX.normalise_currency(getattr(account, "account_currency", None)) == FX.USD
+
+
+def _partition_usd(accounts):
+    """Split ``accounts`` into (USD-denominated, non-USD). The realized-P&L path can only be summed within a single
+    denomination, so non-USD accounts are EXCLUDED from the sum and surfaced (never silently added)."""
+    usd = [a for a in accounts if _account_is_usd(a)]
+    non_usd = [a for a in accounts if not _account_is_usd(a)]
+    return usd, non_usd
+
+
+def _trade_currencies_all_usd(ids, *, stage: str) -> bool:
+    """True unless some in-scope CLOSED trade carries a non-USD (set, non-blank) profit/commission/swap currency.
+
+    Blank/None is treated as USD (estate default). A single trade stores three INDEPENDENT currency fields, so
+    ``_net`` (profit+commission+swap) is only a valid single-denomination number when all three are USD. One
+    existence query; cheap. This is the guard that stops the realized path from ever summing mixed denominations
+    (H1) — the exact invariant ``portfolio_fx`` was written to protect on the balance/open-P/L paths."""
+    from django.db.models import Q
+    if not ids:
+        return True
+    qs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
+    if stage in ("LIVE", "TEST"):
+        qs = qs.filter(source_stage=stage)
+    bad = Q()
+    for f in ("profit_currency", "commission_currency", "swap_currency"):
+        bad |= (Q(**{f"{f}__isnull": False}) & ~Q(**{f: ""}) & ~Q(**{f"{f}__iexact": FX.USD}))
+    return not qs.filter(bad).exists()
+
+
+def _empty_metrics(total: int, basis: str, excluded) -> dict:
+    """Counts-only metrics with every MONETARY/classified field withheld — used when the realized figures cannot be
+    trusted as a single USD denomination (fail-closed: never emit a mixed-currency money number)."""
+    return {
+        "total_trades": total, "wins": None, "losses": None, "breakeven": None,
+        "win_rate_pct": None, "profit_factor": None, "profit_factor_infinite": False,
+        "expectancy": None, "net_pnl_total": None, "gross_profit": None, "gross_loss": None,
+        "max_drawdown_money": None,
+        "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
+        "basis": basis, "excluded_accounts": list(excluded),
+    }
+
+
 def portfolio_metrics(accounts, *, stage: str = "LIVE") -> dict:
     """Portfolio performance computed from the UNDERLYING closed-trade set across ``accounts`` — NOT averaged.
 
@@ -66,8 +110,23 @@ def portfolio_metrics(accounts, *, stage: str = "LIVE") -> dict:
     win_rate = wins/total; profit_factor = Σ gross_profit / Σ |gross_loss| (None if there are no losing trades and
     no profit; flagged infinite if profit but zero loss); expectancy = Σ net / total; max_drawdown = peak-to-trough
     on the chronological cumulative-net curve.
+
+    CURRENCY-HONEST (H1): non-USD accounts are excluded and surfaced under ``excluded_accounts`` (their realized
+    P&L cannot be converted — no vetted FX feed), and if any included trade carries a non-USD currency the whole
+    money block degrades to ``basis="PARTIAL"`` with the monetary fields withheld rather than summed across
+    denominations. ``basis`` is ``"USD"`` only when every account is USD and no trade currency deviates.
     """
-    ids = [a.id for a in accounts]
+    usd_accounts, non_usd = _partition_usd(accounts)
+    excluded = [a.id for a in non_usd]
+    ids = [a.id for a in usd_accounts]
+
+    if not _trade_currencies_all_usd(ids, stage=stage):
+        # Mixed trade currencies within the (USD-account) set: cannot classify or sum honestly -> counts only.
+        cqs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
+        if stage in ("LIVE", "TEST"):
+            cqs = cqs.filter(source_stage=stage)
+        return _empty_metrics(cqs.count(), "PARTIAL", excluded)
+
     qs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
     if stage in ("LIVE", "TEST"):
         qs = qs.filter(source_stage=stage)
@@ -108,20 +167,35 @@ def portfolio_metrics(accounts, *, stage: str = "LIVE") -> dict:
         "gross_profit": round(gross_profit, 2), "gross_loss": round(gross_loss, 2),
         "max_drawdown_money": round(max_dd, 2),
         "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
+        # basis is USD only when the whole scope is a single USD denomination; excluded non-USD accounts surfaced.
+        "basis": ("USD" if not excluded else "PARTIAL"), "excluded_accounts": excluded,
     }
 
 
-def daily_realized_pnl(accounts, *, stage: str = "LIVE") -> float:
-    """Today's (UTC) REALIZED net P&L across accounts (closed positions closed today). Distinct from floating P/L."""
-    ids = [a.id for a in accounts]
+def daily_realized_pnl(accounts, *, stage: str = "LIVE"):
+    """Today's (UTC) REALIZED net P&L across accounts (closed positions closed today). Distinct from floating P/L.
+
+    Returns ``(value|None, basis)`` — currency-honest like ``portfolio_metrics``: non-USD accounts are excluded
+    (``basis="PARTIAL"``), and a mixed trade currency withholds the number entirely (``None``, ``"PARTIAL"``)
+    rather than summing across denominations (H1)."""
+    usd_accounts, non_usd = _partition_usd(accounts)
+    excluded = [a.id for a in non_usd]
+    ids = [a.id for a in usd_accounts]
+    if not _trade_currencies_all_usd(ids, stage=stage):
+        return None, "PARTIAL"
     today = timezone.now().date()
     qs = Trade.objects.filter(account_id__in=ids, close_time__date=today)
     if stage in ("LIVE", "TEST"):
         qs = qs.filter(source_stage=stage)
-    return round(sum(_net(t) for t in qs.only("profit", "commission", "swap")), 2)
+    val = round(sum(_net(t) for t in qs.only("profit", "commission", "swap")), 2)
+    return val, ("USD" if not excluded else "PARTIAL")
 
 
-def account_net_pnl(account, *, stage: str = "LIVE") -> float:
+def account_net_pnl(account, *, stage: str = "LIVE"):
+    """A single account's realized net P&L, or ``None`` when it cannot be reported as a trustworthy USD figure
+    (non-USD account currency, or a trade with a non-USD currency component) — never a mixed-denomination sum."""
+    if not _account_is_usd(account) or not _trade_currencies_all_usd([account.id], stage=stage):
+        return None
     qs = Trade.objects.filter(account_id=account.id, close_time__isnull=False)
     if stage in ("LIVE", "TEST"):
         qs = qs.filter(source_stage=stage)
@@ -159,7 +233,8 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
             logger.warning("portfolio: open-positions fetch raised for account %s", a.id)
             res = None
         if res is None:
-            per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE", "stale": True}
+            per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE",
+                                 "stale": True, "pl_items": []}
             continue
         acct_rows = []
         pl_items = []
@@ -192,8 +267,34 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
         agg = FX.aggregate_usd(pl_items, rate_source)
         per_account[a.id] = {"open_count": len(acct_rows),
                              "open_pl_usd": round(agg.total_usd, 2),
-                             "open_pl_basis": agg.basis, "stale": False}
+                             "open_pl_basis": agg.basis, "stale": False,
+                             # native per-position items kept so the TOP-LEVEL aggregate can preserve PARTIAL
+                             # rather than re-summing an already-USD number (which would always read "USD"). (M1)
+                             "pl_items": pl_items}
     return rows, per_account
+
+
+def portfolio_open_pl(per_account, rate_source: FX.FxRateSource):
+    """Top-level floating-P/L aggregate that PRESERVES per-account PARTIAL and STALE (M1).
+
+    Aggregates the NATIVE per-position items across all non-stale accounts (so a non-convertible currency degrades
+    the whole total to PARTIAL, instead of the previous re-aggregation of pre-summed USD which always reported
+    "USD"), then forces PARTIAL and surfaces every STALE account whose positions could not be read at all — a
+    partial floating-P/L total is never presented as complete. Returns ``(UsdAggregate, stale_ids)``."""
+    items: List[dict] = []
+    stale_ids: List = []
+    for aid, v in per_account.items():
+        if v.get("stale"):
+            stale_ids.append(aid)
+            continue
+        items.extend(v.get("pl_items") or [])
+    agg = FX.aggregate_usd(items, rate_source)
+    if stale_ids:
+        agg.basis = "PARTIAL"
+        for aid in stale_ids:
+            agg.unconverted.append({"account_id": aid, "native": None, "native_currency": "",
+                                    "reason": "stale_read"})
+    return agg, stale_ids
 
 
 def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_positions: Callable,
@@ -206,7 +307,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
 
     open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source)
 
-    bal_items, eq_items, open_pl_items = [], [], []
+    bal_items, eq_items = [], []
     acct_payloads = []
     trading_count = 0
     for a in accounts:
@@ -240,13 +341,13 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         })
         bal_items.append({"account_id": a.id, "amount": balance, "currency": cur})
         eq_items.append({"account_id": a.id, "amount": equity, "currency": cur})
-        if op.get("open_pl_usd") is not None and not op.get("stale"):
-            open_pl_items.append({"account_id": a.id, "amount": op["open_pl_usd"], "currency": FX.USD})
 
     bal_agg = FX.aggregate_usd(bal_items, rate_source)
     eq_agg = FX.aggregate_usd(eq_items, rate_source)
-    open_pl_agg = FX.aggregate_usd(open_pl_items, rate_source)
+    # Floating P/L: aggregate NATIVE items and carry through PARTIAL/STALE (M1), not a re-sum of per-account USD.
+    open_pl_agg, open_stale = portfolio_open_pl(per_open, rate_source)
     metrics = portfolio_metrics(accounts, stage=stage)
+    daily_val, daily_basis = daily_realized_pnl(accounts, stage=stage)
 
     payload = {
         "reporting_currency": FX.USD,
@@ -254,12 +355,14 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         "generated_at": timezone.now().isoformat(),
         "account_count": len(accounts),
         "trading_count": trading_count,
+        "stale_accounts": open_stale,
         "accounts": acct_payloads,
         "aggregate": {
             "balance_usd": bal_agg.as_dict(),
             "equity_usd": eq_agg.as_dict(),
             "open_pl_usd": open_pl_agg.as_dict(),
-            "daily_realized_pnl_usd": daily_realized_pnl(accounts, stage=stage),  # accounts are USD today; see FX notes
+            "daily_realized_pnl_usd": daily_val,            # None when non-USD/mixed; basis states it (H1)
+            "daily_realized_pnl_basis": daily_basis,
             "metrics": metrics,
         },
     }

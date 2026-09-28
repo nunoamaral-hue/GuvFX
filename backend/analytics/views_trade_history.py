@@ -159,7 +159,14 @@ def _fetch_mt5_open_positions(account, windows_username: str) -> Optional[list]:
                      or _inner.get("login") or adata.get("login"))
         obs_server = (adata.get("account_server") or _inner.get("account_server")
                       or _inner.get("server") or adata.get("server"))
-        if not verify_snapshot_identity(account, obs_login, obs_server).ok:
+        # The hosted per-tenant base is already tenant-isolated by construction; the endpoint-less LEGACY global
+        # agent is shared, so on that path the server name must additionally match AND be present — a missing
+        # observed server is a refusal, not a pass (M2 fail-closed). Two legacy accounts on different brokers can
+        # otherwise share a login and read each other via the one global agent. Per-tenant reads (the whole
+        # certified estate) keep require_server=False, so their behaviour is byte-identical.
+        _legacy = not getattr(st, "per_tenant", False)
+        if not verify_snapshot_identity(account, obs_login, obs_server, require_server=_legacy).ok \
+                or (_legacy and not str(obs_server or "").strip()):
             logger.warning("MT5 positions identity firewall refused for account %s", getattr(account, "id", None))
             return None
     except Exception as e:  # noqa: BLE001

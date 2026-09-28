@@ -27,6 +27,12 @@ from analytics.views_trade_history import (
     _account_windows_username, _fetch_mt5_account_balance, _fetch_mt5_open_positions,
 )
 
+# Bound the rows returned to the client so the open-trades payload can never grow without limit as the estate
+# scales (M3). The floating-P/L TOTAL is computed from every position (never capped); only the displayed row
+# LIST is bounded, and ``truncated``/``count`` tell the client honestly when it was. Live open positions across a
+# customer's accounts are normally far below this.
+_MAX_OPEN_ROWS = 300
+
 
 def _rate_source() -> FX.FxRateSource:
     # No vetted internal FX feed exists yet; USD->USD only, honest PARTIAL for anything else.
@@ -66,14 +72,17 @@ class PortfolioOpenTradesView(APIView):
         if err is not None:
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
         rows, per_open = PF.open_positions(accounts, fetch_positions=_positions_fetcher, rate_source=_rate_source())
-        open_pl = FX.aggregate_usd(
-            [{"account_id": aid, "amount": v["open_pl_usd"], "currency": FX.USD}
-             for aid, v in per_open.items() if v.get("open_pl_usd") is not None and not v.get("stale")],
-            _rate_source())
+        # Preserve per-account PARTIAL/STALE in the top-level total (M1): a floating-P/L total that dropped a
+        # non-convertible or unreadable account is reported PARTIAL with those accounts surfaced, never "USD".
+        open_pl, stale_ids = PF.portfolio_open_pl(per_open, _rate_source())
+        total_count = len(rows)
+        truncated = total_count > _MAX_OPEN_ROWS
         from django.utils import timezone
         return Response({
             "reporting_currency": FX.USD, "scope": scope, "generated_at": timezone.now().isoformat(),
-            "count": len(rows), "open_pl_usd": open_pl.as_dict(),
-            "stale_accounts": [aid for aid, v in per_open.items() if v.get("stale")],
-            "trades": rows,
+            "count": total_count,                       # full number of open positions (floating-P/L covers all)
+            "truncated": truncated,                     # True when the row LIST below was capped at _MAX_OPEN_ROWS
+            "open_pl_usd": open_pl.as_dict(),
+            "stale_accounts": stale_ids,
+            "trades": rows[:_MAX_OPEN_ROWS],
         })
