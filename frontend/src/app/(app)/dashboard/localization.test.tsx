@@ -12,6 +12,19 @@ const { apiFetch, locale } = vi.hoisted(() => ({
     if (path.startsWith("/api/backtests/feature-attribution/")) return { ok: true, normalisation_attribution: {} };
     if (path.startsWith("/api/auth/me/")) return { first_name: "Beta" };
     if (path.startsWith("/api/onboarding/account-status/")) return { overall: "HEALTHY", stages: [] };
+    // The strategy proper-noun ("Wayond WIM Strategy") now appears as Open Trades per-position attribution (the old
+    // "Your Strategies" card was replaced by the Open Trades panel). One open position keeps this test's proper-noun
+    // passthrough coverage in the new UI: it must stay English even in the JA view.
+    if (path.startsWith("/api/analytics/portfolio/open-trades/")) return {
+      reporting_currency: "USD", scope: "28", generated_at: new Date().toISOString(), count: 1, truncated: false,
+      open_pl_usd: { total_usd: 12.45, basis: "USD", converted_count: 1, unconverted: [] },
+      stale_accounts: [],
+      trades: [{
+        position_id: "28:100", ticket: 100, account_id: 28, broker: "Taurex", account_masked: "••••2575",
+        symbol: "XAUUSD", side: "BUY", volume: 0.01, open_price: 2400, current_price: 2412,
+        pl_native: 12.45, pl_native_currency: "USD", pl_usd: 12.45, strategy: "Wayond WIM Strategy",
+      }],
+    };
     if (path.startsWith("/api/analytics/trade-history/")) return {
       mt5_balance_current: 49994.55,
       mt5_equity_current: 49994.55,
@@ -64,6 +77,8 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     await screen.findByText("ホステッドワークスペース · 1302575");
     await screen.findByText(/注目: ATR Breakout/);
     await screen.findAllByText("中程度の信頼度");
+    // Open Trades resolves asynchronously; wait for its strategy attribution before snapshotting the DOM.
+    await waitFor(() => expect(container.textContent || "").toContain("Wayond WIM Strategy"));
 
     const text = container.textContent || "";
     expect(text).toContain("買い手と売り手が拮抗し、価格は明確に抜けるよりも既存のレンジ内で推移する時間が長くなっています。");
