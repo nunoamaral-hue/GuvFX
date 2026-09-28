@@ -107,19 +107,28 @@ def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]
                                getattr(account, "id", None), _idc.reason_code)
                 return None
 
+            # Attach the TRUE observed session identity (already firewall-verified above) to whatever balance dict
+            # we return, so a downstream persister (equity ledger) records the actual observed identity for audit
+            # instead of falling back to the account's expected identity. Additive keys; never overwrite existing.
+            def _with_identity(d):
+                if isinstance(d, dict):
+                    d.setdefault("account_login", observed_login)
+                    d.setdefault("account_server", observed_server)
+                return d
+
             # Handle nested response shapes
             # Shape 1: {"ok": true, "data": {"account": {...}}}
             if isinstance(data.get("data"), dict):
                 inner = data["data"]
                 if isinstance(inner.get("account"), dict):
-                    return inner["account"]
+                    return _with_identity(inner["account"])
                 # Shape 2: {"ok": true, "data": {"balance": ...}}
                 if "balance" in inner:
-                    return inner
+                    return _with_identity(inner)
 
             # Shape 3: direct {"balance": ..., "equity": ...}
             if "balance" in data:
-                return data
+                return _with_identity(data)
 
             logger.warning(f"Unexpected MT5 account response shape: {list(data.keys())}")
             return None

@@ -1,5 +1,32 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-28 — Analytics integrity: equity snapshot ledger (Part A) + broker-time normalisation (Part B)
+
+- **Scope / decision.** Sponsor-authorized stream after the P0 (#432): durable equity ledger + truthful equity
+  curves; broker-time normalisation. Forensic-first; preserve-until-proven. Branch `feat/equity-snapshot-ledger`
+  off main `e2e176f`.
+- **Verified fact vs assumption.** *Verified (read-only prod):* MT5 `deal.time` is broker SERVER wall-time —
+  `open_time` is EXACTLY +3.0h ahead of `created_at` (true-UTC) for all 3 brokers → UTC+3 now; bridge exposes no
+  `time_msc`/`server_time`/`server_timezone`; no existing equity time-series model. *Assumption:* the DST-aware
+  per-broker IANA zone (needed to migrate history) is not authoritatively knowable from the bridge → NOT migrated.
+- **What changed.** Part A (backend): `analytics.AccountEquitySnapshot` (mig 0001); `analytics/equity_snapshots.py`
+  (capture: identity-verified require_server, throttled + `select_for_update`; curves: freshness-windowed
+  PARTIAL/STALE, bisect, snapshot-native-currency FX, no interpolation); `capture_equity_snapshots` DARK command +
+  `deploy/equity-snapshots/` cron; `PortfolioEquityCurveView` (bounded `days`); `_fetch_mt5_account_balance` now
+  surfaces the observed identity (audit provenance). Frontend: page.tsx equity-curve now snapshot-driven with
+  building/partial states (per-account fallback preserved). Part B (DARK): `BrokerServer.server_timezone` (mig 0018)
+  + `analytics/broker_time.py` (DST-aware, fail-safe) + `measure_broker_offset`.
+- **Deviations from packet.** Canonical-UTC migration + Daily-window change DEFERRED (packet B3/B5/B6 — no
+  authoritative per-broker tz; keep Daily stable). Snapshot source is the on-demand attach (not the host observer) —
+  zero-attach pipeline-B is a follow-up. floating_pnl = equity−balance (approx). All in `docs/KNOWN_ISSUES.md`.
+- **Exact tests.** `analytics.tests_equity_snapshots` 29; `analytics trading` full 425; frontend build + 358 vitest
+  (via `--no-experimental-webstorage` for the Node-25 localStorage GOTCHA). Adversarial review: HIGH + 6 MED + 2 LOW
+  fixed/documented.
+- **Commit and branch state.** Branch `feat/equity-snapshot-ledger` off `e2e176f` — see Git Status footer. Estate
+  25/35/36 read-only; nothing manufactured.
+- **One bounded next action.** Push + open PR; on green CI → merge → deploy (2 migrations) → install cron + arm
+  `EQUITY_SNAPSHOT_LEDGER_ENABLED=1` → run capture once → Phase-G cert → Phase-H regression.
+
 ## 2026-09-28 — P0 dashboard financial correctness: stage-filter root cause + adversarial hardening
 
 - **Scope / decision.** Sponsor P0: ALL-accounts dashboard showed Daily/Net/WinRate = $0 despite real Taurex closed

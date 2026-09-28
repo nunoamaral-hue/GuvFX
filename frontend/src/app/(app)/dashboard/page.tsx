@@ -20,7 +20,7 @@ import { useLang } from "@/components/AppShell";
 import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
 import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
 import type { PortfolioSummary } from "@/types/portfolio";
-import { localeFor, t, type Lang } from "@/lib/i18n";
+import { localeFor, type Lang } from "@/lib/i18n";
 import {
   formatCustomerAccountDisplay,
   localizeActiveBetaCopy,
@@ -352,6 +352,18 @@ export default function DashboardPage() {
   }, [scope]);
   // Only trust the summary when it belongs to the current scope (guards the scope-change window).
   const portfolioForScope = portfolio && String(portfolio.scope) === String(scope) ? portfolio : null;
+  // Truthful equity curve from the durable snapshot ledger (ALL = portfolio curve; account = that account's curve).
+  // Empty/one-point ledger -> state BUILDING/SINGLE so the UI shows "history is building", never a fake trend.
+  type EquityCurve = { state?: string; count?: number; points?: { equity_usd?: number; equity?: number | null }[] };
+  const [eqCurve, setEqCurve] = useState<{ forScope: string; data: EquityCurve } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const forScope = scope;
+    apiFetch<EquityCurve>(`/api/analytics/portfolio/equity-curve/?scope=${encodeURIComponent(scope)}`, {})
+      .then((d) => { if (live) setEqCurve({ forScope, data: d || {} }); })
+      .catch(() => { if (live) setEqCurve({ forScope, data: {} }); });
+    return () => { live = false; };
+  }, [scope]);
   // Per-account performance (trade-history) and today's realized P/L. Each result carries the account id it
   // describes, so a scope change can never briefly show the previous account's numbers (H2): they are trusted
   // below only when acctId === the scoped primary account.
@@ -553,6 +565,13 @@ export default function DashboardPage() {
   const expLabel = snap.expMoney == null ? null : snap.expMoney >= 0 ? { t: "Positive", c: "#86efac" } : { t: "Negative", c: "#fca5a5" };
   const wrLabel = snap.winRatePct != null ? (snap.winRatePct >= 50 ? { c: "#86efac" } : { c: "#fbbf24" }) : null;
 
+  // Snapshot-ledger equity curve for the current scope (trusted only when it belongs to this scope). ALL scope uses
+  // the portfolio equity_usd series; account scope uses that account's equity series.
+  const curve = eqCurve && eqCurve.forScope === scope ? eqCurve.data : null;
+  const curveValues = (curve?.points || [])
+    .map((p) => (isAll ? p.equity_usd : p.equity))
+    .filter((v): v is number => typeof v === "number");
+
   // ── Derived: Market Focus ──
   const ms = selection?.market_state;
   const ctx = ms?.context;
@@ -712,8 +731,11 @@ export default function DashboardPage() {
           {/* Equity curve — compact context (per-account observed series; the portfolio view has no single curve) */}
           <div style={{ width: 250, minWidth: 200, paddingLeft: "1.4rem", borderLeft: "1px solid rgba(255,255,255,0.045)" }}>
             <div style={{ ...microLabel, fontSize: "0.64rem", marginBottom: 4 }}>Equity Curve (Observed)</div>
-            {snap.series.length > 1 ? <Sparkline values={snap.series} color={trend.color} w={230} h={42} />
-              : <div style={{ ...muted, fontSize: "0.68rem" }}>{isAll ? "Per-account equity curves are on each account's page." : t(lang, "legal.microDisclaimer")}</div>}
+            {curveValues.length > 1
+              ? <Sparkline values={curveValues} color={trend.color} w={230} h={42} />
+              : (!isAll && snap.series.length > 1)
+                ? <Sparkline values={snap.series} color={trend.color} w={230} h={42} />
+                : <div style={{ ...muted, fontSize: "0.68rem" }}>{lang === "ja" ? "エクイティ履歴を構築中…" : "Equity history is building…"}</div>}
           </div>
         </div>
       </div>

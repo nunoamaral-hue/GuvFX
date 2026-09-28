@@ -98,3 +98,30 @@ class PortfolioOpenTradesView(APIView):
             "stale_accounts": stale_ids,
             "trades": rows[:_MAX_OPEN_ROWS],
         })
+
+
+class PortfolioEquityCurveView(APIView):
+    """Truthful equity curve from the durable snapshot ledger. ``scope=ALL`` -> portfolio curve (freshness-aligned,
+    USD, PARTIAL/STALE-honest); ``scope=<account_id>`` -> that account's observed curve. Never fabricates history:
+    an empty/one-point ledger returns state BUILDING/SINGLE so the UI shows "history is building" rather than a
+    misleading trend. Observation-only; scoped to the caller's OWNED accounts (IDOR-safe via resolve_scope)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.utils import timezone
+        from analytics import equity_snapshots as EQ
+        scope = request.query_params.get("scope", "ALL")
+        accounts, err = PF.resolve_scope(request.user, scope)
+        if err is not None:
+            return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
+        # Bounded default window so a single request never materialises the whole snapshot history (scale). Overridable
+        # via ?days= (clamped 1..365); the read/downsample stays inside the ledger functions.
+        try:
+            days = max(1, min(365, int(request.query_params.get("days", "90"))))
+        except (TypeError, ValueError):
+            days = 90
+        since = timezone.now() - timedelta(days=days)
+        if scope.strip().upper() == "ALL":
+            return Response(EQ.portfolio_equity_curve(accounts, rate_source=_rate_source(), since=since))
+        return Response(EQ.account_equity_curve(accounts[0], since=since))
