@@ -14,6 +14,34 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - MEMBER ACCOUNT LIFECYCLE (Start/Stop/Remove) — RECONCILED + Stop hardened; capacity/entitlement
+  design (pre-capacity-upgrade).** RECONCILE-FIRST packet. **Start: WORKS in prod** — `POST
+  /api/trading/accounts/<id>/set-active/ {is_active:true}` runs the certified managed lifecycle
+  (`trading/managed_start.py`), and prod flags are ON (`MANAGED_START_TRADING_ENABLED=1`,
+  `MANAGED_START_AUTHORIZES_EXECUTION=1`, `HOSTED_PERSISTENT_MT5_ENABLED=1`, `HOSTED_MT5_EXECUTION_ENABLED=1`,
+  `HOSTED_OBSERVATION_SCHEDULER_ENABLED=1`, `HOSTED_CAPABILITY_RECOVERY_ENABLED=1`) — so validate→confirm→authorize→
+  arm→EXECUTION_READY all function (the repo "DARK by default" is overridden by prod env). **Stop: WORKS** (same
+  endpoint `{is_active:false}`) and was HARDENED here: flip `is_active=False` first inside a txn (authoritative
+  execution kill — refuses new exposure at ExecutionJob.save + every hosted claim at readiness), then sweep queued
+  PLACE_ORDER/OPEN_TRADE to FAILED; trade-management jobs (MODIFY_POSITION/CLOSE/SYNC) deliberately NOT swept
+  (broker SL/TP + ladder preserved); NEVER closes positions. **Adversarial review caught + I removed a disarm-on-Stop
+  regression** (operator-grade `disarm` sets `auto_arm_suppressed=True`, which the async auto-arm cron a later START
+  relies on permanently skips → Stop→Start would stick armed-off). Stop now leaves the arm untouched → Stop→Start
+  trivially reversible (same account/assignment/magic/sizing). **Remove: WORKS end-to-end** (PR #425 tombstone) —
+  `POST /accounts/<id>/remove/` → `remove_account`: open-position gate (409), IDOR-safe, idempotent, disarm,
+  retire_endpoint, beta-slot release, credential destroy, entitlement release (excludes tombstoned), history/analytics
+  RETAINED; frontend Remove + confirmation reachable for support@ (broker_accounts_ux capability). **GAP (documented,
+  capacity-prerequisite): physical host teardown NOT triggered** — no TERMINATE_TERMINAL/END_SESSION primitive; the
+  tenant MT5 process/RemoteApp/bridge keep running after removal (negligible at 3 accounts; must be a host-op before
+  20-account scale). **Entitlement baseline 3/5** (support@ `EntitlementOverride`: max_trading_accounts={value:5},
+  concurrent_broker_account_limit={value:5}, account_mode=concurrent, concurrent_accounts_enforcement granted). **5→20
+  mechanism (design only, NOT applied): update those two `override_value` to {value:20}** (reversible data change; no
+  code/migration). **Windows host baseline (read-only):** Win Server 2025, 8 vCPU (1 socket), 32 GB (23.9 free), C:
+  479 GB (396 free), 6 MT5 terminals (~97 MB each), 373 procs, ~22% CPU load. Safe=12/ceiling=16 on this box
+  (CPU-bound); 20 needs a vCPU upgrade (Sponsor does the Fasthosts upgrade). Tests: trading 317 (Stop +2). Estate
+  25/35/36 untouched; nothing manufactured; entitlement NOT changed. Branch `fix/member-lifecycle-stop-hardening`.
+
+
 - **2026-09-28 - EQUITY LEDGER + BROKER-TIME — MERGED + DEPLOYED + CERTIFIED = `EQUITY_LEDGER_LIVE` /
   `BROKER_TIME_MECHANISM_READY`.** #433 merged squash → main `2a26262`; deployed backend+worker image `0a479b0`
   (rollback `rollback-pre433`=`85e0456e`); migrations **trading.0018 + analytics.0001 applied OK**; flag

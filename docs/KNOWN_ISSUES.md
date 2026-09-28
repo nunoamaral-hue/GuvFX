@@ -2,6 +2,41 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 P2 MEMBER LIFECYCLE + CAPACITY (recorded 2026-09-28) — Remove teardown, entitlement 5→20, host upgrade
+
+Start/Stop/Remove reconciled + Stop hardened (see STATUS 2026-09-28). Remaining, all gated behind the Sponsor's
+Fasthosts Windows upgrade:
+
+- **[CAPACITY-PREREQUISITE] Remove does not trigger physical host teardown.** `remove_account` tombstones + releases
+  entitlement + disarms + retires the endpoint (DB) + destroys credentials, but dispatches ZERO host ops: the tenant
+  `terminal64` process, RemoteApp alias, AppLocker rule and order-bridge keep running after removal
+  (`host_agent_dispatch.py` has REMOVE_REMOTEAPP/REMOVE_APPLOCKER but NO TERMINATE_TERMINAL/END_SESSION, and none are
+  called on removal). Negligible at 3 accounts; **must be a dedicated host-op (add a terminate/end-session primitive +
+  wire the existing REMOVE_REMOTEAPP/REMOVE_APPLOCKER into `remove_account`'s best-effort teardown) BEFORE scaling to
+  20**, else decommissioned accounts leave idle MT5 processes consuming host CPU/RAM. Fail-closed already holds: the
+  account stays tombstoned/non-tradable/non-entitlement-consuming even if host cleanup is deferred.
+- **[FOLLOW-UP] Remove open-position gate trusts the DB Trade mirror**, not a live broker read (`account_removal.py`:
+  `Trade.close_time IS NULL` count). If ingestion is stale, a truly-open position could be missed. Consider a live
+  broker position read before decommission for extra safety.
+- **[DESIGN, NOT APPLIED] support@ entitlement 5 → 20.** Caps come from `admin_ops.EntitlementOverride` rows (runtime
+  data). support@ (user 29) has `max_trading_accounts={value:5}` + `concurrent_broker_account_limit={value:5}` +
+  `account_mode={value:concurrent}` + `concurrent_accounts_enforcement={granted:true}` (enforcement is LIVE).
+  **Exact change to raise to 20: set both numeric `override_value`s to {value:20}** (update the two rows, or add
+  superseding active rows), keeping account_mode/enforcement. Reversible; no code, no migration, no UI-only change.
+  entitlement-summary then reports 3/20 and provisioning caps at 20 backend-side. **Activation gate:** (1) Sponsor
+  upgrades the Windows server; (2) measure new resources; (3) capacity assessment passes for 20 MT5 with safe
+  headroom; (4) THEN update the two override rows; (5) verify entitlement-summary = active/20; (6) confirm the
+  per-node `TerminalNode.max_accounts` cap also permits it. **NOT changed in this packet.**
+- **[HANDOFF] Windows host capacity baseline (2026-09-28, pre-upgrade, read-only).** Win Server 2025 Datacenter;
+  8 vCPU (1 socket, 8 logical); 32 GB RAM (23.9 GB free ≈ 8 GB used at 6 terminals); C: 479 GB (396 free); 6
+  `terminal64` processes (~97 MB working set each, 585 MB total); 373 processes; ~22% CPU load mid-session
+  (guacd/RemoteApp run on the separate Linux stack). Documented ceiling: safe=12 / hard-ceiling=16 concurrent MT5 on
+  THIS box (binding constraint = CPU on correlated XAUUSD-tick bursts; RAM/disk hugely spare). **20 concurrent MT5
+  exceeds this box → the upgrade must add vCPU (target ≥16 vCPU), keep ≥32 GB RAM (20×~100 MB ≈ 2 GB WS, RAM is not
+  binding). Post-upgrade, RE-MEASURE:** vCPU/RAM/disk/Windows build, then a CPU load test under 20 concurrent
+  XAUUSD-tick terminals (the binding metric) confirming headroom at peak, and the RDS CAL/grace status
+  (grace ends ~2026-12-07). Only then raise the entitlement.
+
 ## 🟠 P2 EQUITY LEDGER + BROKER-TIME (recorded 2026-09-28) — decisions & follow-ups
 
 Part A (equity snapshot ledger + curves) shipped backend-only + DARK. Part B (broker-time) ships a DARK mechanism +
