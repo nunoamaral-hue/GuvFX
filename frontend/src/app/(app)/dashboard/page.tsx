@@ -17,6 +17,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLang } from "@/components/AppShell";
+import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
+import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
+import type { PortfolioSummary } from "@/types/portfolio";
 import { localeFor, t, type Lang } from "@/lib/i18n";
 import {
   formatCustomerAccountDisplay,
@@ -322,9 +325,34 @@ function SectionCard({ icon, title, info, children, action, style }: { icon: str
   );
 }
 
+const SCOPE_LS = "guvfx.dashboard.scope";
+
 export default function DashboardPage() {
   const lang = useLang();
   const [firstName, setFirstName] = useState<string | null>(null);
+  // Portfolio scope: "ALL" (default, whole portfolio) or a specific owned account id (as string). Drives the whole
+  // dashboard. Persisted per-browser (a convenience only; never a security boundary — the backend enforces ownership).
+  // Lazy initialiser (not an effect) reads the stored scope without a synchronous setState-in-effect.
+  const [scope, setScope] = useState<string>(() => {
+    if (typeof window === "undefined") return "ALL";
+    try { return localStorage.getItem(SCOPE_LS) || "ALL"; } catch { return "ALL"; }
+  });
+  const changeScope = (s: string) => {
+    setScope(s);
+    try { localStorage.setItem(SCOPE_LS, s); } catch { /* ignore */ }
+  };
+  // Portfolio summary for the current scope. The payload echoes its scope, so we only render it when it matches the
+  // selected scope (a stale-scope response can never drive the header). No synchronous reset in the effect body.
+  const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiFetch<PortfolioSummary>(`/api/analytics/portfolio/summary/?scope=${encodeURIComponent(scope)}`, {})
+      .then((p) => { if (live) setPortfolio(p || null); })
+      .catch(() => { if (live) setPortfolio(null); });
+    return () => { live = false; };
+  }, [scope]);
+  // Only trust the summary when it belongs to the current scope (guards the scope-change window).
+  const portfolioForScope = portfolio && String(portfolio.scope) === String(scope) ? portfolio : null;
   const [dailyPnl, setDailyPnl] = useState<number | null>(null);
   // Per-strategy 30D stats from the existing daily-pnl endpoint (totals only)
   const [stratPerf, setStratPerf] = useState<Record<number, { net_pnl: number; win_rate: number; trades: number }>>({});
@@ -458,7 +486,11 @@ export default function DashboardPage() {
   }, [symbol]);
 
   // ── Derived: performance ──
-  const primaryAcct = accounts.find((a) => a.is_active) || accounts[0];
+  // When a specific account scope is selected, it is the primary account for the per-account cards; ALL scope keeps
+  // the default primary for cards that still need a single account, while the header/summary shows the portfolio.
+  const scopedAcct = scope !== "ALL" ? accounts.find((a) => String(a.id) === scope) : undefined;
+  const primaryAcct = scopedAcct || accounts.find((a) => a.is_active) || accounts[0];
+  const isAll = scope === "ALL";
   const stats = perf?.observed_stats;
   const series = perf?.balance_series || [];
   const equitySeries = series.map((p) => p.balance_after_trade);
@@ -525,6 +557,9 @@ export default function DashboardPage() {
         <div>
           <h1 className="dashboard-greeting" style={{ fontSize: "1.9rem", margin: 0, color: "#f0f6ff", fontWeight: 650, letterSpacing: "-0.01em" }}>{lang === "ja" ? <>{localizeActiveBetaCopy(lang, greeting())}、<span className="dashboard-greeting-name">{firstName || "トレーダー"}さん 👋</span></> : `${greeting()}, ${firstName || "Trader"} 👋`}</h1>
           <p style={{ margin: "0.45rem 0 0", fontSize: "0.95rem", color: "#94a3b8", fontWeight: 400 }}>Here&apos;s your edge today.</p>
+          <div style={{ marginTop: "0.7rem" }}>
+            <PortfolioScopeSelector accounts={accounts} scope={scope} onChange={changeScope} lang={lang} />
+          </div>
         </div>
 
         {/* Account Status Summary */}
@@ -548,7 +583,12 @@ export default function DashboardPage() {
                 </div>
               );
             })()}
-            {primaryAcct && (
+            {isAll ? (
+              <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>
+                {portfolioForScope ? `${portfolioForScope.account_count} broker accounts · ${portfolioForScope.trading_count} trading`
+                                   : "All accounts"}
+              </div>
+            ) : primaryAcct && (
               <div style={{ fontSize: "0.73rem", color: "#8b9bb4", marginTop: 4 }}>
                 {formatCustomerAccountDisplay(lang, {
                   brokerName: primaryAcct.broker_name,
@@ -568,14 +608,28 @@ export default function DashboardPage() {
             })()}
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 110 }}>
-            <div style={microLabel}><i className="ti ti-wallet" aria-hidden="true" style={{ marginRight: 5 }} />Equity</div>
-            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#f0f6ff" }}>{money(lang, equityRef, perf?.currency)}</div>
+            <div style={microLabel}><i className="ti ti-wallet" aria-hidden="true" style={{ marginRight: 5 }} />Equity{isAll ? " (USD)" : ""}</div>
+            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#f0f6ff" }}
+                 title={isAll && portfolioForScope?.aggregate.equity_usd.basis === "PARTIAL" ? "Some accounts use a currency that could not be converted to USD and are excluded" : undefined}>
+              {isAll
+                ? (portfolioForScope
+                    ? `$${portfolioForScope.aggregate.equity_usd.total_usd.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${portfolioForScope.aggregate.equity_usd.basis === "PARTIAL" ? " *" : ""}`
+                    : "—")
+                : money(lang, equityRef, perf?.currency)}
+            </div>
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 120 }}>
-            <div style={microLabel}><i className={`ti ti-trending-${dailyPnl != null && dailyPnl < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL</div>
-            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dailyPnl == null ? "#f0f6ff" : dailyPnl < 0 ? "#fca5a5" : "#86efac" }}>
-              {dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : "-"}${perf?.currency ? perf.currency + " " : "$"}${Math.abs(dailyPnl).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            </div>
+            {(() => {
+              // ALL scope: portfolio REALIZED daily P/L (USD, from the trade set). Specific account: per-account daily.
+              const dp = isAll ? (portfolioForScope ? portfolioForScope.aggregate.daily_realized_pnl_usd : null) : dailyPnl;
+              const unit = isAll ? "$" : (perf?.currency ? perf.currency + " " : "$");
+              return (<>
+                <div style={microLabel}><i className={`ti ti-trending-${dp != null && dp < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL{isAll ? " (realized)" : ""}</div>
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }}>
+                  {dp == null ? "—" : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                </div>
+              </>);
+            })()}
           </div>
           <div style={{ padding: "0 1.5rem", display: "flex", flexDirection: "column", justifyContent: "space-between", minWidth: 130 }}>
             <div>
@@ -690,57 +744,11 @@ export default function DashboardPage() {
         <div style={{ fontSize: "0.68rem", color: "#475569", marginTop: "auto", paddingTop: "0.8rem" }}>Research context — not a trade signal, prediction, or recommendation. &quot;Worth researching&quot; means conditions align for further study, nothing more.</div>
       </div>
 
-      {/* Your Strategies — fixed right card */}
-      <div style={{ ...glass, flex: "0 1 350px", minWidth: 300, display: "flex", flexDirection: "column" }}>
-        <div style={{ ...secHeader, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>Your Strategies<InfoDot text="Strategies on your account. Status reflects assignment stage — not a performance judgment." /></span>
-          <Link href="/strategies" style={{ fontSize: "0.7rem", color: "#4ab3ff", textTransform: "none", fontWeight: 400, textDecoration: "none" }}>View all →</Link>
-        </div>
-        {strategies.length === 0 ? (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, textAlign: "center", padding: "1.2rem 0" }}>
-            <div style={muted}>No strategies yet.</div>
-            <Link href="/strategies/create" style={actionLink}>Create a strategy →</Link>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", flex: 1, justifyContent: "flex-start" }}>
-            {/* Stat column headers — once, not per row */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "0 0.1rem 0.35rem" }}>
-              <div style={{ flex: 1, minWidth: 0 }} />
-              <div style={{ display: "flex", alignItems: "center", gap: 12, paddingLeft: 12 }}>
-                <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.58rem", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" }}>PnL 30D</div>
-                <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.58rem", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" }}>W/L</div>
-                <div style={{ minWidth: 44, textAlign: "right", fontSize: "0.58rem", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" }}>Health</div>
-              </div>
-              <span aria-hidden="true" style={{ width: 7 }} />
-            </div>
-            {strategies.slice(0, 3).map((s) => {
-              const h = health(s);
-              const syms = (s.symbol_universe || "").replace(/[[\]'"]/g, "").split(/[,;\s]+/).filter(Boolean);
-              const mkts = syms.slice(0, 2).map((x) => marketName(lang, x)).join(" · ") || "No markets assigned";
-              const stage = stageFor(s.id);
-              const sp = stratPerf[s.id];
-              return (
-                <Link key={s.id} href={`/strategies/${s.id}`} style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: 12, padding: "0.55rem 0.1rem", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e9f4ff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
-                    <div style={{ fontSize: "0.68rem", color: "#94a3b8", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mkts}{stage ? ` · ${localizeControlledEnum(lang, "status", stage)}` : ""}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, borderLeft: "1px solid rgba(255,255,255,0.05)", paddingLeft: 12 }}>
-                    <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.76rem", fontWeight: 600, color: !sp || !sp.trades ? "#94a3b8" : sp.net_pnl < 0 ? "#fca5a5" : "#86efac" }}>{!sp || !sp.trades ? "—" : money(lang, sp.net_pnl, perf?.currency)}</div>
-                    <div style={{ minWidth: 52, textAlign: "right", fontSize: "0.76rem", fontWeight: 600, color: "#e9f4ff" }}>{!sp || !sp.trades ? "—" : `${sp.win_rate}%`}</div>
-                    <div style={{ minWidth: 44, textAlign: "right" }}><Badge color={h.c}>{h.t}</Badge></div>
-                  </div>
-                  <span aria-hidden="true" style={{ color: "#64748b", fontSize: "1rem", lineHeight: 1 }}>›</span>
-                </Link>
-              );
-            })}
-          </div>
-        )}
-        {/* Bottom action — always present so the card feels fixed */}
-        <div style={{ marginTop: "auto", borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "0.65rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: "0.68rem", color: "#64748b" }}>{strategies.length > 3 ? `+${strategies.length - 3} more` : ""}</span>
-          <Link href="/strategies" style={actionLink}>Manage strategies →</Link>
-        </div>
+      {/* OPEN TRADES — replaces "Your Strategies" (monitoring only). Strategy management remains in
+          Broker Accounts → Manage Strategies and in My Strategies. Live floating P/L, 30s read-only refresh,
+          account-attributed, scoped by the portfolio selector. */}
+      <div style={{ flex: "0 1 350px", minWidth: 300 }}>
+        <OpenTradesPanel scope={scope} lang={lang} />
       </div>
       </div>
 

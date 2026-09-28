@@ -51,6 +51,9 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     apiFetch.mockClear();
     window.localStorage.clear();
     window.localStorage.setItem("guvfx.focus.symbol", "XAUUSD");
+    // View the specific account (not the default ALL-portfolio scope) so the per-account identity + metrics render;
+    // the ALL-scope portfolio view is covered by analytics.tests_portfolio + OpenTradesPanel.test.tsx.
+    window.localStorage.setItem("guvfx.dashboard.scope", "28");
   });
   afterEach(() => cleanup());
 

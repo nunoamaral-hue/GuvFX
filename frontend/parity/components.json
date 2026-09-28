@@ -33,6 +33,8 @@
   "src/components/broker/SwitchActiveDialog.tsx",
   "src/components/broker/ValidationHistoryTable.tsx",
   "src/components/broker/ValidationTimelinePanel.tsx",
+  "src/components/dashboard/OpenTradesPanel.tsx",
+  "src/components/dashboard/PortfolioScopeSelector.tsx",
   "src/components/hosted/HostedMt5RemoteApp.tsx",
   "src/components/i18n/LocalizedBetaSurface.tsx",
   "src/components/onboarding/HostedWorkspaceJourney.tsx",

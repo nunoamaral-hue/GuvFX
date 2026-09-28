@@ -127,6 +127,59 @@ def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]
         logger.warning(f"Failed to fetch MT5 account balance: {e}")
         return None
 
+def _fetch_mt5_open_positions(account, windows_username: str) -> Optional[list]:
+    """Fetch THIS account's OWN LIVE open positions (with floating P/L) from its per-tenant bridge — read-only,
+    observation only (no order_send, no DB write). Same P0 data-isolation contract as ``_fetch_mt5_account_balance``:
+    the destination is the account's OWN snapshot base (never the module-global agent), and the read is gated on the
+    bridge's OBSERVED session identity — we verify identity via the account snapshot FIRST (the bridge is single-
+    tenant, so ``/mt5/positions`` returns that verified account's positions) and refuse on any mismatch. The bridge
+    also refuses positions for a non-demo terminal. Fail-closed: any resolution/identity/parse failure returns None
+    (the dashboard then marks the account stale rather than showing a foreign or fabricated position).
+
+    Each position: ``{ticket, symbol, type, side, volume, price_open, price_current, profit, magic, comment}``.
+    """
+    from execution.snapshot_transport import resolve_account_snapshot_base, verify_snapshot_identity
+    global_base, token = _get_windows_agent_config()
+    if not token:
+        return None
+    st = resolve_account_snapshot_base(account, global_base_url=global_base)
+    if not st.ok:
+        logger.warning("MT5 positions transport unresolved for account %s: %s",
+                       getattr(account, "id", None), st.reason_code)
+        return None
+    base = st.base_url
+    # 1) Identity firewall via the account snapshot BEFORE trusting positions from this base.
+    try:
+        aurl = f"{base}/mt5/snapshots/account?username={urllib.parse.quote(windows_username)}"
+        areq = urllib.request.Request(aurl, method="GET", headers={"X-GuvFX-Agent-Token": token})
+        with urllib.request.urlopen(areq, timeout=10) as r:
+            adata = json.loads(r.read().decode("utf-8", "ignore") or "{}")
+        _inner = adata.get("data") if isinstance(adata.get("data"), dict) else {}
+        obs_login = (adata.get("account_login") or _inner.get("account_login")
+                     or _inner.get("login") or adata.get("login"))
+        obs_server = (adata.get("account_server") or _inner.get("account_server")
+                      or _inner.get("server") or adata.get("server"))
+        if not verify_snapshot_identity(account, obs_login, obs_server).ok:
+            logger.warning("MT5 positions identity firewall refused for account %s", getattr(account, "id", None))
+            return None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("MT5 positions identity read failed for account %s: %s", getattr(account, "id", None), e)
+        return None
+    # 2) Read live positions from the SAME identity-verified per-tenant base.
+    try:
+        purl = f"{base}/mt5/positions"
+        preq = urllib.request.Request(purl, method="GET", headers={"X-GuvFX-Agent-Token": token})
+        with urllib.request.urlopen(preq, timeout=10) as r:
+            pdata = json.loads(r.read().decode("utf-8", "ignore") or "{}")
+        if not (isinstance(pdata, dict) and pdata.get("ok")):
+            return None
+        pos = pdata.get("positions")
+        return pos if isinstance(pos, list) else []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("MT5 positions read failed for account %s: %s", getattr(account, "id", None), e)
+        return None
+
+
 # MT5 deal types on a balance-operation deal (NOT a trade): a DEPOSIT/WITHDRAWAL is DEAL_TYPE_BALANCE(2)
 # with the signed cash amount in ``profit`` (deposit positive, withdrawal negative); broker bonus is
 # DEAL_TYPE_CREDIT(3). These carry no ``position_id`` so ``build_positions_from_deals`` skips them — they are
