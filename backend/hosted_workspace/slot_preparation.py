@@ -447,9 +447,11 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
     #      refresh / reconnect IDEMPOTENT (one tenant terminal) instead of forking a duplicate that stalls
     #      onboarding at "Detecting your account...". REQUIRED + FAIL-CLOSED while the flag is ON: the host
     #      read-only-verifies the launcher EXISTS, its SHA256 matches the pinned launcher manifest, its ACL is
-    #      non-tenant-writable, an AppLocker ALLOW rule for it is present, and the tenant runtime exists; ANY
-    #      false verdict -> PREP_LAUNCHER_FAILED, slot NON-READY, so no tenant is ever pointed at an absent /
-    #      tampered / unallow-listed launcher. Runs AFTER the runtime (Stage 5) and RemoteApp verify (Stage 8);
+    #      non-tenant-writable, an AppLocker ALLOW rule for it is present, the tenant runtime exists, AND the
+    #      launcher is a GUI-subsystem (windowless) exe (``subsystem_is_gui`` -- a console-subsystem launcher shows
+    #      the member a black console window in front of MT5); ANY false verdict -> PREP_LAUNCHER_FAILED, slot
+    #      NON-READY, so no tenant is ever pointed at an absent / tampered / unallow-listed / console launcher.
+    #      Runs AFTER the runtime (Stage 5) and RemoteApp verify (Stage 8);
     #      it reads AppLocker state INDEPENDENTLY (Stage 9 applocker_prepare is deferred/non-blocking). While the
     #      flag is OFF this stage is skipped -- byte-identical to before, so Customer Zero and every existing slot
     #      are untouched. It grants no authority and performs no broker login. -----------------------------------
@@ -459,11 +461,12 @@ def prepare_hosted_slot(workspace, *, executor=None, actor: str = "", request=No
         if res is None:
             return SlotPreparationResult(False, PREP_EXECUTOR_INCOMPLETE, ST_LAUNCHER)
         if not _ok(res) or not all(bool(res.get(k)) for k in (
-                "launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present", "runtime_exists")):
+                "launcher_exists", "sha256_matches", "acl_safe", "applocker_allow_present",
+                "runtime_exists", "subsystem_is_gui")):
             return SlotPreparationResult(False, PREP_LAUNCHER_FAILED, ST_LAUNCHER,
                                          detail={k: (bool(res.get(k)) if res else None) for k in (
                                              "launcher_exists", "sha256_matches", "acl_safe",
-                                             "applocker_allow_present", "runtime_exists")})
+                                             "applocker_allow_present", "runtime_exists", "subsystem_is_gui")})
 
     # ---- Stage 10: observer registration. BB#1 (Sponsor 2026-08-16): with the delivery-lifecycle flag ON the
     #      read-only session-bound observer is a REQUIRED, idempotent, stage-timed host step — a fresh non-CZ

@@ -134,10 +134,11 @@ class SignedHostExecutor:
     def verify_native_launcher(self, username, runtime_root, rdp_host=None) -> dict:
         """P0 native-launcher gate: ask the host to read-only-verify the certified single-instance launcher
         (``C:\\GuvFX\\launcher\\guvfx_launch.exe``) — it EXISTS, its SHA256 matches the pinned launcher manifest,
-        its ACL is non-tenant-writable, an AppLocker ALLOW rule for it is present, and the tenant runtime exists.
-        Read-only on the host (no launch, no login, no mutation). Confined on ``username``/``runtime_root``;
-        Customer Zero refused in ``_send``. Sends NO params (server-derived). Returns ``{"ok", "launcher_exists",
-        "sha256_matches", "acl_safe", "applocker_allow_present", "runtime_exists"}``."""
+        its ACL is non-tenant-writable, an AppLocker ALLOW rule for it is present, the tenant runtime exists, and
+        the launcher is a GUI-subsystem (windowless) exe (``subsystem_is_gui``). Read-only on the host (no launch,
+        no login, no mutation). Confined on ``username``/``runtime_root``; Customer Zero refused in ``_send``.
+        Sends NO params (server-derived). Returns ``{"ok", "launcher_exists", "sha256_matches", "acl_safe",
+        "applocker_allow_present", "runtime_exists", "subsystem_is_gui"}``."""
         if not self._confined(username=username, runtime_root=runtime_root):
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("VERIFY_NATIVE_LAUNCHER")

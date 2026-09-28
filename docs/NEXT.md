@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Member launch — PR C windowless launcher: repo complete, host install pending (2026-09-28)
+PR B (#426) merged `d30a713` + deployed (frontend `sha256:088952…39adb3`); 25/35/36 unchanged. PR C
+(`fix/launcher-windowless-shell`) makes the launcher GUI-subsystem so the member never sees the black
+`LAUNCH-VERDICT` console — proven on host off the live path (GUI build = subsystem 2; hardened gate rejects the
+live console binary). **Single next action:** open the PR C PR; on green CI, do the host install in this ORDER
+(no provisioning window): (1) push the updated `Verify-GuvfxNativeLauncher.ps1` to the daemon script library +
+re-pin the stage manifest; (2) rebuild the live `C:\GuvFX\launcher\guvfx_launch.exe` via `Build-GuvfxLauncher.ps1`,
+capture the OLD exe + manifest + AppLocker rule as rollback artefacts, install the GUI exe, re-pin
+`.guvfx_launcher_manifest` (installed build's SHA) + the AppLocker FileHashRule, re-assert the ACL; (3) deploy the
+backend gate. Then visual acceptance: Open MT5 on 35/36 (and 25) → MT5 appears, NO shell. Then PR D (Taurex
+preseed). Do NOT alter 25/35/36 strategy/magic/sizing/broker; MAGIC READ/ENFORCE OFF; DB rotation = maintenance
+window only.
+
+
 ## ▶ Phase C / WAYOND POC — support@ TWO concurrent DEMO accounts LIVE; natural-signal cert pending (2026-09-26)
 Account B (TradingAccount 35) broker login CERTIFIED (`62145672`/`PepperstoneUK-Demo`/DEMO, HEDGING, CONNECTED)
 and armed for concurrent execution: StrategyAssignment **#16** (Wayond WIM, `AUTO_DEMO`/`LIVE`/`ti_signals`,
