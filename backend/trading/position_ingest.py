@@ -53,6 +53,25 @@ def deal_time_to_utc(d: dict):
     return None
 
 
+def _dedup_deals_by_ticket(deals: list[dict]) -> list[dict]:
+    """Drop repeats of the SAME MT5 deal, keeping first occurrence, so a paginated/overlapping snapshot cannot
+    inflate a position's volume/profit/commission/swap (financial-correctness guard). Identity is (ticket, entry):
+    a real MT5 deal ticket is globally unique, so a genuine duplicate matches both; keying on entry as well keeps a
+    position's distinct IN and OUT legs even if a caller reuses one ticket value across them. Deals with no ticket
+    are kept as-is (cannot be de-duplicated)."""
+    seen: set = set()
+    out: list[dict] = []
+    for d in deals:
+        tk = d.get("ticket")
+        key = (str(tk), str(d.get("entry"))) if tk is not None else None
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(d)
+    return out
+
+
 def build_positions_from_deals(deals: list[dict]) -> list[dict]:
     """Group raw MT5 deals by ``position_id`` into one position record each, with AUTHORITATIVE open/close
     prices taken from the entry (DEAL_ENTRY_IN) and exit (DEAL_ENTRY_OUT/OUT_BY) deals — NEVER inferred from
@@ -73,6 +92,7 @@ def build_positions_from_deals(deals: list[dict]) -> list[dict]:
     positions = []
     for pid, dl in by_pos.items():
         try:
+            dl = _dedup_deals_by_ticket(dl)  # a paginated/overlapping repeat of the SAME deal must not double-count
             ins = [d for d in dl if deal_entry_type(d) == DEAL_ENTRY_IN]
             outs = [d for d in dl if deal_entry_type(d) in (DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY)]
             inouts = [d for d in dl if deal_entry_type(d) == DEAL_ENTRY_INOUT]

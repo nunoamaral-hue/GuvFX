@@ -14,6 +14,26 @@
 
 ## Execution workstream log
 
+- **2026-09-28 - P0 DASHBOARD FINANCIAL CORRECTNESS — stage-filter root cause fixed + adversarial hardening.**
+  Sponsor reported the ALL-accounts dashboard showing Daily/Net PnL/WinRate = $0 despite the Taurex terminal showing
+  3 closed XAUUSD trades (≈9.65, balance 50,009.65). **Diagnosed (read-only), not cosmetically patched.** ROOT
+  CAUSE: the portfolio analytics filtered `Trade.source_stage='LIVE'`, but `source_stage` is a comment-tag
+  classifier (default `UNKNOWN`) and EVERY real broker-ingested trade is `UNKNOWN` (only 2 rows estate-wide are
+  LIVE) → filtered to 0 → $0. NOT an ingestion gap, NOT timezone: the trades are in GuvFX (acct36 Trade 1722/23/24 =
+  1.19+3.07+5.39 = 9.65 exact; acct35 10.41; acct25 -7963.75 lifetime), and broker-truth read directly from each
+  identity-firewalled bridge reconciles broker↔GuvFX↔balance for all three; the $50k demo deposits are MT5 BALANCE
+  deals (type 2), never Trades, so they contribute 0. **FIX:** default the portfolio analytics stage to `ALL` (no
+  source_stage filter), matching the established trade-history endpoint; definitions documented (Daily = today's
+  realized broker P/L; Net = lifetime realized; metrics = broker-trade based). **Adversarial financial review** (5
+  dimensions, verified) → also fixed: **H-CURRENCY** the realized path now uses the OBSERVED snapshot currency (the
+  H1 guard was inert because `account_currency` is never populated → a non-USD account would have summed as USD;
+  now degrades to PARTIAL consistent with the balance path); **M-DEDUP** deal-ticket dedup added to BOTH
+  `build_positions_from_deals` copies (a paginated/overlapping snapshot can no longer double-count profit);
+  **M-DRAWDOWN** deterministic `("close_time","id")` ordering. Documented follow-ups (latent, no impact today):
+  broker-time-stored-as-UTC daily window (platform-wide), member-local daily, win-rate breakeven rule cross-screen,
+  builder-copy merge, portfolio equity curve = REQUIRES_SNAPSHOT_LEDGER (see KNOWN_ISSUES). Tests: analytics
+  portfolio 53 + position/trade ingest + full analytics+trading 396 green. Branch `fix/dashboard-financial-stage-filter`.
+  Estate 25/35/36 read-only untouched; nothing manufactured.
 - **2026-09-28 - PORTFOLIO DASHBOARD (#431) — MERGED + DEPLOYED + PRODUCTION-CERTIFIED =
   `MULTI_ACCOUNT_PORTFOLIO_DASHBOARD_CERTIFIED`.** After the adversarial fixes (entry below), CI went RED on one
   frontend test (`localization.test.tsx` asserted "Wayond WIM Strategy", which only rendered in the removed "Your

@@ -42,8 +42,10 @@ def _acct(user, broker="Pepperstone", number=None, active=True, removed=False, c
     return a
 
 
-def _closed_trade(account, net, when=None, stage="LIVE", profit_currency=None,
+def _closed_trade(account, net, when=None, stage="UNKNOWN", profit_currency=None,
                   commission_currency=None, swap_currency=None):
+    # Default stage UNKNOWN mirrors production reality: broker-ingested trades carry the default source_stage
+    # (the comment tag is "WAY.../[tp .]", not "LIVE"). The analytics must count these (P0 2026-09-28).
     when = when or timezone.now()
     return Trade.objects.create(
         account=account, ticket=_uniq(), symbol="XAUUSD", side="BUY", volume=1,
@@ -188,6 +190,85 @@ class RealizedCurrencyHonestyTests(TestCase):
         u = _user("h5"); gbp = _acct(u, currency="GBP")
         _closed_trade(gbp, 50)
         self.assertIsNone(PF.account_net_pnl(gbp))               # never a mixed/unconverted figure
+
+
+# ── source_stage must NOT hide real trades (P0 2026-09-28 regression) ─────────────────────────────────────────
+class StageFilterRegressionTests(TestCase):
+    """The dashboard filtered source_stage='LIVE' and reported $0 while real UNKNOWN-stage broker trades existed.
+    Analytics must count all closed trades regardless of source_stage (a comment-tag classifier, not performance)."""
+
+    def test_unknown_stage_trades_are_counted(self):
+        u = _user("sf1"); a = _acct(u, currency="USD")
+        # The exact Taurex incident: three closed XAUUSD trades, source_stage UNKNOWN.
+        for p in (1.19, 3.07, 5.39):
+            _closed_trade(a, p, stage="UNKNOWN")
+        m = PF.portfolio_metrics([a])                                  # default stage = ALL
+        self.assertEqual(m["total_trades"], 3)                          # NOT 0
+        self.assertEqual(m["net_pnl_total"], 9.65)                      # matches broker: 1.19+3.07+5.39
+        self.assertEqual(m["wins"], 3); self.assertEqual(m["win_rate_pct"], 100.0)
+        val, basis = PF.daily_realized_pnl([a])
+        self.assertEqual(val, 9.65); self.assertEqual(basis, "USD")
+        self.assertEqual(PF.account_net_pnl(a), 9.65)
+
+    def test_explicit_live_filter_still_narrows(self):
+        # The stage param still works when a caller explicitly asks for exactly LIVE/TEST.
+        u = _user("sf2"); a = _acct(u, currency="USD")
+        _closed_trade(a, 10.0, stage="UNKNOWN"); _closed_trade(a, 5.0, stage="LIVE")
+        self.assertEqual(PF.portfolio_metrics([a])["total_trades"], 2)                 # ALL default
+        self.assertEqual(PF.portfolio_metrics([a], stage="LIVE")["total_trades"], 1)   # explicit LIVE
+
+    def test_endpoint_counts_unknown_stage_trades(self):
+        u = _user("sf3"); a = _acct(u, currency="USD")
+        for p in (1.19, 3.07, 5.39):
+            _closed_trade(a, p, stage="UNKNOWN")
+        c = APIClient(); c.force_authenticate(u)
+        d = c.get("/api/analytics/portfolio/summary/").json()
+        self.assertEqual(d["aggregate"]["metrics"]["total_trades"], 3)
+        self.assertEqual(d["aggregate"]["metrics"]["net_pnl_total"], 9.65)
+
+
+# ── Observed-currency guard (H-CURRENCY) + drawdown determinism (adversarial review 2026-09-28) ───────────────
+class ObservedCurrencyTests(TestCase):
+    """account_currency is never populated in prod (NULL->USD), so the realized path must use the OBSERVED snapshot
+    currency (as the balance path does) — else a non-USD account is silently summed as USD with basis='USD'."""
+
+    def test_observed_nonusd_account_excluded_from_realized(self):
+        u = _user("oc1")
+        usd = _acct(u); eur = _acct(u)                     # both account_currency NULL (the inert-guard reality)
+        _closed_trade(usd, 10.0); _closed_trade(eur, 999.0)
+        bal = {usd.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
+               eur.id: {"balance": 800, "equity": 800, "currency": "EUR"}}   # observed EUR
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+                                      fetch_positions=_fake_positions({usd.id: [], eur.id: []}),
+                                      rate_source=FX.NullFxRateSource())
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["basis"], "PARTIAL")            # NOT falsely 'USD'
+        self.assertIn(eur.id, m["excluded_accounts"])      # EUR account excluded from the realized sum
+        self.assertEqual(m["net_pnl_total"], 10.0)         # only the USD account, never 1009
+        self.assertEqual(payload["aggregate"]["daily_realized_pnl_basis"], "PARTIAL")
+        rows = {r["account_id"]: r for r in payload["accounts"]}
+        self.assertIsNone(rows[eur.id]["net_pnl"])         # per-account realized withheld for the EUR account
+        self.assertEqual(rows[usd.id]["net_pnl"], 10.0)
+
+    def test_all_usd_observed_is_complete(self):
+        u = _user("oc2"); a = _acct(u)
+        _closed_trade(a, 9.65)
+        bal = {a.id: {"balance": 50009.65, "equity": 50009.65, "currency": "USD"}}
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: bal.get(x.id),
+                                      fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["basis"], "USD"); self.assertEqual(m["excluded_accounts"], [])
+        self.assertEqual(m["net_pnl_total"], 9.65)
+
+
+class MaxDrawdownDeterminismTests(TestCase):
+    def test_same_second_cluster_is_deterministic(self):
+        u = _user("dd1"); a = _acct(u)
+        t = timezone.now()
+        _closed_trade(a, 100.0, when=t); _closed_trade(a, -100.0, when=t); _closed_trade(a, -100.0, when=t)
+        m1 = PF.portfolio_metrics([a]); m2 = PF.portfolio_metrics([a])
+        self.assertEqual(m1["max_drawdown_money"], m2["max_drawdown_money"])   # reproducible (close_time,id tiebreak)
+        self.assertEqual(m1["max_drawdown_money"], 200.0)                      # id order: 100,0,-100 -> peak-trough 200
 
 
 # ── Scope / ownership (IDOR) ──────────────────────────────────────────────────────────────────────────────────
