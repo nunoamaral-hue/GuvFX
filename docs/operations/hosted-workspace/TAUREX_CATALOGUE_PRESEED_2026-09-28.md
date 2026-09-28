@@ -1,5 +1,13 @@
 # Taurex broker preseed — governed capture + v2 catalogue activation (PR D, 2026-09-28)
 
+> **STATUS: production activation HELD (Sponsor decision, 2026-09-28) — "harden first".** The capture +
+> credential-free proof + DEMO-only test coverage are complete and merged, but the v1→v2 activation below is
+> **NOT executed**: the mandated adversarial review flagged pre-existing catalogue-mechanism gaps (see "Deferred
+> hardening" + `docs/KNOWN_ISSUES.md`). The **Broker-Catalogue Hardening packet runs first**; then this activation
+> proceeds. Until then, Taurex-Demo accounts fall back to native MT5 discovery (~5 min) — no breakage. The
+> credential-free candidate is staged (read-only, inert, not in any active version) at
+> `C:\GuvFX\catalogue\_candidates\taurex\servers.dat` (sha `23fd33b8…`) as evidence for the hardening packet.
+
 Adds **Taurex / Taurex-Demo** to the broker catalogue so a NEW Taurex-Demo hosted account preseeds the broker
 discovery `servers.dat` on first launch (instead of a ~5-minute native discovery). Data-driven: **no backend
 model/migration change** — see the code map in `BROKER_CATALOGUE_PRESEED_2026-08-26.md` /
