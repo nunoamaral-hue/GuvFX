@@ -33,8 +33,16 @@
   on a removed account (authoritative, on disconnected_at). Entitlement UX: Broker Accounts counter now shows
   owned_count/owned_limit (+ trading count separately), not active_count/owned_limit. Tests: tests_decommission (16)
   + host-framework + trading suites; FULL backend 5061 OK; eslint 0 errors; vitest 57 files; build OK; the new .ps1
-  ParseFile-validated on the host (RULE 9) + ASCII. NEXT: adversarial review -> merge/deploy -> Phase-21 certify by
-  running the governed cleanup against account 37's residual (37 stays tombstoned; NOT restored).
+  ParseFile-validated on the host (RULE 9) + ASCII.
+  **DEPLOYED + PHASE-21 CERTIFIED 2026-09-29 (PR#437 merged `b8bb22f`; rollback anchor `a68c733`).** VPS: git pull
+  -> build guvfx-prod-guvfx-backend -> migrate 0012 -> recreate guvfx-backend (+ frontend rebuild for the counter).
+  Host daemon: staged primitive_runner.py + host_protocol.py + host_agent_dispatch.py + Decommission-GuvfxRuntime.ps1
+  -> `Restart-Service GuvFXHostedExecutor` (verify_scripts passed). CERT vs account 37 residual: enqueued + ran the
+  SAME governed `run_workspace_cleanup` -> SUCCEEDED first attempt; footprint fully reclaimed (terminal 21204 gone,
+  bridge :8806 not listening, TenantBridge_37/Watchdog_37/HostedObserver_37 unregistered, RemoteApp guvfx_mt5_37
+  removed, accounts\37 + tenants\37 deleted, guvfx_u_37 disabled). 25/35/36 UNTOUCHED (terminals 16984/5952/24116,
+  EXECUTION_READY, observations advancing); entitlement owned_count=3. Account 37 remains tombstoned (NOT restored).
+  Adversarial-review HIGH fixes verified live (port-reuse guard; bc_ guards; reparse-safe deletes).
 - **2026-09-29 - HOSTED OBSERVER never-launch fix (account-37 WebView popup + stuck WAITING_FOR_LOGIN).** ROOT CAUSE
   (read-only forensic, proven): the hosted observer runs as `guvfx_u_<id>` and calls `mt5.initialize(path=)`, which is
   dual-mode — when the per-account `/portable` terminal is running but not yet attachable (first-run: compiling MQL5 /

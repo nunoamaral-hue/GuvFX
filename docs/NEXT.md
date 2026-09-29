@@ -1,14 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Remove Broker Account STAGE-2 physical decommission — CI → deploy → certify vs acct 37 residual (2026-09-29)
-Governed host teardown (DECOMMISSION_RUNTIME + REMOVE_OBSERVER, reuse REMOVE_REMOTEAPP/APPLOCKER) driven by an
-async retryable cleanup_state on HostedMt5Workspace (mig 0012) from the minute cron; + tombstone list-hiding +
-live-op guard + owned/limit entitlement counter. Branch `feat/remove-physical-decommission`. Full backend 5061 OK;
-frontend green; new .ps1 host-ParseFile-validated. **Single next action:** finish adversarial review (fix any
-HIGH/MEDIUM) → PR → GREEN CI → merge → deploy (migrate 0012 + stage Decommission-GuvfxRuntime.ps1 to
-C:\GuvFX\hosted\scripts + recreate backend/observer images) → Phase-21 certify: reconfirm acct 37 tombstoned+flat,
-then invoke the SAME governed cleanup against its residual and verify the host footprint is gone + 25/35/36
-untouched. Do NOT restore/recreate 37. Do NOT raise support@ entitlement to 20. Do NOT resize Fasthosts.
+## ✅ Remove Broker Account STAGE-2 physical decommission — SHIPPED + CERTIFIED (2026-09-29) = PR#437 `b8bb22f`
+Governed host teardown (DECOMMISSION_RUNTIME + REMOVE_OBSERVER, reuse REMOVE_REMOTEAPP/APPLOCKER) via async retryable
+cleanup_state (mig 0012) from the minute cron; + tombstone list-hiding + live-op guard + owned/limit counter.
+Merged + deployed (backend + host daemon + frontend) + Phase-21 certified against account 37's residual (footprint
+fully reclaimed; 25/35/36 untouched; 37 stays tombstoned). Rollback anchor `a68c733`. Remaining pre-20-scale items
+(still gated, NOT in this packet): the generic MT5 broker-discovery warning (next UX item); Fasthosts capacity
+upgrade; support@ entitlement 5→20; full Windows-user/profile DELETION (currently disabled-not-deleted, ProfSvc
+reboot constraint). **Single next action:** await Sponsor direction on the next packet.
 
 ## ▶ Hosted observer never-launch fix — CI → deploy → recover Account 37 (2026-09-29)
 Fixes the account-37 WebView popup + stuck WAITING_FOR_LOGIN (observer's `mt5.initialize(path=)` self-launched a bare
