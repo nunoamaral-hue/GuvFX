@@ -178,3 +178,38 @@ class NormalizeRemoteAppMutationAdequacy(SimpleTestCase):
             except SyntaxError:
                 continue  # a non-compiling mutant is trivially killed
             self.assertTrue(self._oracle(ns), f"MUTANT SURVIVED: {old!r} -> {new!r}")
+
+
+class RemoteAppTtlTests(SimpleTestCase):
+    """P4-a: the optional ``ttl_ms`` param lets the P4 recovery self-connect mint a SHORT-lived token, while every
+    existing caller (default) is byte-identical to the certified 1-hour token."""
+
+    def _expires_offset_ms(self, **over):
+        import time
+        base = dict(
+            username="ws-u", windows_username="guvfx_u_9", windows_password="P@ss-SECRET",
+            host="node-1", remote_app="terminal64",
+            remote_app_dir=r"C:\GuvFX\accounts\9\terminal", remote_app_args="/portable")
+        base.update(over)
+        now_ms = int(time.time() * 1000)
+        return build_remoteapp_rdp_payload(**base)["expires"] - now_ms
+
+    def test_default_ttl_is_one_hour(self):
+        # Default (no ttl_ms) preserves the certified 1h window (allow a clock delta for test execution).
+        off = self._expires_offset_ms()
+        self.assertGreater(off, 3_600_000 - 5_000)
+        self.assertLessEqual(off, 3_600_000 + 3_000)
+
+    def test_explicit_default_matches_implicit(self):
+        # Passing ttl_ms=3_600_000 lands in the SAME 1h window as omitting it => existing callers unaffected. Both
+        # offsets are computed the same way; assert they agree within a few seconds (only wall-clock jitter differs).
+        implicit = self._expires_offset_ms()
+        explicit = self._expires_offset_ms(ttl_ms=3_600_000)
+        self.assertLess(abs(implicit - explicit), 3_000)
+
+    def test_short_ttl_for_recovery(self):
+        off = self._expires_offset_ms(ttl_ms=45_000)   # ~45s recovery token
+        self.assertGreater(off, 40_000)
+        self.assertLessEqual(off, 45_000 + 3_000)
+        # a short token must be FAR below the 1h member token (never reuse it)
+        self.assertLess(off, 60_000)

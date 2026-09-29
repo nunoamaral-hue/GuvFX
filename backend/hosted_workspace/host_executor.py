@@ -23,6 +23,10 @@ from hosted_workspace.host_protocol import (
 
 logger = logging.getLogger("guvfx.hosted_workspace")
 
+# The canonical PROBE_SESSION states (see Probe-GuvfxSession.ps1). ``probe_session()`` normalises anything outside
+# this set to UNKNOWN so a fail-closed / statusless / out-of-enum probe is never mistaken for ABSENT.
+_SESSION_STATES = ("ACTIVE", "DISCONNECTED", "ABSENT", "UNKNOWN")
+
 
 def _epoch_now() -> int:
     from django.utils import timezone
@@ -264,6 +268,31 @@ class SignedHostExecutor:
         This is the ONLY executor method that carries no confinement args because it supplies none — every
         identity/path is host-derived from ``account_id``. It NEVER logs in, NEVER trades, NEVER mutates."""
         return self._send("OBSERVE_WORKSPACE")
+
+    def probe_session(self, rdp_host=None) -> dict:
+        """P4 READ-ONLY reboot-recovery probe: ask the host for THIS account's OWN Windows RDS session state via the
+        PROBE_SESSION op (qwinsta). Like ``observe()``, it carries NO confinement args — the identity is host-derived
+        from ``account_id`` (guvfx_u_<id>).
+
+        RESERVED IDENTITIES — read carefully: the Django executor + the host dispatcher refuse ONLY Customer Zero
+        (account 1) by default (``host_agent_dispatch.DEFAULT_RESERVED_ACCOUNT_IDS = {1}``). Account 18 is SACRED but
+        is reserved at the RECOVERY/APPLICATION layer (``capability_recovery._RESERVED_ACCOUNT_IDS = {1, 18}``) and,
+        defence-in-depth, inside the PROBE_SESSION ``.ps1`` (``@(1, 18)``) — it is NOT reserved by this executor. The
+        P4 reconciler MUST apply the ``{1, 18}`` exclusion itself in candidate selection (as liveness/capability
+        recovery do); do not rely on this method to drop account 18.
+
+        GUARANTEE: the returned dict ALWAYS carries ``session_status`` as exactly one of {ACTIVE, DISCONNECTED,
+        ABSENT, UNKNOWN}. Any fail-closed/transport failure (``ok:false``), a MISSING status, a malformed result, or
+        an out-of-enum value is normalised to UNKNOWN — NEVER ABSENT — so a consumer can trust the field
+        unconditionally. It NEVER launches, logs in, ends a session, arms execution, or trades."""
+        result = self._send("PROBE_SESSION")
+        # Fail-closed normalisation at the source: a statusless / errored / malformed / out-of-enum probe is UNKNOWN,
+        # never ABSENT. Only an ok:true result carrying an in-enum status is trusted verbatim.
+        if not isinstance(result, dict):
+            result = {"ok": False, "reason": "probe_malformed"}
+        if not result.get("ok") or result.get("session_status") not in _SESSION_STATES:
+            result["session_status"] = "UNKNOWN"
+        return result
 
     def preseed_broker_artefact(self, runtime_root, broker_id, expected_sha256, host_relpath, rdp_host=None) -> dict:
         """Broker Catalogue V1 — copy ONE approved, immutable catalogue ``servers.dat`` into this tenant's fresh

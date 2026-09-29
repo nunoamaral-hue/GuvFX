@@ -159,6 +159,7 @@ def build_remoteapp_rdp_payload(
     remote_app_args: str = "",
     port: str = "3389",
     conn_id: str = "mt5-workspace",
+    ttl_ms: int = 3_600_000,
 ) -> dict:
     """
     ADR-0034 Workspace Delivery — the RemoteApp (seamless-window) variant of the dedicated RDP payload.
@@ -176,8 +177,13 @@ def build_remoteapp_rdp_payload(
     of whether the host RemoteApp role is installed yet (repository completion is host-independent, ADR-0034
     Delivery). Printing redirection is additionally disabled here — a RemoteApp window must not open a print
     path back to the client. Every value is SERVER-DERIVED by the caller; nothing here is client-supplied.
+
+    ``ttl_ms`` is the token lifetime in milliseconds; it DEFAULTS to 3_600_000 (1 hour) so every existing caller
+    (the browser delivery path) is byte-identical. The P4 system-initiated recovery self-connect passes a SHORT
+    ttl (~30-60 s) so the minted guacamole-auth-json token is short-lived and is revoked immediately after the
+    session is established (it must NOT reuse the 1-hour member token).
     """
-    expires_ms = int(time.time() * 1000) + 3_600_000
+    expires_ms = int(time.time() * 1000) + int(ttl_ms)
     unique_username = f"{username}-{uuid.uuid4().hex[:12]}"
     parameters = _dedicated_rdp_base_parameters(
         host=host, port=port,
