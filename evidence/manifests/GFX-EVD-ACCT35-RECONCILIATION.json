@@ -38,6 +38,6 @@
     "memory: project_host_reboot_recovery_gap.md",
     "PR #439 (systematic watchdog registration correction + wedge-kill escalation)"
   ],
-  "checksums": [],
+  "checksums": {},
   "reviewer": "pending-sponsor"
 }
