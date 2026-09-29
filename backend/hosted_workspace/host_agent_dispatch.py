@@ -83,6 +83,11 @@ OP_PRIMITIVES = {
     "APPLY_APPLOCKER_AUDIT":    {"primitive": "applocker_tenant_merge",   "params_allow": ()},
     "REMOVE_APPLOCKER_TENANT":  {"primitive": "applocker_tenant_remove",  "params_allow": ()},
     "VERIFY_SLOT":              {"primitive": "verify_slot",              "params_allow": ()},
+    # P3 read-only session probe: report THIS account's own RDS session state (qwinsta) for reboot-recovery
+    # readiness. Server-derived username only (no caller params); -AccountId injected from the username by the
+    # runner so the .ps1 re-asserts the Customer-Zero refusal + identity. Read-only: it never launches, logs in,
+    # ends a session, or places an order.
+    "PROBE_SESSION":            {"primitive": "probe_session",            "params_allow": ()},
     # FINAL Closed-Beta stream: activate this node's dedicated pin-enforcing order bridge. Server-derived
     # terminal_root (falls through to _build_args' base) + injected -AccountId; no caller params.
     "ACTIVATE_ORDER_BRIDGE":    {"primitive": "activate_order_bridge",    "params_allow": ()},
@@ -294,7 +299,7 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         return {"username": slot["username"]}
     if op == "ENSURE_SINGLE_SESSION":
         return {}
-    return base                       # MATERIALISE / PREPARE_OBSERVER / REMOVE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT
+    return base                       # MATERIALISE / PREPARE_OBSERVER / REMOVE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT / PROBE_SESSION
 
 
 _SECRET_KEYS = {"password", "pw", "secret", "payload"}

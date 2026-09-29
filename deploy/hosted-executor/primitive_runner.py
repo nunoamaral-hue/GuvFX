@@ -151,6 +151,13 @@ CONTRACT = {
         argmap={"username": "-HostedUser", "account_id": "-AccountId"}, fixed={"-Mode": "Remove"}),
     # No reviewed read-only slot-verify .ps1 exists yet; VERIFY_SLOT fails closed rather than pretend success.
     "verify_slot": PrimitiveSpec(script=None),
+    # P3 read-only session probe (reboot-recovery readiness): report THIS account's own RDS session state via
+    # qwinsta. The .ps1 takes -Username (server-derived, confined) + injected -AccountId (from the username) so it
+    # re-asserts the Customer-Zero refusal + validates identity == guvfx_u_<AccountId>. It emits a JSON verdict and
+    # mutates NOTHING - no launch, no login, no session end, no order. No caller-supplied username/session target.
+    "probe_session": PrimitiveSpec(
+        script="Probe-GuvfxSession.ps1",
+        argmap={"username": "-Username"}, inject_account_id=True),
     # FINAL Closed-Beta stream: activate THIS node's dedicated pin-enforcing order bridge. Reviewed .ps1 takes
     # -TerminalRoot + injected -AccountId (both server-derived); it REFUSES account 1, writes the node2 env,
     # registers+starts the bridge + a port-specific watchdog, and health-checks :8789. Emits a JSON verdict.

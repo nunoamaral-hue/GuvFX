@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-P3-PROBE-SESSION-HOSTOP",
+  "packet_id": "REBOOT-RECOVERY-P3",
+  "created_at_utc": "2026-09-29T22:15:00Z",
+  "branch": "feat/probe-session-host-op",
+  "base_commit": "0210f1f3a437499a967bd76c2b95b3817777331f",
+  "head_commit": null,
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_probe_session -v2  # 16 P3 unit tests",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace  # full app regression (1105 tests)",
+    "ssh guvfx-windows-mt5 powershell ... [Parser]::ParseFile(Probe-GuvfxSession.ps1)  # RULE 9 host validation, RULE 11 controls",
+    "python3 scripts/check_no_secrets.py ; python3 scripts/check_evidence_manifests.py  # governance"
+  ],
+  "expected_results": [
+    "PROBE_SESSION wired across ALL FOUR layers (host_protocol HOSTED_OPERATIONS, dispatch OP_PRIMITIVES->probe_session, runner CONTRACT->Probe-GuvfxSession.ps1, stage-manifest scripts) with the existing parity assertions green",
+    "Customer Zero refused at BOTH layers (dispatcher reserved default {1}; .ps1 RESERVED_ACCOUNT_IDS @(1,18)); identity is server-derived guvfx_u_<AccountId> only; params_allow=() blocks ALL caller input (no caller username/session target)",
+    "runner injects -AccountId from the username, maps -Username, pipes no stdin; fixed argv (no shell)",
+    "Probe-GuvfxSession.ps1 is ASCII-only, read-only (qwinsta; no launch/login/logoff/reset/write), and distinguishes a blind measurement (0 rows -> qwinsta_no_output, fail-closed) from a genuine no-session negative (RULE 11)",
+    "Probe-GuvfxSession.ps1 ParseFile-validates under the TARGET Windows PowerShell 5.1 with a positive AND a negative control (RULE 9 + RULE 11)",
+    "DARK: no backend caller invokes PROBE_SESSION; the currently-running host executor is unaffected (old lib until a Sponsor-gated redeploy); 25/35/36 untouched"
+  ],
+  "actual_results": [
+    "16/16 hosted_workspace.tests_probe_session pass (four-layer parity; dispatch maps + CZ refused + no param smuggling; runner argv/-AccountId inject/no-stdin + underivable-username fail-closed; .ps1 static: ASCII, CZ+18 guards, read-only denylist WITH positive control, qwinsta bare + no-arg, RULE-11 blind-vs-negative, guard/RULE-11 ordering by source offset, param-block==runner argmap)",
+    "full hosted_workspace app suite = 1105 tests OK (no regression; test DB torn down cleanly); host-op core modules 122 tests OK",
+    "host ParseFile (Windows PowerShell 5.1.26100.32522): probe {ok:true,count:0}; positive control Verify-GuvfxRuntimeBuild.ps1 {ok:true,count:0}; negative control (broken 'if ($true) {') {ok:false,count:1,'Missing closing }'} -> measurement path proven to detect a real error (RULE 11). Host temp file removed; no executor/daemon/estate change; no arming",
+    "check_no_secrets: no findings; EVIDENCE-LINT: PASS",
+    "adversarial multi-lens review (9 agents): no-RCE SHIP-AS-IS, qwinsta SHIP-AS-IS(DARK), framework-parity SHIP-AS-IS; 2 CONFIRMED findings (both LOW: static scans lacked a positive control; guard/RULE-11 tests were order-independent) - BOTH FIXED (positive-control test + source-order assertions added). account-18 reservation (MED, refuted as a blocker) resolved deliberately by adding 18 to the .ps1 reserved set for estate consistency"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "DARK / unarmed: no backend caller invokes PROBE_SESSION. This certifies the repo-complete signed-contract plumbing + the read-only .ps1 + its host ParseFile validation. It is NOT a live behavioural certification.",
+    "NOT RUN (Sponsor-gated deploy): staging Probe-GuvfxSession.ps1 to the host executor scripts dir + restarting the daemon. DEPLOY-ORDERING GATE: the daemon's verify_scripts() ParseFile-gates EVERY CONTRACT script at startup and fails closed if one is missing, so the .ps1 MUST be staged (stage-manifest updated) BEFORE the new executor lib is deployed and the daemon restarted - else the executor refuses to serve ALL ops. The currently-running daemon uses the OLD lib and is unaffected by this merge.",
+    "NOT RUN (out of scope, P4/P5 unauthorized): a behavioural host smoke test of qwinsta output (active + disconnected + no-session cases) and any recovery reconciler that would CALL PROBE_SESSION. That behavioural proof is the arming gate.",
+    "en-US locale assumed: the qwinsta header token ('SESSIONNAME') and the 'Active' state literal are English strings; the host is pinned en-US. A locale-agnostic parse is deferred (documented in the .ps1 header).",
+    "single-session-per-user assumed (host fSingleSessionPerUser=1): the parse records the first row matching the derived username; if that invariant changed, the first-listed session would be reported (documented in the .ps1 header).",
+    "sessions_seen is a diagnostic/positive-control aid (true count of parsed data rows), not a security control.",
+    "No secret, credential, or path is added; the identity and every path are server-derived from account_id; Customer Zero is refused at both layers."
+  ],
+  "artefact_locations": [
+    "backend/hosted_workspace/host_protocol.py (HOSTED_OPERATIONS += PROBE_SESSION)",
+    "backend/hosted_workspace/host_agent_dispatch.py (OP_PRIMITIVES PROBE_SESSION->probe_session)",
+    "deploy/hosted-executor/primitive_runner.py (CONTRACT probe_session->Probe-GuvfxSession.ps1, inject_account_id)",
+    "deploy/hosted-executor/stage-manifest.json (scripts += Probe-GuvfxSession.ps1)",
+    "backend/terminal_provisioning/windows/Probe-GuvfxSession.ps1 (NEW; read-only qwinsta probe)",
+    "backend/hosted_workspace/tests_probe_session.py (16 tests)",
+    "docs/NEXT.md; adversarial review (9-agent workflow, SHIP-AS-IS / SHIP-WITH-FIXES all applied)"
+  ],
+  "checksums": {
+    "backend/terminal_provisioning/windows/Probe-GuvfxSession.ps1": "sha256:44d041d13a93d7ca90a36ee5eb4f1290352b0dac1deaf1b742172645e38afd6f",
+    "backend/hosted_workspace/host_protocol.py": "sha256:f690c8ccf1c22fcf9e819006ee93080c9264dbc352da11e87e0812b712d50d41",
+    "backend/hosted_workspace/host_agent_dispatch.py": "sha256:40dae432564d438085226b63e2950936c7d580741d41b347b8afc831174e0f2b",
+    "deploy/hosted-executor/primitive_runner.py": "sha256:a590c0838476b795b0a6bd5fb0120f64750a2b6ae761ae83d5ae53391690b79e",
+    "deploy/hosted-executor/stage-manifest.json": "sha256:b65452329af15ad9f1170b8b00ba2ca49509d5b93cfce72a79349ade9df92c3c",
+    "backend/hosted_workspace/tests_probe_session.py": "sha256:19ac1c3b1ab0e0e9bab3a33d6a66f271e1e2be047a9a604f17edcb198791cca0"
+  },
+  "reviewer": "pending-sponsor"
+}

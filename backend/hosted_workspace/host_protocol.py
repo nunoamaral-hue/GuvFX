@@ -48,6 +48,7 @@ HOSTED_OPERATIONS = (
     "APPLY_APPLOCKER_AUDIT",     # AppLocker AuditOnly TENANT MERGE for this identity (additive; NEVER -Enforce)
     "REMOVE_APPLOCKER_TENANT",   # tenant rollback: remove ONLY this account's AppLocker deny contribution
     "VERIFY_SLOT",               # read-only re-verification of the whole slot
+    "PROBE_SESSION",             # P3: read-only qwinsta probe of THIS account's own RDS session state (RO; no launch/login/order; NEVER CZ)
     "ACTIVATE_ORDER_BRIDGE",     # start THIS node's dedicated pin-enforcing order bridge + health-check (server-derived slot)
     "ACTIVATE_TENANT_BRIDGE",    # P0-B1.1: start THIS tenant's OWN pin-enforcing order bridge on its per-tenant PORT (multi-tenant host)
     "RELAUNCH_TERMINAL",         # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own MT5 (capability recovery; NEVER CZ; no order)
