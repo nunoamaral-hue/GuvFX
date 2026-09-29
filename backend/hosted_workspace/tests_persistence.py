@@ -508,3 +508,41 @@ class MutationAdequacyTests(SimpleTestCase):
         # `is True` -> `is not True` : input True distinguishes
         m2 = self._fn_from_source(P._as_bool, ("is True", "is not True"))
         self.assertNotEqual(m2(True), P._as_bool(True))
+
+
+class BrokerEverMatchedLatchTests(_Base):
+    """The display-only first-launch latch (broker_ever_matched): set-once the first time an observation reports
+    connected AND matched; never cleared by a later disconnect/mismatch; never set by a wrong-account connect."""
+
+    def test_latches_true_on_first_connected_and_matched(self):
+        ws = self._ws(canonical_state=S.CONNECTED)
+        self.assertFalse(ws.broker_ever_matched)  # precondition
+        decision = derive_workspace_decision(_obs(previous_state=str(S.CONNECTED)))
+        persist_workspace_decision(ws, _obs(connected=True, account_match=True), decision, observation_version=1)
+        ws.refresh_from_db()
+        self.assertTrue(ws.broker_ever_matched)
+
+    def test_latch_survives_a_later_disconnect(self):
+        ws = self._ws(canonical_state=S.CONNECTED)
+        d1 = derive_workspace_decision(_obs(previous_state=str(S.CONNECTED)))
+        persist_workspace_decision(ws, _obs(connected=True, account_match=True), d1, observation_version=1)
+        # Now a genuine disconnect of the (already-established) account.
+        d2 = derive_workspace_decision(
+            _obs(previous_state=str(S.CONNECTED), connected=False, account_match=False, trade_allowed=False))
+        persist_workspace_decision(
+            ws, _obs(connected=False, account_match=False, trade_allowed=False), d2, observation_version=2)
+        ws.refresh_from_db()
+        self.assertIs(ws.proj_connected, False)          # currently disconnected
+        self.assertTrue(ws.broker_ever_matched)          # ...but the first-launch latch is NOT cleared
+
+    def test_wrong_account_connect_never_latches(self):
+        # Connected to the WRONG account (account_match False): canonical still advances to CONNECTED, but the
+        # first-launch latch must NOT be set (the member has not yet correctly connected).
+        ws = self._ws(canonical_state=S.WAITING_FOR_LOGIN)
+        decision = derive_workspace_decision(
+            _obs(previous_state=str(S.WAITING_FOR_LOGIN), connected=True, account_match=False))
+        persist_workspace_decision(ws, _obs(connected=True, account_match=False), decision, observation_version=1)
+        ws.refresh_from_db()
+        self.assertIs(ws.proj_connected, True)
+        self.assertIs(ws.proj_account_match, False)
+        self.assertFalse(ws.broker_ever_matched)

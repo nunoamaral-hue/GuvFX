@@ -55,6 +55,22 @@ def delivery_state_projection(workspace: HostedMt5Workspace, *, staff: bool = Fa
         "last_delivery_success": _iso(workspace.last_delivery_success),
         "updated_at": _iso(workspace.updated_at),
     }
+    # Member's OWN broker identity (display-only) + the first-launch marker. These let the broker-discovery
+    # guidance name the expected broker/server the member must wait for in MetaTrader and show ONLY before the
+    # first correct connection. All three are SECRET-FREE and stay within the projection's allow-list: the broker
+    # display name and server name are the broker's public identifiers the member types into MetaTrader themselves
+    # (never a credential, username, runtime path, embed_url or host). ``broker_ever_matched`` is the durable,
+    # set-once latch (True once observed connected AND matched, never cleared) — so the guidance is shown for a
+    # genuine FIRST launch and never re-appears on a later reconnect/mismatch of an established account.
+    # Read-model only: none of these gate or authorise an order (that remains ``evaluate_binding`` in the bridge).
+    _acct = getattr(workspace, "trading_account", None)
+    _bs = getattr(_acct, "broker_server", None) if _acct is not None else None
+    projection["broker_display_name"] = (
+        (getattr(_bs, "broker_display_name", "") or getattr(_acct, "broker_name", "") or "")
+        if _acct is not None else ""
+    )
+    projection["server_name"] = (getattr(_bs, "server_name", "") or "") if _bs is not None else ""
+    projection["broker_ever_matched"] = bool(workspace.broker_ever_matched)
     if staff:
         node = workspace.workspace_node
         projection["operator"] = {

@@ -79,18 +79,49 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
   const [maximized, setMaximized] = useState(false);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const browserFullscreenRef = useRef(false);
-  // First-launch guidance (PP5): the first time MT5 opens in a fresh workspace it downloads the broker's full
-  // instrument catalogue, which can take minutes. Show the one-time warning until this browser has opened it
-  // once (no first-launch flag exists on delivery-state, so we use a per-account localStorage marker).
-  const [hasLaunched, setHasLaunched] = useState(true);
-  const firstLaunchSessionRef = useRef(false);
+  // First-launch broker-discovery guidance. GuvFX CANNOT observe MT5's "search for your broker" step (the observer
+  // only reads post-login account_info), so this is honest member GUIDANCE, never a progress claim. Show/suppress
+  // is gated on a DURABLE, server-derived signal - never browser-local state - so it appears on any device during
+  // the pre-connection broker search + login and stops for good ONCE GuvFX has authoritatively observed the broker
+  // connected to the CORRECT account. The signal is read from the SAME owner-scoped delivery-state endpoint the
+  // detection effect already probes (never /api/trading/accounts/, which the account-explicit isolation guard
+  // forbids here): its allow-listed, secret-free projection carries the member's own expected broker/server plus
+  // `broker_ever_matched` (the set-once latch: True the first time proj_connected AND proj_account_match; never
+  // cleared; read-model only, never order authority). Because it is a latch, a later disconnect/mismatch of an
+  // ESTABLISHED account never re-shows the first-launch wizard copy - only a genuine first launch does. A light
+  // poll self-suppresses on the first correct connect without a manual refresh (real backend state, not a timer).
+  const [acctInfo, setAcctInfo] = useState<{ broker: string; server: string; complete: boolean } | null>(null);
   useEffect(() => {
-    if (!account) return;
-    let launched = true;
-    try { launched = localStorage.getItem(`guvfx_mt5_launched_${account.id}`) === "1"; } catch { launched = false; }
-    setHasLaunched(launched);
-    firstLaunchSessionRef.current = !launched;
+    if (!account) { setAcctInfo(null); return; }
+    let cancelled = false;
+    const load = async (): Promise<boolean> => {
+      try {
+        const a = await apiFetch<{ broker_display_name?: string; server_name?: string; broker_ever_matched?: boolean }>(
+          `/api/hosted-workspace/delivery-state/?account_id=${account.id}`, {});
+        if (cancelled) return false;
+        // `broker_ever_matched` true => this account has connected to the CORRECT account at least once (first
+        // launch is complete) -> suppress for good. Anything else (never correctly connected, or the field absent)
+        // keeps the first-launch guidance.
+        const complete = a?.broker_ever_matched === true;
+        setAcctInfo({ broker: a?.broker_display_name || "", server: a?.server_name || "", complete });
+        return complete;
+      } catch {
+        // Can't confirm connected -> default to SHOWING guidance (safe: guidance is never harmful; the identity
+        // pin remains the authoritative boundary regardless).
+        if (!cancelled) setAcctInfo({ broker: "", server: "", complete: false });
+        return false;
+      }
+    };
+    let timer: ReturnType<typeof setInterval> | undefined;
+    void load().then((complete) => {
+      if (cancelled || complete) return;
+      timer = setInterval(() => { void load().then((done) => { if (done && timer) { clearInterval(timer); timer = undefined; } }); }, 20000);
+    });
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [account]);
+  // Only once we have a definitive backend answer AND it is not-yet-connected. Established accounts (complete) never
+  // show it; the brief pre-answer window shows nothing (no flash).
+  const showDiscovery = !!acctInfo && acctInfo.complete === false;
   // Keyboard-focus management for the embedded Guacamole RemoteApp. Guacamole's key handler listens on the
   // iframe's OWN document, so keystrokes only reach MT5 while the iframe holds DOM focus (mouse works without
   // focus, keyboard does not — the "mouse works / keyboard dead" symptom). We give the iframe an explicit ref
@@ -326,8 +357,6 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
       setDescriptor(withCleanGuacAuth(safe));
       setEpoch((e) => e + 1);
       onConnected?.();   // AJ#5.1 diagnostic: record the "MT5 launched" moment (no data, no I/O)
-      try { localStorage.setItem(`guvfx_mt5_launched_${account.id}`, "1"); } catch { /* non-fatal */ }
-      setHasLaunched(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : t(lang, "terminal.openError");
       if (message.includes("409")) {
@@ -339,6 +368,50 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
       setConnecting(false);
     }
   }, [account, lang, onConnected]);
+
+  // Prominent, accessible first-launch broker-discovery warning shown ABOVE the MT5 window during the pre-connection
+  // window. Amber house treatment + role="alert" + a warning glyph (never colour-alone). Concise: the primary
+  // instruction and the MetaQuotes-first caveat are visible without expanding anything.
+  const expLabel: React.CSSProperties = { fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.05em",
+    color: "#94a3b8", fontWeight: 700 };
+  const expVal: React.CSSProperties = { fontSize: "0.85rem", color: "#e9f4ff", fontWeight: 600 };
+  const renderDiscovery = () => (
+    <div role="alert" className="guvfx-discovery-warn" style={{
+      display: "flex", gap: "0.7rem", padding: "0.85rem 1rem", borderRadius: 12,
+      border: "1px solid rgba(251,191,36,0.45)", background: "rgba(251,191,36,0.09)",
+      marginBottom: "1rem", lineHeight: 1.55 }}>
+      <span aria-hidden style={{ fontSize: "1.1rem", lineHeight: 1.3 }}>⚠️</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.05em",
+                      color: "#fbbf24", fontWeight: 700, marginBottom: 4 }}>
+          {t(lang, "terminal.discoveryTitle")}
+        </div>
+        <p style={{ margin: "0 0 6px", color: "#fde68a", fontWeight: 700, fontSize: "0.92rem" }}>
+          {t(lang, "terminal.discoveryPrimary")}
+        </p>
+        <p style={{ margin: "0 0 6px", color: "#e9d8a6", fontSize: "0.82rem" }}>{t(lang, "terminal.discoveryBody")}</p>
+        <p style={{ margin: "0 0 8px", color: "#e9d8a6", fontSize: "0.82rem" }}>{t(lang, "terminal.discoveryMetaquotes")}</p>
+        {(acctInfo?.broker || acctInfo?.server) && (
+          <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" as const, margin: "0 0 8px" }}>
+            {acctInfo?.broker && (
+              <div><div style={expLabel}>{t(lang, "terminal.discoveryExpectedBroker")}</div>
+                   <div style={expVal} data-testid="discovery-expected-broker">{acctInfo.broker}</div></div>)}
+            {acctInfo?.server && (
+              <div><div style={expLabel}>{t(lang, "terminal.discoveryExpectedServer")}</div>
+                   <div style={expVal} data-testid="discovery-expected-server">{acctInfo.server}</div></div>)}
+          </div>
+        )}
+        <ol style={{ margin: "0 0 4px", paddingLeft: "1.1rem", color: "#cbb78a", fontSize: "0.8rem" }}>
+          <li>{t(lang, "terminal.discoveryStep1")}</li>
+          <li>{t(lang, "terminal.discoveryStep2")}</li>
+          <li>{t(lang, "terminal.discoveryStep3")}</li>
+          <li>{t(lang, "terminal.discoveryStep4")}</li>
+          <li>{t(lang, "terminal.discoveryStep5")}</li>
+        </ol>
+        <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>{t(lang, "terminal.discoveryWaiting")}</div>
+      </div>
+    </div>
+  );
 
   if (!account) {
     // Still resolving hosted-ownership: show a neutral "preparing" message only if detection is slow (so a
@@ -383,6 +456,12 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
       >
         {t(lang, "terminal.description", { account: account.label })}
       </p>
+
+      {/* First-launch broker-discovery safeguard — sits ABOVE the MT5 window (both the launched iframe and the
+          pre-open Open button). Durable: driven by the server-derived `broker_ever_matched` latch, not browser-local
+          state, so it survives refresh, shows only for a genuine first launch, and never re-appears once the account
+          has correctly connected even once. Hidden in full-screen (the description is hidden there too). */}
+      {showDiscovery && !maximized && renderDiscovery()}
 
       {descriptor?.embed_url ? (
         // Forward the user's pointer intent to keyboard focus: a pointer-down anywhere on the terminal card
@@ -429,13 +508,6 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
               </button>
             </div>
           </div>
-          {firstLaunchSessionRef.current && (
-            <div style={{ padding: "0.5rem 1rem", background: "rgba(74,179,255,0.05)",
-                          borderBottom: "1px solid rgba(74,179,255,0.1)", fontSize: "0.78rem", color: "#94a3b8",
-                          lineHeight: 1.5 }}>
-              {t(lang, "terminal.firstLaunchShort")}
-            </div>
-          )}
           <iframe
             ref={iframeRef}
             key={`hosted-mt5-${epoch}`}
@@ -472,16 +544,6 @@ export function HostedMt5RemoteApp({ onActiveChange, onConnected, accountId }: {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {!hasLaunched && (
-            <div style={{ display: "flex", gap: "0.6rem", padding: "0.75rem 0.9rem", borderRadius: 10,
-                          border: "1px solid rgba(74,179,255,0.2)", background: "rgba(74,179,255,0.06)" }}>
-              <span aria-hidden style={{ fontSize: "0.95rem", lineHeight: 1.4 }}>ℹ️</span>
-              <p style={{ fontSize: "0.82rem", color: "#b7c5dd", margin: 0, lineHeight: 1.6 }}>
-                <strong style={{ color: "#e9f4ff" }}>{t(lang, "terminal.firstLaunchTitle")}</strong>{" "}
-                {t(lang, "terminal.firstLaunchBody")}
-              </p>
-            </div>
-          )}
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" as const }}>
             <Button onClick={openTerminal} disabled={connecting}>
               {connecting ? t(lang, "terminal.opening") : t(lang, "terminal.open")}
