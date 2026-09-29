@@ -22,7 +22,10 @@ _BRIDGE_PATH = os.path.join(_REPO, "scripts", "mt5_signal_bridge.py")
 def _load_bridge(**env):
     """Import a FRESH bridge module under a controlled environment (flags are read at import time). Loaded from a
     temp cwd because the bridge builds a module-scope FileHandler."""
-    base = {"GUVFX_AGENT_TOKEN": "synthetic-token-threading"}
+    # A fake, obviously-non-secret token so the bridge imports with auth configured. The value carries the "fake"
+    # placeholder marker so the repo secret scanner (check_no_secrets.py) recognises it as a non-credential; the
+    # tests stub _validate_token anyway, so the actual value is never used to authenticate.
+    base = {"GUVFX_AGENT_TOKEN": "fake-token-not-a-secret-threading-tests"}
     base.update(env)
     prev = os.getcwd()
     with tempfile.TemporaryDirectory() as tmp:
