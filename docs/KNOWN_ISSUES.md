@@ -14,11 +14,16 @@ Context: the never-launch fix (STATUS 2026-09-29) stops the observer from creati
   fast-follow is a short per-account attach backoff after a `would_launch` hold (host-side marker in the observer's
   `_obs` dir), or surfacing the tenant `guarded_attach_would_launch` reason so the backend can back off. NOT done now
   (avoids added host-side state on a live box; frozen-visibility alerts if it ever fails to self-heal).
-- **[DEPLOY GATE] The never-CREATE gate needs psutil OR wmic in the observer's `pyw` python.** `_bare_terminal_pids`
-  prefers psutil (not a declared observer dependency) and falls back to wmic; if NEITHER is available it FAILS CLOSED
-  (the observer holds, does not attach) rather than silently no-op — so verify wmic (standard on Windows Server) is on
-  PATH for the observer identity during deploy, or install psutil into the observer runtime. A positive/negative
-  control test covers the wmic parser (RULE 11).
+- **[RESOLVED 2026-09-29] The never-CREATE gate's process enumerator.** First deploy attempt used psutil→wmic; the
+  host (Windows Server 2025) has **neither** psutil nor wmic (wmic is removed on Server 2025), so `_bare_terminal_pids`
+  returned `None` for EVERY account → the guard would have failed closed for the whole estate. Caught by a live
+  host positive/negative control BEFORE it could affect trading (the estate was rolled back within ~2 min; 25/35/36
+  never stopped advancing). FIX: enumeration order is now psutil → **PowerShell `Get-CimInstance Win32_Process`** (the
+  modern Windows enumerator, verified working on the host: healthy accounts → empty set, acct 37 → its stray pid) →
+  wmic → `None` (fail closed only if ALL fail). Kill safety rests on NTFS per-account dir isolation + the OS
+  only letting the observer terminate its own processes (owner filter dropped as fragile). RULE-11 control test covers
+  the CIM parser. LESSON: a host-environment assumption (psutil/wmic present) must be verified on the target before a
+  guard depends on it — the live control run is the positive control.
 - **[OUT OF THIS CALL'S WINDOW] MT5 self-fork after the observe call** (e.g. LiveUpdate staging a second non-portable
   terminal) is not caught by the single before/after diff; it is handled by the existing LiveUpdate exe-immutability
   containment + the LocalSystem `duplicate_terminal` fail-closed + the new `frozen` alert (operator-visible).
