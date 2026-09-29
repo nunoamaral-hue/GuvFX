@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ MT5 first-launch broker-discovery UX safeguard — IMPLEMENTED, PR + deploy pending (2026-09-29)
+Generic amber ``role="alert"`` warning ABOVE the embedded MT5 window during first launch so a member never clicks
+MetaTrader *Next* before their broker appears (primary copy preserved verbatim: "Do not click Next until the broker
+you are searching for appears in the list."). MetaQuotes-first caveat, dynamic expected broker/server, honest waiting
+(no fake progress), en+ja. Durable FIRST-LAUNCH-ONLY suppression via a NEW secret-free set-once latch
+``broker_ever_matched`` (True the first time proj_connected AND proj_account_match; never cleared → a later
+reconnect/disconnect/switch-flip never re-shows the wizard) + broker/server on the customer
+``delivery_state_projection``, read through the card's EXISTING owner-scoped delivery-state probe — never
+``/api/trading/accounts/`` (P0 isolation guard intact). Identity-enforcement chain + canonical/decision UNCHANGED;
+read-model only. Files: ``HostedMt5RemoteApp.tsx``, ``i18n.ts`` (+discovery, −orphaned firstLaunch),
+``delivery_read_model.py``, ``delivery_views.py`` (select_related), ``models.py`` (+broker_ever_matched),
+``persistence.py`` (set-once latch), mig ``0013`` (+backfill), ``tests_delivery.py`` (+3), ``tests_persistence.py``
+(+3), new ``HostedMt5RemoteApp.test.tsx`` (8). Adversarial review: no HIGH; MED (reconnect re-show) fixed by the latch.
+Backend hosted_workspace+trading+execution green; frontend vitest 366 OK; eslint 0; build+parity OK.
+**Single next action:** open PR → on GREEN CI merge → deploy backend (rebuild guvfx-prod-guvfx-backend, migrate 0013,
+recreate guvfx-backend + workers) + frontend rebuild → Phase-13 structural production verify (don't create accounts;
+25/35/36 read-only only; confirm latch backfilled → no warning for them) → deliver MT5_BROKER_DISCOVERY_MEMBER_UX_SAFE.
+
 ## ✅ Remove Broker Account STAGE-2 physical decommission — SHIPPED + CERTIFIED (2026-09-29) = PR#437 `b8bb22f`
 Governed host teardown (DECOMMISSION_RUNTIME + REMOVE_OBSERVER, reuse REMOVE_REMOTEAPP/APPLOCKER) via async retryable
 cleanup_state (mig 0012) from the minute cron; + tombstone list-hiding + live-op guard + owned/limit counter.

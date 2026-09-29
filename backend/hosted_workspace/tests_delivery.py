@@ -264,6 +264,44 @@ class DeliveryReadModelTests(_Base):
         self.assertNotIn(self.prov.windows_username, flat)
         self.assertNotIn(self.prov.runtime_root, flat)
 
+    # ── Broker-discovery UX safeguard: the customer-safe projection carries the member's own expected broker/
+    #    server (display-only) + broker_ever_matched (the set-once first-correct-connection latch). These drive
+    #    the first-launch discovery guidance and its durable first-launch-only suppression. Read-model only.
+    def test_customer_projection_carries_broker_identity_and_first_launch_latch(self):
+        proj = delivery_state_projection(self.workspace, staff=False)
+        # broker_server is unset here -> broker_display_name falls back to the free-text broker_name; no server.
+        self.assertEqual(proj["broker_display_name"], "Broker-Demo")
+        self.assertEqual(proj["server_name"], "")
+        # A never-connected workspace: latch is False -> first-launch guidance stays visible.
+        self.assertIs(proj["broker_ever_matched"], False)
+
+    def test_broker_ever_matched_latch_projected_and_survives_disconnect(self):
+        # Once the latch is set (by the observation writer on the first connected+matched observation), the
+        # projection reports it True even if the account is currently disconnected/mismatched (reconnect must NOT
+        # re-show the first-launch wizard). The latch itself is never cleared by the read model.
+        self.workspace.broker_ever_matched = True
+        self.workspace.proj_connected = False           # now disconnected
+        self.workspace.proj_account_match = False
+        self.workspace.save(update_fields=["broker_ever_matched", "proj_connected", "proj_account_match"])
+        self.assertIs(delivery_state_projection(self.workspace)["broker_ever_matched"], True)
+
+    def test_broker_identity_prefers_broker_server_and_stays_secret_free(self):
+        from trading.models import BrokerServer
+        bs = BrokerServer.objects.create(
+            broker_display_name="FortressFX", server_name="FortressFX-Trade", environment="live")
+        self.account.broker_server = bs
+        self.account.save(update_fields=["broker_server"])
+        self.workspace.refresh_from_db()
+        proj = delivery_state_projection(self.workspace, staff=False)
+        # Prefers the structured BrokerServer identifiers (what the member searches for / connects to in MT5).
+        self.assertEqual(proj["broker_display_name"], "FortressFX")
+        self.assertEqual(proj["server_name"], "FortressFX-Trade")
+        # Broker/server identifiers are public (the member types them into MT5); still no secret leaks alongside.
+        flat = repr(proj)
+        self.assertNotIn(self.prov.windows_username, flat)
+        self.assertNotIn(self.prov.runtime_root, flat)
+        self.assertNotIn(_WINDOWS_PW, flat)
+
 
 @override_settings(HOSTED_PERSISTENT_MT5_ENABLED=True, HOSTED_MT5_REMOTEAPP_ENABLED=True)
 class DeliveryApiTests(_Base):

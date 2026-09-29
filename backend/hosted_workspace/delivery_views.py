@@ -68,7 +68,9 @@ class HostedWorkspaceDeliveryStateView(APIView):
             return Response({"detail": "Not found."}, status=http.HTTP_404_NOT_FOUND)
 
         workspace = (HostedMt5Workspace.objects
-                     .select_related("workspace_node")
+                     # trading_account__broker_server: the projection surfaces the member's own (secret-free)
+                     # expected broker/server for the first-launch discovery guidance — join it to avoid N+1.
+                     .select_related("workspace_node", "trading_account__broker_server")
                      .filter(trading_account_id=account.id).first())
         if workspace is None:
             return Response({"detail": "No hosted workspace for this account."},

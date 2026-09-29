@@ -187,6 +187,15 @@ def persist_workspace_decision(
             "last_correlation_id", "last_decision_at", "updated_at",
         ]
 
+        # First-launch latch (display-only, set-once): the first time we observe connected AND matched, record it
+        # permanently so the member-facing broker-discovery guidance is shown ONLY before the first correct
+        # connection and never re-appears on a later reconnect/mismatch. Never cleared here; never an order/identity
+        # gate; does not affect ``material``, ``canonical_state`` or the decision. Idempotent (only written once).
+        if (not locked.broker_ever_matched
+                and bool(observation.connected) and bool(observation.account_match)):
+            locked.broker_ever_matched = True
+            update_fields.append("broker_ever_matched")
+
         transition_created = False
         telemetry_emitted = False
         result_status = PersistStatus.IDEMPOTENT

@@ -14,6 +14,42 @@
 
 ## Execution workstream log
 
+- **2026-09-29 - MT5 FIRST-LAUNCH BROKER-DISCOVERY UX SAFEGUARD (member guidance; identity enforcement UNCHANGED).**
+  New members opening MT5 for the first time can click MetaTrader's *Next* before their broker finishes appearing in
+  the list (discovery takes minutes and MetaQuotes shows first), landing on the wrong server. Fix: a prominent,
+  accessible amber ``role="alert"`` warning ABOVE the embedded MT5/RemoteApp window during the pre-connection window,
+  in ``HostedMt5RemoteApp``. PRIMARY COPY (preserved verbatim): "Do not click Next until the broker you are searching
+  for appears in the list." GENERIC (never broker-specific / no FortressFX hardcode) + a MetaQuotes-first caveat
+  ("MetaQuotes may appear first… Do not select MetaQuotes"), a 5-step ordered guide, an honest waiting line (NO fake
+  progress/"found" — MT5 broker search is UNOBSERVABLE), and dynamic **expected broker/server** the member must wait
+  for. i18n en+ja (``terminal.discovery*``); removed 3 now-orphaned ``terminal.firstLaunch*`` keys + the old
+  localStorage first-launch box they fed.
+  Show/suppress is DURABLE + server-derived, never browser-local: it reads a new **secret-free** first-launch LATCH
+  ``broker_ever_matched`` (set-once True the first time an observation reports ``proj_connected AND
+  proj_account_match``; NEVER cleared) plus ``broker_display_name``/``server_name`` from the customer-facing
+  ``delivery_state_projection``, via the SAME owner-scoped ``/api/hosted-workspace/delivery-state/`` probe the card
+  already makes. It NEVER calls ``/api/trading/accounts/`` (respects the P0 account-explicit cross-account isolation
+  guard). A light 20s poll self-suppresses on the first correct connect (real backend state, not a timer). The latch
+  (mig 0013 + a 2-line set-once write in ``persistence.persist_workspace_decision``, in the always-refresh block —
+  never touches ``material``/``canonical_state``/decision; + a data backfill latching already-connected+matched rows
+  so 25/35/36 never flash the warning post-deploy) fixes the review's MED: gating on *current* connection alone would
+  re-show the FIRST-LAUNCH wizard on a genuine reconnect/disconnect or a switch-policy match-flip; the latch scopes it
+  to a genuine first launch only. INVARIANT: read-model only — ``broker_ever_matched`` never gates/authorises an order
+  (that stays ``evaluate_binding``); NO change to the identity-enforcement chain (matching / persistence-decision /
+  readiness / managed_start / 409 / broker_gate / write-once identity). Never-correctly-connected shows the warning;
+  wrong-account (connected, not matched) KEEPS it (latch stays False); once correctly connected even once it never
+  re-appears; fetch failure fails OPEN to guidance (harmless). Adversarial review: no HIGH; the one MED is fixed by
+  the latch; LOWs (transient-blip fail-open, poll-transition test) addressed. Tests: tests_delivery +3 (broker
+  identity + latch-projected-survives-disconnect + secret-free), tests_persistence +3 (latch set-once / survives
+  disconnect / wrong-account never latches); new HostedMt5RemoteApp.test.tsx (8: exact copy, dynamic broker, no
+  hardcode, first-launch-latch suppression, empty-projection, a11y+MetaQuotes, ja, no /api/trading/accounts/, poll
+  self-suppress). Backend hosted_workspace+trading+execution suites green; frontend vitest 366 OK; eslint 0 errors;
+  next build + parity OK.
+  **STATUS: IMPLEMENTED on branch ``feat/mt5-broker-discovery-ux``; PR + deploy pending. Target:
+  MT5_BROKER_DISCOVERY_MEMBER_UX_SAFE.** NOTE (Amber, flagged): additive read-model fields + a display-only latch
+  field/migration on the shared hosted_workspace model + a set-once write in the observation writer (secret-free, no
+  enforcement/decision touched) — so this needs a BACKEND deploy + migration 0013, not frontend-only.
+
 - **2026-09-29 - REMOVE BROKER ACCOUNT: STAGE-2 PHYSICAL DECOMMISSIONING + tombstone visibility + entitlement UX
   (pre-20-account capacity gate).** Closes the residual gap that a removed account's Windows footprint (terminal,
   tenant bridge, tasks, RemoteApp, dirs, identity) kept running after logical removal. Design: logical removal

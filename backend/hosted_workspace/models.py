@@ -150,6 +150,16 @@ class HostedMt5Workspace(models.Model):
     proj_margin_mode = models.IntegerField(null=True, blank=True)
     last_correlation_id = models.CharField(max_length=128, blank=True, default="")
 
+    # First-launch marker (display-only). LATCHED True the first time an observation reports the terminal
+    # connected to the CORRECT account (proj_connected AND proj_account_match); once set it is NEVER cleared —
+    # a later disconnect/mismatch does NOT reset it. This distinguishes a genuine FIRST launch (never yet
+    # correctly connected -> show the broker-discovery guidance) from a RECONNECT of an already-established
+    # account (must NOT re-show the first-launch wizard copy). It is a pure read-model convenience derived from
+    # the observation projection; it is NOT an order gate, NOT an identity field, and never derives lifecycle
+    # state. DEFAULT FALSE; no migration arms it (a data backfill only latches already-connected+matched rows so
+    # existing members never see the first-launch warning after deploy).
+    broker_ever_matched = models.BooleanField(default=False)
+
     # --- ADR-0034 Execution Engine: explicit per-workspace ARM (Decision D, condition 4) ---------------
     # The durable, per-workspace switch that must be True before this workspace may execute. DEFAULT FALSE.
     # No migration ever sets it True; nothing auto-arms. It is one AND-term among the layered arming gate
