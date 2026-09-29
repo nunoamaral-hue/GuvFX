@@ -15,6 +15,12 @@
   is NOT reported as session_found:false. ``sessions_seen`` is included so a certifier can confirm the probe saw
   real data (a positive control: the host always has at least the services/console rows).
 
+  RESULT MODEL: the canonical field a reconciler consumes is ``session_status``, exactly one of
+  ACTIVE | DISCONNECTED | ABSENT | UNKNOWN. It defaults to UNKNOWN, so every fail-closed emission (blind qwinsta,
+  exception, CZ/identity refusal, or a found-but-unrecognised session state) is UNKNOWN and MUST NEVER be treated
+  as ABSENT. ABSENT is reported ONLY when qwinsta produced output and no row matched the derived user. (``ok``,
+  ``session_found``, ``session_state``, ``session_active`` remain as detail; a consumer keys on ``session_status``.)
+
   ASCII-only (RULE 9). Emits one compact JSON object as its last line.
 
   LIMITATIONS (documented, acceptable for the DARK/unarmed op; revisit before any P4/P5 caller is armed):
@@ -37,12 +43,21 @@ $ErrorActionPreference = "Stop"
 # reserved default {1}) before this op maps; account 18 is added here to keep the estate's sacred-identity set whole.
 $RESERVED_ACCOUNT_IDS = @(1, 18)
 
+# session_status is the CANONICAL 4-state result a reconciler consumes: ACTIVE | DISCONNECTED | ABSENT | UNKNOWN.
+# It DEFAULTS to UNKNOWN so EVERY fail-closed emission (Fail(): blind qwinsta, exception, identity/CZ refusal, or a
+# found-but-unrecognised session state) reports UNKNOWN and is NEVER mistakable for ABSENT. Only the success path
+# ever sets ACTIVE/DISCONNECTED/ABSENT, and ABSENT only when qwinsta produced output AND no row matched the user.
 $result = [ordered]@{
-  ok = $false; account_id = $AccountId; username = $Username; session_found = $false;
-  session_state = ""; session_active = $false; session_id = -1; sessions_seen = 0; reason = ""
+  ok = $false; account_id = $AccountId; username = $Username; session_status = "UNKNOWN";
+  session_found = $false; session_state = ""; session_active = $false; session_id = -1; sessions_seen = 0; reason = ""
 }
 function Emit() { $result | ConvertTo-Json -Compress }
-function Fail([string]$why) { $result.ok = $false; $result.reason = $why; Emit; exit 1 }
+# Fail() FORCES session_status back to UNKNOWN so a fail-closed emission is STRUCTURALLY UNKNOWN, never a stale
+# value. This matters for the exception path: the success path sets session_status ("ABSENT"/etc.) inside the try
+# BEFORE Emit, so if any later statement (e.g. ConvertTo-Json) threw under ErrorActionPreference=Stop, the catch ->
+# Fail path would otherwise emit a stale ABSENT with ok:false - the exact "UNKNOWN/ERROR must NEVER be ABSENT"
+# violation. Resetting here makes the guarantee structural, not incidental on statement ordering.
+function Fail([string]$why) { $result.session_status = "UNKNOWN"; $result.ok = $false; $result.reason = $why; Emit; exit 1 }
 
 try {
   # --- identity confinement (defence in depth) ---
@@ -100,6 +115,19 @@ try {
   $result.session_id = $sid
   # qwinsta abbreviates "Disconnected" to "Disc"; treat only an explicit "Active" state as an active session.
   $result.session_active = ($found -and ($state -eq "Active"))
+  # Canonical 4-state for the reconciler. A FOUND session in any state other than the two we recognise (Active /
+  # Disc) - e.g. the transitional Conn/ConnQ/Shadow/Init/Down/Listen - stays UNKNOWN (fail-closed), so the
+  # reconciler never establishes a fresh session over one that is mid-flight (which would risk a duplicate). ABSENT
+  # is set ONLY when qwinsta gave output (guaranteed by the qwinsta_no_output gate above) and no row matched.
+  if (-not $found) {
+    $result.session_status = "ABSENT"
+  } elseif ($state -eq "Active") {
+    $result.session_status = "ACTIVE"
+  } elseif ($state -eq "Disc") {
+    $result.session_status = "DISCONNECTED"
+  } else {
+    $result.session_status = "UNKNOWN"      # found but unrecognised/in-flux state -> fail closed, not ABSENT
+  }
   $result.ok = $true
   $result.reason = if ($found) { "ok" } else { "no_session_for_account" }
   Emit

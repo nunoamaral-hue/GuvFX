@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-P4PREP-PROBE-SESSION-STATE-MODEL",
+  "packet_id": "REBOOT-RECOVERY-P4-PREP",
+  "created_at_utc": "2026-09-29T23:10:00Z",
+  "branch": "feat/probe-session-state-model",
+  "base_commit": "7a2a6728aff63e0ec7f2e251d3800f0f189514fb",
+  "head_commit": null,
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_probe_session -v2  # 20 tests",
+    "ssh guvfx-windows-mt5 powershell ... [Parser]::ParseFile(Probe-GuvfxSession.ps1)  # RULE 9 host re-validation + RULE 11 controls",
+    "python3 scripts/check_no_secrets.py ; python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "PROBE_SESSION emits a canonical session_status in {ACTIVE, DISCONNECTED, ABSENT, UNKNOWN}",
+    "session_status DEFAULTS to UNKNOWN; every fail-closed emission (blind qwinsta_no_output, exception/catch, reserved-identity, account-id-range, username-mismatch) is UNKNOWN and NEVER ABSENT",
+    "ABSENT is set ONLY on the success path when qwinsta produced output AND no row matched; a found-but-unrecognised/in-flux state (Conn/ConnQ/Shadow/Init/Down/Listen/blank) is UNKNOWN (fail-closed), never ABSENT/ACTIVE",
+    "session_status survives dispatch's response sanitiser + response signature (reconciler can trust it end to end)",
+    ".ps1 ParseFile-validates under Windows PowerShell 5.1 with positive+negative controls; still ASCII-only, read-only, qwinsta bare, CZ+18 refused"
+  ],
+  "actual_results": [
+    "20/20 hosted_workspace.tests_probe_session pass, incl. session_status-flows-through-signed-response; default-UNKNOWN + Fail()-forces-UNKNOWN (structural); ordered mapping regex (not-found->ABSENT, Active->ACTIVE, Disc->DISCONNECTED, else->UNKNOWN) + ABSENT-assigned-exactly-once; ABSENT-unreachable-before-blind-gate",
+    "ADVERSARIAL REVIEW caught a HIGH latent fail-open: the success path sets session_status='ABSENT' inside the try BEFORE Emit, so an exception after that (e.g. ConvertTo-Json under ErrorActionPreference=Stop) would reach catch->Fail and emit a STALE ABSENT with ok:false. FIXED: Fail() now FORCES session_status='UNKNOWN' first, making 'UNKNOWN/ERROR is never ABSENT' structural, not incidental on statement ordering. MED test-quality finding also fixed (tautological/presence-only assertions replaced with the ordered-mapping regex + Fail-forces-UNKNOWN regex + ABSENT-count==1).",
+    "host ParseFile (Windows PowerShell 5.1.26100.32522): probe {ok:true,count:0}; positive control {ok:true,count:0}; negative control {ok:false,count:1}; host temp removed; no executor/daemon/estate change; no arming",
+    "check_no_secrets: no findings; EVIDENCE-LINT: PASS"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "DARK / unarmed: no caller invokes PROBE_SESSION; this certifies the strengthened read-only result model + its host ParseFile validation, not live behaviour.",
+    "The structural fail-closed guarantee (Fail forces UNKNOWN; ABSENT only after the blind gate; found-but-unrecognised -> UNKNOWN) is proven by source-structure tests + the host ParseFile gate; the authoritative BEHAVIOURAL proof (real qwinsta ACTIVE/DISCONNECTED/ABSENT/exception cases) is the host smoke gate run before P4 is armed.",
+    "en-US locale + single-session-per-user assumptions unchanged (documented in the .ps1 header).",
+    "No host deploy (Sponsor-gated; verify_scripts deploy-ordering gate unchanged); no arming."
+  ],
+  "artefact_locations": [
+    "backend/terminal_provisioning/windows/Probe-GuvfxSession.ps1 (session_status 4-state; Fail forces UNKNOWN)",
+    "backend/hosted_workspace/tests_probe_session.py (20 tests)",
+    "adversarial review (focused agent): SHIP-WITH-FIXES -> HIGH + MED both applied"
+  ],
+  "checksums": {
+    "backend/terminal_provisioning/windows/Probe-GuvfxSession.ps1": "sha256:38cd29674350da9ff9795ca826c1971483ea084318f4f356573e7ffd6e72a0f7",
+    "backend/hosted_workspace/tests_probe_session.py": "sha256:847fae163258db130e6afd323b8216aa289bda407ecf2d3e261341e873d0f25a"
+  },
+  "reviewer": "pending-sponsor"
+}

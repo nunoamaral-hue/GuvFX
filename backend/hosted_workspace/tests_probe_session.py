@@ -145,6 +145,21 @@ class ProbeSessionDispatch(SimpleTestCase):
                 self._run("PROBE_SESSION", account_id=14, params=bad)
             self.assertEqual(cm.exception.reason_code, "params_not_allowed")
 
+    def test_session_status_flows_through_signed_response(self):
+        # The canonical session_status the reconciler consumes must survive dispatch's response sanitiser (it is
+        # not a secret key) and the response signature, so P4 can trust it end to end.
+        calls = []
+
+        def run_primitive(name, args):
+            calls.append((name, args))
+            return {"ok": True, "primitive": name, "session_status": "ABSENT",
+                    "session_found": False, "sessions_seen": 3}
+
+        resp = D.dispatch(_req("PROBE_SESSION", account_id=14), keyring=KR, now=T, nonce_burn=_burner(),
+                          run_primitive=run_primitive, reserved_ids="")
+        out = P.verify_hosted_response(resp, correlation_id="c1", nonce=resp["nonce"], keyring=KR)
+        self.assertEqual(out["session_status"], "ABSENT")
+
 
 class ProbeSessionRunnerArgv(unittest.TestCase):
     def _argv(self, primitive, args, proc=None):
@@ -260,6 +275,35 @@ class ProbeSessionScriptStatic(unittest.TestCase):
         self.assertIn("$dataRows -lt 1", self.src)
         self.assertIn('"no_session_for_account"', self.src)
         self.assertIn("sessions_seen", self.src)
+
+    def test_session_status_default_is_unknown_and_fail_forces_unknown(self):
+        # (a) the result dict DEFAULTS session_status to UNKNOWN; and (b) Fail() STRUCTURALLY forces it back to
+        # UNKNOWN, so the exception/catch path can never emit a stale ABSENT (the success path sets ABSENT before
+        # Emit, inside the try). Both together make "UNKNOWN/ERROR is never ABSENT" structural, not incidental.
+        self.assertRegex(self.src, r'\$result\s*=\s*\[ordered\]@\{[^}]*session_status = "UNKNOWN"',
+                         "session_status must default to UNKNOWN in the result dict")
+        self.assertRegex(self.src, r'function Fail\([^)]*\)\s*\{\s*\$result\.session_status = "UNKNOWN";',
+                         "Fail() must force session_status to UNKNOWN before emitting (structural fail-closed)")
+
+    def test_session_status_mapping_is_ordered_and_absent_confined_to_not_found(self):
+        # Prove the ORDERED mapping structurally (not mere presence): not-found->ABSENT, Active->ACTIVE,
+        # Disc->DISCONNECTED, else->UNKNOWN. And ABSENT is assigned EXACTLY ONCE, so it cannot leak into another
+        # branch (a found-but-unrecognised state must be UNKNOWN, never ABSENT).
+        mapping = re.compile(
+            r'if\s*\(-not\s+\$found\)\s*\{\s*\$result\.session_status\s*=\s*"ABSENT"\s*\}'
+            r'\s*elseif\s*\(\$state\s*-eq\s*"Active"\)\s*\{\s*\$result\.session_status\s*=\s*"ACTIVE"\s*\}'
+            r'\s*elseif\s*\(\$state\s*-eq\s*"Disc"\)\s*\{\s*\$result\.session_status\s*=\s*"DISCONNECTED"\s*\}'
+            r'\s*else\s*\{\s*\$result\.session_status\s*=\s*"UNKNOWN"', re.DOTALL)
+        self.assertRegex(self.src, mapping)
+        self.assertEqual(self.src.count('$result.session_status = "ABSENT"'), 1,
+                         "ABSENT must be assigned in exactly one place (the not-found branch)")
+
+    def test_absent_is_unreachable_on_a_blind_measurement(self):
+        # RULE 11 for the state model: ABSENT can only be assigned AFTER the qwinsta_no_output blind gate, so a
+        # blind probe fails closed to UNKNOWN and can never be reported as ABSENT.
+        i_blind = self.src.index('Fail "qwinsta_no_output"')
+        i_absent = self.src.index('$result.session_status = "ABSENT"')
+        self.assertLess(i_blind, i_absent, "ABSENT must be unreachable until the blind-measurement gate has passed")
 
     def test_ps1_param_block_matches_runner_argmap(self):
         """A param-name drift (e.g. renaming -Username) would only surface at host runtime; pin the .ps1 param()
