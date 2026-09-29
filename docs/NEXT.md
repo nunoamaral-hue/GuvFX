@@ -1,6 +1,8 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Reboot-recovery readiness P0 — bridge resilience DARK PR (2026-09-29) branch `fix/bridge-threading-resilience`
+## ✅ Reboot-recovery readiness P0 — bridge resilience MERGED DARK (2026-09-29) = PR#440 `4da49d5`
+Evidence: `evidence/manifests/GFX-EVD-P0-BRIDGE-THREADING-RESILIENCE.json` (PASS; CI 10/10 green; DARK-merged, NOT
+armed, NO live-bridge restart). Arming prerequisites preserved as a future explicit gate (see below). **NEXT = P3.**
 Fixes the ALIVE-BUT-WEDGED bridge variant (P1 #439 fixed the DEAD variant). Root cause: the per-tenant bridge served
 HTTP on a single-threaded `HTTPServer`, so a slow/wedged MT5 IPC call head-of-line-blocks `/health` and the tenant
 watchdog's liveness probe times out — a busy-but-alive bridge looks dead. Fix (`scripts/mt5_signal_bridge.py`), DARK
@@ -16,7 +18,7 @@ otherwise MASKS a persistent wedge behind a green `/health`; (2) narrow the lock
 timeout only bounds it); (4) verify the comment-idempotency guard covers the timeout-retry path for the live brokers.
 **DARK live deploy DEFERRED on purpose:** the DARK code is inert (byte-identical), so restarting live order bridges
 25/35/36 to pre-position it is pure risk for zero behavioural change, and arming needs more code first anyway.
-**Single next action:** open PR → CI green → merge DARK → then P3 (read-only `PROBE_SESSION` host-op).
+**Single next action:** P3 (read-only `PROBE_SESSION` host-op).
 
 ## ✅ MT5 first-launch broker-discovery UX safeguard — SHIPPED + CERTIFIED (2026-09-29) = PR#438 `47d0aac`
 `MT5_BROKER_DISCOVERY_MEMBER_UX_SAFE`. Merged → migration 0013 (backfill) → recreated ONLY guvfx-backend +

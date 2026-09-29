@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-P0-BRIDGE-THREADING-RESILIENCE",
+  "packet_id": "REBOOT-RECOVERY-P0",
+  "created_at_utc": "2026-09-29T20:30:00Z",
+  "branch": "main",
+  "base_commit": "216142a6a9d64e7672323205f6283e9a093b1310",
+  "head_commit": "4da49d54ef4cdf7c78b843465252f1b9e67525ce",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test execution.tests_bridge_threading -v2  # P0 unit tests",
+    "python3 -c \"import ast; ast.parse(open('scripts/mt5_signal_bridge.py').read())\"  # bridge parses",
+    "python3 scripts/check_no_secrets.py  # governance secret scan",
+    "python3 scripts/check_evidence_manifests.py  # governance evidence linter",
+    "gh pr merge 440 --squash  # merge DARK PR #440 to main (CI 10/10 green before merge)"
+  ],
+  "expected_results": [
+    "MT5_BRIDGE_THREADED OFF (default) => byte-identical dispatch; _mt5_serialized a no-op; plain HTTPServer; /health additive keys only",
+    "MT5_BRIDGE_THREADED ON => ThreadingHTTPServer; ALL MT5 access serialized on one RLock; /health never takes the lock",
+    "read-only GET snapshot routes fail-fast 503 mt5_busy on a held-lock wedge; mutating POST order routes WAIT (block=True), never bounced to 503",
+    "malformed / non-finite MT5_CALL_TIMEOUT_SECONDS falls back to 8s (never bricks import); huge finite clamps to 300s",
+    "all P0 unit tests pass; governance secret scan + evidence linter pass; full CI green; PR merged DARK",
+    "NO live-bridge restart; MT5_BRIDGE_THREADED remains OFF (unarmed); 25/35/36 untouched"
+  ],
+  "actual_results": [
+    "14/14 execution.tests_bridge_threading pass (DARK no-op CM + end-to-end handler dispatch; block=True waits / block=False->Mt5Busy; real do_GET/do_POST dispatch: mutating POST waits & never 503s, read-only GET fast-503s, /health lock-free; timeout parsing incl. non-finite/overflow)",
+    "scripts/mt5_signal_bridge.py parses (ast); adversarial review verdict SHIP-WITH-FIXES ('no finding blocks the DARK merge'); all cheap fixes applied pre-merge (#2 armed-only socket timeout + mutating-POST block=True; #3 liveness-proxy docstring; #5 non-finite timeout->503 not 500; #6 documented deliberate RLock)",
+    "check_no_secrets: no findings; EVIDENCE-LINT: PASS; governance job GREEN",
+    "PR #440 CI: 10 passing / 0 failing / 0 pending; MERGEABLE / CLEAN; squash-merged to main as 4da49d5",
+    "MT5_BRIDGE_THREADED NOT set anywhere (OFF); no per-tenant bridge on the host was restarted or recreated; live estate 25/35/36 unchanged"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "SCOPE: this certifies the DARK, merged code ONLY. MT5_BRIDGE_THREADED is OFF and was NOT armed. Under the flag OFF the change is byte-identical except two additive /health keys (threaded, mt5_last_ok_age_s); the sole /health consumer (tenant_bridge_watchdog.ps1) reads only body.ok.",
+    "NOT RUN (deferred on purpose): the DARK live deploy. The DARK code is inert/byte-identical, so restarting the live order bridges 25/35/36 to pre-position it is pure operational risk for zero behavioural change; the Sponsor directed not to restart them solely to pre-position dormant code.",
+    "NOT RUN (Sponsor-gated): arming MT5_BRIDGE_THREADED=1. ARMING PREREQUISITES preserved as a future explicit gate: (1) the tenant watchdog must consume mt5_last_ok_age_s AND gain a poll-loop stall detector - armed threaded mode otherwise MASKS a persistent wedge behind a green /health (the current watchdog detects a wedge ONLY by a /health transport timeout); (2) narrow the lock OFF socket I/O (the armed-only 60s request socket timeout only BOUNDS the stall, it is not the full fix); (3) verify the comment-idempotency guard (find_existing_execution) covers the block=True timeout-retry path for the live brokers given known comment-truncation.",
+    "mt5_last_ok_age_s is a 'last clean lock release' liveness PROXY, not proof of MT5 success: it grows without bound under a hard hang (the P0 target) but stays small under fast-fail. Any future age-based wedge detector must also weigh persistent data-route 503s.",
+    "The MT5 python API not-thread-safe premise and the head-of-line-block root cause are established from code + prior incident analysis; no adversarial multi-thread MT5 IPC stress was run against a real MT5 (arming certification, separate + gated).",
+    "No secret, credential, path or username is added; no host contact; no DB or estate mutation."
+  ],
+  "artefact_locations": [
+    "scripts/mt5_signal_bridge.py (P0 block ~L265-350; do_GET/do_POST; start_http_server)",
+    "backend/execution/tests_bridge_threading.py (14 SimpleTestCase tests; no MT5/network)",
+    "docs/NEXT.md (Reboot-recovery readiness P0 entry)",
+    "memory: project_host_reboot_recovery_gap.md",
+    "PR #440 (merged 4da49d5); adversarial review (SHIP-WITH-FIXES)"
+  ],
+  "checksums": {
+    "scripts/mt5_signal_bridge.py": "sha256:18d5665d692b6ef45daca47fc11043cf4c84dc66cb85a0ba34534ff3d3d7bf2f",
+    "backend/execution/tests_bridge_threading.py": "sha256:00810ffb6c467fbd5f2e7ab43dcdf7817404097c580b5d1db0189edd7ea9b10d"
+  },
+  "reviewer": "pending-sponsor"
+}
