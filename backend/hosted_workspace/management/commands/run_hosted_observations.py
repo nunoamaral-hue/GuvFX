@@ -102,6 +102,7 @@ def run_cycle(*, observe_fn=None) -> dict:
     from hosted_workspace.flags import hosted_bounded_observation_enabled, hosted_delivery_lifecycle_enabled
     from hosted_workspace.observation_runner import run_hosted_observations
     from hosted_workspace.provisioning_runner import run_workspace_provisioning
+    from hosted_workspace.decommission import run_workspace_cleanup
     prov = run_workspace_provisioning()
     # P0 BOUNDED path (flag ON, production cycle only — tests injecting a serial observe_fn keep the legacy path):
     # ONE bounded, tenant-isolated, de-duplicated concurrent observe pass drives BOTH the canonical and delivery
@@ -121,8 +122,11 @@ def run_cycle(*, observe_fn=None) -> dict:
         # HOSTED_LIVENESS_RECOVERY_ENABLED; bounded/loop-safe; CZ-excluded; arms nothing (observer re-proves).
         liveness = run_hosted_liveness_recovery()
         arm = run_hosted_auto_arm()
+        # Remove-account STAGE-2 physical teardown of tombstoned accounts (governed, idempotent, retryable). Never
+        # touches a live account; writes only cleanup_* columns; never un-tombstones. DARK with the master flag.
+        cleanup = run_workspace_cleanup()
         return {"provisioning": prov, "observation": obs, "capability_recovery": recovery,
-                "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm,
+                "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm, "cleanup": cleanup,
                 "bounded": {"workers": b["workers"], "reasons": b["reasons"], "frozen": b.get("frozen", 0)}}
     # LEGACY serial path (flag OFF or test-injected observe_fn) — byte-identical to before this stream.
     obs = run_hosted_observations(observe_fn=observe_fn or resolve_observe_fn(),
@@ -139,8 +143,9 @@ def run_cycle(*, observe_fn=None) -> dict:
     # DARK unless HOSTED_DELIVERY_LIFECYCLE_ENABLED; own transport gating; CZ-excluded; single-writer.
     deliv = run_hosted_delivery_observe(source="hosted_workspace.scheduler")
     arm = run_hosted_auto_arm()
+    cleanup = run_workspace_cleanup()
     return {"provisioning": prov, "observation": obs, "capability_recovery": recovery,
-            "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm}
+            "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm, "cleanup": cleanup}
 
 
 class Command(BaseCommand):

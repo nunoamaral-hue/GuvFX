@@ -134,7 +134,7 @@ describe("BrokerAccountsContent (C4)", () => {
     await waitFor(() => expect(api.setAccountActive).toHaveBeenCalledWith(2, true));
   });
 
-  it("CONCURRENT: shows 'Active N / limit' and activates without a switch modal", async () => {
+  it("CONCURRENT: shows owned-slot usage (owned/limit) + trading count separately, activates without a switch modal", async () => {
     api.listAccounts.mockResolvedValue([
       acct({ id: 1, name: "Alpha", is_active: true }),
       acct({ id: 2, name: "Bravo", is_active: false }),
@@ -143,7 +143,8 @@ describe("BrokerAccountsContent (C4)", () => {
       account_mode: "concurrent", active_count: 1, concurrent_limit: 5, owned_count: 2, owned_limit: 5,
     });
     render(<BrokerAccountsContent />);
-    expect(await screen.findByText(/Active 1 \/ 5/)).toBeInTheDocument();
+    // Capacity indicator is owned_count/owned_limit (NOT active_count/owned_limit); trading count shown separately.
+    expect(await screen.findByText(/2 \/ 5 broker accounts - 1 trading/)).toBeInTheDocument();
 
     await userEvent.click(await screen.findByRole("button", { name: /^start trading on bravo$/i }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();  // no switch modal in CONCURRENT

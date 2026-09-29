@@ -196,6 +196,21 @@ class HostedMt5Workspace(models.Model):
     liveness_recovery_at = models.DateTimeField(null=True, blank=True, default=None)
     liveness_recovery_count = models.PositiveIntegerField(default=0)
 
+    # --- Remove Broker Account: STAGE-2 physical decommission lifecycle (2026-09-29) ---------------------------
+    # Logical removal (tombstone: credential destroy + is_active=False + disconnected_at) is authoritative and
+    # commits first; the PHYSICAL host teardown (stop observer task + tenant bridge/watchdog + port, terminate the
+    # tenant's own terminal64, end the RDP session, remove the RemoteApp/AppLocker rule, delete the runtime/tenant
+    # dirs, disable the Windows identity) is a SEPARATE, asynchronous, retryable Stage-2 driven by the hosted
+    # observation cron (``run_workspace_cleanup``). These fields express that lifecycle WITHOUT a new table, exactly
+    # like the recovery field-sets above (written ONLY by the cleanup runner + the removal trigger). Invariant: a
+    # cleanup FAILURE must NEVER un-tombstone, restore credentials, or restore entitlement consumption — the
+    # account stays logically removed and cleanup simply retries. ``cleanup_state`` default NOT_REQUIRED so every
+    # existing row is byte-safe; ``remove_account`` flips it to PENDING inside the tombstone transaction.
+    cleanup_state = models.CharField(max_length=20, default="NOT_REQUIRED")
+    cleanup_attempts = models.PositiveIntegerField(default=0)
+    cleanup_next_retry_at = models.DateTimeField(null=True, blank=True, default=None)
+    cleanup_last_reason = models.CharField(max_length=120, default="", blank=True)
+
     # --- ADR-0034 Execution Engine capstone (PART 2/3): durable workspace->node execution binding ---------
     # The ONE authorised execution TerminalNode this workspace resolves to (Decision C). NULL ⇒ NOT
     # execution-routable (fail-closed). Server-assigned only, via the provisioning contract

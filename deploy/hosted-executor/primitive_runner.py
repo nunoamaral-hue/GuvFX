@@ -131,6 +131,12 @@ CONTRACT = {
     "prepare_observer": PrimitiveSpec(
         script="Set-GuvfxObserver.ps1",
         argmap={"username": "-Username", "runtime_root": "-RuntimeRoot"}, fixed={"-Mode": "Ensure"}),
+    # Remove-account teardown: unregister ONLY this account's observer scheduled task (reuses the already-reviewed
+    # Set-GuvfxObserver.ps1 -Mode Remove -> Unregister-ScheduledTask). Server-derived username/runtime_root;
+    # idempotent (already-absent => ok). It derives the GuvFX_HostedObserver_<id> task name from the username.
+    "remove_observer": PrimitiveSpec(
+        script="Set-GuvfxObserver.ps1",
+        argmap={"username": "-Username", "runtime_root": "-RuntimeRoot"}, fixed={"-Mode": "Remove"}),
     # 9E: trigger the account's session-bound observer task once + return its snapshot (read-only). The .ps1
     # derives the task/output path from -AccountId + -Username; no caller path/task/output is ever accepted.
     "observe_workspace": PrimitiveSpec(
@@ -167,6 +173,17 @@ CONTRACT = {
         script="Preseed-GuvfxBrokerArtefact.ps1",
         argmap={"username": "-Username", "terminal_root": "-TerminalRoot", "account_id": "-AccountId",
                 "broker_id": "-BrokerId", "expected_sha256": "-ExpectedSha256", "host_relpath": "-HostRelpath"}),
+    # Remove-account STAGE-2 physical teardown of THIS account only. Reviewed .ps1 takes -Username (owner+session)
+    # + -RuntimeRoot (accounts\<id> terminal path + dir to remove) + explicit -AccountId (derives tenants\<id> +
+    # GuvFX_TenantBridge_<id>/…Watchdog_<id> task names + re-asserts the CZ refusal). It stops the tenant bridge +
+    # watchdog + port-owning process, terminates ONLY a terminal64 whose owner==<user> AND exe path is under
+    # -RuntimeRoot (never /IM, never a sibling account), ends the session, removes tenants\<id> + accounts\<id>
+    # (canonicalized, leaf must equal the account id), and disables the Windows identity. Per-step JSON verdict;
+    # idempotent (already-absent => ok). NEVER logs in, arms, places an order, or touches another tenant / CZ.
+    "decommission_runtime": PrimitiveSpec(
+        script="Decommission-GuvfxRuntime.ps1",
+        argmap={"username": "-Username", "runtime_root": "-RuntimeRoot", "account_id": "-AccountId",
+                "port": "-Port"}),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and

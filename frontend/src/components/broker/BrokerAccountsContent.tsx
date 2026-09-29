@@ -240,9 +240,13 @@ export function BrokerAccountsContent() {
   const activeCount = accounts
     ? accounts.filter((a) => (statuses[a.id]?.is_active ?? a.is_active)).length
     : 0;
+  // The PRIMARY capacity indicator is the broker-account SLOT usage (owned_count / owned_limit) — the entitlement
+  // the member is actually spending, and the number that changes when they add/remove an account. The trading
+  // count is shown SEPARATELY (never as active_count / owned_limit, which mixes two different metrics and misleads).
   const entitlementLine = entitlement
     ? (isConcurrent
-        ? `Active ${activeCount} / ${entitlement.concurrent_limit}`
+        ? `${entitlement.owned_count} / ${entitlement.owned_limit} broker accounts`
+          + (activeCount ? ` - ${activeCount} trading` : "")
         : "Only one account can trade at a time")
     : "Connect and validate the broker accounts your strategies trade on.";
 

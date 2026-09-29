@@ -322,6 +322,12 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         qs = qs.prefetch_related("strategy_assignments")
         if not user.is_staff:
             qs = qs.filter(user=user)
+        # Remove Broker Account: a removed (tombstoned) account is hidden from the LIST only — the member's current
+        # Broker Accounts view must not show a decommissioned account. get_object / detail actions (remove
+        # idempotency, bc_status/history, trade-history) intentionally STILL resolve it so history and idempotent
+        # re-removal keep working; only the collection listing excludes it.
+        if getattr(self, "action", None) == "list":
+            qs = qs.filter(disconnected_at__isnull=True)
         return qs.order_by("-created_at")
 
     def perform_destroy(self, instance):
@@ -424,6 +430,13 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
             is_active = raw.strip().lower() in ("1", "true", "yes", "on")
         else:
             is_active = bool(raw)
+
+        # A removed (tombstoned) account can NEVER be re-STARTED — disconnected_at is the authoritative execution
+        # kill (credentials destroyed, endpoint retired). STOP stays allowed (harmless/idempotent). This is the
+        # top-level reject the managed/legacy START paths below otherwise only catch indirectly.
+        if is_active:
+            from trading.account_removal import guard_live_op
+            guard_live_op(acc)
 
         if not acc.mt5_instance_id:
             # IPR Area B (C2): a dedicated-runtime (beta/hosted) account has no shared MT5 instance — the
@@ -661,6 +674,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         if guard is not None:
             return guard
         account = self.get_object()
+        from trading.account_removal import guard_live_op
+        guard_live_op(account)   # a removed account performs no live broker validation
         attempt = run_broker_validation(account, trigger="test", actor=str(request.user), request=request)
         return Response(BrokerValidationAttemptSerializer(attempt).data, status=status.HTTP_200_OK)
 
@@ -670,6 +685,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         if guard is not None:
             return guard
         account = self.get_object()
+        from trading.account_removal import guard_live_op
+        guard_live_op(account)   # a removed account performs no live broker validation
         attempt = run_broker_validation(account, trigger="retry", actor=str(request.user), request=request)
         return Response(BrokerValidationAttemptSerializer(attempt).data, status=status.HTTP_200_OK)
 
@@ -679,6 +696,8 @@ class TradingAccountViewSet(viewsets.ModelViewSet):
         if guard is not None:
             return guard
         account = self.get_object()
+        from trading.account_removal import guard_live_op
+        guard_live_op(account)   # a removed account's credential was destroyed; never restore it without a re-add
         new_password = request.data.get("password") or ""
         if not new_password:
             return Response({"detail": "password is required."}, status=status.HTTP_400_BAD_REQUEST)

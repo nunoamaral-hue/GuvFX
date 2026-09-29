@@ -1,5 +1,32 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-29 — Remove Broker Account STAGE-2 physical decommission + tombstone visibility + entitlement UX
+
+- **Scope / decision.** Sponsor-authorized pre-20-account packet: safe physical Windows-host teardown for removed
+  accounts (Stage 2), hide tombstoned accounts from current member views, fix the Broker Accounts entitlement
+  counter, and certify against account 37's residual. Do NOT restore/recreate 37, resize Fasthosts, or raise
+  support@ to 20. Branch `feat/remove-physical-decommission` off main `a68c733`.
+- **Verified fact vs assumption.** *Verified:* three forensic passes mapped the governed host-op framework (protocol
+  /dispatch/runner/executor + verify_scripts ParseFile gate; existing inverses REMOVE_REMOTEAPP/REMOVE_APPLOCKER,
+  orphaned Set-GuvfxObserver -Mode Remove), the async model (reuse a cleanup_* field-set on HostedMt5Workspace driven
+  by the minute cron; ProvisioningJob.DEPROVISION is the BETA analogue, not used here), and the tombstone-visibility
+  surfaces. Phase-0 host baseline captured the anti-cross-account map (each account's terminal pid/identity/port).
+  The bridge python is only identifiable by its per-tenant listening PORT (probed live: pid 24356 cmd=`python
+  node2\mt5_signal_bridge.py`, no tenant path). New .ps1 ParseFile-validated on the host + ASCII. *Assumption:* the
+  live teardown itself is certified only in Phase 21 (against 37).
+- **What changed.** mig `0012_workspace_cleanup_fields`; `hosted_workspace/decommission.py` (orchestrator);
+  `Decommission-GuvfxRuntime.ps1` (new); wired ops in host_protocol/host_agent_dispatch/host_executor/primitive_
+  runner/stage-manifest; `remove_account` (guard_live_op + AccountRemovedError + cleanup enqueue); list filter +
+  START guard in trading/views; live-op guards in mt5/views (_resolve_launch_account), strategies/views
+  (signal_copy_arm), hosted_workspace/delivery (authorize_workspace_delivery, DA_ACCOUNT_REMOVED); cron wiring in
+  run_hosted_observations; entitlement counter in BrokerAccountsContent.tsx. Tests: tests_decommission.py (16).
+- **Exact tests.** `cd backend && .venv/bin/python manage.py test` -> **Ran 5061, OK (skipped=1)**. Frontend: `npx
+  eslint .` 0 errors; `vitest run` 57 files pass; `next build` OK. Host: ParseFile PARSE_OK on Decommission-Guvfx
+  Runtime.ps1. Adversarial multi-dimension review run (findings addressed before merge).
+- **Commit / branch state.** Branch `feat/remove-physical-decommission` off `a68c733`; PR pending at handoff time.
+- **One bounded next action.** Adversarial review -> PR -> GREEN CI -> merge -> deploy (migrate 0012 + stage the
+  .ps1 + recreate backend/observer images) -> Phase-21 certify vs account 37 residual (37 stays tombstoned).
+
 ## 2026-09-29 — Hosted observer never-launch fix (account-37 WebView popup + stuck WAITING_FOR_LOGIN)
 
 - **Scope / decision.** Sponsor-approved Option 1: fix the generic observer launch defect before the acct-37 Remove
