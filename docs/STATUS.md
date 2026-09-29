@@ -45,10 +45,27 @@
   hardcode, first-launch-latch suppression, empty-projection, a11y+MetaQuotes, ja, no /api/trading/accounts/, poll
   self-suppress). Backend hosted_workspace+trading+execution suites green; frontend vitest 366 OK; eslint 0 errors;
   next build + parity OK.
-  **STATUS: IMPLEMENTED on branch ``feat/mt5-broker-discovery-ux``; PR + deploy pending. Target:
-  MT5_BROKER_DISCOVERY_MEMBER_UX_SAFE.** NOTE (Amber, flagged): additive read-model fields + a display-only latch
-  field/migration on the shared hosted_workspace model + a set-once write in the observation writer (secret-free, no
-  enforcement/decision touched) — so this needs a BACKEND deploy + migration 0013, not frontend-only.
+  **DEPLOYED + CERTIFIED 2026-09-29 = `MT5_BROKER_DISCOVERY_MEMBER_UX_SAFE` (PR#438 merged `47d0aac`; rollback anchor
+  `e360cec`).** VPS: git pull -> `docker build guvfx-prod-guvfx-backend` (rollback img `:pre438`=22df3682377e; new
+  a30ef2e7) + `guvfx-prod-guvfx-frontend` (rollback `:pre438`=5fa968a903ab; new 146815cda676) -> migrate
+  hosted_workspace 0013 (backfill latched 5/9 workspaces) -> recreate ONLY guvfx-backend + guvfx-frontend
+  (`--force-recreate --no-deps`, NO --remove-orphans). WORKER SCOPING (as instructed): confirmed the latch writer's
+  only caller is `run_hosted_observations`, which runs via `docker compose exec guvfx-backend` (inside the backend
+  container) — so NO worker recreated. All 3 order/ingest workers (`mt5_trade_ingest_worker.py`), beta-provisioner,
+  notification worker, tp-protection-watcher and the wayond listener only READ `proj_*` (readiness), never call the
+  writer or reference broker_ever_matched; 0013 is an additive backward-compatible column; all left running (uptimes
+  23h–8w, undisturbed). CERT EVIDENCE: backfill latched 25/35/36 `broker_ever_matched=True` (proj_connected+match were
+  True); live delivery-state projection + authenticated HTTP (35=Pepperstone/PepperstoneUK-Demo, 36=Taurex/Taurex-Demo,
+  25=IS6Technologies-Demo) return broker_ever_matched=True + secret-free (no username/path/host/operator block) ⇒ NO
+  first-launch warning for established members; delivery-state unauth HTTP=401 (route live, new code), frontend / +
+  /trading/terminal-access =200, deployed .next bundle contains the exact en + ja primary copy; observations advancing
+  under new code (obs_ver 25:20299→20302, 35:2249→2252, 36:1548→1551) with cycle `errors=0 frozen=0`; entitlement
+  counter intact (support@ user29 owned_count=3/owned_limit=5, mode=concurrent, switch_enforced=True); 15 containers
+  Up. OBSERVED PRE-EXISTING (NOT caused by / NOT in scope of this deploy, flagged separately): `SYNC_POSITIONS`
+  execution jobs failing with `URLError` (MT5-agent connectivity) — 111 FAILED BEFORE the deploy and 9 FAILED AFTER,
+  identical pattern, no account, zero ORDER jobs; my change has no code path into execution. NOTE (Amber): this needed
+  a BACKEND deploy + migration 0013 (additive read-model fields + display-only latch + set-once observation write),
+  not frontend-only; no enforcement/decision/identity path touched.
 
 - **2026-09-29 - REMOVE BROKER ACCOUNT: STAGE-2 PHYSICAL DECOMMISSIONING + tombstone visibility + entitlement UX
   (pre-20-account capacity gate).** Closes the residual gap that a removed account's Windows footprint (terminal,
