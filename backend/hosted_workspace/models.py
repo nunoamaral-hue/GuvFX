@@ -206,6 +206,16 @@ class HostedMt5Workspace(models.Model):
     liveness_recovery_at = models.DateTimeField(null=True, blank=True, default=None)
     liveness_recovery_count = models.PositiveIntegerField(default=0)
 
+    # --- P4 cold-boot SESSION recovery (2026-09-30) — bounded/loop-safe attempt bookkeeping -----------------
+    # DISTINCT from the two field-sets above: those track relaunches of a TERMINAL inside an existing session;
+    # these track attempts to re-establish/reconnect the tenant's RDS SESSION itself after a host cold boot
+    # (which liveness recovery structurally cannot do — no session means no observe). ``session_recovery_at``
+    # stamps the last attempt and ``session_recovery_count`` caps total attempts so a persistently-failing
+    # self-connect backs off (and raises one operator alert) instead of looping. Written ONLY by the session
+    # reconciler; never arms, never logs in, never places an order — restoring a runtime is not TRADING.
+    session_recovery_at = models.DateTimeField(null=True, blank=True, default=None)
+    session_recovery_count = models.PositiveIntegerField(default=0)
+
     # --- Remove Broker Account: STAGE-2 physical decommission lifecycle (2026-09-29) ---------------------------
     # Logical removal (tombstone: credential destroy + is_active=False + disconnected_at) is authoritative and
     # commits first; the PHYSICAL host teardown (stop observer task + tenant bridge/watchdog + port, terminate the
