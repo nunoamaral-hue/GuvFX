@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Reboot-recovery readiness P0 — bridge resilience DARK PR (2026-09-29) branch `fix/bridge-threading-resilience`
+Fixes the ALIVE-BUT-WEDGED bridge variant (P1 #439 fixed the DEAD variant). Root cause: the per-tenant bridge served
+HTTP on a single-threaded `HTTPServer`, so a slow/wedged MT5 IPC call head-of-line-blocks `/health` and the tenant
+watchdog's liveness probe times out — a busy-but-alive bridge looks dead. Fix (`scripts/mt5_signal_bridge.py`), DARK
+behind `MT5_BRIDGE_THREADED` (default OFF ⇒ byte-identical): `ThreadingHTTPServer` + ONE reentrant lock serialising
+ALL MT5 access; `/health` NEVER takes the lock (adds `threaded` + `mt5_last_ok_age_s`); read-only GET snapshots
+fail-fast to 503 `mt5_busy` on a wedge; MUTATING POST order routes WAIT (block=True, like the poll-loop order path)
+so a live order is never bounced by transient contention; armed-only per-request socket timeout (60s) bounds a stalled
+connection under the lock. 14 SimpleTestCase tests green; adversarial review = SHIP-WITH-FIXES, all cheap fixes applied
+(#5 non-finite timeout→503 not 500; #3 liveness-proxy docstring corrected; #2 armed-only socket timeout; #6 RLock is a
+documented deliberate defensive choice). **ARMING GATES (NOT this packet, Sponsor-gated) before `MT5_BRIDGE_THREADED=1`:**
+(1) the tenant watchdog must consume `mt5_last_ok_age_s` + gain a poll-loop stall detector — armed threaded mode
+otherwise MASKS a persistent wedge behind a green `/health`; (2) narrow the lock off socket I/O (full fix; socket
+timeout only bounds it); (4) verify the comment-idempotency guard covers the timeout-retry path for the live brokers.
+**DARK live deploy DEFERRED on purpose:** the DARK code is inert (byte-identical), so restarting live order bridges
+25/35/36 to pre-position it is pure risk for zero behavioural change, and arming needs more code first anyway.
+**Single next action:** open PR → CI green → merge DARK → then P3 (read-only `PROBE_SESSION` host-op).
+
 ## ✅ MT5 first-launch broker-discovery UX safeguard — SHIPPED + CERTIFIED (2026-09-29) = PR#438 `47d0aac`
 `MT5_BROKER_DISCOVERY_MEMBER_UX_SAFE`. Merged → migration 0013 (backfill) → recreated ONLY guvfx-backend +
 guvfx-frontend (latch writer runs inside the backend via `exec run_hosted_observations`; no worker needed the new code,

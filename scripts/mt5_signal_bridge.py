@@ -58,7 +58,7 @@ import threading
 from datetime import datetime
 from typing import Optional, Dict, Any
 from urllib.parse import urlencode, parse_qs, urlparse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -263,6 +263,109 @@ def _guarded_attach_enabled() -> bool:
     never-launch invariant (target already running + connected + identity, or fail closed). Legacy/
     production bridges leave it unset ⇒ exact prior mt5.initialize() behaviour (may launch)."""
     return os.getenv("MT5_GUARDED_ATTACH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---- P0 bridge resilience (DARK by default) --------------------------------------------------------------
+# ROOT CAUSE (2026-09-29): the HTTP server was a single-threaded http.server.HTTPServer, and every snapshot
+# handler runs a synchronous MT5 IPC cycle. A degraded MT5 call head-of-line-blocks /health and every later
+# request past the client's timeout - so the tenant watchdog's /health probe times out and (before P1) the
+# bridge looked dead. The MT5 python API is ALSO not thread-safe, and this process already calls MT5 from two
+# threads (the HTTP thread + the main poll loop) with no lock, so simply switching to a threaded server would
+# add concurrent MT5 callers.
+#
+# FIX (opt-in via MT5_BRIDGE_THREADED): serve with ThreadingHTTPServer AND serialize ALL MT5 access through one
+# reentrant lock, acquired WITH A TIMEOUT on the HTTP data paths so a wedged MT5 call fails those requests fast
+# (503 mt5_busy) instead of hanging, while /health NEVER takes the lock so it always answers immediately. Off
+# by default => byte-identical prior behaviour (plain HTTPServer, no lock).
+# Read ONCE at import (like HOSTED_EXECUTION): the flag is set in the bridge task's env before launch and never
+# changes for the life of the process. Caching it also makes the mode deterministic for a freshly-imported module
+# under test.
+_MT5_BRIDGE_THREADED = os.getenv("MT5_BRIDGE_THREADED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def bridge_threaded_enabled() -> bool:
+    return _MT5_BRIDGE_THREADED
+
+
+# RLock (not Lock) is DELIBERATE and defensive: no current path nests _mt5_serialized on one thread (the only three
+# call sites - process_job, do_GET, do_POST - never nest), so a plain Lock would work today. But on a LIVE order
+# path, a future accidental same-thread re-entry must degrade to a harmless reentrant acquire, NEVER a self-deadlock.
+# The cost (a nested block=False would bypass the timeout/503) is acceptable versus deadlocking the money path.
+_MT5_LOCK = threading.RLock()
+
+
+def _read_call_timeout() -> float:
+    """Per-call MT5 lock-acquire timeout (seconds). Tuning knob, not a credential: a malformed, non-positive, or
+    non-finite value falls back to the 8s default rather than crashing the bridge at import - a fat-finger during
+    arming must not brick startup. Kept a positive FINITE value so a block=False acquire always has a bounded wait
+    and can never hit ``RLock.acquire(timeout=inf)`` (which raises OverflowError at call time -> a 500 instead of a
+    fast 503). ``inf`` fails ``v < inf``; ``nan`` fails every comparison; both fall back to the default. Clamped to
+    a sane max so a large-but-finite value can never approach ``threading.TIMEOUT_MAX``."""
+    try:
+        v = float(os.getenv("MT5_CALL_TIMEOUT_SECONDS", "8") or "8")
+    except (TypeError, ValueError):
+        return 8.0
+    if v > 0 and v < float("inf"):
+        return min(v, 300.0)
+    return 8.0
+
+
+_MT5_CALL_TIMEOUT = _read_call_timeout()
+# Per-request SOCKET timeout applied ONLY in threaded mode (see start_http_server). Bounds the case where a client
+# connection stalls mid-body-read or mid-response-write WHILE a handler holds the MT5 lock: without it a half-open
+# socket would park the lock (and, for the block=True order path, the whole poll loop) forever. Comfortably above
+# the backend's own HTTP_TIMEOUT (=15s) so it never truncates a legitimate request; a stalled socket raises
+# socket.timeout after this, which releases the lock. DARK mode leaves the handler timeout at its default (None) so
+# behaviour is byte-identical to before. Not a substitute for narrowing the lock off socket I/O (an arming
+# hardening) - it only bounds the damage.
+_MT5_REQUEST_TIMEOUT = 60.0
+_MT5_LAST_OK = {"ts": 0.0}   # wall-clock of the last clean release of the MT5 lock (health liveness proxy)
+
+
+class Mt5Busy(Exception):
+    """Raised when the serialized MT5 lock cannot be acquired within the per-call timeout (a wedge)."""
+
+
+class _mt5_serialized:
+    """Context manager that serializes MT5 access when MT5_BRIDGE_THREADED is on.
+
+    ``block=True`` (the order poll path) waits for the lock; ``block=False`` (HTTP data paths) acquires with the
+    per-call timeout and raises ``Mt5Busy`` on a wedge so the caller can return a fast 503 instead of hanging.
+    When threaded mode is OFF this is a no-op (prior single-threaded, lock-free behaviour is preserved exactly).
+    """
+    def __init__(self, *, block: bool = False):
+        self._block = block
+        self._held = False
+
+    def __enter__(self):
+        if not bridge_threaded_enabled():
+            return self
+        if self._block:
+            _MT5_LOCK.acquire()
+            self._held = True
+        else:
+            self._held = _MT5_LOCK.acquire(timeout=_MT5_CALL_TIMEOUT)
+            if not self._held:
+                raise Mt5Busy("MT5 serialization lock not acquired within %.1fs (wedge)" % _MT5_CALL_TIMEOUT)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._held:
+            try:
+                if exc_type is None:
+                    # Stamp on a CLEAN release of the lock. NOTE: this advances on any clean exit of a lock-holding
+                    # context - including lock-holding paths that did NOT perform a successful MT5 call (empty-body
+                    # 400s, 404s, the /mt5/order_check shadow path, or an MT5 call that returned an error but did not
+                    # raise). It is therefore a "last clean lock release" liveness proxy, NOT a proof of MT5 success:
+                    # it grows without bound only when a call HANGS while holding the lock (the hard-wedge this packet
+                    # targets), and stays small if MT5 is merely fast-FAILING. Any age-based wedge detector built on
+                    # mt5_last_ok_age_s (an arming precondition) must therefore also weigh persistent data-route 503s,
+                    # not treat a small age alone as proof of health.
+                    _MT5_LAST_OK["ts"] = time.time()
+            finally:
+                _MT5_LOCK.release()
+                self._held = False
+        return False
 
 
 def evaluate_hosted_startup_config(env) -> list:
@@ -1269,8 +1372,11 @@ def process_job(job: Dict) -> None:
         complete_job(job_id, success=False, error_message=f"SAFETY_CHECK_FAILED: {safety_error}")
         return
 
-    # Execute trade
-    success, result, error = execute_mt5_trade(job)
+    # Execute trade. Serialize MT5 access (blocking) so the poll/order path never runs an MT5 call concurrently
+    # with an HTTP snapshot handler when threaded mode is on (the MT5 python API is not thread-safe). No-op when
+    # MT5_BRIDGE_THREADED is off. block=True: the order path waits for the lock rather than failing fast.
+    with _mt5_serialized(block=True):
+        success, result, error = execute_mt5_trade(job)
 
     # Report result
     complete_job(job_id, success=success, result=result, error_message=error)
@@ -2240,31 +2346,53 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response({"ok": False, "error": "unauthorized"}, 401)
                 return
 
-            if path == "/mt5/snapshots/rates":
-                self._handle_rates_request(params)
-            elif path == "/mt5/snapshots/deals":
-                username = params.get("username", [""])[0]
-                result = fetch_deals_snapshot(username)
-                self._send_json_response(result, 200 if result.get("ok") else 400)
-            elif path == "/mt5/snapshots/account":
-                username = params.get("username", [""])[0]
-                result = fetch_account_snapshot(username)
-                self._send_json_response(result, 200 if result.get("ok") else 400)
-            elif path == "/mt5/symbols":
-                result = self._handle_symbols_request()
-                self._send_json_response(result, 200 if result.get("ok") else 400)
-            elif path == "/mt5/positions":
-                symbol = params.get("symbol", [""])[0]
-                result = fetch_positions(symbol)
-                self._send_json_response(result, 200 if result.get("ok") else 400)
-            elif path == "/health":
-                self._send_json_response({"ok": True, "status": "healthy"})
-            else:
-                self._send_json_response({"ok": False, "error": "not_found"}, 404)
+            # /health must NEVER take the MT5 lock, so it answers instantly even while an MT5 call is in-flight
+            # or wedged - the tenant watchdog's liveness probe must not be head-of-line-blocked (the exact
+            # symptom that made a wedged bridge look dead). Served before any MT5-touching route.
+            if path == "/health":
+                self._send_json_response(self._health_payload())
+                return
+
+            try:
+                # Serialize the MT5-touching routes (no-op unless MT5_BRIDGE_THREADED); acquired with a timeout so
+                # a wedged MT5 call fails these requests fast (503 mt5_busy) instead of hanging.
+                with _mt5_serialized(block=False):
+                    if path == "/mt5/snapshots/rates":
+                        self._handle_rates_request(params)
+                    elif path == "/mt5/snapshots/deals":
+                        username = params.get("username", [""])[0]
+                        result = fetch_deals_snapshot(username)
+                        self._send_json_response(result, 200 if result.get("ok") else 400)
+                    elif path == "/mt5/snapshots/account":
+                        username = params.get("username", [""])[0]
+                        result = fetch_account_snapshot(username)
+                        self._send_json_response(result, 200 if result.get("ok") else 400)
+                    elif path == "/mt5/symbols":
+                        result = self._handle_symbols_request()
+                        self._send_json_response(result, 200 if result.get("ok") else 400)
+                    elif path == "/mt5/positions":
+                        symbol = params.get("symbol", [""])[0]
+                        result = fetch_positions(symbol)
+                        self._send_json_response(result, 200 if result.get("ok") else 400)
+                    else:
+                        self._send_json_response({"ok": False, "error": "not_found"}, 404)
+            except Mt5Busy:
+                self._send_json_response({"ok": False, "error": "mt5_busy"}, 503)
 
         except Exception as e:
             logger.exception(f"HTTP handler error: {e}")
             self._send_json_response({"ok": False, "error": str(e)}, 500)
+
+    def _health_payload(self) -> Dict:
+        """Liveness payload for /health. NEVER takes the MT5 lock. ``mt5_last_ok_age_s`` is the age (seconds) since
+        the serialization lock was last released cleanly (None = never yet this process) - a liveness PROXY, not a
+        proof of MT5 success (see _mt5_serialized.__exit__): it grows without bound under a hard hang but stays small
+        under fast-fail. ``ok`` stays True whenever the bridge is RESPONSIVE: a genuine hard wedge manifests as
+        /health not answering at all (the watchdog treats that as a transport failure), never as ok=false, so this
+        must not flip to false."""
+        last = _MT5_LAST_OK.get("ts", 0.0)
+        age = round(time.time() - last, 1) if last else None
+        return {"ok": True, "status": "healthy", "threaded": bridge_threaded_enabled(), "mt5_last_ok_age_s": age}
 
     def do_POST(self):
         """Handle POST requests."""
@@ -2276,18 +2404,27 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response({"ok": False, "error": "unauthorized"}, 401)
                 return
 
-            if path == "/mt5/order":
-                self._handle_order_request()
-            elif path == "/mt5/order_check":
-                self._handle_order_check_request()
-            elif path == "/mt5/close-position":
-                self._handle_close_position_request()
-            elif path == "/mt5/modify-position":
-                self._handle_modify_position_request()
-            elif path == "/mt5/login-and-validate":
-                self._handle_login_validate_request()
-            else:
-                self._send_json_response({"ok": False, "error": "not_found"}, 404)
+            # Serialize the MT5-touching POST routes (no-op unless MT5_BRIDGE_THREADED). These are the MUTATING /
+            # order-transport routes, so they use block=True: WAIT for the lock exactly like the poll-loop order
+            # path (process_job), rather than fail-fast. A live order must never be bounced with 503 by transient
+            # contention from a read-only snapshot GET (a dropped/retried order is a correctness/financial risk);
+            # waiting a moment for the in-flight snapshot to finish is always preferable. block=True never raises
+            # Mt5Busy, so there is no fast-fail path here - only the read-only GET data routes fail-fast. A
+            # PERSISTENT wedge (holder never releases) is out of scope for this decoupling and is the documented
+            # arming precondition for MT5_BRIDGE_THREADED (the watchdog must consume mt5_last_ok_age_s first).
+            with _mt5_serialized(block=True):
+                if path == "/mt5/order":
+                    self._handle_order_request()
+                elif path == "/mt5/order_check":
+                    self._handle_order_check_request()
+                elif path == "/mt5/close-position":
+                    self._handle_close_position_request()
+                elif path == "/mt5/modify-position":
+                    self._handle_modify_position_request()
+                elif path == "/mt5/login-and-validate":
+                    self._handle_login_validate_request()
+                else:
+                    self._send_json_response({"ok": False, "error": "not_found"}, 404)
 
         except Exception as e:
             logger.exception(f"HTTP POST handler error: {e}")
@@ -2494,10 +2631,23 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
 
 
 def start_http_server():
-    """Start the HTTP server in a background thread."""
+    """Start the HTTP server in a background thread.
+
+    When MT5_BRIDGE_THREADED is on, use ThreadingHTTPServer so a slow/wedged MT5 request can never head-of-line-
+    block /health or other requests; MT5 access is serialized by _mt5_serialized so the added concurrency is safe.
+    Off => the exact prior single-threaded HTTPServer."""
     try:
-        server = HTTPServer(("0.0.0.0", HTTP_SERVER_PORT), OHLCRequestHandler)
-        logger.info(f"HTTP server started on port {HTTP_SERVER_PORT}")
+        if bridge_threaded_enabled():
+            # Apply the per-request socket timeout ONLY here (threaded mode). StreamRequestHandler.setup() calls
+            # connection.settimeout(self.timeout), so a stalled body-read/response-write under the lock raises
+            # socket.timeout and releases it, instead of parking the pipeline forever. DARK mode never sets this.
+            OHLCRequestHandler.timeout = _MT5_REQUEST_TIMEOUT
+            server = ThreadingHTTPServer(("0.0.0.0", HTTP_SERVER_PORT), OHLCRequestHandler)
+            server.daemon_threads = True  # explicit: worker threads never block process shutdown (defensive)
+            logger.info(f"HTTP server started on port {HTTP_SERVER_PORT} (threaded; MT5 access serialized)")
+        else:
+            server = HTTPServer(("0.0.0.0", HTTP_SERVER_PORT), OHLCRequestHandler)
+            logger.info(f"HTTP server started on port {HTTP_SERVER_PORT}")
         server.serve_forever()
     except Exception as e:
         logger.exception(f"HTTP server error: {e}")
