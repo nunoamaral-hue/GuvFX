@@ -3,9 +3,9 @@
   "handoff_id": "GFX-EVD-P3-PROBE-SESSION-HOSTOP",
   "packet_id": "REBOOT-RECOVERY-P3",
   "created_at_utc": "2026-09-29T22:15:00Z",
-  "branch": "feat/probe-session-host-op",
+  "branch": "main",
   "base_commit": "0210f1f3a437499a967bd76c2b95b3817777331f",
-  "head_commit": null,
+  "head_commit": "2ab679b6f64a63d9a9bd4719ad04517121975a6a",
   "commands": [
     "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_probe_session -v2  # 16 P3 unit tests",
     "cd backend && .venv/bin/python manage.py test hosted_workspace  # full app regression (1105 tests)",

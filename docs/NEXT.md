@@ -1,7 +1,7 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Reboot-recovery readiness P3 — read-only PROBE_SESSION host-op DARK PR (2026-09-29) branch `feat/probe-session-host-op`
-Evidence: `evidence/manifests/GFX-EVD-P3-PROBE-SESSION-HOSTOP.json` (PASS; DARK/unarmed). A NEW read-only host-op that
+## ✅ Reboot-recovery readiness P3 — read-only PROBE_SESSION host-op MERGED DARK (2026-09-29) = PR#441 `2ab679b`
+Evidence: `evidence/manifests/GFX-EVD-P3-PROBE-SESSION-HOSTOP.json` (PASS; DARK/unarmed; deploy + arming Sponsor-gated). A NEW read-only host-op that
 reports THIS account's OWN RDS session state (qwinsta) so a FUTURE human-gated recovery reconciler can tell which
 per-tenant terminals need re-establishing after a cold boot (the P0-gap in `project_host_reboot_recovery_gap.md`).
 Wired across all four signed-contract layers (host_protocol `HOSTED_OPERATIONS`, dispatch `OP_PRIMITIVES`->
@@ -13,7 +13,8 @@ RULE-11 blind-vs-negative (0 rows -> fail-closed `qwinsta_no_output`). 16 tests 
 adversarial review (9 agents) SHIP-AS-IS on 3 lenses, 2 LOW test-hardening findings FIXED (positive control +
 source-order assertions). **DEPLOY GATE (Sponsor-gated, NOT this packet):** the daemon `verify_scripts()` fails
 closed if the .ps1 is missing, so stage the .ps1 (manifest) BEFORE redeploying the executor lib + restarting the
-daemon. Arming a caller = P4/P5 (unauthorized). **Single next action:** open PR -> CI green -> merge DARK.
+daemon. Arming a caller = P4/P5 (unauthorized). **Single next action:** await Sponsor direction (P0-P3 complete;
+P4/P5 unauthorized).
 
 ## ✅ Reboot-recovery readiness P0 — bridge resilience MERGED DARK (2026-09-29) = PR#440 `4da49d5`
 Evidence: `evidence/manifests/GFX-EVD-P0-BRIDGE-THREADING-RESILIENCE.json` (PASS; CI 10/10 green; DARK-merged, NOT
