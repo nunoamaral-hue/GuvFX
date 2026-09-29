@@ -47,10 +47,38 @@ def _max_workers() -> int:
     return max(1, min(n, _HARD_MAX_WORKERS))
 
 
+# Reasons that mean a terminal IS present for the account but observation cannot proceed because the terminal is
+# not cleanly attachable, so an onboarding account's observation is FROZEN (never advances to CONNECTED). This must
+# be VISIBLE, not hidden in the generic "unavailable" bucket - a stuck onboarding account is exactly the account-37
+# forensic. Only ``duplicate_terminal`` is listed because it is the ONLY such reason the live pipeline actually
+# surfaces here: observe_workspace_combined derives ``reason`` from the LocalSystem host result
+# (live_observe.observe_workspace_combined -> result["reason"]), and the LocalSystem corroboration emits
+# ``duplicate_terminal`` when it sees >1 per-account terminal (the persistent-stray / self-fork case). The tenant
+# observer's own ``guarded_attach_would_launch`` hold lives in the tenant snapshot and is NOT surfaced as the
+# top-level host reason today, so listing it here would be dead code tested only by an injected token (a review
+# fake). Add it only once the pipeline genuinely surfaces it.
+FROZEN_REASONS = frozenset({"duplicate_terminal"})
+
+
 def _empty(enabled: bool) -> dict:
     return {"enabled": enabled, "polled": 0, "applied": 0, "unavailable": 0, "errors": 0,
-            "workers": 0, "reasons": {},
+            "workers": 0, "reasons": {}, "frozen": 0,
             "delivery": {"connected": 0, "disconnected": 0, "held": 0, "cz_skipped": 0}}
+
+
+def _log_frozen(ws, reason: str) -> None:
+    """Emit a stable, greppable, secret-free WARNING for a frozen onboarding observation so operators/alerting can
+    see a stuck account instead of it hiding in the 'unavailable' bucket. Never raises."""
+    try:
+        from django.utils import timezone
+        last = getattr(ws, "last_decision_at", None)
+        stale = int((timezone.now() - last).total_seconds()) if last is not None else -1
+        logger.warning(
+            "hosted_observation_frozen account=%s state=%s reason=%s stale_seconds=%s observation_version=%s",
+            getattr(ws, "trading_account_id", None), getattr(ws, "canonical_state", None), reason, stale,
+            getattr(ws, "observation_version", None))
+    except Exception:  # noqa: BLE001 - visibility must never break the cycle
+        pass
 
 
 def _safe_combined(combined_fn, ws):
@@ -128,6 +156,11 @@ def run_bounded_observation_cycle(*, combined_fn=None, correlation_id: str = "",
             # ---- canonical single-writer ingest (monotonic version; writer rejects a stale/duplicate) ----
             if canonical is None:
                 out["unavailable"] += 1
+                # Frozen-observation visibility: a present-but-unattachable terminal on an onboarding account is a
+                # stuck state, not routine unavailability - surface it distinctly so it can be alerted on.
+                if reason in FROZEN_REASONS and str(getattr(ws, "canonical_state", "") or "") in ONBOARDING_STATES:
+                    out["frozen"] += 1
+                    _log_frozen(ws, reason)
             else:
                 next_version = int(ws.observation_version or 0) + 1
                 res = ingest_observation(ws, canonical, observation_version=next_version,

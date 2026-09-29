@@ -100,6 +100,30 @@ class BoundedObservationTests(TestCase):
         self.assertEqual(sum(out["reasons"].values()), 3)
         self.assertEqual(set(out["reasons"]), {"observation_timeout", "terminal_not_running", "duplicate_terminal"})
 
+    def test_frozen_onboarding_observation_is_surfaced_distinctly(self):
+        # A present-but-unattachable terminal on an onboarding tenant (duplicate_terminal) is a STUCK state, not
+        # routine unavailability - it must be counted as `frozen` and logged, so operators/alerting see it instead of
+        # it hiding in the generic `unavailable` bucket (the account-37 forensic). Only reachable reasons are used
+        # here: duplicate_terminal is what the live pipeline actually surfaces; observation_timeout is routine.
+        _ws("dup", login="700010"); _ws("gone", login="700011"); _ws("routine", login="700012")
+        reasons = iter(["duplicate_terminal", "duplicate_terminal", "observation_timeout"])
+        combined = lambda ws: (None, None, next(reasons))
+        with patch("hosted_workspace.bounded_observation.ingest_observation"):
+            with self.assertLogs("guvfx.hosted_workspace", level="WARNING") as cm:
+                out = BO.run_bounded_observation_cycle(combined_fn=combined)
+        self.assertEqual(out["unavailable"], 3)
+        self.assertEqual(out["frozen"], 2)              # the two duplicate_terminal onboarding tenants; timeout is not
+        self.assertTrue(any("hosted_observation_frozen" in line for line in cm.output))
+
+    def test_frozen_not_counted_for_non_onboarding_state(self):
+        # The same blocking reason on a CONNECTED (post-onboarding) tenant is NOT a frozen-onboarding event.
+        _ws("connected_dup", login="700013", state=S.CONNECTED, connected=True, matched=True)
+        combined = lambda ws: (None, None, "duplicate_terminal")
+        with patch("hosted_workspace.bounded_observation.ingest_observation"):
+            out = BO.run_bounded_observation_cycle(combined_fn=combined)
+        self.assertEqual(out["unavailable"], 1)
+        self.assertEqual(out["frozen"], 0)
+
     def test_dark_when_master_flag_off(self):
         _ws("x")
         with override_settings(HOSTED_PERSISTENT_MT5_ENABLED="0"):

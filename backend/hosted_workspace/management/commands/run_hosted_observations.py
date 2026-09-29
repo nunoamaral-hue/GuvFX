@@ -123,7 +123,7 @@ def run_cycle(*, observe_fn=None) -> dict:
         arm = run_hosted_auto_arm()
         return {"provisioning": prov, "observation": obs, "capability_recovery": recovery,
                 "liveness_recovery": liveness, "delivery": deliv, "auto_arm": arm,
-                "bounded": {"workers": b["workers"], "reasons": b["reasons"]}}
+                "bounded": {"workers": b["workers"], "reasons": b["reasons"], "frozen": b.get("frozen", 0)}}
     # LEGACY serial path (flag OFF or test-injected observe_fn) — byte-identical to before this stream.
     obs = run_hosted_observations(observe_fn=observe_fn or resolve_observe_fn(),
                                   source="hosted_workspace.scheduler")
@@ -205,7 +205,7 @@ class Command(BaseCommand):
         bounded_txt = rec_txt = live_txt = ""
         b = result.get("bounded")
         if b is not None:   # bounded path ONLY — the legacy (flag-off) line stays byte-identical
-            bounded_txt = f" | bounded: workers={b['workers']} reasons={b['reasons']}"
+            bounded_txt = f" | bounded: workers={b['workers']} frozen={b.get('frozen', 0)} reasons={b['reasons']}"
             rec = result.get("capability_recovery") or {}
             rec_txt = (f" | recovery: candidates={rec.get('candidates', 0)} attempted={rec.get('attempted', 0)} "
                        f"relaunched={rec.get('relaunched', 0)} skipped_onboarding={rec.get('skipped_onboarding', 0)}")

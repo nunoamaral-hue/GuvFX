@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-09-29 — Hosted observer never-launch fix (account-37 WebView popup + stuck WAITING_FOR_LOGIN)
+
+- **Scope / decision.** Sponsor-approved Option 1: fix the generic observer launch defect before the acct-37 Remove
+  test. Preserve the DENY ACL + `duplicate_terminal` fail-closed. Backend-only, additive. Branch
+  `fix/observer-never-launch-guard` off main `5873be3`.
+- **Verified fact vs assumption.** *Verified (read-only host + DB forensic):* the observer runs as `guvfx_u_<id>` and
+  calls `mt5.initialize(path=)`; that call self-LAUNCHED a bare non-`/portable` terminal for acct 37 (AppLocker 06:44:01,
+  pid 19012, parent = observer pyw, reaped) 7s after the `/portable` terminal (pid 21204) while it was in first-run;
+  bare → DENY `%APPDATA%` → WebView popup; duplicate → LocalSystem `duplicate_terminal` → obs_version FROZEN at 1
+  (`last_decision_at` 06:43:24Z), observer task lastRun frozen 06:44:00. 25/35/36 immune only circumstantially (past
+  first-run; obs_version advancing). All gates open (cert=True). *Assumption/gap:* psutil presence in the observer
+  `pyw` python was never proven → added wmic fallback + fail-closed.
+- **What changed.** `backend/terminal_provisioning/windows/observer_attach.py` (`guarded_initialize` gains `force` +
+  attachability gate: bare-pid snapshot before/after, neutralise only the spawned bare PID, psutil→wmic→None
+  fail-closed, cmdline-unreadable ⇒ not bare, `_terminate_pid` verifies; ntpath for Windows paths);
+  `run_observer.py` (enforces guard via `force=True`, NOT an env mutation — an earlier env-set leaked process-wide and
+  was caught by CI); `bounded_observation.py` + `run_hosted_observations.py` (frozen counter + WARNING + ops line).
+  Tests: `tests_observer_attach.py` (attachability gate matrix, force param, enum fail-closed, RULE-11 wmic
+  positive/negative control), `tests_bounded_observation.py` (frozen visibility), `tests_hosted_observation_command.py`
+  (frozen in ops line). No production execution bridge change; parity lock preserved.
+- **Exact tests.** `cd backend && .venv/bin/python manage.py test` → **Ran 5045, OK (skipped=1)**. Targeted:
+  `hosted_workspace.tests_observer_attach hosted_workspace.tests_bounded_observation
+  hosted_workspace.tests_hosted_observation_command hosted_workspace.tests_live_observe execution.tests_e2b_shadow`
+  → OK (118). Env-leak regression reproduced then fixed (live_observe+shadow together → OK). Adversarial multi-lens
+  workflow review run; CONFIRMED findings (psutil no-op, cmdline fail-open, kill false-success, frozen review-fake,
+  RULE-11 control) all addressed.
+- **Commit / branch state.** Branch `fix/observer-never-launch-guard` off `5873be3`; commit pushed; PR opened. Not yet
+  merged/deployed at time of writing.
+- **One bounded next action.** On GREEN CI merge → deploy staged observer harness + recreate backend/worker images →
+  verify 25/35/36 unaffected → terminate ONLY the acct-37 stray → verify 37 recovers to CONNECTED → STOP.
+
 ## 2026-09-28 — Member account lifecycle (Start/Stop/Remove): reconciled + Stop hardened; capacity/entitlement design
 
 - **Scope / decision.** Reconcile-first packet before the Windows capacity upgrade: complete + certify Start/Stop +

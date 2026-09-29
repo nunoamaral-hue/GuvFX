@@ -59,18 +59,22 @@ class _FakeMt5:
 
 
 class _FakeBridge:
-    """Mimics scripts.mt5_signal_bridge: guarded_initialize (never launches) + _terminal_process_running."""
+    """Mimics observer_attach: guarded_initialize (never launches) + _terminal_process_running."""
     def __init__(self, *, running=True, attach_ok=True, launched_flag=None):
         self._running = running
         self._attach_ok = attach_ok
         self._launched_flag = launched_flag
+        self.forced = None
 
     def _terminal_process_running(self, path):
         return self._running
 
-    def guarded_initialize(self, mt5, params):
-        # A real guarded attach never launches; assert the observer passes ONLY a path (no login/pwd/server).
+    def guarded_initialize(self, mt5, params, **kwargs):
+        # A real guarded attach never launches; assert the observer passes ONLY a path (no login/pwd/server) AND
+        # enforces the never-launch guard via force=True (not via a global env var).
         assert set(params.keys()) <= {"path"}, "observer must pass only {'path'} to the guarded attach"
+        self.forced = kwargs.get("force")
+        assert self.forced is True, "observer must enforce the never-launch guard with force=True"
         if self._launched_flag is not None:
             self._launched_flag.append(params.get("path"))
         return self._attach_ok

@@ -40,6 +40,19 @@ RESERVED_ACCOUNT_IDS = frozenset({1})   # Customer Zero (guvfx_u_1) - never obse
 SNAPSHOT_SCHEMA = "9e.observer.v1"
 
 
+# The hosted observer is ALWAYS guarded - it must ATTACH ONLY and NEVER launch a terminal. An unguarded
+# mt5.initialize(path=) will, when the /portable terminal is running but not yet attachable (first-run: compiling
+# MQL5 / downloading the broker catalogue), LAUNCH a fresh terminal itself; that launch omits /portable, so the
+# bare instance hits the containment DENY ACL (the "couldn't create data directory" WebView error) AND creates a
+# duplicate terminal that fails observation closed (the account sticks at WAITING_FOR_LOGIN). The observer enforces
+# the guard by passing force=True to guarded_initialize (below) - NOT by setting MT5_GUARDED_ATTACH in the
+# environment: the observer runs create-if-absent scheduled tasks that are not re-registered for existing accounts,
+# and mutating the process-global env would leak the guard into anything else sharing the interpreter. force=True
+# fixes EVERY account (existing and new) the moment this centrally-staged file is deployed, with no global side
+# effect.
+_OBSERVER_FORCE_GUARDED_ATTACH = True
+
+
 def _term_read(mt5):
     """Read terminal_info -> {connected, trade_allowed} (read-only). Any failure -> None (fail closed).
     Mirrors the certified agent_host._term_read."""
@@ -143,7 +156,7 @@ def observe(account_id, *, mt5=None, bridge=None):
     #    launches and never authenticates (no login/password/server passed).
     snap["attach_attempted"] = True
     try:
-        ok = bool(bridge.guarded_initialize(mt5, {"path": term_path}))
+        ok = bool(bridge.guarded_initialize(mt5, {"path": term_path}, force=_OBSERVER_FORCE_GUARDED_ATTACH))
     except Exception:
         snap["attach_reason"] = "attach_error"
         return snap

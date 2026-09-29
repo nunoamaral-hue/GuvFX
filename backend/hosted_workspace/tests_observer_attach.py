@@ -8,6 +8,7 @@ Two jobs:
      extraction is reconciled.
 """
 import os
+from types import SimpleNamespace
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -83,19 +84,23 @@ class InvariantTests(SimpleTestCase):
     @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
     def test_guarded_ok_only_when_connected_with_account(self):
         mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
-        self.assertTrue(OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True))
+        # inject an empty bare-pid enumerator so the test never depends on the CI host having psutil/wmic
+        self.assertTrue(OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                              list_bare_pids=lambda p: set()))
         self.assertFalse(mt5.login_called)
 
     @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
     def test_guarded_releases_attach_when_not_connected(self):
         mt5 = _Mt5(init_ok=True, term=_Term(False), acc=None)
-        self.assertFalse(OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True))
+        self.assertFalse(OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                               list_bare_pids=lambda p: set()))
         self.assertTrue(mt5.shutdown_called)   # a partial attach is released, never left dangling
 
     @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
     def test_guarded_fail_closed_on_raise(self):
         mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc(), raise_on={"terminal_info"})
-        self.assertFalse(OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True))
+        self.assertFalse(OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                               list_bare_pids=lambda p: set()))
 
     def test_evaluate_guarded_attach_reports_most_specific_failure(self):
         self.assertEqual(OA.evaluate_guarded_attach("", True, True, True, True)[1], "guarded_attach_no_path")
@@ -158,10 +163,206 @@ class ParityTests(SimpleTestCase):
             {"init_ok": False, "term": None, "acc": None},             # initialize failed
             {"init_ok": True, "term": _Term(True), "acc": None},       # connected, no account
         ]
+        # No terminal ever SPAWNS during these fakes (init just returns a bool), so the observer's attachability
+        # gate is inert here and the return value stays identical to the legacy helper. Inject an always-empty
+        # bare-pid enumerator so the parity check never depends on the CI host's real process list.
+        no_spawn = lambda p: set()
         for guarded in ("1", ""):
             with mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": guarded}):
                 for running in (True, False):
                     for sc in scenarios:
-                        a = OA.guarded_initialize(_Mt5(**sc), {"path": _PATH}, probe=lambda p: running)
+                        a = OA.guarded_initialize(_Mt5(**sc), {"path": _PATH}, probe=lambda p: running,
+                                                  list_bare_pids=no_spawn)
                         b = legacy.guarded_initialize(_Mt5(**sc), {"path": _PATH}, probe=lambda p: running)
                         self.assertEqual(a, b, (guarded, running, sc))
+
+
+class AttachabilityGateTests(SimpleTestCase):
+    """The never-CREATE guarantee (account-37 forensic). ``mt5.initialize(path=)`` is dual-mode: when the target
+    is running but NOT attachable (first-run/busy, or it exits mid-call on a restart/LiveUpdate) it LAUNCHES a
+    fresh, bare (non-/portable) terminal itself. The guard must detect that and neutralise EXACTLY what it spawned,
+    failing closed - never leaving an extra terminal behind. All process I/O is injected (no psutil/no real procs)."""
+
+    def _seq(self, *snapshots):
+        """Fake list_bare_pids(path) returning each snapshot set on successive calls (before, then after)."""
+        state = {"i": 0}
+
+        def _f(path):
+            i = min(state["i"], len(snapshots) - 1)
+            state["i"] = state["i"] + 1
+            return set(snapshots[i])
+        return _f
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_would_launch_is_neutralised_and_fails_closed(self):
+        # before={}, after={4242} => initialize LAUNCHED a bare terminal. Even a 'connected' readback must not be
+        # trusted: kill exactly the spawned pid, release the attach, and return False (a hold). Never login.
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        killed = []
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                   list_bare_pids=self._seq(set(), {4242}),
+                                   terminate=lambda pid: (killed.append(pid) or True))
+        self.assertFalse(ok)
+        self.assertEqual(killed, [4242])
+        self.assertTrue(mt5.shutdown_called)
+        self.assertFalse(mt5.login_called)
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_clean_attach_when_no_new_terminal_spawned(self):
+        # before==after => initialize ATTACHED (no launch). Connected + account => True; nothing killed.
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        killed = []
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                   list_bare_pids=self._seq(set(), set()),
+                                   terminate=lambda pid: (killed.append(pid) or True))
+        self.assertTrue(ok)
+        self.assertEqual(killed, [])
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_preexisting_bare_terminal_is_not_killed(self):
+        # A bare terminal (555) present in BOTH snapshots is not in our diff and is never killed - the guard only
+        # neutralises what IT spawned (a lingering stray is handled by duplicate_terminal + frozen visibility).
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        killed = []
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                   list_bare_pids=self._seq({555}, {555}),
+                                   terminate=lambda pid: (killed.append(pid) or True))
+        self.assertTrue(ok)
+        self.assertEqual(killed, [])
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_multiple_spawned_bare_terminals_all_neutralised(self):
+        mt5 = _Mt5(init_ok=False)   # attach failed AND it launched two bare ones
+        killed = []
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                   list_bare_pids=self._seq(set(), {11, 22}),
+                                   terminate=lambda pid: (killed.append(pid) or True))
+        self.assertFalse(ok)
+        self.assertEqual(sorted(killed), [11, 22])
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_would_launch_still_fails_closed_when_terminate_fails(self):
+        # Even if the kill fails, the result is still a hold (False); downstream duplicate_terminal is the backstop.
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                   list_bare_pids=self._seq(set(), {9}), terminate=lambda pid: False)
+        self.assertFalse(ok)
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_down_terminal_never_enumerates_or_kills(self):
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        enum, killed = [], []
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: False,
+                                   list_bare_pids=lambda p: (enum.append(p) or set()),
+                                   terminate=lambda pid: (killed.append(pid) or True))
+        self.assertFalse(ok)
+        self.assertIsNone(mt5.initialize_kwargs)   # never attached
+        self.assertEqual(enum, [])                 # no enumeration when the terminal is down
+        self.assertEqual(killed, [])
+
+    def test_dark_mode_gate_is_inert(self):
+        # Guard unset AND force=False => pure passthrough; the attachability gate must not enumerate or kill.
+        with mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": ""}):
+            mt5 = _Mt5(init_ok=True)
+            enum, killed = [], []
+            ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                       list_bare_pids=lambda p: (enum.append(p) or set()),
+                                       terminate=lambda pid: (killed.append(pid) or True))
+            self.assertTrue(ok)
+            self.assertEqual(enum, [])
+            self.assertEqual(killed, [])
+
+    def test_force_enables_guard_without_env(self):
+        # force=True enforces the never-launch guard even when the env is unset (the observer's path), with NO
+        # dependence on / mutation of MT5_GUARDED_ATTACH.
+        with mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": ""}):
+            mt5 = _Mt5(init_ok=True, term=_Term(False), acc=None)   # attached, not connected
+            ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True,
+                                       list_bare_pids=lambda p: set(), force=True)
+            self.assertFalse(ok)                 # guarded path ran (not-connected -> fail closed)
+            self.assertTrue(mt5.shutdown_called)
+            self.assertEqual(os.environ.get("MT5_GUARDED_ATTACH"), "")   # no global env mutation
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_enum_unavailable_fails_closed_without_attaching(self):
+        # If the bare-terminal set cannot be enumerated at all (host has neither psutil nor wmic), we cannot
+        # guarantee never-launch -> fail closed WITHOUT ever calling initialize (never risk a launch).
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True, list_bare_pids=lambda p: None)
+        self.assertFalse(ok)
+        self.assertIsNone(mt5.initialize_kwargs)   # never attached (fail closed before initialize)
+
+    @mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "1"})
+    def test_postcheck_unavailable_fails_closed_and_releases(self):
+        # Enumeration works before but becomes indeterminate after initialize -> cannot verify no-launch -> release
+        # any attach and fail closed.
+        mt5 = _Mt5(init_ok=True, term=_Term(True), acc=_Acc())
+        seq = iter([set(), None])   # before=ran(empty), after=indeterminate
+        ok = OA.guarded_initialize(mt5, {"path": _PATH}, probe=lambda p: True, list_bare_pids=lambda p: next(seq))
+        self.assertFalse(ok)
+        self.assertTrue(mt5.shutdown_called)
+
+
+class BareTerminalClassifierControlTests(SimpleTestCase):
+    """RULE 11 positive+negative control for the DESTRUCTIVE classifier ``_bare_terminal_pids``: prove the enumerator
+    can FIND a bare terminal that IS there (positive) and correctly EXCLUDE a /portable one and an empty-cmdline one
+    (negative), on the psutil-absent host path (the wmic fallback that makes the never-CREATE gate robust). Skipped
+    where psutil is importable (that branch is covered by the injection tests); this exercises the deployed-like
+    no-psutil path where wmic is the measurement tool."""
+
+    def setUp(self):
+        try:
+            import psutil  # noqa: F401
+            self.skipTest("psutil present -> wmic fallback not exercised here; covered by injection tests")
+        except Exception:
+            pass
+
+    def test_wmic_positive_and_negative_controls(self):
+        path = r"C:\GuvFX\accounts\18\terminal\terminal64.exe"
+        stdout = (
+            "\r\n"
+            'CommandLine="C:\\GuvFX\\accounts\\18\\terminal\\terminal64.exe"\r\n'
+            "ProcessId=111\r\n"
+            "\r\n"
+            'CommandLine="C:\\GuvFX\\accounts\\18\\terminal\\terminal64.exe" /portable\r\n'
+            "ProcessId=222\r\n"
+            "\r\n"
+            "CommandLine=\r\n"                     # empty cmdline -> must be EXCLUDED (fail closed for kill)
+            "ProcessId=333\r\n"
+            "\r\n"
+        )
+        with mock.patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=stdout)):
+            pids = OA._bare_terminal_pids(path)
+        # positive: the bare terminal (111) is found; negatives: /portable (222) and empty-cmdline (333) excluded.
+        self.assertEqual(pids, {111})
+
+    def test_wmic_unavailable_returns_none_fail_closed(self):
+        def _boom(*a, **k):
+            raise FileNotFoundError("wmic not found")
+        with mock.patch("subprocess.run", _boom):
+            self.assertIsNone(OA._bare_terminal_pids(r"C:\GuvFX\accounts\18\terminal\terminal64.exe"))
+
+
+class ObserverForcesGuardTests(SimpleTestCase):
+    """The observer harness enforces the never-launch guard via force=True (NOT via a global env mutation), so every
+    account (existing + new) is protected the moment the centrally-staged run_observer.py deploys - independent of
+    the per-account scheduled task's env - and the guard can never leak into any other code sharing the process."""
+
+    def test_observe_passes_force_and_does_not_mutate_env(self):
+        from terminal_provisioning.windows import run_observer as RO
+        captured = {}
+
+        class _Bridge:
+            @staticmethod
+            def _terminal_process_running(p):
+                return True
+
+            @staticmethod
+            def guarded_initialize(mt5, kw, **k):
+                captured.update(k)
+                return False   # hold; we only assert HOW it was called
+
+        with mock.patch.dict(os.environ, {"MT5_GUARDED_ATTACH": "0"}):
+            RO.observe(18, mt5=object(), bridge=_Bridge)
+            self.assertTrue(captured.get("force"))                       # observer enforced the never-launch guard
+            self.assertEqual(os.environ.get("MT5_GUARDED_ATTACH"), "0")  # and did NOT mutate the global env
