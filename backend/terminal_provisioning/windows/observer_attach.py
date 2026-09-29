@@ -109,19 +109,111 @@ def _terminal_process_running(path) -> bool:
     return target_dir in _running_terminal_dirs()
 
 
+def _bare_via_psutil(target_dir):
+    """psutil enumeration (precise: exe install dir + cmdline). Returns a set, or None if psutil is unusable."""
+    try:
+        import psutil
+    except Exception:
+        return None
+    try:
+        result = set()
+        for proc in psutil.process_iter(["pid", "exe", "cmdline"]):
+            try:
+                exe = proc.info.get("exe") or ""
+                if ntpath.basename(exe).lower() != "terminal64.exe":
+                    continue
+                if ntpath.dirname(ntpath.abspath(exe)).lower() != target_dir:
+                    continue
+                cl = proc.info.get("cmdline")
+                if not cl:
+                    # empty/unreadable command line -> cannot CONFIRM it is bare (non-/portable) -> do NOT classify
+                    # it (fail closed in the KILL direction: never neutralise the real /portable terminal on a
+                    # cmdline-read failure).
+                    continue
+                cmd = " ".join(cl).lower()
+                if "/portable" not in cmd:
+                    result.add(int(proc.info["pid"]))
+            except Exception:
+                continue
+        return result
+    except Exception:
+        return None
+
+
+def _bare_via_powershell_cim(target_dir):
+    """PowerShell ``Get-CimInstance Win32_Process`` enumeration (PID + CommandLine). This is the MODERN Windows
+    process enumerator and the one that works on the GuvFX host: Windows Server 2025 has REMOVED wmic, and psutil is
+    not a declared observer dependency, so CIM is the reliable path. Returns a set, or None if it could not run.
+    Matches by the target install dir appearing in the command line (the per-account dir is NTFS-isolated to
+    ``guvfx_u_<id>``, so a match there is this account's own terminal); an empty/denied command line never matches."""
+    import subprocess
+    ps = ("$ErrorActionPreference='SilentlyContinue';"
+          "Get-CimInstance Win32_Process -Filter \"Name='terminal64.exe'\" | "
+          "ForEach-Object { ('{0}|{1}' -f $_.ProcessId, $_.CommandLine) }")
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+        capture_output=True, text=True, timeout=20,
+    )
+    if out.returncode != 0 and not (out.stdout or "").strip():
+        return None  # powershell/CIM did not run -> cannot enumerate this way
+    result = set()
+    for raw in (out.stdout or "").splitlines():
+        line = raw.strip()
+        if "|" not in line:
+            continue
+        pid_s, _, cmd = line.partition("|")
+        cl = cmd.lower()
+        if cmd and target_dir in cl and "/portable" not in cl:
+            try:
+                result.add(int(pid_s.strip()))
+            except Exception:
+                pass
+    return result
+
+
+def _bare_via_wmic(target_dir):
+    """Legacy wmic enumeration (PID + CommandLine via /format:list). Kept for older hosts that still ship wmic;
+    absent on Windows Server 2025. Returns a set, or None if wmic could not run."""
+    import subprocess
+    out = subprocess.run(
+        ["wmic", "process", "where", "name='terminal64.exe'", "get", "ProcessId,CommandLine", "/format:list"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if out.returncode != 0 and not (out.stdout or "").strip():
+        return None
+    result = set()
+    block = {}
+    for raw in (out.stdout or "").splitlines() + [""]:
+        line = raw.strip()
+        if not line:
+            cl = (block.get("CommandLine") or "").lower()
+            pid = (block.get("ProcessId") or "").strip()
+            if pid and cl and target_dir in cl and "/portable" not in cl:
+                try:
+                    result.add(int(pid))
+                except Exception:
+                    pass
+            block = {}
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+            block[k] = v
+    return result
+
+
 def _bare_terminal_pids(path):
     """PIDs of terminal64.exe running from ``path``'s INSTALL DIRECTORY *without* ``/portable`` on their command
     line. This is the exact signature of a terminal that ``mt5.initialize(path=)`` launched itself (its own
     auto-launch omits ``/portable`` -> the non-portable data dir hits the containment DENY ACL). A ``/portable``
     terminal - the real per-account runtime, or any other tenant's - is never in this set and so can never be
-    neutralised.
+    neutralised; kill safety additionally rests on NTFS per-account dir isolation and the OS only letting the
+    observer terminate its OWN processes.
 
-    Returns a SET of PIDs when it enumerated (possibly empty = 'ran, found none'), or ``None`` when it could not
-    enumerate at ALL (neither psutil nor wmic usable). The caller treats ``None`` as 'cannot guarantee
-    never-launch' and FAILS CLOSED (does not attach), so a host missing both tools can never let the gate silently
-    no-op into launching a bare terminal. psutil is preferred (precise: exe dir + cmdline + owner); the wmic
-    fallback (PID + CommandLine) mirrors the sibling ``_running_terminal_dirs`` so the guarantee holds on a host
-    without psutil (psutil is not a declared observer dependency)."""
+    Returns a SET of PIDs when ANY enumerator ran (possibly empty = 'ran, found none'), or ``None`` when NONE of
+    them could enumerate. The caller treats ``None`` as 'cannot guarantee never-launch' and FAILS CLOSED (does not
+    attach), so a host missing every enumerator can never let the gate silently no-op into launching a bare
+    terminal. Order: psutil (precise) -> PowerShell CIM (the modern Windows enumerator; the one live on the host) ->
+    wmic (older hosts)."""
     if not path:
         return set()
     try:
@@ -130,72 +222,14 @@ def _bare_terminal_pids(path):
         target_dir = ntpath.dirname(ntpath.abspath(path)).lower()
     except Exception:
         return set()
-
-    # --- Preferred: psutil (precise) ---
-    try:
-        import psutil
-    except Exception:
-        psutil = None
-    if psutil is not None:
+    for enumerator in (_bare_via_psutil, _bare_via_powershell_cim, _bare_via_wmic):
         try:
-            try:
-                me = psutil.Process().username()
-            except Exception:
-                me = None
-            result = set()
-            for proc in psutil.process_iter(["pid", "exe", "cmdline", "username"]):
-                try:
-                    exe = proc.info.get("exe") or ""
-                    if ntpath.basename(exe).lower() != "terminal64.exe":
-                        continue
-                    if ntpath.dirname(ntpath.abspath(exe)).lower() != target_dir:
-                        continue
-                    if me is not None and (proc.info.get("username") or "") != me:
-                        continue  # only our OWN processes (belt-and-suspenders; we can only kill ours anyway)
-                    cl = proc.info.get("cmdline")
-                    if not cl:
-                        # empty/unreadable command line: we CANNOT confirm this is a bare (non-/portable) instance,
-                        # so we must NOT classify it as one - fail closed in the KILL direction, never risk
-                        # neutralising the account's real /portable terminal on a cmdline-read failure.
-                        continue
-                    cmd = " ".join(cl).lower()
-                    if "/portable" not in cmd:
-                        result.add(int(proc.info["pid"]))
-                except Exception:
-                    continue
-            return result
+            r = enumerator(target_dir)
         except Exception:
-            pass  # psutil present but unusable -> try wmic
-
-    # --- Fallback: wmic (host has no psutil) -> ProcessId + CommandLine (/format:list is comma-safe) ---
-    try:
-        import subprocess
-        out = subprocess.run(
-            ["wmic", "process", "where", "name='terminal64.exe'", "get", "ProcessId,CommandLine", "/format:list"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if out.returncode != 0 and not (out.stdout or "").strip():
-            return None  # wmic did not run -> cannot enumerate at all
-        result = set()
-        block = {}
-        for raw in (out.stdout or "").splitlines() + [""]:
-            line = raw.strip()
-            if not line:
-                cl = (block.get("CommandLine") or "").lower()
-                pid = (block.get("ProcessId") or "").strip()
-                if pid and target_dir in cl and "/portable" not in cl:
-                    try:
-                        result.add(int(pid))
-                    except Exception:
-                        pass
-                block = {}
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                block[k] = v
-        return result
-    except Exception:
-        return None  # neither psutil nor wmic usable -> indeterminate (caller fails closed)
+            r = None
+        if r is not None:
+            return r
+    return None  # no enumerator usable -> indeterminate (caller fails closed)
 
 
 def _terminate_pid(pid) -> bool:

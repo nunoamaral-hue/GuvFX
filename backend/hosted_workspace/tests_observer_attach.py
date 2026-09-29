@@ -305,40 +305,36 @@ class AttachabilityGateTests(SimpleTestCase):
 
 class BareTerminalClassifierControlTests(SimpleTestCase):
     """RULE 11 positive+negative control for the DESTRUCTIVE classifier ``_bare_terminal_pids``: prove the enumerator
-    can FIND a bare terminal that IS there (positive) and correctly EXCLUDE a /portable one and an empty-cmdline one
-    (negative), on the psutil-absent host path (the wmic fallback that makes the never-CREATE gate robust). Skipped
-    where psutil is importable (that branch is covered by the injection tests); this exercises the deployed-like
-    no-psutil path where wmic is the measurement tool."""
+    can FIND a bare terminal that IS there (positive) and correctly EXCLUDE a /portable one, an empty-cmdline one, and
+    a different-account terminal (negative), on the psutil-absent host path via the PowerShell-CIM fallback (the
+    enumerator that actually runs on the GuvFX host: Windows Server 2025 removed wmic and psutil is not installed).
+    Skipped where psutil is importable (that branch is covered by the injection tests)."""
 
     def setUp(self):
         try:
             import psutil  # noqa: F401
-            self.skipTest("psutil present -> wmic fallback not exercised here; covered by injection tests")
+            self.skipTest("psutil present -> subprocess fallback not exercised here; covered by injection tests")
         except Exception:
             pass
 
-    def test_wmic_positive_and_negative_controls(self):
+    def test_cim_positive_and_negative_controls(self):
         path = r"C:\GuvFX\accounts\18\terminal\terminal64.exe"
+        # PowerShell CIM emits one "<pid>|<CommandLine>" line per terminal64 process.
         stdout = (
-            "\r\n"
-            'CommandLine="C:\\GuvFX\\accounts\\18\\terminal\\terminal64.exe"\r\n'
-            "ProcessId=111\r\n"
-            "\r\n"
-            'CommandLine="C:\\GuvFX\\accounts\\18\\terminal\\terminal64.exe" /portable\r\n'
-            "ProcessId=222\r\n"
-            "\r\n"
-            "CommandLine=\r\n"                     # empty cmdline -> must be EXCLUDED (fail closed for kill)
-            "ProcessId=333\r\n"
-            "\r\n"
+            '111|"C:\\GuvFX\\accounts\\18\\terminal\\terminal64.exe"\r\n'                  # bare -> INCLUDE
+            '222|"C:\\GuvFX\\accounts\\18\\terminal\\terminal64.exe" /portable\r\n'        # /portable -> EXCLUDE
+            '333|\r\n'                                                                       # empty cmd -> EXCLUDE
+            '444|"C:\\GuvFX\\accounts\\99\\terminal\\terminal64.exe"\r\n'                   # other acct -> EXCLUDE
         )
         with mock.patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=stdout)):
             pids = OA._bare_terminal_pids(path)
-        # positive: the bare terminal (111) is found; negatives: /portable (222) and empty-cmdline (333) excluded.
+        # positive: the bare terminal (111); negatives: /portable (222), empty cmdline (333), other account (444).
         self.assertEqual(pids, {111})
 
-    def test_wmic_unavailable_returns_none_fail_closed(self):
+    def test_all_enumerators_unavailable_returns_none_fail_closed(self):
+        # psutil absent + every subprocess enumerator (CIM, wmic) fails to run -> indeterminate -> None (fail closed).
         def _boom(*a, **k):
-            raise FileNotFoundError("wmic not found")
+            raise FileNotFoundError("no enumerator available")
         with mock.patch("subprocess.run", _boom):
             self.assertIsNone(OA._bare_terminal_pids(r"C:\GuvFX\accounts\18\terminal\terminal64.exe"))
 
