@@ -44,28 +44,48 @@ class TenantWatchdogRegistrationGuards(SimpleTestCase):
         self.assertEqual(offenders, [],
                          "registrar must NOT wire per-tenant watchdogs to node2_bridge_watchdog.ps1 (hardcodes :8789)")
 
-    def test_repair_script_repoints_broken_to_fixed_and_is_scoped(self):
+    def test_repair_script_repoints_broken_to_fixed_scoped_and_field_robust(self):
         text = _read(_REPAIR)
         self.assertIn("node2_bridge_watchdog.ps1", text, "repair must detect the broken script")
         self.assertIn("tenant_bridge_watchdog.ps1", text, "repair must repoint to the fixed script")
-        # Only ever touches per-tenant watchdog tasks (never the node watchdog / Customer Zero).
-        self.assertIn("GuvFX_TenantBridgeWatchdog_", text)
         self.assertIn(r"^GuvFX_TenantBridgeWatchdog_\d+$", text,
-                      "repair must match GuvFX_TenantBridgeWatchdog_<id> tasks only")
+                      "repair must match GuvFX_TenantBridgeWatchdog_<id> tasks only (excludes node/CZ watchdogs)")
+        # MED-1: must read Execute AND Arguments (schtasks may split the -File/-Port/-Task across either field),
+        # not Arguments alone, or a broken task can be silently mis-classified as unrecognised.
+        self.assertRegex(text, r"\$_\.Execute\s*\)\s*\+\s*'\s*'\s*\+\s*\(\[string\]\$_\.Arguments",
+                         "repair must combine Execute + Arguments when reading a task action")
+        # Positive control (RULE 11): an all-unrecognised result must warn/fail, not silently look clean.
+        self.assertRegex(text, r"repointed\s*-eq\s*0.*already\s*-eq\s*0|WARNING:.*field-read",
+                         "repair must emit a positive-control warning when 0 tasks match a known script")
 
-    def test_fixed_watchdog_wedge_escalation_is_dark_by_default(self):
+    def test_fixed_watchdog_wedge_escalation_is_dark_by_default_and_gated(self):
         text = _read(_FIXED_WD)
         self.assertRegex(text, r"\$WedgeKillThreshold\s*=\s*0",
-                         "PID-kill escalation must default OFF (DARK) so behaviour is unchanged unless armed")
+                         "PID-kill escalation must default OFF (DARK)")
+        # The kill path must be gated behind an explicit > 0 threshold, not merely default 0.
+        self.assertRegex(text, r"\$WedgeKillThreshold\s*-gt\s*0",
+                         "escalation must be guarded by an explicit -gt 0 threshold check")
 
-    def test_fixed_watchdog_wedge_kill_refuses_reserved_ports_and_nonpython(self):
+    def test_fixed_watchdog_wedge_kill_is_defence_in_depth(self):
         text = _read(_FIXED_WD)
-        # Defence-in-depth: never kill a process that also owns the CZ (:8788) or node (:8789) port.
-        self.assertIn("8788", text)
-        self.assertIn("8789", text)
-        self.assertIn("python", text, "wedge-kill must verify the target is a python bridge")
-        self.assertIn("8800", text)  # per-tenant port range floor guard
-        self.assertIn("8899", text)  # per-tenant port range ceiling guard
+        # Never kill a process that also owns the CZ (:8788) or node (:8789) port -> return $false.
+        self.assertRegex(text, r"-contains\s*8788", "wedge-kill must refuse an owner of the CZ port :8788")
+        self.assertRegex(text, r"-contains\s*8789", "wedge-kill must refuse an owner of the node port :8789")
+        self.assertRegex(text, r"\$p\.Name\s*-notmatch\s*'python'", "wedge-kill must verify a python bridge")
+        # Port-range guard confines supervision to the per-tenant band.
+        self.assertRegex(text, r"\$Port\s*-lt\s*8800", "must refuse ports below the per-tenant band")
+        self.assertRegex(text, r"\$Port\s*-gt\s*8899", "must refuse ports above the per-tenant band")
+        # LOW-4: re-verify the :$Port owner immediately before the kill (PID-reuse TOCTOU guard).
+        self.assertRegex(text, r"owner changed before kill|\$again\.OwningProcess\s*-ne\s*\$procId",
+                         "wedge-kill must re-verify the port owner immediately before Stop-Process")
+
+    def test_fixed_watchdog_only_treats_transport_failure_as_wedge(self):
+        # MED-2: a wedge is ONLY a no-response transport failure. An HTTP error status (401/5xx) or ok=false means
+        # the server RESPONDED, so it must NOT be counted as a wedge or trigger the PID-kill.
+        text = _read(_FIXED_WD)
+        self.assertRegex(text, r"\$ex\.Response\s*-ne\s*\$null", "must detect that the server responded (HTTP status)")
+        self.assertIn("not a wedge", text, "responsive-but-unhealthy paths must be explicitly excluded from wedge")
+        self.assertRegex(text, r"Invoke-WedgeHandling", "only the transport-failure path invokes wedge handling")
 
     def test_ps1_artefacts_are_pure_ascii(self):
         for path in (_REPAIR, _FIXED_WD):

@@ -62,9 +62,26 @@ function Stop-WedgedBridge {
   if (($owned -contains 8788) -or ($owned -contains 8789)) { Write-Log "REFUSE wedge-kill: pid $procId also owns a reserved port"; return $false }
   $p = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $procId) -ErrorAction SilentlyContinue
   if ((-not $p) -or ($p.Name -notmatch 'python')) { Write-Log "REFUSE wedge-kill: pid $procId is not a python bridge"; return $false }
+  # PID-reuse TOCTOU guard: re-read the :$Port owner immediately before the kill and confirm it is still $procId,
+  # so a PID recycled between the checks above and the kill can never be targeted.
+  $again = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ((-not $again) -or ([int]$again.OwningProcess -ne $procId)) { Write-Log "ABORT wedge-kill: :$Port owner changed before kill"; return $false }
   Write-Log ("escalation: PID-scoped kill of wedged bridge pid=" + $procId + " (owns only :" + ($owned -join ',') + ")")
   Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
   return $true
+}
+
+# A genuine wedge (transport failure while :$Port is LISTENING): increment the consecutive-wedge counter and,
+# once ARMED and at/above threshold, PID-kill the wedged owner before relaunching. Off by default (threshold 0).
+function Invoke-WedgeHandling([string]$why) {
+  $n = (Get-WedgeCount) + 1
+  if (($WedgeKillThreshold -gt 0) -and ($n -ge $WedgeKillThreshold)) {
+    if (Stop-WedgedBridge) { Set-WedgeCount 0 } else { Set-WedgeCount $n }
+    Restart-TenantBridge "$why; wedge escalation (n=$n>=$WedgeKillThreshold)"
+  } else {
+    Set-WedgeCount $n
+    Restart-TenantBridge "$why (wedge n=$n; escalation off or below threshold)"
+  }
 }
 
 $listen = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -75,24 +92,24 @@ try {
   $resp = Invoke-WebRequest -Uri $HealthUrl -Headers $headers -TimeoutSec 10 -UseBasicParsing
   $body = $resp.Content | ConvertFrom-Json
   if ($body.ok -eq $true) { Set-WedgeCount 0; exit 0 }        # healthy: silent success, reset wedge counter
-  # Listening but health ok!=true => alive-but-wedged.
-  $n = (Get-WedgeCount) + 1
-  if (($WedgeKillThreshold -gt 0) -and ($n -ge $WedgeKillThreshold)) {
-    if (Stop-WedgedBridge) { Set-WedgeCount 0 } else { Set-WedgeCount $n }
-    Restart-TenantBridge "health ok=false; wedge escalation (n=$n>=$WedgeKillThreshold)"
-  } else {
-    Set-WedgeCount $n
-    Restart-TenantBridge "health returned ok=false (wedge n=$n; escalation off or below threshold)"
-  }
+  # The server RESPONDED with ok!=true (responsive-but-unhealthy) - this is NOT a wedge (a wedged bridge cannot
+  # answer /health at all). Restart via the task (no-op if running) and reset the wedge counter: never PID-kill a
+  # bridge that is answering. Only a no-response transport failure (below) is treated as a wedge.
+  Set-WedgeCount 0
+  Restart-TenantBridge "health returned ok=false (server responsive; not a wedge - no escalation)"
 } catch {
-  # Timeout/connection error while :$Port is LISTENING is the classic wedge symptom.
-  $n = (Get-WedgeCount) + 1
-  if (($WedgeKillThreshold -gt 0) -and ($n -ge $WedgeKillThreshold)) {
-    if (Stop-WedgedBridge) { Set-WedgeCount 0 } else { Set-WedgeCount $n }
-    Restart-TenantBridge "health check failed (wedge escalation n=$n>=$WedgeKillThreshold): $($_.Exception.Message)"
+  # Distinguish a genuine TRANSPORT failure (timeout / connection refused = a real wedge) from an HTTP error
+  # STATUS (401/403/5xx: the server RESPONDED, so it is NOT wedged). PS 5.1 Invoke-WebRequest throws on any 4xx/5xx,
+  # so a wrong/empty agent token (401) or a transient 5xx must NEVER be counted as a wedge or trigger the PID-kill;
+  # only a no-response failure while :$Port is LISTENING is a wedge.
+  $ex = $_.Exception
+  $responded = $false
+  try { if ($ex -and ($ex.PSObject.Properties.Name -contains 'Response') -and ($ex.Response -ne $null)) { $responded = $true } } catch { $responded = $false }
+  if ($responded) {
+    Set-WedgeCount 0
+    Restart-TenantBridge "health HTTP error status (server responded; not a wedge - no escalation): $($ex.Message)"
   } else {
-    Set-WedgeCount $n
-    Restart-TenantBridge "health check failed (wedge n=$n; escalation off or below threshold): $($_.Exception.Message)"
+    Invoke-WedgeHandling "health check transport failure (timeout/refused) while :$Port listening: $($ex.Message)"
   }
 }
 exit 0

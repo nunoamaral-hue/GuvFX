@@ -30,7 +30,10 @@ if (-not $tasks) { Write-Output "no GuvFX_TenantBridgeWatchdog_<id> tasks found"
 $repointed = 0; $already = 0; $skipped = 0
 foreach ($t in $tasks) {
   $name = $t.TaskName
-  $args0 = ($t.Actions | ForEach-Object { $_.Arguments }) -join ' '
+  # Read BOTH Execute and Arguments: schtasks /tr may place the powershell path, -File and the -Port/-Task tail in
+  # either field depending on Windows/schtasks version, so keying decisions off .Arguments alone can silently miss a
+  # broken task (RULE 11). Combining both is robust regardless of the split.
+  $args0 = ($t.Actions | ForEach-Object { (([string]$_.Execute) + ' ' + ([string]$_.Arguments)) }) -join ' '
   # Extract the task's own -Port and -Task so we preserve them exactly.
   $port = if ($args0 -match '-Port\s+(\d+)') { [int]$matches[1] } else { $null }
   $tgt  = if ($args0 -match '-Task\s+(\S+)') { $matches[1] } else { $null }
@@ -50,10 +53,18 @@ foreach ($t in $tasks) {
   } else {
     $act = New-ScheduledTaskAction -Execute 'powershell' -Argument $newArgs
     Set-ScheduledTask -TaskName $name -Action $act | Out-Null
-    $after = ((Get-ScheduledTask -TaskName $name).Actions | ForEach-Object { $_.Arguments }) -join ' '
+    $after = ((Get-ScheduledTask -TaskName $name).Actions | ForEach-Object { (([string]$_.Execute) + ' ' + ([string]$_.Arguments)) }) -join ' '
     $ok = ($after -match 'tenant_bridge_watchdog\.ps1')
     if ($ok) { $repointed++; Write-Output ("REPOINTED: " + $name + " -Port " + $port + " -> fixed script" + $(if($WedgeKillThreshold -gt 0){" (escalation armed t=$WedgeKillThreshold)"}else{""})) }
     else { $skipped++; Write-Output ("FAILED to repoint: " + $name) }
   }
 }
-Write-Output ("SUMMARY: repointed=" + $repointed + " already_fixed=" + $already + " skipped=" + $skipped + " total=" + ($tasks | Measure-Object).Count)
+$total = ($tasks | Measure-Object).Count
+Write-Output ("SUMMARY: repointed=" + $repointed + " already_fixed=" + $already + " skipped=" + $skipped + " total=" + $total)
+# Positive control (RULE 11): if EVERY task classified as unrecognised (none fixed, none already-correct), the
+# action field-read assumption is almost certainly wrong for this host - do NOT trust the clean-looking result.
+if (($total -gt 0) -and ($repointed -eq 0) -and ($already -eq 0)) {
+  Write-Output ("WARNING: 0 tasks matched a known watchdog script across " + $total + " tenant watchdog task(s) - the")
+  Write-Output ("         scheduled-task action field-read may be wrong on this host; VERIFY MANUALLY before trusting.")
+  exit 2
+}
