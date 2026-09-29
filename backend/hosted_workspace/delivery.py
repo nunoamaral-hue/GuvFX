@@ -55,6 +55,7 @@ class DeliveryReason:
     INVALID_REQUEST = "DA_INVALID_REQUEST"             # unauthenticated / malformed workspace id
     WORKSPACE_MISSING = "DA_WORKSPACE_MISSING"         # no workspace with that uuid
     NOT_OWNER = "DA_NOT_OWNER"                         # workspace owned by another user (IDOR-safe)
+    ACCOUNT_REMOVED = "DA_ACCOUNT_REMOVED"            # account tombstoned (removed) — no live Open-MT5 delivery
     NODE_UNASSIGNED = "DA_NODE_UNASSIGNED"             # no workspace_node → cannot derive host
     NODE_TRANSPORT_UNCONFIGURED = "DA_NODE_TRANSPORT_UNCONFIGURED"  # node has no rdp_host → no delivery transport
     IDENTITY_MISSING = "DA_IDENTITY_MISSING"           # no AccountProvisioning / no windows_username
@@ -110,6 +111,11 @@ def workspace_delivery_ready(workspace) -> bool:
     try:
         if not (hosted_persistent_mt5_enabled() and hosted_mt5_remoteapp_enabled()):
             return False
+        # A removed (tombstoned) account is never deliverable (matches the authority's DA_ACCOUNT_REMOVED deny), so
+        # the frontend connect card does not offer Open MetaTrader for it.
+        from trading.account_removal import account_is_removed
+        if account_is_removed(getattr(workspace, "trading_account", None)):
+            return False
         node = getattr(workspace, "workspace_node", None)
         if node is None or not getattr(node, "hostname", None) or not getattr(node, "rdp_host", None):
             return False
@@ -157,6 +163,12 @@ def authorize_workspace_delivery(user, workspace_id) -> DeliveryAuthorization:
         # From here the caller owns the workspace — carry workspace_pk so a FAILED attempt can be recorded
         # on THEIR OWN workspace (never on anyone else's).
         wpk = workspace.pk
+
+        # A removed (tombstoned) account may NOT mint an Open-MT5 RemoteApp session — this is the authoritative
+        # mint-time block for Phase 15 (its credentials are destroyed and its host runtime is being reclaimed).
+        from trading.account_removal import account_is_removed
+        if account_is_removed(workspace.trading_account):
+            return _deny(DeliveryReason.ACCOUNT_REMOVED, workspace_uuid=wuuid_str, workspace_pk=wpk)
 
         node = workspace.workspace_node
         if node is None or not node.hostname:

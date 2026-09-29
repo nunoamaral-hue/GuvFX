@@ -226,6 +226,9 @@ def run_hosted_liveness_recovery(*, actor: str = SOURCE, executor_resolver=None,
     qs = (HostedMt5Workspace.objects
           .filter(execution_enabled=True, execution_authorized_at__isnull=False, proj_account_match=True,
                   trading_account__is_demo=True, trading_account__workspace_confirmed_at__isnull=False)
+          # Never relaunch a REMOVED (tombstoned) account's terminal (removal already disarms execution_enabled, but
+          # this is explicit defence in depth so a Stage-2 teardown is never fought by a relaunch).
+          .filter(trading_account__disconnected_at__isnull=True)
           .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS)
           .select_related("trading_account", "execution_node")
           .iterator())

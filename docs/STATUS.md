@@ -14,6 +14,27 @@
 
 ## Execution workstream log
 
+- **2026-09-29 - REMOVE BROKER ACCOUNT: STAGE-2 PHYSICAL DECOMMISSIONING + tombstone visibility + entitlement UX
+  (pre-20-account capacity gate).** Closes the residual gap that a removed account's Windows footprint (terminal,
+  tenant bridge, tasks, RemoteApp, dirs, identity) kept running after logical removal. Design: logical removal
+  (tombstone) stays authoritative + first; ``remove_account`` now flips ``HostedMt5Workspace.cleanup_state`` to
+  PENDING inside the tombstone txn (mig 0012 adds cleanup_state/attempts/next_retry_at/last_reason, mirroring the
+  recovery field-sets). A new ``hosted_workspace.decommission.run_workspace_cleanup`` pass in the minute cron drives
+  the async, retryable Stage-2 via GOVERNED signed-executor primitives - reuse ``REMOVE_REMOTEAPP`` +
+  ``REMOVE_APPLOCKER_TENANT``, wire the orphaned ``REMOVE_OBSERVER`` (Set-GuvfxObserver -Mode Remove), and one new
+  consolidated ``DECOMMISSION_RUNTIME`` -> ``Decommission-GuvfxRuntime.ps1`` (stop tenant bridge+watchdog+port,
+  terminate ONLY a terminal64 owned by guvfx_u_<id> with exe path under RuntimeRoot [never /IM], end the session,
+  remove tenants\<id>+accounts\<id> [canonicalized, leaf==id], disable the identity; per-step JSON; idempotent).
+  INVARIANT: a Stage-2 failure NEVER un-tombstones/restores credentials/restores entitlement - it retries with
+  backoff (FAILED_RETRYABLE); open positions re-checked fail-closed before teardown; Customer Zero refused at every
+  layer; the bridge is targeted by its per-tenant PORT (proven: the shared bridge python is not otherwise
+  identifiable). Tombstone visibility: the accounts LIST action now excludes disconnected_at (detail/history/
+  idempotent-remove still resolve); a shared ``guard_live_op`` blocks Start / Open-MT5 (delivery) / View-MT5 / arm
+  on a removed account (authoritative, on disconnected_at). Entitlement UX: Broker Accounts counter now shows
+  owned_count/owned_limit (+ trading count separately), not active_count/owned_limit. Tests: tests_decommission (16)
+  + host-framework + trading suites; FULL backend 5061 OK; eslint 0 errors; vitest 57 files; build OK; the new .ps1
+  ParseFile-validated on the host (RULE 9) + ASCII. NEXT: adversarial review -> merge/deploy -> Phase-21 certify by
+  running the governed cleanup against account 37's residual (37 stays tombstoned; NOT restored).
 - **2026-09-29 - HOSTED OBSERVER never-launch fix (account-37 WebView popup + stuck WAITING_FOR_LOGIN).** ROOT CAUSE
   (read-only forensic, proven): the hosted observer runs as `guvfx_u_<id>` and calls `mt5.initialize(path=)`, which is
   dual-mode — when the per-account `/portable` terminal is running but not yet attachable (first-run: compiling MQL5 /

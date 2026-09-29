@@ -43,6 +43,7 @@ HOSTED_OPERATIONS = (
     "ENSURE_REMOTEAPP",          # publish/verify the per-account RemoteApp alias (guvfx_mt5_<id>) /portable
     "REMOVE_REMOTEAPP",          # tenant rollback: remove ONLY this account's RemoteApp alias
     "PREPARE_OBSERVER",          # register the read-only session-bound observer task
+    "REMOVE_OBSERVER",           # Remove-account teardown: unregister ONLY this account's observer task
     "OBSERVE_WORKSPACE",         # 9E: trigger the account's session-bound observer once + return its snapshot (RO)
     "APPLY_APPLOCKER_AUDIT",     # AppLocker AuditOnly TENANT MERGE for this identity (additive; NEVER -Enforce)
     "REMOVE_APPLOCKER_TENANT",   # tenant rollback: remove ONLY this account's AppLocker deny contribution
@@ -51,6 +52,7 @@ HOSTED_OPERATIONS = (
     "ACTIVATE_TENANT_BRIDGE",    # P0-B1.1: start THIS tenant's OWN pin-enforcing order bridge on its per-tenant PORT (multi-tenant host)
     "RELAUNCH_TERMINAL",         # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own MT5 (capability recovery; NEVER CZ; no order)
     "PRESEED_BROKER_ARTEFACT",   # Broker Catalogue V1: copy ONE approved+SHA-verified servers.dat into a FRESH runtime (RO source; no golden; no login)
+    "DECOMMISSION_RUNTIME",      # Remove-account STAGE-2: stop THIS account's tenant bridge+watchdog+port, terminate its terminal64 (owner+path verified), end its session, remove tenant+runtime dirs, disable its Windows identity (NEVER CZ)
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.
 CREDENTIALED_HOSTED_OPERATIONS = ("PROVISION_IDENTITY",)

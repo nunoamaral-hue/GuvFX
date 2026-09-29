@@ -180,7 +180,9 @@ def _resolve_launch_account(request):
             aid = int(raw)
         except (TypeError, ValueError):
             return None, True
-        return base.filter(id=aid).first(), True
+        # A removed (tombstoned) account is NOT viewable — exclude it from the explicit resolve so View-MT5 returns
+        # None (the caller 404s / shows not-available). The fallback below already excludes it via is_active=True.
+        return base.filter(id=aid, disconnected_at__isnull=True).first(), True
     return base.filter(is_active=True).first(), False
 
 

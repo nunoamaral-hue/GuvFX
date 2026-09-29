@@ -93,6 +93,21 @@ def allocate_port(host: str, *, exclude: frozenset[int] = frozenset()) -> int:
         .filter(host=host)
         .values_list("port", flat=True)
     )
+    # Remove-account safety: a RETIRED endpoint frees its port for reuse, BUT the removed account's STAGE-2 host
+    # teardown (which kills whatever listens on that port) is async/retryable. If the port were reallocated to a
+    # co-resident tenant before that teardown ran, the teardown would kill the NEW tenant's live order bridge. So
+    # keep a retired port RESERVED until its account's cleanup has SUCCEEDED (cleanup_state no longer active).
+    try:
+        from hosted_workspace.decommission import _ACTIVE_STATES as _CLEAN_ACTIVE
+        pending_teardown = set(
+            HostedExecutionEndpoint.objects
+            .filter(state=HostedExecutionEndpoint.State.RETIRED, host=host,
+                    workspace__cleanup_state__in=_CLEAN_ACTIVE)
+            .values_list("port", flat=True)
+        )
+        taken |= pending_teardown
+    except Exception:  # noqa: BLE001 - never let the reuse guard block allocation entirely (worst case: prior behaviour)
+        pass
     for port in range(PORT_RANGE_START, PORT_RANGE_END + 1):
         if port in RESERVED_PORTS or port in exclude or port in taken:
             continue

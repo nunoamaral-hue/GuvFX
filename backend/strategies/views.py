@@ -1478,6 +1478,14 @@ class StrategyViewSet(viewsets.ModelViewSet):
         if not account:
             return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        # A removed (tombstoned) account can never be armed — explicit, authoritative reject on disconnected_at
+        # (defence in depth over the is_demo+is_active gate below, which a tombstone also trips indirectly).
+        from trading.account_removal import account_is_removed
+        if account_is_removed(account):
+            return Response({"status": "account_removed",
+                             "detail": "This account has been removed. Add it again to trade."},
+                            status=status.HTTP_409_CONFLICT)
+
         # ADR-0021: no per-user admission allowlist. Enable Trading is governed by ownership + account
         # validation + runtime readiness + execution controls + the self-serve-arm operational flag
         # (all enforced below) — NOT by spare runtime capacity or registration state.

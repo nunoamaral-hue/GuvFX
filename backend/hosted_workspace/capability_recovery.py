@@ -218,6 +218,9 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
     qs = (HostedMt5Workspace.objects
           .filter(canonical_state=str(S.CONNECTED), proj_connected=True, proj_account_match=True,
                   proj_trade_allowed=False)
+          # Never recover/relaunch a REMOVED (tombstoned) account's terminal - it is decommissioning; a stale
+          # CONNECTED projection must not fight the Stage-2 teardown.
+          .filter(trading_account__disconnected_at__isnull=True)
           .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS)
           .select_related("trading_account", "execution_node")
           .iterator())

@@ -33,14 +33,17 @@ Context: the never-launch fix (STATUS 2026-09-29) stops the observer from creati
 Start/Stop/Remove reconciled + Stop hardened (see STATUS 2026-09-28). Remaining, all gated behind the Sponsor's
 Fasthosts Windows upgrade:
 
-- **[CAPACITY-PREREQUISITE] Remove does not trigger physical host teardown.** `remove_account` tombstones + releases
-  entitlement + disarms + retires the endpoint (DB) + destroys credentials, but dispatches ZERO host ops: the tenant
-  `terminal64` process, RemoteApp alias, AppLocker rule and order-bridge keep running after removal
-  (`host_agent_dispatch.py` has REMOVE_REMOTEAPP/REMOVE_APPLOCKER but NO TERMINATE_TERMINAL/END_SESSION, and none are
-  called on removal). Negligible at 3 accounts; **must be a dedicated host-op (add a terminate/end-session primitive +
-  wire the existing REMOVE_REMOTEAPP/REMOVE_APPLOCKER into `remove_account`'s best-effort teardown) BEFORE scaling to
-  20**, else decommissioned accounts leave idle MT5 processes consuming host CPU/RAM. Fail-closed already holds: the
-  account stays tombstoned/non-tradable/non-entitlement-consuming even if host cleanup is deferred.
+- **[RESOLVED 2026-09-29] Remove now triggers governed physical host teardown (STAGE 2).** `remove_account` flips
+  `HostedMt5Workspace.cleanup_state=PENDING` inside the tombstone txn; `hosted_workspace.decommission.
+  run_workspace_cleanup` (minute cron) drives the async, retryable teardown via governed signed-executor primitives:
+  `REMOVE_OBSERVER` + `REMOVE_REMOTEAPP` + `REMOVE_APPLOCKER_TENANT` + the consolidated `DECOMMISSION_RUNTIME`
+  (`Decommission-GuvfxRuntime.ps1`: tenant bridge+watchdog+port, terminal64 by owner+path, session, tenant+runtime
+  dirs, disable identity). Fail-closed (never un-tombstones; open-position re-check; CZ refused; per-tenant port +
+  owner+path process targeting; canonicalized dir removal). Ships behind the existing hosted master flag. Cert vs
+  acct 37 residual pending (Phase 21). NOTE: `DECOMMISSION_RUNTIME` DISABLES (not deletes) the Windows user +
+  removes runtime/tenant dirs (broker-session material) — full user/profile deletion deferred (ProfSvc lock needs a
+  reboot, which is forbidden mid-service); the disabled identity + removed dirs already satisfy "cannot relaunch / no
+  reusable broker-login state."
 - **[FOLLOW-UP] Remove open-position gate trusts the DB Trade mirror**, not a live broker read (`account_removal.py`:
   `Trade.close_time IS NULL` count). If ingestion is stale, a truly-open position could be missed. Consider a live
   broker position read before decommission for extra safety.

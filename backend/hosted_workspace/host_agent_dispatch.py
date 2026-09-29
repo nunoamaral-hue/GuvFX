@@ -76,6 +76,9 @@ OP_PRIMITIVES = {
     "ENSURE_REMOTEAPP":         {"primitive": "ensure_remoteapp",         "params_allow": ("target",)},
     "REMOVE_REMOTEAPP":         {"primitive": "remove_remoteapp",         "params_allow": ()},
     "PREPARE_OBSERVER":         {"primitive": "prepare_observer",         "params_allow": ()},
+    # Remove-account teardown: unregister ONLY this account's observer scheduled task. Server-derived
+    # username/runtime_root + injected account_id; no caller params. Idempotent (already-absent => ok).
+    "REMOVE_OBSERVER":          {"primitive": "remove_observer",          "params_allow": ()},
     "OBSERVE_WORKSPACE":        {"primitive": "observe_workspace",        "params_allow": ()},
     "APPLY_APPLOCKER_AUDIT":    {"primitive": "applocker_tenant_merge",   "params_allow": ()},
     "REMOVE_APPLOCKER_TENANT":  {"primitive": "applocker_tenant_remove",  "params_allow": ()},
@@ -92,6 +95,12 @@ OP_PRIMITIVES = {
     # relaunches a terminal — it NEVER logs in, changes accounts, arms a strategy, or places an order.
     "RELAUNCH_TERMINAL":        {"primitive": "relaunch_terminal",        "params_allow": ()},
     "PRESEED_BROKER_ARTEFACT":  {"primitive": "preseed_broker_artefact",  "params_allow": ("broker_id", "expected_sha256", "host_relpath")},
+    # Remove-account STAGE-2 physical teardown of THIS account only. Server-derived username + runtime_root +
+    # injected account_id fully determine every task name, path and identity. The tenant bridge PROCESS is a shared
+    # python that is only reliably identifiable by its per-tenant LISTENING PORT, so ``port`` (the account's own
+    # retired HostedExecutionEndpoint port, backend-derived + signed + range-validated) is the SOLE caller-
+    # influenced value. Customer Zero refused (reserved) before this maps. Idempotent + per-step JSON verdict.
+    "DECOMMISSION_RUNTIME":     {"primitive": "decommission_runtime",     "params_allow": ("port",)},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 
@@ -226,6 +235,24 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         # re-assert the CZ refusal as defence in depth.
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
                 "account_id": slot["account_id"]}
+    if op == "DECOMMISSION_RUNTIME":
+        # Remove-account STAGE-2: the host script derives EVERY per-account resource from these server-derived
+        # values only — guvfx_u_<id> (owner+session), runtime_root=accounts\<id> (terminal path + dir to remove),
+        # tenants\<id> (bridge dir, from account_id) and the GuvFX_TenantBridge_<id>/…Watchdog_<id> task names
+        # (from account_id). It terminates ONLY a terminal64 whose owner==username AND whose exe path is under
+        # runtime_root, and re-asserts the Customer-Zero refusal. The one caller-influenced value is ``port`` — the
+        # account's own retired-endpoint bridge port — since the shared bridge python is only reliably identifiable
+        # by its per-tenant listening port. Re-validate its RANGE here (defence in depth): a per-tenant port only
+        # (8800-8899), never a reserved GuvFX port; 0 means "port unknown" (skip the port-targeted kill host-side).
+        port_raw = (fields.get("params") or {}).get("port", 0)
+        try:
+            port = int(port_raw)
+        except (TypeError, ValueError):
+            raise HostProtocolError("params_malformed")
+        if port != 0 and not (8800 <= port <= 8899):
+            raise HostProtocolError("params_not_allowed")
+        return {"username": slot["username"], "runtime_root": slot["runtime_root"],
+                "account_id": slot["account_id"], "port": port}
     if op == "PRESEED_BROKER_ARTEFACT":
         # Broker Catalogue V1: copy ONE approved catalogue servers.dat into the tenant's fresh runtime + read-back
         # verify. All identity/paths are server-derived from the account slot; the SOURCE is confined host-side to
@@ -267,7 +294,7 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         return {"username": slot["username"]}
     if op == "ENSURE_SINGLE_SESSION":
         return {}
-    return base                                     # MATERIALISE / PREPARE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT
+    return base                       # MATERIALISE / PREPARE_OBSERVER / REMOVE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT
 
 
 _SECRET_KEYS = {"password", "pw", "secret", "payload"}

@@ -191,6 +191,46 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("PREPARE_OBSERVER")
 
+    def remove_observer(self, username, runtime_root, rdp_host=None) -> dict:
+        """Remove-account teardown: unregister ONLY this account's observer scheduled task (the host runs the
+        reviewed ``Set-GuvfxObserver.ps1 -Mode Remove`` -> Unregister-ScheduledTask). Confined on
+        username+runtime_root (Django) + Customer Zero refused in ``_send``; idempotent (already-absent => ok).
+        Reads nothing, launches nothing, mutates no broker/account state."""
+        if not self._confined(username=username, runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("REMOVE_OBSERVER")
+
+    def remove_remoteapp(self, username, runtime_root, rdp_host=None) -> dict:
+        """Remove-account teardown: unpublish ONLY this account's RemoteApp alias (guvfx_mt5_<id>) via the reviewed
+        ``Set-GuvfxRemoteApp.ps1 -Mode Remove``. The alias is host-derived from account_id (never the caller's);
+        confined on username+runtime_root (Django) + Customer Zero refused in ``_send`` and in-script. Idempotent."""
+        if not self._confined(username=username, runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("REMOVE_REMOTEAPP")
+
+    def applocker_remove(self, username, rdp_host=None) -> dict:
+        """Remove-account teardown: strip ONLY this account's AppLocker tenant contribution (host resolves the SID
+        from the username + tags rules with account_id, so the base and other tenants / CZ are untouched). Confined
+        on username (Django) + Customer Zero refused in ``_send``; idempotent (already-absent => ok)."""
+        if not self._confined(username=username):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("REMOVE_APPLOCKER_TENANT")
+
+    def decommission_runtime(self, username, runtime_root, port=0, rdp_host=None) -> dict:
+        """Remove-account STAGE-2 physical teardown of THIS account's host footprint — tenant bridge + watchdog +
+        its listening port, the tenant's OWN terminal64, its RDP session, the tenant+runtime directories, and a
+        disable of the Windows identity. Confined on username+runtime_root (Django) + Customer Zero refused in
+        ``_send``; the host re-derives every task name/path from ``account_id`` and re-asserts the CZ refusal,
+        terminates ONLY a terminal64 owned by ``username`` whose exe path is under ``runtime_root`` (never ``/IM``,
+        never a sibling account), and canonicalizes each directory (its leaf MUST equal the account id) before
+        removal. ``port`` is the account's OWN retired-endpoint bridge port (the shared bridge python is only
+        reliably identifiable by its per-tenant listening port) — the sole caller-influenced value, signed +
+        range-validated host-side; 0 means unknown (the host skips the port-targeted kill). NEVER logs in, arms, or
+        places an order. Returns the sanitised signed per-step result. Idempotent (already-absent => step ok)."""
+        if not self._confined(username=username, runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("DECOMMISSION_RUNTIME", params={"port": int(port or 0)})
+
     def verify_slot(self, rdp_host=None) -> dict:
         return self._send("VERIFY_SLOT")
 

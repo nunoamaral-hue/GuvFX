@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Remove Broker Account STAGE-2 physical decommission — CI → deploy → certify vs acct 37 residual (2026-09-29)
+Governed host teardown (DECOMMISSION_RUNTIME + REMOVE_OBSERVER, reuse REMOVE_REMOTEAPP/APPLOCKER) driven by an
+async retryable cleanup_state on HostedMt5Workspace (mig 0012) from the minute cron; + tombstone list-hiding +
+live-op guard + owned/limit entitlement counter. Branch `feat/remove-physical-decommission`. Full backend 5061 OK;
+frontend green; new .ps1 host-ParseFile-validated. **Single next action:** finish adversarial review (fix any
+HIGH/MEDIUM) → PR → GREEN CI → merge → deploy (migrate 0012 + stage Decommission-GuvfxRuntime.ps1 to
+C:\GuvFX\hosted\scripts + recreate backend/observer images) → Phase-21 certify: reconfirm acct 37 tombstoned+flat,
+then invoke the SAME governed cleanup against its residual and verify the host footprint is gone + 25/35/36
+untouched. Do NOT restore/recreate 37. Do NOT raise support@ entitlement to 20. Do NOT resize Fasthosts.
+
 ## ▶ Hosted observer never-launch fix — CI → deploy → recover Account 37 (2026-09-29)
 Fixes the account-37 WebView popup + stuck WAITING_FOR_LOGIN (observer's `mt5.initialize(path=)` self-launched a bare
 non-`/portable` terminal during first-run → DENY popup + `duplicate_terminal` freeze). Backend-only, additive: observer
