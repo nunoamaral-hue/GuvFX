@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-ACCT35-RECONCILIATION",
+  "packet_id": "REBOOT-RECOVERY-P2",
+  "created_at_utc": "2026-09-29T19:00:00Z",
+  "branch": "main",
+  "base_commit": "f21918d63870670ee2ca51f232406d6c332faa6c",
+  "head_commit": null,
+  "commands": [
+    "docker compose exec -T guvfx-backend python manage.py shell  # Trade/SignalExecutionPlan/_fetch_mt5_open_positions queries for acct 35",
+    "Start-ScheduledTask GuvFX_TenantBridge_35  # restore the dead per-tenant bridge on :8804 (guarded-attach, identity-pinned)",
+    "_fetch_mt5_open_positions(acct35)  # live bridge open-positions after restore",
+    "resolve_completed_plans via run_monitor_chain (1/min cron)  # authoritative plan resolution"
+  ],
+  "expected_results": [
+    "acct-35 per-tenant bridge :8804 LISTENING after restore",
+    "live bridge open-positions fetch for acct 35 responds (not 10s timeout) with 0 open positions",
+    "Trade 1805 close_time SET from the authoritative broker OUT deal (ingested via the restored bridge)",
+    "SignalExecutionPlan 1029 transitions PROMOTED -> CLOSED once all 3 legs are settled+closed",
+    "acct 35: 0 ingested open trades, 0 active plans; NO DB edits or fabricated state"
+  ],
+  "actual_results": [
+    "8804 LISTENING pid=10944 after Start-ScheduledTask GuvFX_TenantBridge_35",
+    "live bridge fetch acct35 = 0 open positions in 0.15s (was 10s timeout while :8804 was dead)",
+    "Trade 1805 close_time = 2026-09-29 13:57:59+00:00 (ingested from broker deal; not edited)",
+    "Plan 1029 status = CLOSED; legs L1/L2/L3 = Trades 1803(closed 13:37:21)/1804(13:45:26)/1805(13:57:59)",
+    "acct 35 ingested open trades = 0, active plans (PLANNED/PROMOTED) = 0"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Reconciliation was unblocked by the acute host restart of GuvFX_TenantBridge_35 (:8804). P1 (PR #439) makes the watchdog correction systematic so a dead per-tenant bridge is detected+restarted going forward; P0 (bridge ThreadingHTTPServer+per-call-timeout, pending) hardens against the alive-but-wedged variant. Neither P0 nor P1 was deployed at reconciliation time.",
+    "Root cause of the outage was watchdog mispointing (5/6 tasks on node2_bridge_watchdog.ps1 hardcoding :8789), documented in P1; the reconciliation LOGIC (close_monitor.resolve_completed_plans in run_monitor_chain) was itself sound and fail-closed - it was only starved by the dead bridge.",
+    "NO DB rows were edited and NO trade/plan state was fabricated; close_time and the plan transition came from the authoritative broker OUT deal via the normal deal-ingest -> resolve path.",
+    "Not covered: a fresh from-scratch reproduction of the wedge under the P0 threading fix (that is P0's certification, separate)."
+  ],
+  "artefact_locations": [
+    "docs/NEXT.md (Cold-boot recovery build + bridge/watchdog mechanism fix)",
+    "memory: project_host_reboot_recovery_gap.md",
+    "PR #439 (systematic watchdog registration correction + wedge-kill escalation)"
+  ],
+  "checksums": {},
+  "reviewer": "pending-sponsor"
+}
