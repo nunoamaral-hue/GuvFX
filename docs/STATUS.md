@@ -14,6 +14,14 @@
 
 ## Execution workstream log
 
+- **2026-09-29 - MEMBER LIFECYCLE Start/Stop — SPONSOR-INTERACTIVELY CERTIFIED on Account 36 (Taurex).** Sponsor
+  clicked Stop then Start in the UI; certified read-only around each click. STOP: 36 is_active True→False,
+  trading_state TRADING→TRADING_STOPPED, **arm PRESERVED** (execution_enabled=True, auto_arm_suppressed=False — the
+  no-disarm design), assignment/magic(1000000019)/sizing unchanged, 0 open/0 pending, **siblings 25 & 35 stayed
+  TRADING**. START: 36 back to TRADING (re-armed synchronously), same assignment/magic/sizing, no reprovision;
+  full TRADING→STOPPED→TRADING round-trip clean and estate restored to its original state. `MEMBER_ACCOUNT_LIFECYCLE
+  _START_STOP_CERTIFIED`. REMAINING: Phase-F destructive Remove on a Sponsor-onboarded disposable 4th account
+  (25/35/36 untouched); capacity upgrade + 5→20 entitlement still gated (KNOWN_ISSUES).
 - **2026-09-28 - MEMBER ACCOUNT LIFECYCLE (Start/Stop/Remove) — RECONCILED + Stop hardened; capacity/entitlement
   design (pre-capacity-upgrade).** RECONCILE-FIRST packet. **Start: WORKS in prod** — `POST
   /api/trading/accounts/<id>/set-active/ {is_active:true}` runs the certified managed lifecycle
