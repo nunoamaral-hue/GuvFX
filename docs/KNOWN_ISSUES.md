@@ -2,6 +2,27 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 P3 HOSTED OBSERVER — first-run popup churn residual + observer requires psutil OR wmic (recorded 2026-09-29)
+
+Context: the never-launch fix (STATUS 2026-09-29) stops the observer from creating a bare terminal, but two residuals remain:
+
+- **[RESIDUAL — self-healing] First-run DENY-popup churn.** While a NEW account's `/portable` terminal is in first-run
+  (not yet IPC-attachable), each observe cycle's `mt5.initialize(path=)` may still briefly launch a bare terminal that
+  the gate detects and kills within the 8s bounded attach — so the customer may see the "couldn't create data
+  directory" popup FLASH a few times during first-run (≤ a few minutes), then it self-heals to CONNECTED. This is
+  strictly better than the previous PERMANENT stuck+popup. If it proves customer-visible in practice, the clean
+  fast-follow is a short per-account attach backoff after a `would_launch` hold (host-side marker in the observer's
+  `_obs` dir), or surfacing the tenant `guarded_attach_would_launch` reason so the backend can back off. NOT done now
+  (avoids added host-side state on a live box; frozen-visibility alerts if it ever fails to self-heal).
+- **[DEPLOY GATE] The never-CREATE gate needs psutil OR wmic in the observer's `pyw` python.** `_bare_terminal_pids`
+  prefers psutil (not a declared observer dependency) and falls back to wmic; if NEITHER is available it FAILS CLOSED
+  (the observer holds, does not attach) rather than silently no-op — so verify wmic (standard on Windows Server) is on
+  PATH for the observer identity during deploy, or install psutil into the observer runtime. A positive/negative
+  control test covers the wmic parser (RULE 11).
+- **[OUT OF THIS CALL'S WINDOW] MT5 self-fork after the observe call** (e.g. LiveUpdate staging a second non-portable
+  terminal) is not caught by the single before/after diff; it is handled by the existing LiveUpdate exe-immutability
+  containment + the LocalSystem `duplicate_terminal` fail-closed + the new `frozen` alert (operator-visible).
+
 ## 🟠 P2 MEMBER LIFECYCLE + CAPACITY (recorded 2026-09-28) — Remove teardown, entitlement 5→20, host upgrade
 
 Start/Stop/Remove reconciled + Stop hardened (see STATUS 2026-09-28). Remaining, all gated behind the Sponsor's

@@ -75,7 +75,7 @@ class SchedulerCommandTests(TestCase):
         # §8/§9: the bounded worker count, typed unavailable reasons, and recovery onboarding-skip/relaunch
         # counts must be OBSERVABLE in the ops summary line. Patch the cycle (no host) and assert they render.
         canned = {"enabled": True, "polled": 3, "applied": 1, "unavailable": 2, "errors": 0, "workers": 8,
-                  "reasons": {"ok": 1, "observation_timeout": 2},
+                  "reasons": {"ok": 1, "duplicate_terminal": 1, "observation_timeout": 1}, "frozen": 1,
                   "delivery": {"connected": 0, "disconnected": 0, "held": 3, "cz_skipped": 0}}
         with mock.patch("hosted_workspace.bounded_observation.run_bounded_observation_cycle",
                         return_value=canned):
@@ -83,6 +83,7 @@ class SchedulerCommandTests(TestCase):
             call_command("run_hosted_observations", stdout=out)
         s = out.getvalue()
         self.assertIn("bounded: workers=8", s)
+        self.assertIn("frozen=1", s)                          # frozen-observation counter is visible in ops line
         self.assertIn("observation_timeout", s)               # typed reason, not flattened
         self.assertIn("recovery:", s)
         self.assertIn("skipped_onboarding=", s)               # §9 onboarding-gate counter is visible

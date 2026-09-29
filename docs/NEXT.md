@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Hosted observer never-launch fix — CI → deploy → recover Account 37 (2026-09-29)
+Fixes the account-37 WebView popup + stuck WAITING_FOR_LOGIN (observer's `mt5.initialize(path=)` self-launched a bare
+non-`/portable` terminal during first-run → DENY popup + `duplicate_terminal` freeze). Backend-only, additive: observer
+forces the guard via `force=True` (no env leak), `guarded_initialize` gets a spawn-detect+neutralise attachability gate
+(bare-only, own-user, diff-scoped kill; psutil→wmic; fail-closed), frozen-observation visibility. Branch
+`fix/observer-never-launch-guard`. Full backend suite 5045 green; adversarial review addressed. **Single next action:**
+open PR → on GREEN CI merge → deploy the staged observer harness (`run_observer.py` + `observer_attach.py`) to
+`C:\GuvFX\observer` + recreate the backend/worker images → verify 25/35/36 keep advancing observations + stay TRADING →
+terminate ONLY the proven acct-37 stray (bare `terminal64` pid, currently 19012-class) → confirm 37 transitions
+WAITING_FOR_LOGIN → CONNECTED with the FortressFX 70195397 identity → STOP for the Sponsor (then Phase-F Remove).
+
 ## ▶ Member account lifecycle — reconciled + Stop hardened; SPONSOR interactive test then capacity upgrade (2026-09-28)
 Start/Stop/Remove reconciled (all work in prod). Stop hardened (fail queued new-exposure jobs + txn ordering; NO
 disarm — an adversarial-caught regression that would have broken Stop→Start). Remove (PR #425) is production-ready

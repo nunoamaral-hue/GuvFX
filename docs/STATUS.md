@@ -14,6 +14,32 @@
 
 ## Execution workstream log
 
+- **2026-09-29 - HOSTED OBSERVER never-launch fix (account-37 WebView popup + stuck WAITING_FOR_LOGIN).** ROOT CAUSE
+  (read-only forensic, proven): the hosted observer runs as `guvfx_u_<id>` and calls `mt5.initialize(path=)`, which is
+  dual-mode — when the per-account `/portable` terminal is running but not yet attachable (first-run: compiling MQL5 /
+  downloading the broker catalogue) the MT5 library LAUNCHES a fresh terminal itself, omitting `/portable`; that bare
+  instance (a) hits the intentional containment DENY ACL on `%APPDATA%\MetaQuotes\Terminal` → the "couldn't create
+  data directory" WebView2 popup, and (b) creates a duplicate terminal (same exe path/owner/session) → LocalSystem
+  `duplicate_terminal` fail-closed → observation never ingested → the account sticks at WAITING_FOR_LOGIN
+  (obs_version frozen). The observer's guard was DARK (`MT5_GUARDED_ATTACH` unset in its scheduled task, which is
+  create-if-absent so never re-registered). FIX (backend-only, additive): (1) `run_observer.observe()` enforces the
+  guard via a new `force=True` arg to `observer_attach.guarded_initialize` — NOT a global env mutation (an earlier
+  env-set leaked process-wide and forced the execution bridge into guarded mode; caught in CI) — so every account is
+  fixed on deploy of the centrally-staged harness. (2) `guarded_initialize` gains a genuine attachability gate:
+  snapshot the BARE (non-`/portable`) terminal PIDs at the target dir before attach, and if a NEW bare PID appears
+  during our own `initialize` call, release the attach + terminate ONLY that spawned bare PID + fail closed. Only
+  bare, own-user PIDs in the before/after diff are killed — a `/portable` terminal (the real runtime, or 25/35/36) can
+  never be touched; cmdline-unreadable ⇒ never classified bare (fail closed for the kill); enumeration uses psutil
+  with a **wmic fallback** (psutil is not a declared observer dependency) and fails closed if neither is available;
+  `_terminate_pid` verifies the kill. (3) Frozen-observation visibility: a `frozen` counter + `hosted_observation_
+  frozen …` WARNING + ops-summary field when an onboarding account is unavailable due to `duplicate_terminal`. DENY
+  ACL and `duplicate_terminal` fail-closed preserved; production execution bridge untouched. Adversarial multi-lens
+  review + full backend suite (5045 tests) green. RESIDUAL (documented): a NEW account's first-run may briefly flash
+  the DENY popup for < the 8s bounded attach until the terminal is attachable (self-healing, vs the previous permanent
+  stuck+popup); a terminal MT5 self-forks AFTER our call (LiveUpdate) is out of this call's window and handled by the
+  existing LiveUpdate exe-immutability containment + `duplicate_terminal` + the new frozen alert. NEXT: deploy →
+  verify 25/35/36 unaffected → terminate ONLY the proven acct-37 stray → verify 37 recovers WAITING_FOR_LOGIN →
+  CONNECTED, then Phase-F Remove.
 - **2026-09-29 - MEMBER LIFECYCLE Start/Stop — SPONSOR-INTERACTIVELY CERTIFIED on Account 36 (Taurex).** Sponsor
   clicked Stop then Start in the UI; certified read-only around each click. STOP: 36 is_active True→False,
   trading_state TRADING→TRADING_STOPPED, **arm PRESERVED** (execution_enabled=True, auto_arm_suppressed=False — the
