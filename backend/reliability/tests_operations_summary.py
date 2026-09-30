@@ -537,9 +537,13 @@ class SignalExecutionBlockTests(TestCase):
         gap — pending_stuck>0 → all_accounted False."""
         from execution.models import SignalExecutionPlan
         p = self._plan("PLANNED", mid="stuck1")
-        old = timezone.now() - timezone.timedelta(seconds=600)
+        # Use a fixed mid-day reference so backdating the plan past the 300s settle window can never cross UTC
+        # midnight: near 00:00 UTC, ``now - 600s`` falls before ``_today_start(now)`` and the plan drops out of the
+        # block entirely (KeyError 'ti_signals') - a latent time-of-day flake independent of what this test asserts.
+        ref = timezone.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        old = ref - timezone.timedelta(seconds=600)
         SignalExecutionPlan.objects.filter(id=p.id).update(created_at=old)
-        block = ops._signal_execution_block(timezone.now())["ti_signals"]
+        block = ops._signal_execution_block(ref)["ti_signals"]
         self.assertEqual(block["pending"], 1)
         self.assertEqual(block["pending_stuck"], 1)
         self.assertFalse(block["all_accounted"])
