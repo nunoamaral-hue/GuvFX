@@ -664,6 +664,46 @@ def _sync_freshness_block(now):
     return {"status": worst, "warn_threshold_s": _SYNC_FRESHNESS_WARN_S, "accounts": accounts}
 
 
+def _session_recovery_block(now):
+    """P5 read-only visibility for cold-boot SESSION recovery (project_host_reboot_recovery_gap). Reports, over the
+    armed non-reserved demo workspaces: how many are STALE (a DIMENSION-AGNOSTIC count — a stale candidate may need
+    SESSION recovery OR TERMINAL recovery), how many carry an in-flight SESSION-recovery attempt counter, how many
+    have an OPEN session-down operator alert, and the two darkness gates. The ACTIONABLE metrics here are the
+    SESSION dimension (the session reconciler's); the TERMINAL dimension's own recovery counters/alerts live with
+    liveness_recovery (they converge idempotently across their separate crons). WARNING when any account has an OPEN
+    session-down alert. Read-only; internal account counts only, never secrets. NEVER triggers recovery."""
+    try:
+        from execution.readiness import _observation_fresh
+        from hosted_workspace.capability_recovery import _RESERVED_ACCOUNT_IDS
+        from hosted_workspace.flags import (
+            hosted_session_reconciler_arm_selfconnect_enabled, hosted_session_reconciler_enabled,
+        )
+        from hosted_workspace.models import HostedMt5Workspace
+        from reliability.models import AlertEvent
+
+        armed = list(HostedMt5Workspace.objects.filter(
+            execution_enabled=True, execution_authorized_at__isnull=False, proj_account_match=True,
+            trading_account__is_demo=True, trading_account__workspace_confirmed_at__isnull=False,
+            trading_account__disconnected_at__isnull=True)
+            .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS)
+            .select_related("trading_account"))
+        stale = sum(1 for w in armed if not _observation_fresh(w))
+        in_flight = sum(1 for w in armed if (w.session_recovery_count or 0) > 0)
+        open_alerts = AlertEvent.objects.filter(
+            dedup_key__startswith="hosted_session_recovery:account:", status=AlertEvent.Status.OPEN).count()
+        return {
+            "reconciler_enabled": hosted_session_reconciler_enabled(),
+            "self_connect_armed": hosted_session_reconciler_arm_selfconnect_enabled(),
+            "armed_workspaces": len(armed),
+            "stale_recovery_candidates": stale,       # both-dimension: session absent OR terminal down
+            "in_flight_recovery": in_flight,
+            "open_session_down_alerts": open_alerts,
+            "status": "WARNING" if open_alerts else "HEALTHY",
+        }
+    except Exception:  # pragma: no cover — read-only; the status page must never 500 on this block
+        return {"status": "UNKNOWN", "error": "unavailable"}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -775,6 +815,8 @@ def build_operations_summary() -> dict:
     states.append(capacity.get("status", "HEALTHY"))
     sync_freshness = _sync_freshness_block(now)
     states.append(sync_freshness.get("status", "HEALTHY"))
+    session_recovery = _session_recovery_block(now)
+    states.append(session_recovery.get("status", "HEALTHY"))
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -795,6 +837,7 @@ def build_operations_summary() -> dict:
         "concurrency": concurrency,
         "capacity": capacity,
         "sync_freshness": sync_freshness,
+        "session_recovery": session_recovery,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},

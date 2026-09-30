@@ -66,6 +66,14 @@ SOURCE = "hosted_workspace.session_reconciler"
 MAX_RECOVERY_ATTEMPTS = 3
 RECOVERY_COOLDOWN_S = 300
 
+# P5 cold-boot STAGGERING: cap the number of actual self-connect ESTABLISH/RECONNECT attempts per pass. A cold boot
+# can make the whole estate ABSENT at once; without a cap the reconciler would fire N simultaneous guacd self-
+# connects (RDS/CPU surge on the 8 vCPU host). With the cap, each pass establishes a bounded few and the cron
+# cadence staggers the remainder across subsequent passes (idempotent: the rest stay ABSENT and are retried).
+# Deliberately conservative for the current host (reference_windows_host_capacity: safe=12). Probe/classify/audit
+# are NOT capped — only the credential-decrypting self-connect is.
+MAX_ESTABLISH_PER_CYCLE = 4
+
 _SESSION_STATES = ("ACTIVE", "DISCONNECTED", "ABSENT", "UNKNOWN")
 _ALERT_PREFIX = "hosted_session_recovery"
 
@@ -207,7 +215,8 @@ def _new_correlation_id() -> str:
 def _empty_summary(enabled: bool) -> dict:
     return {"enabled": enabled, "self_connect_armed": False, "candidates": 0, "active": 0, "disconnected": 0,
             "absent": 0, "unknown": 0, "established": 0, "reconnected": 0, "skipped_healthy": 0,
-            "skipped_no_executor": 0, "skipped_not_armed": 0, "skipped_gate": 0, "skipped_cooldown": 0, "errors": 0}
+            "skipped_no_executor": 0, "skipped_not_armed": 0, "skipped_gate": 0, "skipped_cooldown": 0,
+            "skipped_rate_limited": 0, "errors": 0}
 
 
 def run_hosted_session_reconciler(*, actor: str = SOURCE, executor_resolver=None, probe_fn=None,
@@ -232,6 +241,7 @@ def run_hosted_session_reconciler(*, actor: str = SOURCE, executor_resolver=None
 
     s = _empty_summary(True)
     s["self_connect_armed"] = bool(self_connect_armed)
+    established_attempts = 0                 # P5 staggering: self-connect attempts made THIS pass (capped)
 
     qs = (HostedMt5Workspace.objects
           .filter(execution_enabled=True, execution_authorized_at__isnull=False, proj_account_match=True,
@@ -318,6 +328,14 @@ def run_hosted_session_reconciler(*, actor: str = SOURCE, executor_resolver=None
                    action="skipped", reason="delivery_not_ready")
             continue
 
+        # P5 STAGGERING: cap self-connect attempts per pass. A rate-limited candidate is DEFERRED (no cooldown burn,
+        # no claim) and retried next cycle - it stays ABSENT/DISCONNECTED, so convergence is idempotent.
+        if established_attempts >= MAX_ESTABLISH_PER_CYCLE:
+            s["skipped_rate_limited"] += 1
+            _audit(account, correlation_id=corr, phase="gate", status=status, decision=decision,
+                   action="skipped", reason="rate_limited")
+            continue
+
         if not _attempt_allowed(ws, now):
             exhausted = (ws.session_recovery_count or 0) >= MAX_RECOVERY_ATTEMPTS   # F3: distinguish cap vs cooldown
             _open_session_down_alert(account, exhausted=exhausted)
@@ -334,6 +352,7 @@ def run_hosted_session_reconciler(*, actor: str = SOURCE, executor_resolver=None
 
         # ACT via the seam. ABSENT -> establish a fresh session; DISCONNECTED -> reconnect the EXISTING session
         # (the driver reuses the stable per-workspace connection id so Windows rejoins rather than duplicating).
+        established_attempts += 1            # this self-connect counts toward the per-pass stagger cap
         r = _safe_call_establish(establish_fn, ws, account, node, status)
         if _ok(r):
             if status == "ABSENT":
