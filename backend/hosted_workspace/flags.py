@@ -377,3 +377,30 @@ def hosted_liveness_recovery_enabled() -> bool:
     attempt cap + cooldown); a persistently-failing relaunch backs off and raises ONE operator alert rather
     than restart-looping. Customer Zero (1) and account 18 are reserved and never touched."""
     return _flag("HOSTED_LIVENESS_RECOVERY_ENABLED")
+
+
+def hosted_session_reconciler_enabled() -> bool:
+    """P4 cold-boot SESSION reconciler (Sponsor 2026-09-29/30) — the gate for the governed step that detects a
+    per-tenant Windows/MT5 runtime that did NOT auto-recover after a host cold boot and drives it back to the
+    desired state. DEFAULT OFF. DISTINCT from ``HOSTED_LIVENESS_RECOVERY_ENABLED`` (which relaunches a TERMINAL
+    inside an EXISTING session; it structurally cannot act when the RDS SESSION itself is absent after a reboot).
+
+    Two-level darkness: a dormant no-op unless BOTH this AND the master ``HOSTED_PERSISTENT_MT5_ENABLED`` are on.
+    With ONLY this flag on, the reconciler may SELECT candidates, PROBE their session state (read-only
+    PROBE_SESSION), CLASSIFY (ACTIVE/DISCONNECTED/ABSENT/UNKNOWN) and AUDIT — but it performs ZERO credential
+    decryption and ZERO self-connect: actual session establishment is impossible unless the SEPARATE
+    ``HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED`` gate is also on. It NEVER arms execution or places an
+    order — restoring a runtime is not TRADING; the observe->capability->auto-arm chain + freshness gate remain
+    the sole re-arm authority. Customer Zero (1) and account 18 are reserved and never touched."""
+    return _flag("HOSTED_SESSION_RECONCILER_ENABLED")
+
+
+def hosted_session_reconciler_arm_selfconnect_enabled() -> bool:
+    """P4-c ARM gate for the SESSION reconciler's actual system-initiated guacd self-connect (the security-posture
+    change: it decrypts the tenant's Windows password into a short-lived guacamole-auth-json token and drives
+    guacd headlessly to establish/reconnect the RDS session). DEFAULT OFF and INDEPENDENT of
+    ``HOSTED_SESSION_RECONCILER_ENABLED``: with the reconciler on but this OFF, P4-b runs probe-only (no
+    decryption, no self-connect). Establishment additionally stays impossible unless the host executor is armed +
+    configured and delivery is ready (layered fail-closed). Arming this is gated on P4-c's security/adversarial
+    certification and the final Sponsor-authorized reboot-readiness sequence."""
+    return _flag("HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED")
