@@ -1,6 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Cold-boot recovery P0-P5 COMPLETE (DARK) + reboot-readiness cert WITHHELD (2026-09-30)
+## ▶ Cold-boot recovery P0-P5 DEPLOYED + probe-only CERTIFIED; reboot-READY pending flat window + arm (2026-09-30)
+Sponsor-authorized deploy DONE: (1) P4/P5 backend deployed DARK (mig 0014, flags present+OFF, 25/35/36 untouched);
+(2) PROBE_SESSION host-deployed (staged .ps1 PARSE_OK -> libs -> dry-run VERIFY_SCRIPTS_OK+parity -> restart
+GuvFXHostedExecutor; real probes 25/35/36->DISCONNECTED accurate); (3) reconciler cron `*/5` installed (DARK no-op
+verified). **Probe-only PRODUCTION CERTIFIED** (`HOSTED_SESSION_RECONCILER_ENABLED=1` in hosted-executor.env,
+backup `.preSESSIONRECON`; 2 idempotent cycles: 25/35/36 skipped_healthy, 1 stale ws->DISCONNECTED->skipped_not_armed
+= ZERO self-connect/decryption, nothing altered). Fresh gates: bridge-health GREEN, identity/magic/sizing GREEN
+untouched, recovery-readiness GREEN; flat-estate = reboot-TIME WAIT (25/35/36 live-trading, not flat now).
+**`FASTHOSTS_UPGRADE_REBOOT_READY` (deployment+subsystem) = GREEN but CONDITIONAL** on a fresh authoritative
+immediately-pre-reboot exposure gate (doc sec 5A: BROKER-authoritative 0 positions + 0 pending/RUNNING jobs + no
+active host-mgmt plans + reconfirm invariants; reconcile stale rows vs broker). NOT permission to reboot now — the
+estate has open exposure (live trading). `ARM_SELFCONNECT` stays OFF until the final supervised reboot. Manual
+RemoteApp = fallback only. **WAIT for NATURAL flatness (never force/close/manufacture trades); when genuinely flat,
+return the final immediate-pre-reboot snapshot + STOP for Sponsor reboot authorization.** **Single next action:**
+monitor exposure (read-only) for natural flatness -> then run the sec 5A gate + return the snapshot.
 All of P0-P5 merged DARK (P4-a #443 `cfa25e3`, P4-b #444 `b41cd1c`, P4-c #445 `caff68d`, P5 #446 `244f1ba`; P4-prep
 #442 `2ab7d65`). Automatic cold-boot SESSION recovery is built + adversarially certified + unit-tested; two OFF
 flags `HOSTED_SESSION_RECONCILER_ENABLED` (probe-only) + `HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED`

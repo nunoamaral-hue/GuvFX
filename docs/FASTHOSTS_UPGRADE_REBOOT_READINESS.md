@@ -1,89 +1,66 @@
 # FASTHOSTS_UPGRADE_REBOOT_READINESS — cold-boot unattended-recovery certification
 
-**Date:** 2026-09-30 · **Author:** governance packet REBOOT-RECOVERY P0–P5 · **Reviewer:** pending-Sponsor
-**Codebase:** all of P0–P5 merged to `main` (P0 `4da49d5`, P1 `216142a`, P2 `92114f1`, P3 `2ab679b`, P4-prep `2ab7d65`, P4-a `cfa25e3`, P4-b `b41cd1c`, P4-c `caff68d`, P5 `244f1ba`).
+**Date:** 2026-09-30 · **Packet:** REBOOT-RECOVERY P0–P5 + Sponsor-authorized deployment · **Reviewer:** pending-Sponsor
+**Codebase:** all of P0–P5 merged to `main` (P0 `4da49d5`, P1 `216142a`, P2 `92114f1`, P3 `2ab679b`, P4-prep `2ab7d65`, P4-a `cfa25e3`, P4-b `b41cd1c`, P4-c `caff68d`, P5 `244f1ba`). Prod at `f2c41ca`.
 
-## VERDICT: **NOT YET `FASTHOSTS_UPGRADE_REBOOT_READY` — 3 deployment blockers (identified below).**
+## VERDICT: **`FASTHOSTS_UPGRADE_REBOOT_READY` (deployment + subsystem) = GREEN — but CONDITIONAL on a fresh, authoritative, immediately-pre-reboot flat-estate gate. This is NOT permission to reboot at the present moment.**
 
-The recovery subsystem is **built, unit-tested, adversarially certified, and DARK-merged**; the **estate is flat, the bridges are healthy, 25/35/36 are untouched**, and the **arming *machinery* is present and correct in production**. But the reboot's purpose is to production-certify **unattended** recovery (reconciler ON + self-connect ON), and the recovery path is **not deployed** to production — so unattended recovery cannot run, and this certification is **withheld** per the Sponsor rule "if any arming prerequisite is unproven, do not issue; identify the blocker; do not weaken to probe-only." Probe-only is the degraded/rollback mode, **not** the target reboot configuration.
-
-Both flags remain **OFF**. Nothing was deployed, enabled, or rebooted.
+The three deployment blockers are **CLEARED** and probe-only recovery is **production-certified**. Every subsystem-readiness gate is GREEN. **However, the Fasthosts reboot is NOT authorized while the live estate has open exposure.** `FASTHOSTS_UPGRADE_REBOOT_READY` here certifies that the recovery *system* is deployment-ready — it does **not** authorize a reboot now. The reboot requires a fresh, authoritative **immediately-pre-reboot exposure gate** (§5A) to pass **at that moment**, plus enabling `HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED` immediately before, plus explicit Sponsor reboot authorization. The estate is a live trading system and is **not flat now** (25/35/36 hold open positions — normal strategy activity). **We wait for natural strategy management to leave the estate flat; trades are never closed/altered/manufactured to obtain the window.** Self-connect remains OFF; nothing was rebooted.
 
 ---
 
-## 1. Fresh estate / exposure / bridge-health assessment (GREEN)
+## 1. Deployment executed (2026-09-30, under Sponsor authorization)
 
-Read-only, captured 2026-09-30 against prod (VPS `100.119.23.29`) and host (`100.79.101.19`):
+| Step | Action | Result |
+|---|---|---|
+| 1 | Deploy P4/P5 backend to prod **DARK** (both flags OFF), migrate | ✅ image rebuilt; migration 0014 applied zero-downtime (one-off on new image, old backend serving) then `guvfx-backend` recreated `--no-deps --force-recreate` (never `--remove-orphans`); reconciler flags now present + OFF; 25/35/36 untouched; all other containers undisturbed. |
+| 2 | Deploy PROBE_SESSION to the host, safe ordering | ✅ `Probe-GuvfxSession.ps1` staged FIRST (checksum-matched + **PARSE_OK** under Win PS 5.1); then `host_protocol.py`/`host_agent_dispatch.py`/`primitive_runner.py` deployed (checksums matched); dry-run **VERIFY_SCRIPTS_OK + contract parity True** BEFORE restart; `GuvFXHostedExecutor` restarted (only that service) → Running. **Real read-only probes: 25→DISCONNECTED (sid 7), 35→DISCONNECTED (sid 14), 36→DISCONNECTED (sid 15)** — states correspond to reality (terminals running in disconnected RDS sessions). |
+| 3 | Install the P5 reconciler schedule | ✅ `*/5 * * * * … run_hosted_session_reconciler` cron installed (log pre-created `ubuntu:ubuntu`); DARK no-op verified while the flag was OFF ("disabled … no-op"). Cadence `*/5` documented in §3. |
+| 4 | **No** experimental prod-guacd/self-connect | ✅ none performed. Read-only prod Guacamole compat only: base HTTP 200, `/api/languages` HTTP 200 (REST reachable) — no token minted, no session created. |
+| 5 | Enable **`HOSTED_SESSION_RECONCILER_ENABLED` only** + certify probe-only | ✅ enabled in `hosted-executor.env` (backup `…preSESSIONRECON`; `ARM_SELFCONNECT` deliberately absent), backend recreated. **Probe-only cert (2 idempotent cycles):** `recon_enabled=True, arm=False`; 25/35/36 (fresh) → `skipped_healthy`; one genuinely-stale workspace → correctly classified **DISCONNECTED** via real PROBE_SESSION and **`skipped_not_armed`** (decided-reconnect, **zero self-connect, zero decryption, no claim burned**); `established=0 reconnected=0 errors=0`; nothing created/altered; 25/35/36 `session_recovery_count=0`. |
 
-| Account | Open trades | Active plans | Identity | Magic | delivery_ready | workspace_node |
-|---|---|---|---|---|---|---|
-| 25 | **0 (flat)** | 0 | persistent_workspace, demo, active (…2587) | 1000000010 | true | node 2 (rdp 100.79.101.19), agrees with execution_node |
-| 35 | **0 (flat)** | 0 | persistent_workspace, demo, active (…5672) | 1000000016 | true | node 2, agrees |
-| 36 | **0 (flat)** | 0 | persistent_workspace, demo, active (…7146) | 1000000019 | true | node 2, agrees |
+## 2. Fresh gates (2026-09-30, read-only)
 
-**Estate is FLAT.** Bridges: `8788` (CZ) / `8789` (node·25) / `8804` (35) / `8805` (36) all **LISTENING**; 6 `terminal64` processes; 11 `guvfx_u_*` RDS sessions. **25/35/36 identity/strategy/magic/sizing UNCHANGED** (recorded above as the untouched reference).
+- **Bridge-health — GREEN:** `8788`/`8789`/`8804`/`8805` all LISTENING; 6 `terminal64`; 11 `guvfx_u_*` sessions.
+- **Identity / strategy / magic / sizing — GREEN (untouched):** 25 magic 1000000010 (asn 10); 35 magic 1000000016 (asn 16, leg_sizing 6); 36 magic 1000000019 (asn 19, leg_sizing 9); all persistent_workspace demo active. `session_recovery_count=0` for all three (recovery never touched them).
+- **Recovery-readiness — GREEN:** deployed + probe-only production-certified; arming machinery proven (host executor armed + resolves, GUAC configured, `delivery_ready`, `workspace_node` present + node-agree).
+- **Flat-estate — WAIT (reboot-time gate):** currently NOT flat — 25=3, 35=3, 36=2 open positions (live strategy trading; fluctuates). The reboot must occur in a flat window (0 open, 0 active plans).
 
----
+## 3. Recovery sequence / timing / backoff / concurrency / failure states / audit / rollback
 
-## 2. Exact automatic cold-boot recovery sequence (as built)
+Recovery sequence, timing (cadence `*/5`; staggering `MAX_ESTABLISH_PER_CYCLE=4`; cooldown `RECOVERY_COOLDOWN_S=300`; `MAX_RECOVERY_ATTEMPTS=3`), per-tenant isolation, failure states (`UNKNOWN`/`ok:false`/transport → fail-closed; establish fail → bounded retry → CRITICAL alert; `node_divergence` fail-closed), audit (per-attempt `OperationalEvent` `workspace.session_recovery` secret-free + `AlertEvent` + `operations_summary._session_recovery_block`), and disable/rollback (two independent flags OFF) are as previously specified. **Cadence `*/5` rationale:** after boot a session is ABSENT → stale within 300 s → the next `*/5` tick establishes it; 25/35/36 (3 candidates < cap 4) recover in ~one pass (≈5–10 min); the future 20-account estate = ⌈20/4⌉ = 5 passes ≈ 25 min worst case. Tunable via the cron cadence + `MAX_ESTABLISH_PER_CYCLE`.
 
-1. **Fasthosts brings Windows back.** Administrator `AutoAdminLogon` → `GuvFX_Autostart` → account-1/CZ MT5 + bridge `:8788`; per-tenant **bridges** recover (`GuvFX_TenantBridge_<id>`, logon-triggered); `GuvFXHostedExecutor` + Tailscale auto-start. **Per-tenant `/portable` TERMINALS do NOT auto-recover** — this is the gap the subsystem closes.
-2. **Session-reconciler cron** (`run_hosted_session_reconciler`, own advisory-lock singleton) runs each cadence:
-   - Selects armed, matched, non-reserved (CZ + 18 excluded), demo workspaces that are **STALE** (post-boot the projection goes stale within `WORKSPACE_OBSERVATION_FRESH_SECONDS`=300 s).
-   - **PROBE_SESSION** (read-only `qwinsta`) → canonical `session_status`.
-   - **Pinned state table:** `ACTIVE` → converge (no create); `DISCONNECTED` → reconnect the **same stable conn id** (Windows single-session rejoin, never a 2nd session); `ABSENT` → establish only after all server-derived gates; `UNKNOWN`/`ok:false`/missing/transport-failure → fail closed, no action.
-   - **Establish/reconnect** = system-initiated guacd self-connect: short-TTL (~45 s) token → `POST /api/tokens` → drive the tunnel until guacd confirms the RDP connect → **immediate token revoke**. `/portable` RemoteApp auto-launches in the restored session.
-3. **Runtime restored ≠ TRADING.** The independent observe → `capability_recovery` (re-assert AutoTrading) → `auto_arm` chain, gated by readiness freshness, is the **sole** re-arm authority. The reconciler arms nothing, logs in nothing, places no order.
-
-## 3. Timing / backoff / concurrency
-
-- **Staggering:** `MAX_ESTABLISH_PER_CYCLE = 4` self-connects per pass; the rest are deferred (no cooldown/claim burned) and retried next cron tick. For 25/35/36 (3 candidates) → **one pass**. For the future 20-account estate → ⌈20/4⌉ = **5 passes** × cadence.
-- **Backoff:** per-workspace `MAX_RECOVERY_ATTEMPTS = 3`, `RECOVERY_COOLDOWN_S = 300`; a persistently-failing establish backs off and raises **one** operator alert (never a self-connect loop). Per-incident reset on a confirmed-ACTIVE session (a later reboot gets a fresh budget).
-- **Per-tenant isolation:** one tenant's establish failure is caught and counted; siblings continue.
-- **Cron cadence:** a **deployment setting, not yet chosen** (see Blocker 3). Recommend ~5 min; confirm the `(cap=4, cadence)` pair meets the reboot-recovery SLA.
-
-## 4. Failure states
-
-- `UNKNOWN` (blind qwinsta / exception / transport): fail-closed, no action, retried next pass.
-- Establish failure: retried up to 3× with 300 s cooldown → then a CRITICAL `MT5_TERMINAL` operator alert.
-- `node_divergence` (execution_node ≠ workspace_node): fail-closed, never probes/establishes a split host.
-- Not deliverable / executor unarmed / guac unconfigured: fail-closed, no decryption, no self-connect.
-- **Manual RemoteApp = fallback ONLY** on a defined failure/timeout, explicitly invoked — **not** the default.
-
-## 5. Audit trail
-
-- Per-attempt **`OperationalEvent`** (`workspace.session_recovery`, category RUNTIME, secret-free: internal account id + phase/status/decision/action/reason).
-- **`reliability.AlertEvent`** (`MT5_TERMINAL`) session-down open/resolve.
-- Read-only **`operations_summary._session_recovery_block`** (armed workspaces, stale candidates, in-flight recovery, open session-down alerts, both darkness gates).
-- Structured `core/observability` logging with a per-pass correlation id. **No password / token / broker secret** in any audit, return, or log (adversarially verified).
-
-## 6. Disable / rollback mechanism
-
-- **Two independent flags, both DEFAULT OFF:** `HOSTED_SESSION_RECONCILER_ENABLED` (reconciler on/off) and `HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED` (self-connect on/off).
-- **Rollback = flip flags OFF** — no code revert needed. `ARM_SELFCONNECT` OFF → probe-only (degraded, read-only). Reconciler OFF → fully inert. P0 `MT5_BRIDGE_THREADED` remains **OFF** (not part of this packet).
-- All P0–P5 code is DARK by default; with flags off the merge is byte-identical to prior behaviour.
-
-## 7. Arming-prerequisite status for `HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED`
+## 4. Arming-prerequisite status — ALL MET
 
 | Prerequisite | Status |
 |---|---|
-| P4-c/P5 governed tests + adversarial certification | ✅ PROVEN (all merged; every SHIP-WITH-FIXES finding applied) |
-| Arming machinery in prod (executor armed `HOSTED_HOST_EXECUTOR_ENABLED=1` + resolves; GUAC configured; 25/35/36 `delivery_ready` + `workspace_node` + node-agree) | ✅ PROVEN (fresh read-only check) |
-| `Probe-GuvfxSession.ps1` Windows PowerShell 5.1 ParseFile (RULE 9 + RULE 11 controls) | ✅ PROVEN |
-| `accounts.dat` broker auto-reconnect for 25/35/36 | ✅ PROVEN (prior MT5-journal evidence) |
-| Estate flat + bridges healthy + 25/35/36 untouched | ✅ PROVEN (fresh) |
-| **Backend P4/P5 code deployed to prod** | ❌ **BLOCKER 1** — reconciler flags read `NO_FLAG` in the running `guvfx-backend`; the recovery code is not deployed. |
-| **PROBE_SESSION host-op deployed** (stage `Probe-GuvfxSession.ps1` + updated executor lib + restart `GuvFXHostedExecutor`; `verify_scripts` green) | ❌ **BLOCKER 2** — `probe_ps1_staged=False`, deployed lib has no `PROBE_SESSION`. The reconciler cannot probe → recovery is non-functional. |
-| **Session-reconciler cron scheduled** (+ cadence decided vs SLA) | ❌ **BLOCKER 3** — not in crontab or compose; the reconciler would never run after boot. |
-| End-to-end probe→establish→session validated against the real prod host/guacd | ⏳ **By design at the supervised reboot** (no prod spike; feasibility proven by the isolated 12/12 harness). Not a blocker per the Sponsor's revised framing — it is what the supervised reboot certifies. |
+| P4-c/P5 governed tests + adversarial certification | ✅ met |
+| Arming machinery in prod (executor armed + resolves; GUAC; `delivery_ready`; `workspace_node`+node-agree) | ✅ met (fresh) |
+| `Probe-GuvfxSession.ps1` host ParseFile (RULE 9/11) | ✅ met (staged, PARSE_OK) |
+| `accounts.dat` broker auto-reconnect (25/35/36) | ✅ met |
+| **Backend P4/P5 deployed to prod** | ✅ **cleared** (deployed DARK) |
+| **PROBE_SESSION host-op deployed** (`verify_scripts`/parity green; real probes accurate) | ✅ **cleared** |
+| **Session-reconciler cron scheduled** | ✅ **cleared** (`*/5`, DARK-verified) |
+| **Probe-only production certification** | ✅ **met** (2 idempotent cycles; zero self-connect/decryption; nothing altered) |
+| End-to-end probe→establish→session against real prod guacd | ⏳ at the **supervised reboot** (its purpose; no prod spike; feasibility = 12/12 harness) |
 
-## 8. Sponsor-gated sequence to clear the blockers, then certify at the supervised reboot
+## 5A. Authoritative immediately-pre-reboot exposure gate (must PASS at reboot time)
 
-1. Deploy P4/P5 backend to prod (recreate `guvfx-backend` + workers with the new image; DARK — flags off; byte-identical until armed).
-2. Host-deploy PROBE_SESSION: stage `Probe-GuvfxSession.ps1` + the updated `hosted_workspace` executor lib to `C:\GuvFX\hosted\...`, restart `GuvFXHostedExecutor`; **`verify_scripts` must pass** (the `.ps1` is already ParseFile-validated; RULE 9). Deploy-ordering: stage the `.ps1` **before**/with the lib or the daemon fails closed for all ops.
-3. Schedule the session-reconciler cron; choose the cadence and confirm `(cap=4, cadence)` meets the reboot-recovery SLA.
-4. **Recommended:** a supervised single-tenant validation (enable both flags, probe + establish ONE account) to get the first real-guacd self-connect proof **before** estate-wide.
-5. Enable **both** flags (reconciler ON + self-connect ON) — the target unattended-recovery configuration.
-6. **Supervised certification reboot.** Automatic recovery runs; **do NOT manually open 25/35/36** unless automatic recovery reaches a defined failure/timeout state and fallback is explicitly invoked.
+A fresh gate re-run **at the moment of the reboot** — not at cert time. It must show, for 25/35/36:
+- **Zero broker positions/exposure** — BROKER-authoritative (live per-tenant bridge `/mt5/positions` snapshot), NOT the ingested GuvFX `Trade` rows. **Reconcile stale GuvFX records against live broker state** (a stale open `Trade` whose broker position is closed is reconciled, never treated as authoritative exposure).
+- **Zero pending / RUNNING execution jobs** (`ExecutionJob` in a non-terminal state for these accounts).
+- **No active management plans requiring host management** (`SignalExecutionPlan` PLANNED/PROMOTED; TP-protection ladders; any in-flight MODIFY/close orchestration).
+- **Reconfirm invariants:** bridges LISTENING (8788/8789/8804/8805); host executor armed + resolves; PROBE_SESSION deployed (verify_scripts/parity green); reconciler schedule present; Guacamole reachable (read-only); identity/server/magic/sizing unchanged (magic 1000000010/16/19); recovery flags = reconciler ON, self-connect OFF.
 
-Only after steps 1–5 are executed and the fresh gates (§1) re-confirmed GREEN can `FASTHOSTS_UPGRADE_REBOOT_READY` be issued.
+**The window is obtained by WAITING for natural strategy management to flatten the estate — trades are never closed, altered, or manufactured to force it.** Only when this gate genuinely passes does the reboot proceed.
+
+## 5. Exact final flag-change + supervised reboot procedure (Sponsor-executed; STOP is here)
+
+1. **Wait for the §5A gate to pass genuinely** (natural flat estate; do not force).
+2. **Arm self-connect immediately before the reboot:** add `HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED=1` to `/home/ubuntu/guvfx-prod/hosted-executor.env`, then `cd /home/ubuntu/guvfx-prod && docker compose up -d --no-deps --force-recreate guvfx-backend` (never `--remove-orphans`). Verify `hosted_session_reconciler_arm_selfconnect_enabled()==True` (reconciler flag is already ON). Target config now = reconciler ON + self-connect ON.
+3. **Fasthosts performs the cold-boot/upgrade.** Do **NOT** manually open 25/35/36.
+4. **Automatic recovery (the certification event):** Administrator autologon restores CZ + per-tenant bridges; per-tenant `/portable` terminals do not auto-recover → sessions ABSENT → stale within 300 s → the `*/5` reconciler (ON + armed) probes → ABSENT → establishes via guacd self-connect (≤4/pass) → `/portable` auto-launches → observer → capability_recovery → auto_arm (freshness-gated). **This is the first production self-connect.**
+5. **Fallback = manual RemoteApp ONLY** on a defined failure/timeout (3 attempts exhausted → CRITICAL `MT5_TERMINAL` alert, or the account not recovered within ~2 recovery cycles). Do not pre-empt automatic recovery.
+6. **Rollback/disable at any point:** set the flag(s) OFF in `hosted-executor.env` + recreate `guvfx-backend` → `ARM_SELFCONNECT` OFF = probe-only (degraded); reconciler OFF = fully inert. Backups: `hosted-executor.env.bak.preSESSIONRECON`.
+
+**Constraints honoured throughout:** P0 `MT5_BRIDGE_THREADED` OFF; no entitlement change; no manufactured trades; 25/35/36 identity/strategy/magic/sizing untouched; every production check read-only except the authorized DARK deploy + probe-only enablement. RDS SPLA/SAL remains a separate written commercial gate before 20-account production enablement.

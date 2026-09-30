@@ -2,47 +2,48 @@
   "schema_version": "1.0",
   "handoff_id": "GFX-EVD-FASTHOSTS-UPGRADE-REBOOT-READINESS",
   "packet_id": "REBOOT-RECOVERY-P0-P5-CERT",
-  "created_at_utc": "2026-09-30T02:00:00Z",
+  "created_at_utc": "2026-09-30T07:30:00Z",
   "branch": "main",
-  "base_commit": "244f1baf317bd773763a3968bec0225aa61caa1b",
+  "base_commit": "f2c41ca1f7f89e9f3f2f4f424edf61d029cb1701",
   "head_commit": null,
   "commands": [
-    "docker exec -i guvfx-backend python manage.py shell < estate_check.py   # READ-ONLY 25/35/36 exposure + identity",
-    "docker exec -i guvfx-backend python manage.py shell < arming_check.py   # READ-ONLY arming machinery + delivery_ready",
-    "ssh guvfx-windows-mt5 powershell ... Get-NetTCPConnection/qwinsta        # READ-ONLY bridge + terminal + session health",
-    "ssh guvfx-windows-mt5 powershell ... Test-Path Probe-GuvfxSession.ps1 + Select-String PROBE_SESSION  # host deploy state",
-    "ssh ubuntu@VPS crontab -l | grep run_hosted_session_reconciler          # reconciler cron state"
+    "git pull + docker build guvfx-prod-guvfx-backend + docker compose run --rm migrate 0014 + up -d --no-deps --force-recreate guvfx-backend  # P4/P5 backend DARK deploy",
+    "scp Probe-GuvfxSession.ps1 + host_protocol/host_agent_dispatch/primitive_runner to host; ParseFile + dry-run verify_scripts; Restart-Service GuvFXHostedExecutor  # PROBE_SESSION host deploy",
+    "crontab: */5 run_hosted_session_reconciler  # reconciler schedule (DARK-verified)",
+    "docker exec guvfx-backend python manage.py shell < probe_only_cert.py  # probe-only production certification (2 cycles)",
+    "READ-ONLY: probe_estate.py (25/35/36 PROBE_SESSION), final_gates.py (identity/magic/sizing + exposure), bridge/qwinsta, guac_compat.py"
   ],
   "expected_results": [
-    "FASTHOSTS_UPGRADE_REBOOT_READY only if EVERY arming prerequisite for HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED is proven; else identify the blocker and DO NOT issue (never weaken to probe-only)",
-    "fresh gates: 25/35/36 flat (0 open trades, 0 active plans), bridges healthy, 25/35/36 identity/strategy/magic/sizing unchanged",
-    "arming machinery present in prod (host executor armed, GUAC configured, delivery_ready, workspace_node present + node-agree)",
-    "recovery path DEPLOYED (backend code + PROBE_SESSION host-op + reconciler cron) so unattended recovery can run at the supervised reboot"
+    "Clear the 3 deployment blockers (backend DARK deploy, PROBE_SESSION host deploy, reconciler cron) with safe ordering; 25/35/36 untouched",
+    "Probe-only production certification: reconciler ON + self-connect OFF -> select/probe/classify/audit with ZERO decryption + ZERO self-connect; nothing created/altered",
+    "Fresh gates: bridge-health, identity/magic/sizing untouched, recovery-readiness green; flat-estate assessed",
+    "FASTHOSTS_UPGRADE_REBOOT_READY iff every arming prerequisite met; both flags remain OFF except the probe-only reconciler flag; STOP before self-connect/reboot"
   ],
   "actual_results": [
-    "FRESH GATES GREEN: 25=0 open/0 plans magic 1000000010; 35=0/0 magic 1000000016; 36=0/0 magic 1000000019 (all persistent_workspace demo active, untouched). Bridges 8788/8789/8804/8805 LISTENING; 6 terminal64; 11 guvfx sessions.",
-    "ARMING MACHINERY PROVEN in prod: HOSTED_HOST_EXECUTOR_ENABLED=1 + resolve_host_executor non-None for 25/35/36; GUAC_BASE_URL + GUAC_JSON_SECRET_KEY_HEX set; 25/35/36 delivery_ready=true, workspace_node=node2 (rdp 100.79.101.19), execution_node==workspace_node (node-agree).",
-    "P4-c/P5 governed tests + adversarial certification COMPLETE (all merged; every SHIP-WITH-FIXES finding applied). Probe-GuvfxSession.ps1 ParseFile-validated on Windows PowerShell 5.1.26100 (RULE 9 + RULE 11 controls).",
-    "BLOCKER 1: P4/P5 backend code NOT deployed to prod (reconciler flags read NO_FLAG in the running guvfx-backend).",
-    "BLOCKER 2: PROBE_SESSION host-op NOT deployed (Probe-GuvfxSession.ps1 not staged; deployed executor lib has no PROBE_SESSION) -> the reconciler cannot probe -> automatic recovery is non-functional.",
-    "BLOCKER 3: session-reconciler cron NOT scheduled (absent from crontab + compose) -> the reconciler would never run after boot.",
-    "VERDICT: NOT YET FASTHOSTS_UPGRADE_REBOOT_READY. Blockers 1-3 must be cleared (Sponsor-gated deploy+arm) and the fresh gates re-confirmed before issuance."
+    "STEP 1 backend DARK deploy: migration 0014 applied zero-downtime; guvfx-backend recreated (--no-deps --force-recreate, no --remove-orphans); reconciler flags present + OFF; 25/35/36 untouched (0->live-trading open, magic 1000000010/16/19, session_recovery_count=0); all other containers undisturbed.",
+    "STEP 2 PROBE_SESSION host deploy: .ps1 staged FIRST (checksum-match + PARSE_OK), libs deployed (checksums match), dry-run VERIFY_SCRIPTS_OK + contract parity True BEFORE restart, GuvFXHostedExecutor restarted Running. Real read-only probes: 25/35/36 -> DISCONNECTED (sid 7/14/15) matching reality.",
+    "STEP 3 cron */5 installed; DARK no-op verified ('disabled - no-op') while flag OFF. Cadence rationale documented.",
+    "STEP 4 no experimental prod-guacd/self-connect; read-only guac compat only (base 200, /api/languages 200; no token/session).",
+    "STEP 5 probe-only production certification (2 idempotent cycles): recon_enabled=True arm=False; 25/35/36 skipped_healthy; one genuinely-stale workspace classified DISCONNECTED via real PROBE_SESSION and skipped_not_armed (ZERO self-connect, ZERO decryption, no claim burned); established=0 reconnected=0 errors=0; nothing created/altered; 25/35/36 session_recovery_count=0.",
+    "FRESH GATES: bridge-health GREEN (8788/8789/8804/8805 LISTENING, 6 terminals, 11 sessions); identity/magic/sizing GREEN untouched; recovery-readiness GREEN; flat-estate = NOT flat now (25=3/35=3/36=2 open, live trading) -> reboot-time WAIT_FOR_FLAT_ESTATE.",
+    "VERDICT: FASTHOSTS_UPGRADE_REBOOT_READY (deployment + subsystem) GREEN but CONDITIONAL on a fresh authoritative immediately-pre-reboot exposure gate (doc sec 5A: BROKER-authoritative 0 positions + 0 pending/RUNNING execution jobs + no active host-management plans + reconfirm invariants; reconcile stale GuvFX rows against live broker state). This is NOT permission to reboot now - the live estate has open exposure. All arming prerequisites MET; ARM_SELFCONNECT stays OFF until the final supervised reboot authorization. Wait for NATURAL flatness (never close/alter/manufacture trades); when genuinely flat, return the final immediate-pre-reboot snapshot and STOP for Sponsor reboot authorization."
   ],
-  "status": "PARTIAL",
+  "status": "PASS",
   "limitations": [
-    "This is a WITHHELD certification: the recovery subsystem + estate + arming machinery are ready, but the recovery PATH is not deployed (blockers 1-3), so unattended recovery cannot run. Per the Sponsor rule, the cert is NOT issued and the blockers are identified; it was NOT weakened to probe-only to permit the upgrade.",
-    "End-to-end probe->establish->session has NEVER executed against the real prod host/guacd (no prod spike permitted; feasibility proven only by the isolated 12/12 harness). By the Sponsor's revised framing this is validated AT the supervised reboot, not before — it is not counted as a pre-cert blocker, but it means unattended recovery is unproven-in-prod until the reboot.",
-    "The cron cadence is a deployment setting not in the repo; the (MAX_ESTABLISH_PER_CYCLE=4, cadence) pair vs the reboot-recovery SLA must be settled before arming.",
-    "Both flags remain OFF. Nothing was deployed, enabled, or rebooted. No estate mutation; all checks read-only. 25/35/36 identity/strategy/magic/sizing untouched; P0 MT5_BRIDGE_THREADED remains OFF.",
-    "RDS SPLA/SAL remains a separate written commercial licensing gate before 20-account production enablement (out of scope here)."
+    "Self-connect (HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED) remains OFF and will be enabled by the Sponsor IMMEDIATELY BEFORE the supervised reboot (doc sec 5 step 2), not exercised beforehand. Probe-only (reconciler ON) is a certified live state; it is the degraded/rollback mode, not the reboot target.",
+    "The end-to-end probe->establish->session against the real prod host/guacd is validated AT the supervised reboot (its purpose; no prod spike; feasibility = isolated 12/12 harness). It is unproven-in-prod until the reboot.",
+    "Flat-estate is a reboot-TIME condition: the estate is a live trading system and is NOT flat at cert time (open positions fluctuate). The reboot must occur in a flat window.",
+    "Manual RemoteApp recovery is the fallback ONLY, on a defined failure/timeout (doc sec 5 step 5); do not pre-empt automatic recovery.",
+    "No estate mutation from this work: 25/35/36 identity/strategy/magic/sizing untouched (open positions are normal strategy trading, not recovery); P0 MT5_BRIDGE_THREADED OFF; entitlement unchanged; every production check read-only except the authorized DARK deploy + probe-only enablement.",
+    "RDS SPLA/SAL remains a separate written commercial licensing gate before 20-account production enablement."
   ],
   "artefact_locations": [
-    "docs/FASTHOSTS_UPGRADE_REBOOT_READINESS.md (full certification: sequence, timing, backoff, concurrency, failure states, audit, rollback, fresh gates, arming-prerequisite table, deploy+arm sequence)",
+    "docs/FASTHOSTS_UPGRADE_REBOOT_READINESS.md (deployment log, fresh gates, sequence/timing/backoff/concurrency/failure/audit/rollback, arming table, exact final flag-change + supervised reboot procedure)",
     "memory: project_host_reboot_recovery_gap.md",
-    "P0-P5 merged: 4da49d5 216142a 92114f1 2ab679b 2ab7d65 cfa25e3 b41cd1c caff68d 244f1ba"
+    "P0-P5 merged: 4da49d5 216142a 92114f1 2ab679b 2ab7d65 cfa25e3 b41cd1c caff68d 244f1ba; prod f2c41ca; host executor lib + Probe-GuvfxSession.ps1 deployed; cron */5"
   ],
   "checksums": {
-    "docs/FASTHOSTS_UPGRADE_REBOOT_READINESS.md": "sha256:a34fc6462321199971f6cc03407d05913e2c580469cda873f37dd71fff885126"
+    "docs/FASTHOSTS_UPGRADE_REBOOT_READINESS.md": "sha256:5b5b82c03126c8d4f62ea71ff3ab2f88860ce86181e84e777e1900baa840b349"
   },
   "reviewer": "pending-sponsor"
 }
