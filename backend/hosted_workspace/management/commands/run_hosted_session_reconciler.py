@@ -5,9 +5,11 @@ a cold-boot session sweep never contends with — or is throttled by — the min
 it independently (staggered / rate-limited).
 
 Two-level darkness: a DORMANT no-op unless ``HOSTED_SESSION_RECONCILER_ENABLED`` is on (or ``--force``); and even
-then it self-gates on ``hosted_persistent_mt5_enabled()``. Probe-only by construction: this command wires NO
-``establish_fn``, so it SELECTS / PROBES / CLASSIFIES / AUDITS and performs ZERO credential decryption and ZERO
-self-connect regardless of the arm sub-gate. The actual guacd self-connect driver is added + wired in P4-c.
+then it self-gates on ``hosted_persistent_mt5_enabled()``. The ``establish_fn`` is resolved via
+``guac_selfconnect.resolve_establish_fn()``, which returns the real guacd self-connect driver ONLY when
+``HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED`` is separately on, and ``None`` otherwise — so with the arm
+sub-gate off this command SELECTS / PROBES / CLASSIFIES / AUDITS and performs ZERO credential decryption and ZERO
+self-connect (probe-only).
 
 SINGLETON / no-overlap: a second cycle that finds the lock held simply skips. Emits a secret-free summary line. It
 NEVER launches MT5, logs in, places an order, or arms execution.
@@ -16,6 +18,7 @@ from django.core.management.base import BaseCommand
 from django.db import connection
 
 from hosted_workspace.flags import hosted_session_reconciler_enabled
+from hosted_workspace.guac_selfconnect import resolve_establish_fn
 from hosted_workspace.session_reconciler import run_hosted_session_reconciler
 
 # Fixed 64-bit advisory-lock key for the session-reconciler singleton (distinct from the observation cron's key).
@@ -55,7 +58,9 @@ class Command(BaseCommand):
             self.stdout.write("session_reconciler: another pass holds the singleton lock - skipping")
             return
         try:
-            summary = run_hosted_session_reconciler()
+            # establish_fn is the real guacd self-connect driver ONLY when the arm sub-gate is on; otherwise None
+            # => probe-only (zero decryption / zero self-connect), unchanged from P4-b.
+            summary = run_hosted_session_reconciler(establish_fn=resolve_establish_fn())
         finally:
             release_singleton()
         # Secret-free one-line summary (counts only; no identity beyond internal counters).

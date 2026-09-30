@@ -48,6 +48,14 @@ REMOTEAPP_ALIAS = "terminal64"
 REMOTEAPP_ARGS = "/portable"
 
 
+def workspace_conn_id(workspace) -> str:
+    """The stable, server-derived guacd connection id for a workspace — the SINGLE SOURCE OF TRUTH for both the
+    human delivery path (_build_signed_descriptor) and the P4-c recovery self-connect (build_recovery_connection),
+    so a DISCONNECTED session always REJOINS the SAME guacd connection rather than spawning a second Windows
+    session. Derived from the immutable ``workspace_uuid``; never caller-supplied."""
+    return f"mt5-workspace-{workspace.workspace_uuid}"
+
+
 class DeliveryReason:
     """Stable, secret-free outcome codes (parity with the execution engine's ``ER_*`` taxonomy)."""
     OK = "DA_OK"
@@ -232,7 +240,7 @@ def _build_signed_descriptor(*, workspace, prov, node, base_url, secret_hex) -> 
     )
 
     # Stable per-workspace connection id → a reconnect deep-links to the SAME persistent Windows session.
-    conn_id = f"mt5-workspace-{workspace.workspace_uuid}"
+    conn_id = workspace_conn_id(workspace)
     windows_username = prov.windows_username
     remote_app_dir = rf"{prov.runtime_root}\terminal"
 
@@ -255,4 +263,33 @@ def _build_signed_descriptor(*, workspace, prov, node, base_url, secret_hex) -> 
         "embed_url": embed_url,
         "session_token": "",  # always empty — everything rides inside the AES-encrypted token
         "expiry": int(expiry) if isinstance(expiry, int) else None,
+    }
+
+
+def build_recovery_connection(*, workspace, prov, node, base_url, secret_hex, ttl_ms=45000) -> dict:
+    """P4-c: server-derive a SHORT-LIVED (``ttl_ms``, ~30-60 s) guacamole-auth-json token for a SYSTEM-initiated
+    recovery self-connect, returning the RAW parts the guacd REST/tunnel driver needs — the encrypted ``data``
+    blob, the stable connection id, and the base64 client identifier — NOT a browser embed URL. Reuses the SAME
+    canonical guac primitives and the SAME stable per-workspace ``conn_id`` as ``_build_signed_descriptor`` so a
+    DISCONNECTED session REJOINS (Windows single-session) rather than spawning a second session. The Windows
+    password is decrypted into the token ONLY and never returned/logged/persisted; no new credential store. The
+    short TTL means the minted authToken is short-lived and is revoked immediately after establish (P4-c)."""
+    from trading.crypto import decrypt_password
+    from mt5.guac_json import (
+        build_remoteapp_rdp_payload, guac_client_identifier, sign_and_encrypt_json,
+    )
+    conn_id = workspace_conn_id(workspace)   # SAME stable id as the human path -> reconnect rejoins (MED-1)
+    payload = build_remoteapp_rdp_payload(
+        username=f"ws-{prov.windows_username}", windows_username=prov.windows_username,
+        windows_password=decrypt_password(prov.password_enc), host=node.rdp_host,
+        remote_app=remoteapp_alias(prov.trading_account_id),
+        remote_app_dir=rf"{prov.runtime_root}\terminal", remote_app_args=REMOTEAPP_ARGS,
+        conn_id=conn_id, ttl_ms=int(ttl_ms))
+    data_b64 = sign_and_encrypt_json(payload, secret_hex=secret_hex)
+    return {
+        "data_b64": data_b64,                                   # the encrypted auth blob POSTed to /api/tokens
+        "conn_id": conn_id,                                     # stable per-workspace id -> reconnect rejoins
+        "client_id": guac_client_identifier(conn_id, "json"),   # base64 client identifier for the tunnel URL
+        "base_url": base_url.rstrip("/"),
+        "expiry": int(payload.get("expires") or 0),
     }
