@@ -1,5 +1,21 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Cold-boot recovery P0-P5 COMPLETE (DARK) + reboot-readiness cert WITHHELD (2026-09-30)
+All of P0-P5 merged DARK (P4-a #443 `cfa25e3`, P4-b #444 `b41cd1c`, P4-c #445 `caff68d`, P5 #446 `244f1ba`; P4-prep
+#442 `2ab7d65`). Automatic cold-boot SESSION recovery is built + adversarially certified + unit-tested; two OFF
+flags `HOSTED_SESSION_RECONCILER_ENABLED` (probe-only) + `HOSTED_SESSION_RECONCILER_ARM_SELFCONNECT_ENABLED`
+(guacd self-connect). **`FASTHOSTS_UPGRADE_REBOOT_READY` = WITHHELD** (`docs/FASTHOSTS_UPGRADE_REBOOT_READINESS.md`
++ evidence `GFX-EVD-FASTHOSTS-UPGRADE-REBOOT-READINESS.json`, status PARTIAL). Fresh gates GREEN: 25/35/36 flat
+(0 open/0 plans, magic 1000000010/16/19 untouched), bridges 8788/8789/8804/8805 LISTENING; arming machinery proven
+in prod (host executor armed, GUAC configured, delivery_ready + workspace_node + node-agree for all three). **3
+DEPLOY BLOCKERS (Sponsor-gated, none done):** (1) P4/P5 backend not deployed (flags NO_FLAG in running container);
+(2) PROBE_SESSION host-op not deployed (.ps1 not staged; daemon lib lacks it -> reconciler cannot probe); (3)
+reconciler cron not scheduled. Target reboot config = reconciler ON + self-connect ON (NOT probe-only, which is
+degraded/rollback). Both flags OFF; nothing deployed/enabled/rebooted. **Single next action:** await Sponsor
+review of the withheld cert + authorization of the deploy+arm sequence (doc §8), then re-gate.
+
+
+
 ## ✅ Reboot-recovery readiness P3 — read-only PROBE_SESSION host-op MERGED DARK (2026-09-29) = PR#441 `2ab679b`
 Evidence: `evidence/manifests/GFX-EVD-P3-PROBE-SESSION-HOSTOP.json` (PASS; DARK/unarmed; deploy + arming Sponsor-gated). A NEW read-only host-op that
 reports THIS account's OWN RDS session state (qwinsta) so a FUTURE human-gated recovery reconciler can tell which
