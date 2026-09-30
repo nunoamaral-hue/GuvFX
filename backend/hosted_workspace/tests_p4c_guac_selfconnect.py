@@ -75,8 +75,8 @@ class _RecTunnel:
         self._confirm = confirm
         self._raises = raises
 
-    def connect_and_confirm(self, *, base_url, auth_token, client_id, timeout_s=25.0):
-        self.calls.append((base_url, auth_token, client_id))
+    def connect_and_confirm(self, *, base_url, auth_token, conn_id, timeout_s=25.0):
+        self.calls.append((base_url, auth_token, conn_id))
         if self._raises:
             raise RuntimeError("tunnel boom")
         return self._confirm
@@ -292,7 +292,7 @@ class StdlibTunnelConfirmTests(TestCase):
     def _confirm(self, fake, timeout_s=1.0):
         tunnel = GSC._StdlibGuacTunnel(open_socket=lambda host, port, secure, ts: fake)
         return tunnel.connect_and_confirm(base_url="https://guac.invalid/guacamole", auth_token="t",
-                                          client_id="c", timeout_s=timeout_s)
+                                          conn_id="c", timeout_s=timeout_s)
 
     def test_accept_and_sync_confirms(self):
         self.assertTrue(self._confirm(_FakeSock(accept_ok=True, frames=_sframe("4.sync,8.31245867;"))))
@@ -318,5 +318,40 @@ class StdlibTunnelFailClosedTests(TestCase):
         # The pure-stdlib tunnel must fail closed (False), never raise, when guacd is unreachable. (Real guac wire
         # behaviour is validated at the final Sponsor-authorised reboot; this only pins the fail-closed contract.)
         tunnel = GSC._StdlibGuacTunnel()
-        ok = tunnel.connect_and_confirm(base_url="http://127.0.0.1:1", auth_token="t", client_id="c", timeout_s=0.2)
+        ok = tunnel.connect_and_confirm(base_url="http://127.0.0.1:1", auth_token="t", conn_id="c", timeout_s=0.2)
         self.assertFalse(ok)
+
+
+class P4cTunnelIdentifierRegressionTests(TestCase):
+    """REGRESSION (post-reboot 2026-09-30 cold-boot cert failure): the recovery WS tunnel MUST send the RAW conn_id as
+    GUAC_ID, never the base64 ``guac_client_identifier`` ClientIdentifier. Sending the ClientIdentifier (while
+    GUAC_TYPE=c + GUAC_DATA_SOURCE=json are supplied separately) made prod Guacamole report
+    "Requested tunnel destination does not exist" and every cold-boot self-connect failed tunnel_not_confirmed. The
+    isolated 12/12 harness + prior unit tests never asserted the ON-WIRE GUAC_ID, so the defect shipped. These pin the
+    wire value AND the forwarding so it cannot regress. (The human/browser delivery path is unchanged and untested
+    here — it decodes its ClientIdentifier route client-side and its JS sends this same raw id.)"""
+
+    def test_establish_sends_raw_conn_id_as_guac_id_on_the_wire(self):
+        from urllib.parse import urlsplit, parse_qs
+        from mt5.guac_json import guac_client_identifier
+        fake = _FakeSock(accept_ok=True, frames=_sframe("4.sync,8.31245867;"))
+        tunnel = GSC._StdlibGuacTunnel(open_socket=lambda host, port, secure, ts: fake)
+        out = _run("ABSENT", tokens=_RecTokens(), tunnel=tunnel)
+        self.assertEqual(out, {"ok": True, "reason": "established"})
+        req_line = fake._sent.split(b"\r\n", 1)[0].decode("ascii", "replace")
+        q = parse_qs(urlsplit(req_line.split(" ", 2)[1]).query)
+        # GUAC_ID is the RAW conn id; type + datasource are separate params (guacd resolves the destination from all 3)
+        self.assertEqual(q.get("GUAC_ID"), [_FAKE_CONN["conn_id"]])
+        self.assertEqual(q.get("GUAC_TYPE"), ["c"])
+        self.assertEqual(q.get("GUAC_DATA_SOURCE"), ["json"])
+        # and NEVER the base64 ClientIdentifier (the exact prod defect that yielded "destination does not exist")
+        self.assertNotEqual(q.get("GUAC_ID"), [guac_client_identifier(_FAKE_CONN["conn_id"], "json")])
+        self.assertNotEqual(q.get("GUAC_ID"), [_FAKE_CONN["client_id"]])
+
+    def test_establish_forwards_conn_id_not_client_identifier(self):
+        tokens, tunnel = _RecTokens(), _RecTunnel(confirm=True)
+        _run("ABSENT", tokens=tokens, tunnel=tunnel)
+        self.assertEqual(len(tunnel.calls), 1)
+        forwarded = tunnel.calls[0][2]                       # (base_url, auth_token, conn_id)
+        self.assertEqual(forwarded, _FAKE_CONN["conn_id"])   # RAW stable per-workspace id
+        self.assertNotEqual(forwarded, _FAKE_CONN["client_id"])  # NOT the base64 ClientIdentifier
