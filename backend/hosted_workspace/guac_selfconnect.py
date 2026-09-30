@@ -104,7 +104,7 @@ class _StdlibGuacTunnel:
         raw = socket.create_connection((host, port), timeout=timeout_s)
         return ssl.create_default_context().wrap_socket(raw, server_hostname=host) if secure else raw
 
-    def connect_and_confirm(self, *, base_url: str, auth_token: str, client_id: str,
+    def connect_and_confirm(self, *, base_url: str, auth_token: str, conn_id: str,
                             timeout_s: float = _TUNNEL_TIMEOUT_S) -> bool:
         sock = None
         try:
@@ -113,8 +113,15 @@ class _StdlibGuacTunnel:
             host = parts.hostname or ""
             port = parts.port or (443 if secure else 80)
             path = (parts.path or "").rstrip("/") + "/websocket-tunnel"
+            # GUAC_ID MUST be the RAW connection id (the connection's identifier within the ``json`` data source),
+            # NOT the base64 Guacamole ClientIdentifier. The websocket-tunnel endpoint resolves the destination from
+            # (GUAC_ID, GUAC_TYPE, GUAC_DATA_SOURCE) supplied SEPARATELY here; passing the base64
+            # ``guac_client_identifier(conn_id)`` form (the shape the browser uses in its ``#/client/<id>`` ROUTE)
+            # double-encodes and makes guacd report "Requested tunnel destination does not exist". The human/browser
+            # delivery path is UNCHANGED: the browser decodes its ClientIdentifier route and its JS sends this same
+            # RAW id on the tunnel — so both paths converge on the same wire value here.
             query = (f"?token={quote(auth_token, safe='')}&GUAC_DATA_SOURCE=json"
-                     f"&GUAC_ID={quote(client_id, safe='')}&GUAC_TYPE=c"
+                     f"&GUAC_ID={quote(conn_id, safe='')}&GUAC_TYPE=c"
                      "&GUAC_WIDTH=1024&GUAC_HEIGHT=768&GUAC_DPI=96")
             key = base64.b64encode(os.urandom(16)).decode("ascii")
             sock = self._connect(host, port, secure, timeout_s)
@@ -257,7 +264,10 @@ def establish_session(ws, account, node, status, *, token_client=None, tunnel_cl
             logger.warning("guac_selfconnect: token mint failed acct %s", account.id)
             return {"ok": False, "reason": "token_mint_failed"}
         try:
-            up = tunnel.connect_and_confirm(base_url=base_url, auth_token=auth_token, client_id=conn["client_id"])
+            # Pass the RAW stable per-workspace conn id as GUAC_ID (NOT conn["client_id"], the base64 ClientIdentifier
+            # used only by the browser ROUTE). See _StdlibGuacTunnel.connect_and_confirm for why double-encoding here
+            # yields guacd "Requested tunnel destination does not exist".
+            up = tunnel.connect_and_confirm(base_url=base_url, auth_token=auth_token, conn_id=conn["conn_id"])
         except Exception:  # noqa: BLE001
             up = False
         if up:
