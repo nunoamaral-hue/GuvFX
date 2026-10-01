@@ -218,7 +218,10 @@ def _find_existing_account(user, acct_no, broker_server, broker_name):
     neither exist nor be created — the CheckConstraint forbids it)."""
     if not acct_no:
         return None
-    qs = TradingAccount.objects.filter(user=user, account_number=acct_no)
+    # Model-A (2026-10-01): idempotency matches ACTIVE (non-tombstoned) accounts ONLY, mirroring the
+    # partial-unique-on-active constraints. A REMOVED (tombstoned) same-identity row is intentionally NOT
+    # matched here, so a re-add creates a brand-new lifecycle instance instead of reviving the dead row.
+    qs = TradingAccount.objects.filter(user=user, account_number=acct_no, disconnected_at__isnull=True)
     if broker_server is not None:
         return qs.filter(broker_server=broker_server).first()
     if broker_name:

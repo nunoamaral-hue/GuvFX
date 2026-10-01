@@ -119,9 +119,13 @@ def _cleanup_one(ws, *, executor_resolver, now) -> tuple:
         _write(ws, state=CLEANUP_NOT_REQUIRED, now=now, reason="reserved_account", next_retry_at=None)
         return "skipped", "reserved_account"
 
-    # FAIL-CLOSED re-check 1: must still be tombstoned. If not (should be impossible - enqueue only on tombstone),
-    # NEVER physically tear down a live account; hold as an integrity error for the operator.
-    if getattr(account, "disconnected_at", None) is None:
+    # FAIL-CLOSED re-check 1: must still be tombstoned. Re-read disconnected_at FRESH from the DB (never trust the
+    # select_related-cached value captured at selection time) so a concurrent state change can never slip a live
+    # account into teardown. Model-A makes disconnected_at immutable-once-set (revive-in-place removed), closing the
+    # old revive-vs-cleanup TOCTOU; this fresh re-read closes the residual stale-read window regardless.
+    from trading.models import TradingAccount as _TA
+    _fresh_disc = _TA.objects.filter(pk=getattr(account, "id", None)).values_list("disconnected_at", flat=True).first()
+    if _fresh_disc is None:
         _write(ws, state=CLEANUP_FAILED_RETRYABLE, now=now, reason="not_tombstoned",
                next_retry_at=now + timezone.timedelta(seconds=_BACKOFF_MAX_SECONDS))
         logger.error("hosted_cleanup_integrity account=%s not tombstoned but cleanup queued - refusing teardown",
@@ -193,6 +197,15 @@ def _cleanup_one(ws, *, executor_resolver, now) -> tuple:
             failed.append(f"{name}:{str(res.get('reason') or 'not_ok')[:40]}")
 
     if not failed:
+        # Model-A decommission correctness: once the host identity/runtime is torn down, truthfully RETIRE the
+        # provisioning record (destroy the hosted-runtime credential + status=RETIRED). Idempotent belt-and-
+        # suspenders over the synchronous destroy in remove_account (also covers legacy removals predating it).
+        try:
+            from trading.account_removal import destroy_runtime_provisioning_credential
+            destroy_runtime_provisioning_credential(account, actor="hosted_cleanup")
+        except Exception:  # noqa: BLE001 - credential-retire is best-effort; never flips a clean teardown to retry
+            logger.warning("hosted cleanup: provisioning-credential retire failed account=%s",
+                           getattr(account, "id", None))
         _write(ws, state=CLEANUP_SUCCEEDED, now=now, reason="cleaned", next_retry_at=None)
         logger.info("hosted_cleanup_succeeded account=%s attempts=%s", account.id, attempts)
         return "succeeded", "cleaned"

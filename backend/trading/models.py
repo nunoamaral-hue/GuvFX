@@ -178,14 +178,20 @@ class TradingAccount(models.Model):
 
     class Meta:
         constraints = [
+            # ADR Model-A (2026-10-01): uniqueness applies to ACTIVE (non-tombstoned) identities ONLY. A
+            # REMOVED account keeps its row as immutable history; re-adding the same broker/login/server
+            # creates a brand-new lifecycle instance (new pk/identity/runtime) that may coexist with the
+            # tombstone. Without the ``disconnected_at IS NULL`` predicate the all-rows constraint forced
+            # revive-in-place (now removed as a supported path). INVARIANT: at most ONE active account per
+            # (user, broker identity, account_number); unbounded tombstones are allowed.
             models.UniqueConstraint(
                 fields=["user", "broker_name", "account_number"],
-                condition=Q(broker_server__isnull=True) & ~Q(broker_name=""),
+                condition=Q(broker_server__isnull=True) & ~Q(broker_name="") & Q(disconnected_at__isnull=True),
                 name="uniq_user_brokername_accountnumber",
             ),
             models.UniqueConstraint(
                 fields=["user", "broker_server", "account_number"],
-                condition=Q(broker_server__isnull=False),
+                condition=Q(broker_server__isnull=False) & Q(disconnected_at__isnull=True),
                 name="uniq_user_brokerserver_accountnumber",
             ),
             # ONE ACTIVE per (user, mt5_instance)
