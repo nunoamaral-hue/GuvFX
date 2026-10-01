@@ -78,6 +78,26 @@ def _release_beta_runtime_slot(account, *, actor: str) -> None:
         pass
 
 
+def destroy_runtime_provisioning_credential(account, *, actor: str = "") -> dict:
+    """Model-A decommission correctness (2026-10-01): truthfully destroy the HOSTED-RUNTIME credential + retire
+    the provisioning record on removal. ``disconnect_account`` already destroys the customer ``TradingAccount``
+    credential, but the per-tenant Windows/MT5 runtime login lives SEPARATELY on
+    ``AccountProvisioning.password_enc``; without this it SURVIVED removal with ``status`` left ``PROVISIONED`` —
+    so the DB misrepresented a decommissioned account as still-provisioned with live credential material
+    (observed on tombstoned Account 37). Clears the credential (set '') and sets ``status=RETIRED``. Idempotent +
+    best-effort (NEVER blocks the authoritative tombstone). Never logs/returns the credential. Returns
+    {rows, had_credential}."""
+    try:
+        from terminal_provisioning.models import AccountProvisioning
+        rows = list(AccountProvisioning.objects.filter(trading_account=account))
+        had = any(bool(r.password_enc) for r in rows)
+        n = (AccountProvisioning.objects.filter(trading_account=account)
+             .update(password_enc="", status=AccountProvisioning.Status.RETIRED))
+        return {"rows": n, "had_credential": had}
+    except Exception:  # noqa: BLE001 — credential-retire is best-effort; the tombstone remains authoritative
+        return {"rows": 0, "had_credential": False}
+
+
 def remove_account(account, *, actor: str = "", request=None) -> dict:
     """Remove (decommission) a broker account, retaining history. Fail-closed on open positions. Idempotent
     and race-safe (row-locked re-check)."""
@@ -115,8 +135,12 @@ def remove_account(account, *, actor: str = "", request=None) -> dict:
                 disarm_hosted_workspace_execution(account, actor=actor or "account_removal", request=request)
             except Exception:  # noqa: BLE001 — never let de-arm failure block the removal (tombstone still runs)
                 pass
-        # 4) TOMBSTONE (credential destroy + is_active=False + disconnected_at) — the history-retaining core.
+        # 4) TOMBSTONE (customer-credential destroy + is_active=False + disconnected_at) — history-retaining core.
         disconnect_account(account, actor=actor or "account_removal", request=request)
+        # 4b) Model-A decommission correctness: ALSO destroy the hosted-runtime credential
+        # (AccountProvisioning.password_enc) + retire the provisioning record, so removal truthfully destroys
+        # BOTH credential stores and the provisioning state reflects the tombstone (not a lingering PROVISIONED).
+        destroy_runtime_provisioning_credential(account, actor=actor or "account_removal")
         # 5) Release the runtime endpoint (idempotent, best-effort).
         if ws is not None:
             try:

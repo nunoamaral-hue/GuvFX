@@ -144,22 +144,28 @@ class RemoveAccountTests(TestCase):
         self.assertEqual(res.status_code, 200)
         a.refresh_from_db(); self.assertIsNotNone(a.disconnected_at)
 
-    def test_readd_removed_identity_revives_same_row(self):
-        # MEDIUM review fix: re-adding a REMOVED broker identity revives the same row (keeps history), not a
-        # dead tombstone / unique-constraint 500 / duplicate row.
+    def test_readd_removed_identity_creates_new_instance(self):
+        # Model-A (2026-10-01): re-adding a REMOVED broker identity creates a BRAND-NEW lifecycle instance
+        # (new pk), NOT a revive-in-place; the tombstone is RETAINED as immutable history. At most ONE active
+        # row per identity (partial-unique-on-active); unbounded tombstones allowed.
         a = _acct(self.user, "4001")
+        old_id = a.id
         _remove(self.user, a.id)
-        a.refresh_from_db(); self.assertIsNotNone(a.disconnected_at)
+        a.refresh_from_db(); self.assertIsNotNone(a.disconnected_at)   # tombstoned
         req = APIRequestFactory().post("/api/trading/accounts/",
                                        {"name": "A", "account_number": "4001", "broker_name": "B",
                                         "password": "pw", "is_demo": True}, format="json")
         force_authenticate(req, user=self.user)
         resp = TradingAccountViewSet.as_view({"post": "create"})(req)
         self.assertIn(resp.status_code, (200, 201), getattr(resp, "data", None))
-        a.refresh_from_db()
-        self.assertIsNone(a.disconnected_at)       # revived — tombstone cleared
-        self.assertFalse(a.is_active)              # fresh intent
-        self.assertEqual(TradingAccount.objects.filter(user=self.user, account_number="4001").count(), 1)  # no dup
+        rows = list(TradingAccount.objects.filter(user=self.user, account_number="4001").order_by("id"))
+        self.assertEqual(len(rows), 2)                                 # tombstone + new instance (NO revive)
+        old, new = rows[0], rows[1]
+        self.assertEqual(old.id, old_id)
+        self.assertIsNotNone(old.disconnected_at)                     # tombstone UNCHANGED (never un-tombstoned)
+        self.assertNotEqual(new.id, old_id)                           # brand-new lifecycle instance
+        self.assertIsNone(new.disconnected_at)                        # new instance is active-lifecycle
+        self.assertFalse(new.is_active)                               # fresh intent (not yet armed)
 
     def test_removed_excluded_from_observer_query(self):
         from hosted_workspace.models import HostedMt5Workspace
