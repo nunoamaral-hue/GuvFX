@@ -28,29 +28,11 @@ already-existing account.
 from __future__ import annotations
 
 
-def _revive_tombstoned_account(account, serializer):
-    """Re-add of a REMOVED (tombstoned) broker identity = REVIVE the same row in place, keeping its retained
-    history, rather than returning the dead tombstone or hitting the all-rows identity unique constraint. Clears
-    the tombstone, resets to fresh intent (is_active=False, validation NEVER), and re-applies the newly submitted
-    credential. Row-locked + idempotent. Returns the revived instance."""
-    from django.db import transaction
-    from trading.crypto import encrypt_password
-    from trading.models import TradingAccount
-
-    raw_password = serializer.validated_data.get("password") if serializer is not None else None
-    with transaction.atomic():
-        locked = TradingAccount.objects.select_for_update().get(pk=account.pk)
-        if locked.disconnected_at is None:
-            return locked   # a concurrent re-add already revived it
-        locked.disconnected_at = None
-        locked.is_active = False
-        locked.validation_status = TradingAccount.ValidationStatus.NEVER
-        fields = ["disconnected_at", "is_active", "validation_status", "updated_at"]
-        if raw_password:
-            locked.password_enc = encrypt_password(raw_password)
-            fields.append("password_enc")
-        locked.save(update_fields=fields)
-        return locked
+# REMOVED (Model-A, 2026-10-01): ``_revive_tombstoned_account`` (revive-in-place) is NO LONGER a supported
+# lifecycle path. Re-adding a removed broker/login/server now creates a brand-new BrokerAccount instance (new
+# pk/identity/runtime/endpoint/provisioning); the tombstone is retained as immutable history and is NEVER
+# un-tombstoned. Normal application code must never clear ``disconnected_at`` on a tombstoned account — the
+# partial-unique-on-active constraints (migration 0019) let a fresh instance coexist with the tombstone.
 
 
 def create_customer_account(request, serializer):
@@ -86,15 +68,11 @@ def create_customer_account(request, serializer):
     if broker_server is None and not broker_name:
         raise ValidationError({"broker": "Select a broker server or enter a broker name."})
 
-    # Fast path (no lock): an identical prior submission returns the SAME account (idempotent). A REMOVED
-    # (tombstoned) match is REVIVED (re-add of a previously-removed broker identity), not returned dead.
+    # Fast path (no lock): an identical prior submission returns the SAME ACTIVE account (idempotent). Model-A:
+    # ``_find_existing_account`` matches ACTIVE (non-tombstoned) accounts ONLY, so a REMOVED same-identity row is
+    # never matched here and a re-add falls through to create a brand-new lifecycle instance (never revived).
     existing = _find_existing_account(user, acct_no, broker_server, broker_name)
     if existing is not None:
-        if existing.disconnected_at is not None:
-            revived = _revive_tombstoned_account(existing, serializer)
-            serializer.instance = revived
-            _maybe_enqueue_beta_provisioning(user, revived)
-            return revived, True
         serializer.instance = existing
         _maybe_enqueue_beta_provisioning(user, existing)   # idempotent re-drive of provisioning
         return existing, False
@@ -109,12 +87,10 @@ def create_customer_account(request, serializer):
             type(user).objects.select_for_update().get(pk=user.pk)   # cap serialisation only
             locked = _find_existing_account(user, acct_no, broker_server, broker_name)
             if locked is not None:
-                if locked.disconnected_at is not None:
-                    serializer.instance = _revive_tombstoned_account(locked, serializer)
-                    created = True   # a removed identity re-added = revived (fresh intent), not idempotent no-op
-                else:
-                    serializer.instance = locked   # a concurrent identical submission just won — reuse it
-                    created = False
+                # Model-A: only an ACTIVE concurrent winner is matched — reuse it (idempotent). A tombstone is
+                # never matched, so a re-add always falls through to create a new instance below.
+                serializer.instance = locked
+                created = False
             else:
                 # Phase C: config-driven owned-account cap (override-aware, active/tombstone-correct) once
                 # armed. DARK by default — while the flag is OFF the legacy cap below runs UNCHANGED, so
@@ -138,13 +114,8 @@ def create_customer_account(request, serializer):
         winner = _find_existing_account(user, acct_no, broker_server, broker_name)
         if winner is None:
             raise   # a different integrity error (not the account-identity race) — surface it
-        if winner.disconnected_at is not None:
-            # The all-rows identity unique constraint forced a same-identity INSERT onto the tombstone — revive
-            # it (re-add of a removed identity) rather than returning the dead row.
-            revived = _revive_tombstoned_account(winner, serializer)
-            serializer.instance = revived
-            _maybe_enqueue_beta_provisioning(user, revived)
-            return revived, True
+        # Model-A: the partial-unique-on-active constraint only collides with another ACTIVE row, so the winner
+        # is always active — reuse it idempotently. A tombstone never triggers this path (a re-add inserts anew).
         serializer.instance = winner
         _maybe_enqueue_beta_provisioning(user, winner)
         return winner, False
