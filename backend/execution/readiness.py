@@ -45,6 +45,8 @@ RW_EXECUTION_DISABLED = "workspace_execution_disabled"                  # condit
 RW_EXECUTION_NOT_AUTHORIZED = "workspace_execution_not_authorized"      # ADR-0047 — no explicit customer authz
 RW_REAL_ACCOUNT_NOT_ENABLED = "real_account_not_enabled"               # condition 11 (demo-only, fail-closed)
 RW_SUPERVISED_BOUNDARY = "supervised_single_tenant_boundary"           # ADR-0044 (supervised posture only)
+RW_MONITORING_DISABLED = "monitoring_subsystem_disabled"              # D3 — monitoring split flag off (DARK)
+RW_MONITORING_OK = "monitoring_ok"                                     # D3 — env-agnostic monitoring eligible
 
 # The last attach observation must be no older than this to gate eligibility (mirrors the runtime
 # heartbeat freshness). It is an ELIGIBILITY bound only — the authority is the live order-time gate.
@@ -77,6 +79,16 @@ def _hosted_mt5_execution_enabled() -> bool:
     try:
         from hosted_workspace.flags import hosted_mt5_execution_enabled
         return hosted_mt5_execution_enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _hosted_live_monitoring_enabled() -> bool:
+    """D3 DARK gate for the environment-agnostic MONITORING split (import-local; fail-closed). Distinct from
+    every execution flag: when OFF, ``evaluate_monitoring`` returns not-eligible so nothing changes."""
+    try:
+        from hosted_workspace.flags import hosted_live_monitoring_enabled
+        return hosted_live_monitoring_enabled()
     except Exception:  # noqa: BLE001
         return False
 
@@ -191,6 +203,40 @@ class PersistentWorkspaceProvider:
             return ReadinessDecision(False, RW_OBSERVATION_STALE, self.key)
         return ReadinessDecision(True, g.GATE_OK, self.key)
 
+    def evaluate_monitoring(self, account) -> ReadinessDecision:
+        """D3 — environment-AGNOSTIC MONITORING eligibility (observe / identity-match / dashboard), DARK and
+        execution-NEUTRAL. ``eligible`` here is True when the workspace is connected + identity-matched +
+        customer-confirmed + fresh and the account is a live (non-tombstoned) lifecycle instance — OMITTING
+        the subsystem execution flag, the per-workspace arm, the explicit authorization, trade_allowed, the
+        supervised EXECUTION posture, AND the DEMO-only wall (condition 11). It therefore holds for a
+        correctly-matched LIVE account WITHOUT making it execution-eligible: the execution fact
+        (``evaluate`` / ``.eligible``) is unchanged and still fails LIVE closed at condition 11, and no §3
+        authorization exists until D4. The environment AWARENESS lives in the matcher — ``proj_account_match``
+        requires the observed terminal's demo/live class to EQUAL the account's — so a wrong-environment
+        terminal is never 'matched' and thus never monitoring-eligible here.
+
+        DARK: not-eligible unless BOTH the master subsystem flag and the D3 monitoring flag are on, so with
+        either off this is inert and no caller's behaviour changes. Fail-closed, most-specific-first."""
+        from execution import broker_gate as g
+        if not _hosted_persistent_mt5_enabled():
+            return ReadinessDecision(False, RW_SUBSYSTEM_DISABLED, self.key)
+        if not _hosted_live_monitoring_enabled():
+            return ReadinessDecision(False, RW_MONITORING_DISABLED, self.key)
+        if getattr(account, "disconnected_at", None) is not None:   # tombstoned ⇒ never monitored
+            return ReadinessDecision(False, g.R_ACCOUNT_DISCONNECTED, self.key)
+        ws = getattr(account, "hosted_workspace", None)
+        if ws is None:
+            return ReadinessDecision(False, RW_WORKSPACE_MISSING, self.key)
+        if ws.proj_connected is not True:
+            return ReadinessDecision(False, RW_WORKSPACE_NOT_CONNECTED, self.key)
+        if ws.proj_account_match is not True:
+            return ReadinessDecision(False, RW_ACTIVE_ACCOUNT_MISMATCH, self.key)
+        if getattr(account, "workspace_confirmed_at", None) is None:
+            return ReadinessDecision(False, RW_NOT_CONFIRMED, self.key)
+        if not _observation_fresh(ws):
+            return ReadinessDecision(False, RW_OBSERVATION_STALE, self.key)
+        return ReadinessDecision(True, RW_MONITORING_OK, self.key)
+
 
 def _observation_fresh(ws) -> bool:
     """True only when the workspace's last CANONICAL decision is recent enough to gate eligibility.
@@ -224,3 +270,16 @@ def evaluate_readiness(account) -> ReadinessDecision:
     its decision. Callers must still apply the flag gate + account-present check + (at dispatch) the
     health/pause convergence — this only replaces the password_enc/VALIDATED eligibility layer."""
     return provider_for(account).evaluate(account)
+
+
+def evaluate_monitoring_readiness(account) -> ReadinessDecision:
+    """D3 — the environment-AGNOSTIC MONITORING fact, distinct from the execution fact (``evaluate_readiness``).
+    Monitoring is a Provider-B (persistent workspace) concept; any other provider is not monitoring-eligible.
+    DARK + execution-neutral: see ``PersistentWorkspaceProvider.evaluate_monitoring``. This NEVER authorises an
+    order — it only reports whether a connected + identity-matched + confirmed + fresh account (demo OR live)
+    may be observed/displayed as monitoring."""
+    prov = provider_for(account)
+    monitor = getattr(prov, "evaluate_monitoring", None)
+    if monitor is None:
+        return ReadinessDecision(False, RW_SUBSYSTEM_DISABLED, prov.key)
+    return monitor(account)

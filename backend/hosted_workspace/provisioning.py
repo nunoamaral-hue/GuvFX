@@ -517,7 +517,16 @@ def bind_broker_identity(user, workspace, *, expected_login, expected_server="",
         if str(getattr(acct, "readiness_provider", "")) != PERSISTENT_WORKSPACE:
             return BindResult(False, BIND_NOT_HOSTED)         # Provider-B hosted accounts only
         if acct.is_demo is not True:
-            return BindResult(False, BIND_LIVE_FORBIDDEN)     # Closed Beta is DEMO-only; never self-authorize live
+            # Closed Beta is DEMO-only; never self-authorize live. D3 (DARK): a LIVE broker identity may be
+            # bound for MONITORING only when HOSTED_LIVE_MONITORING_ENABLED is on AND the authoritative policy
+            # confirms a CLEAN live classification (a demo/live mismatch stays fail-closed). Binding is
+            # identity-only — it NEVER authorizes execution (readiness condition 11 + the live order-time
+            # bridge gate keep every LIVE order blocked; there is no §3 authorization until D4). Byte-identical
+            # when the flag is off (any non-demo account is still forbidden here).
+            from hosted_workspace.flags import hosted_live_monitoring_enabled
+            from trading.account_policy import is_live_environment
+            if not (hosted_live_monitoring_enabled() and is_live_environment(acct)):
+                return BindResult(False, BIND_LIVE_FORBIDDEN)
         if str(ws.canonical_state) not in (S.PROVISIONING, S.WAITING_FOR_LOGIN):
             return BindResult(False, BIND_WRONG_STATE)        # only before the workspace connects
         prior_login = str(acct.account_number or "").strip()

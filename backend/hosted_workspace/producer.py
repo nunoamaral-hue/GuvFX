@@ -37,6 +37,13 @@ class RawWorkspaceSnapshot:
     # Expected identity (from the workspace/account binding supplied to the producer).
     expected_login: Optional[str] = None
     expected_server: Optional[str] = None
+    # D3 — the account's EXPECTED environment, supplied by the (Django-aware, flag-gated) driver so this pure
+    # module reads no flag. ``None`` (the default, and every pre-D3 caller) ⇒ demo-only, byte-identical. When
+    # the driver opts a LIVE account in (D3 flag on), it sets ``expected_is_demo=False`` + ``expected_allow_live
+    # =True`` so the matcher requires a LIVE terminal (symmetric env-equality). Identity-match data only —
+    # never an order authorization (execution stays gated at readiness condition 11 + the bridge).
+    expected_is_demo: Optional[bool] = None
+    expected_allow_live: bool = False
     # Process
     target_pid: Optional[int] = None
     target_path: Optional[str] = None
@@ -119,9 +126,14 @@ def _account_match(snapshot):
         process_running=True, ipc_available=True, connected=True, trade_allowed=True,
         login=_clean_identity(snapshot.observed_login), server=_clean_identity(snapshot.observed_server),
         trade_mode=_clean_trade_mode(snapshot.observed_trade_mode))
+    # D3: carry the account's EXPECTED environment from the snapshot (set by the flag-gated driver). None ⇒
+    # demo-only (every pre-D3 caller), byte-identical. A LIVE account opted in by the driver (is_demo=False,
+    # allow_live=True) requires the observed terminal to be LIVE too (symmetric env match). Still pure — no
+    # flag is read here; the driver owns the flag decision.
     expected = ExpectedAccount(
         login=_clean_identity(snapshot.expected_login), server=_clean_identity(snapshot.expected_server),
-        is_demo=True, allow_live=False)
+        is_demo=(True if snapshot.expected_is_demo is None else bool(snapshot.expected_is_demo)),
+        allow_live=bool(snapshot.expected_allow_live))
     return bool(evaluate_active_account_match(observed, expected).ok)
 
 

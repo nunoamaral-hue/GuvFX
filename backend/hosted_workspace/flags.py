@@ -395,6 +395,29 @@ def hosted_session_reconciler_enabled() -> bool:
     return _flag("HOSTED_SESSION_RECONCILER_ENABLED")
 
 
+def hosted_live_monitoring_enabled() -> bool:
+    """Stream D3 (2026-10-05) — the gate for LIVE-account MONITORING (observe / identity-match / confirm /
+    bind / dashboard), environment-aware but execution-NEUTRAL. DEFAULT OFF.
+
+    While OFF, every D3 edit is byte-identical to the pre-D3 behaviour: the observer's ExpectedAccount is
+    constructed demo-only (``is_demo=True, allow_live=False``), the matcher stays effectively demo-only, a
+    LIVE account cannot be identity-matched, and no LIVE monitoring/display path activates — so DEMO is
+    untouched and a LIVE account remains categorically inert. While ON, a LIVE account's ExpectedAccount
+    carries its ACTUAL environment (from ``trading.account_policy``), the matcher requires the observed
+    terminal's demo/live classification to EQUAL the expected (LIVE expects LIVE; a mismatch stays
+    fail-closed), confirm/bind accept a LIVE identity for monitoring, and the derived
+    ``CONNECTED_MONITORING_EXEC_UNAUTHORIZED`` display state becomes reachable.
+
+    HARD INVARIANT: this flag NEVER enables EXECUTION for a LIVE account. The execution-readiness fact
+    (``ReadinessDecision.eligible`` via ``PersistentWorkspaceProvider.evaluate``) is UNCHANGED and still
+    fails LIVE closed at condition 11 (``is_demo_environment`` -> ``RW_REAL_ACCOUNT_NOT_ENABLED``); there is
+    no §3 ``LiveExecutionAuthorization`` model until D4, so ``execution_eligible`` is False for LIVE and the
+    order-time bridge gate remains authoritative. This gate only unblocks environment-independent MONITORING.
+    It is additionally ANDed with the master ``HOSTED_PERSISTENT_MT5_ENABLED``. Arming it (and selecting the
+    first real LIVE monitoring account) is a Sponsor decision after D3 certifies."""
+    return _flag("HOSTED_LIVE_MONITORING_ENABLED")
+
+
 def hosted_session_reconciler_arm_selfconnect_enabled() -> bool:
     """P4-c ARM gate for the SESSION reconciler's actual system-initiated guacd self-connect (the security-posture
     change: it decrypts the tenant's Windows password into a short-lived guacamole-auth-json token and drives
