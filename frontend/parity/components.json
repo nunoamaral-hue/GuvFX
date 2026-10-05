@@ -21,6 +21,7 @@
   "src/components/broker/AccountCard.tsx",
   "src/components/broker/AccountManageContent.tsx",
   "src/components/broker/AccountStrategiesContent.tsx",
+  "src/components/broker/AccountTypeSelector.tsx",
   "src/components/broker/AssignmentConfigContent.tsx",
   "src/components/broker/BrokerAccountDetailContent.tsx",
   "src/components/broker/BrokerAccountWizard.tsx",

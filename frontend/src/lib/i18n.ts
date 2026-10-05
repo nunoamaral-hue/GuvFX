@@ -400,6 +400,20 @@ const dictionary: Dictionary = {
   },
   "accounts.accountType": { en: "Account type", ja: "口座タイプ" },
   "accounts.demoAccount": { en: "Demo account", ja: "デモ口座" },
+  // D2 (Stream D) — required Demo/Live selector (no default). The "*" marks it required.
+  "accounts.accountTypeRequired": { en: "Account type *", ja: "口座タイプ *" },
+  "accounts.accountTypeDemoTitle": { en: "Demo account", ja: "デモ口座" },
+  "accounts.accountTypeDemoDesc": { en: "Virtual funds", ja: "仮想資金" },
+  "accounts.accountTypeLiveTitle": { en: "Live account", ja: "ライブ口座" },
+  "accounts.accountTypeLiveDesc": { en: "Real funds", ja: "実資金" },
+  "accounts.accountTypeLiveWarning": {
+    en: "This is a live trading account using real funds.",
+    ja: "これは実資金を使用するライブ取引口座です。",
+  },
+  "accounts.accountTypeMissing": {
+    en: "Please choose Demo or Live before adding the account.",
+    ja: "口座を追加する前にデモまたはライブを選択してください。",
+  },
 
   // -----------------------------------------------------------------------------
   // Accounts - Broker Suggestions

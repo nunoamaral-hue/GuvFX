@@ -7,6 +7,7 @@ import { Alert } from "@/components/ui/Alert";
 import { StatusBadge } from "@/components/broker/StatusBadge";
 import { addHostedAccount, createAccount, testConnection } from "@/lib/broker-api";
 import { healthStatusView, reasonMessage, toCustomerError } from "@/lib/broker-status";
+import { AccountTypeSelector, type AccountType } from "@/components/broker/AccountTypeSelector";
 import type { ValidationAttempt } from "@/types/broker";
 
 /** WP4.2 — Add a broker account.
@@ -32,7 +33,9 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
   const [server, setServer] = useState("");
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
-  const [isDemo, setIsDemo] = useState(true);
+  // D2 (Stream D): no default — the LEGACY path requires an explicit Demo/Live choice. HOSTED is
+  // demo-locked (§2; LIVE hosted is D3), so it does not use this selector and always creates a demo account.
+  const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<ValidationAttempt | null>(null);
@@ -40,7 +43,7 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
 
   const reset = () => {
     setName(""); setBroker(""); setServer(""); setLogin(""); setPassword("");
-    setIsDemo(true); setBusy(false); setError(""); setResult(null); setHostedDone(false);
+    setAccountType(null); setBusy(false); setError(""); setResult(null); setHostedDone(false);
   };
   const close = () => { if (!busy) { reset(); onClose(); } };
 
@@ -51,22 +54,23 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
     try {
       if (hosted) {
         // Hosted: broker + account number + server, NO password (entered in MT5 after provisioning).
+        // Hosted is demo-locked (§2) — always a demo account; LIVE hosted is D3.
         if (!broker.trim() || !login.trim() || !server.trim()) {
           setError("Broker, account number and server are required."); setBusy(false); return;
         }
         await addHostedAccount({
           broker_name: broker.trim(), expected_login: login.trim(),
-          expected_server: server.trim(), is_demo: isDemo,
+          expected_server: server.trim(), is_demo: true,
         });
         setHostedDone(true);
         onAdded();
       } else {
-        if (!broker.trim() || !login.trim() || !password) {
-          setError("Broker, account number and password are required."); setBusy(false); return;
+        if (!broker.trim() || !login.trim() || !password || accountType === null) {
+          setError("Broker, account number, password and account type are required."); setBusy(false); return;
         }
         const acct = await createAccount({
           name: name.trim() || broker.trim(), broker_name: `${broker.trim()}${server.trim() ? ` (${server.trim()})` : ""}`,
-          account_number: login.trim(), password, is_demo: isDemo,
+          account_number: login.trim(), password, account_type: accountType,
         });
         setPassword(""); // drop the plaintext as soon as it is submitted
         const attempt = await testConnection(acct.id);
@@ -126,10 +130,25 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
               <input id="ba-password" type="password" style={input} value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} required autoComplete="new-password" />
             </>
           )}
-          <label style={{ ...label, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-            <input type="checkbox" checked={isDemo} onChange={(e) => setIsDemo(e.target.checked)} disabled={busy} />
-            This is a demo account
-          </label>
+          {/* D2: LEGACY requires an explicit Demo/Live choice (no default). HOSTED is demo-locked (§2), so
+              no selector is shown — it always creates a demo account. */}
+          {!hosted && (
+            <div style={{ margin: "0.7rem 0 0" }}>
+              <AccountTypeSelector
+                value={accountType}
+                onChange={setAccountType}
+                disabled={busy}
+                labels={{
+                  legend: "Account type *",
+                  demoTitle: "Demo account",
+                  demoDesc: "Virtual funds",
+                  liveTitle: "Live account",
+                  liveDesc: "Real funds",
+                  liveWarning: "This is a live trading account using real funds.",
+                }}
+              />
+            </div>
+          )}
           {hosted && (
             <p style={{ color: "#8fa0b7", fontSize: "0.8rem", lineHeight: 1.5, margin: "10px 0 0" }}>
               You&apos;ll log into your broker inside MetaTrader after the account is set up — no password is
@@ -139,7 +158,7 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
           {error && <div style={{ marginTop: 12 }}><Alert type="error">{error}</Alert></div>}
           <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <Button type="button" variant="secondary" onClick={close} disabled={busy}>Cancel</Button>
-            <Button type="submit" disabled={busy}>{busy ? (hosted ? "Setting up…" : "Validating…") : (hosted ? "Add account" : "Add & validate")}</Button>
+            <Button type="submit" disabled={busy || (!hosted && accountType === null)}>{busy ? (hosted ? "Setting up…" : "Validating…") : (hosted ? "Add account" : "Add & validate")}</Button>
           </div>
         </form>
       )}

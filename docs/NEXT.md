@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ▶ Stream D (Real/LIVE MT5) — D1 DEPLOYED+CERTIFIED, D2 built; D3 next (2026-10-05)
+Sponsor authorized D1→D4 (governed PR/test/adversarial/CI/deploy). **D1** (centralized `account_policy`, PR #449
+`4225140`) is merged + DARK-deployed + certified in prod (demo/live/mismatch/stale-FK fail-closed proven in the
+running image; no migration, no flags armed). **D2** (explicit required Add-Account `account_type`, §4) is built on
+branch `feat/stream-d2-account-type`: write-only `account_type` on `TradingAccountSerializer` → `is_demo`
+(create-only, 400 on missing/null/invalid, cross-checked by `classification_error`), `views_account_add` no silent
+default; backward compatible (explicit legacy `is_demo` still accepted; internal/seed/admin/hosted untouched; no
+migration); shared no-default `AccountTypeSelector` (LIVE=amber real-money) in both the inline accounts form and the
+wizard legacy mode; hosted stays demo-locked (§2). Creating a LIVE account is inert — D1's demo-only walls block
+LIVE observe/match/execute until D3/D4. Local: full backend suite green; frontend eslint 0-err + build green +
+wizard/accounts vitest 18/18. **Single next action:** open the D2 PR → Auto-fix CI monitor → on GREEN+CLEAN merge →
+DARK deploy (code-only, recreate ONLY guvfx-backend + guvfx-frontend, never `--remove-orphans`) → then **D3** (LIVE
+monitoring: observer/matcher/confirm/bind environment-aware via the policy; `monitoring_eligible` split in
+`readiness.py`; LIVE can connect+monitor, execution still blocked by absence of §3 `LiveExecutionAuthorization`).
+Invariants held throughout: no real-money order; self-connect OFF; Account 33 quarantined; Cold-Boot V2 paused;
+support@ entitlement 20; 25/35/36 untouched. Stop only for a genuinely new Sponsor-level architecture/live-money
+decision (e.g. the §3 LIVE-execution-authorization ceremony in D4, or the first real LIVE monitoring account).
+
 ## ▶ Cold-boot recovery P0-P5 DEPLOYED + probe-only CERTIFIED; reboot-READY pending flat window + arm (2026-09-30)
 Sponsor-authorized deploy DONE: (1) P4/P5 backend deployed DARK (mig 0014, flags present+OFF, 25/35/36 untouched);
 (2) PROBE_SESSION host-deployed (staged .ps1 PARSE_OK -> libs -> dry-run VERIFY_SCRIPTS_OK+parity -> restart

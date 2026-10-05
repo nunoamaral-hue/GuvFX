@@ -54,11 +54,14 @@ class ClassificationCrossCheckTests(TestCase):
         self.assertIn("is_demo", ser.errors)
 
     def test_create_on_demo_server_omitting_is_demo_is_rejected(self):
-        # Fail-closed: with the model default (False), an omitted is_demo on a DEMO server is a
-        # mismatch — is_demo must be sent explicitly. (Pins the M1 behaviour.)
+        # D2 (Stream D): the account type is REQUIRED on create (no silent default). Omitting BOTH the
+        # explicit account_type and the legacy is_demo is rejected fail-closed, now keyed under
+        # account_type. This supersedes the pre-D2 mechanism (which rejected an omitted is_demo on a DEMO
+        # server only, incidentally via the model-default-False↔server mismatch); the type is now required
+        # on ANY server. The rejection-and-no-create safety invariant is preserved and strengthened.
         ser = self._ser({"name": "A", "account_number": "5", "broker_server": self.demo_srv.id})
         self.assertFalse(ser.is_valid())
-        self.assertIn("is_demo", ser.errors)
+        self.assertIn("account_type", ser.errors)
 
     def test_broker_name_only_skips_crosscheck(self):
         self.assertTrue(self._ser({"name": "A", "account_number": "6", "broker_name": "SomeBroker",
@@ -119,3 +122,101 @@ class ClassificationCrossCheckTests(TestCase):
         acct = TradingAccount.objects.get(user=self.user, account_number="12")
         self.assertEqual(acct.broker_server_id, self.demo_srv.id)
         self.assertIsNone(acct.mt5_instance)   # canonical contract: never the legacy shared instance
+
+
+class AccountTypeRequiredTests(TestCase):
+    """D2 (Stream D §4) — explicit, required account_type on CREATE. Maps account_type→is_demo
+    (demo→True, live→False), cross-checked by classification_error; missing/null/invalid → 400; backward
+    compatible with an explicit legacy is_demo; create-only (existing accounts/updates unaffected)."""
+
+    def setUp(self):
+        self.user = U.objects.create_user(username="at", email="at@x.invalid", password="x")
+        grant_beta_entitlement(self.user)
+        self.demo_srv = _server(BrokerServer.DEMO, "at-demo")
+        self.live_srv = _server(BrokerServer.LIVE, "at-live")
+
+    def _ser(self, data, instance=None):
+        return TradingAccountSerializer(instance, data=data, partial=instance is not None)
+
+    # ── account_type → is_demo mapping (and the write-only field never leaks to the model) ──
+    def test_account_type_demo_maps_is_demo_true(self):
+        ser = self._ser({"name": "A", "account_number": "20",
+                         "broker_server": self.demo_srv.id, "account_type": "demo"})
+        self.assertTrue(ser.is_valid(), ser.errors)
+        self.assertTrue(ser.validated_data["is_demo"])
+        self.assertNotIn("account_type", ser.validated_data)
+
+    def test_account_type_live_maps_is_demo_false(self):
+        ser = self._ser({"name": "A", "account_number": "21",
+                         "broker_server": self.live_srv.id, "account_type": "live"})
+        self.assertTrue(ser.is_valid(), ser.errors)
+        self.assertFalse(ser.validated_data["is_demo"])
+
+    def test_account_type_is_cross_checked_against_server(self):
+        # account_type=demo on a LIVE server maps is_demo=True, which classification_error rejects
+        # (keyed is_demo) — proving the mapped type funnels into the existing T7 cross-check.
+        ser = self._ser({"name": "A", "account_number": "22",
+                         "broker_server": self.live_srv.id, "account_type": "demo"})
+        self.assertFalse(ser.is_valid())
+        self.assertIn("is_demo", ser.errors)
+
+    # ── required / null / invalid / disagreement → 400 ──
+    def test_missing_account_type_rejected(self):
+        ser = self._ser({"name": "A", "account_number": "23", "broker_name": "SomeBroker"})
+        self.assertFalse(ser.is_valid())
+        self.assertIn("account_type", ser.errors)
+
+    def test_null_account_type_rejected(self):
+        ser = self._ser({"name": "A", "account_number": "24",
+                         "broker_name": "SomeBroker", "account_type": None})
+        self.assertFalse(ser.is_valid())
+        self.assertIn("account_type", ser.errors)
+
+    def test_invalid_account_type_rejected(self):
+        ser = self._ser({"name": "A", "account_number": "25",
+                         "broker_name": "SomeBroker", "account_type": "paper"})
+        self.assertFalse(ser.is_valid())
+        self.assertIn("account_type", ser.errors)
+
+    def test_account_type_and_is_demo_disagree_rejected(self):
+        ser = self._ser({"name": "A", "account_number": "26", "broker_name": "SomeBroker",
+                         "account_type": "demo", "is_demo": False})
+        self.assertFalse(ser.is_valid())
+        self.assertIn("account_type", ser.errors)
+
+    # ── backward compatibility + create-only scoping ──
+    def test_legacy_is_demo_only_still_accepted(self):
+        # An existing API client that sends is_demo (no account_type) must keep working (backward compat).
+        ser = self._ser({"name": "A", "account_number": "27",
+                         "broker_name": "SomeBroker", "is_demo": True})
+        self.assertTrue(ser.is_valid(), ser.errors)
+        self.assertTrue(ser.validated_data["is_demo"])
+
+    def test_update_does_not_require_account_type(self):
+        acct = TradingAccount.objects.create(
+            user=self.user, name="A", account_number="28", broker_name="SomeBroker", is_demo=True)
+        ser = self._ser({"name": "Renamed"}, instance=acct)   # PATCH, no account_type
+        self.assertTrue(ser.is_valid(), ser.errors)
+
+    # ── endpoint path (add-with-mt5-login) ──
+    def test_endpoint_missing_account_type_rejected(self):
+        factory = APIRequestFactory()
+        req = factory.post("/api/accounts/add-with-mt5-login/", {
+            "name": "A", "account_number": "29", "password": "pw",
+            "broker_server": self.demo_srv.id}, format="json")   # no account_type, no is_demo
+        force_authenticate(req, user=self.user)
+        resp = AddAccountWithMt5LoginView.as_view()(req)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("account_type", str(resp.data))
+        self.assertFalse(TradingAccount.objects.filter(user=self.user, account_number="29").exists())
+
+    def test_endpoint_account_type_demo_creates(self):
+        factory = APIRequestFactory()
+        req = factory.post("/api/accounts/add-with-mt5-login/", {
+            "name": "A", "account_number": "30", "password": "pw",
+            "broker_server": self.demo_srv.id, "account_type": "demo"}, format="json")
+        force_authenticate(req, user=self.user)
+        resp = AddAccountWithMt5LoginView.as_view()(req)
+        self.assertEqual(resp.status_code, 201, resp.data)
+        acct = TradingAccount.objects.get(user=self.user, account_number="30")
+        self.assertTrue(acct.is_demo)

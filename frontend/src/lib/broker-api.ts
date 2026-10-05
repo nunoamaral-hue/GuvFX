@@ -81,7 +81,9 @@ export function getValidationTimeline(
 }
 
 export function createAccount(input: {
-  name: string; broker_name: string; account_number: string; password: string; is_demo: boolean;
+  // D2 (Stream D): explicit required account type (demo|live) — the backend rejects a missing/null/invalid
+  // type. Maps to the stored is_demo server-side (demo→True, live→False).
+  name: string; broker_name: string; account_number: string; password: string; account_type: "demo" | "live";
 }): Promise<BrokerAccount> {
   return apiFetch<BrokerAccount>(`${BASE}/`, { method: "POST", body: JSON.stringify(input) });
 }
