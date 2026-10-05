@@ -40,7 +40,7 @@ class BrokerAccountCapTests(TestCase):
         user = self._make_user("cap@x.invalid", plan="starter_trial")
         TradingAccount.objects.create(user=user, name="A0", account_number="1", broker_name="B", is_demo=True)
         self.client.force_authenticate(user)
-        resp = self.client.post(LIST_URL, {"name": "A1", "account_number": "2", "broker_name": "B"}, format="json")
+        resp = self.client.post(LIST_URL, {"name": "A1", "account_number": "2", "broker_name": "B", "account_type": "demo"}, format="json")
         self.assertEqual(resp.status_code, 400, resp.content)
         self.assertIn("limit reached", str(resp.content).lower())
         self.assertIn("maximum 1", str(resp.content))
@@ -50,7 +50,7 @@ class BrokerAccountCapTests(TestCase):
         # No subscription state → viewer defaults → max 0 → even the first create is fail-closed.
         user = self._make_user("viewer@x.invalid")
         self.client.force_authenticate(user)
-        resp = self.client.post(LIST_URL, {"name": "V1", "account_number": "9", "broker_name": "B"}, format="json")
+        resp = self.client.post(LIST_URL, {"name": "V1", "account_number": "9", "broker_name": "B", "account_type": "demo"}, format="json")
         self.assertEqual(resp.status_code, 400, resp.content)
         self.assertIn("maximum 0", str(resp.content))
         self.assertEqual(TradingAccount.objects.filter(user=user).count(), 0)
@@ -62,7 +62,7 @@ class BrokerAccountCapTests(TestCase):
             TradingAccount.objects.create(
                 user=user, name=f"A{i}", account_number=str(100 + i), broker_name="B", is_demo=True)
         self.client.force_authenticate(user)
-        resp = self.client.post(LIST_URL, {"name": "A10", "account_number": "999", "broker_name": "B"}, format="json")
+        resp = self.client.post(LIST_URL, {"name": "A10", "account_number": "999", "broker_name": "B", "account_type": "demo"}, format="json")
         self.assertEqual(resp.status_code, 400, resp.content)
         self.assertIn("maximum 10", str(resp.content))
         self.assertEqual(TradingAccount.objects.filter(user=user).count(), 10)
@@ -74,14 +74,14 @@ class BrokerAccountCapTests(TestCase):
             TradingAccount.objects.create(
                 user=staff, name=f"S{i}", account_number=str(200 + i), broker_name="B", is_demo=True)
         self.client.force_authenticate(staff)
-        resp = self.client.post(LIST_URL, {"name": "S12", "account_number": "999", "broker_name": "B"}, format="json")
+        resp = self.client.post(LIST_URL, {"name": "S12", "account_number": "999", "broker_name": "B", "account_type": "demo"}, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(TradingAccount.objects.filter(user=staff).count(), 13)
 
     def test_under_limit_create_succeeds(self):
         user = self._make_user("ok@x.invalid", plan="beta")
         self.client.force_authenticate(user)
-        resp = self.client.post(LIST_URL, {"name": "OK1", "account_number": "5", "broker_name": "B"}, format="json")
+        resp = self.client.post(LIST_URL, {"name": "OK1", "account_number": "5", "broker_name": "B", "account_type": "demo"}, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(TradingAccount.objects.filter(user=user).count(), 1)
 
@@ -91,7 +91,7 @@ class BrokerAccountCapTests(TestCase):
         # recovery), never a duplicate and never a 500.
         user = self._make_user("dup@x.invalid", plan="beta")
         self.client.force_authenticate(user)
-        payload = {"name": "L1", "account_number": "7", "broker_name": "B"}
+        payload = {"name": "L1", "account_number": "7", "broker_name": "B", "account_type": "demo"}
         r1 = self.client.post(LIST_URL, payload, format="json")
         r2 = self.client.post(LIST_URL, payload, format="json")
         self.assertEqual(r1.status_code, 201, r1.content)

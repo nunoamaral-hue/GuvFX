@@ -40,8 +40,14 @@ class AddAccountWithMt5LoginView(APIView):
             "name": name,
             "account_number": account_number,
             "password": password,
-            "is_demo": bool(data.get("is_demo", True)),
         }
+        # D2 (Stream D): forward the EXPLICIT account type; the serializer requires it and rejects a
+        # missing/null/invalid type with a 400 (no silent demo default). Backward compatible: an explicit
+        # legacy ``is_demo`` is still honoured by the serializer when a client has not yet migrated.
+        if "account_type" in data:
+            payload["account_type"] = data.get("account_type")
+        if "is_demo" in data:
+            payload["is_demo"] = data.get("is_demo")
         # Broker identity: a BrokerServer id takes precedence; otherwise a free-text server name.
         broker_server_id = data.get("broker_server")
         if broker_server_id:

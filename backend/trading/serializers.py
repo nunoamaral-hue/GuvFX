@@ -18,6 +18,12 @@ class TradingAccountSerializer(serializers.ModelSerializer):
 
     # Accept plaintext password in request, store encrypted in password_enc
     password = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
+    # D2 (Stream D) — explicit account type on CREATE. Write-only input ∈ {demo, live} that maps to the
+    # stored ``is_demo`` (demo→True, live→False). ``required=False`` at field level so the "missing" case
+    # yields a single clean 400 from the create-scoped check in ``validate`` (ChoiceField still 400s a
+    # null/blank/invalid value). Never an output field; never a stored column.
+    account_type = serializers.ChoiceField(
+        choices=[BrokerServer.DEMO, BrokerServer.LIVE], write_only=True, required=False)
     mt5_instance = serializers.PrimaryKeyRelatedField(read_only=True)
     # IPR Area B (C6): truthful dedicated-runtime signal. For a beta account ``mt5_instance`` is always
     # ``null`` by design (ADR-0021), so the frontend must gate on runtime readiness — not on the legacy
@@ -58,6 +64,7 @@ class TradingAccountSerializer(serializers.ModelSerializer):
             "trading_state",
             "is_removed",
             "is_demo",
+            "account_type",
             "is_active",
             "myfxbook_url",
             "myfxbook_system_id",
@@ -119,6 +126,25 @@ class TradingAccountSerializer(serializers.ModelSerializer):
         if not broker_server and not broker_name:
             raise serializers.ValidationError("Provide either broker_server or broker_name.")
 
+        # D2 (Stream D) — explicit account type is REQUIRED on CREATE; no silent demo/live default. The
+        # write-only ``account_type`` ∈ {demo, live} maps to the stored ``is_demo`` (demo→True, live→False)
+        # and is cross-checked below by classification_error against broker_server.environment. Missing /
+        # null / invalid ⇒ 400 (ChoiceField rejects null/blank/invalid; the presence check here rejects a
+        # fully-missing type). BACKWARD COMPATIBLE: an explicit legacy ``is_demo`` in the payload still
+        # satisfies the requirement, so existing API clients, seeds, and the hosted/bind paths (which send
+        # ``is_demo`` directly, bypassing or explicitly setting it) are unaffected. CREATE ONLY — existing
+        # accounts keep their stored classification; ``account_type`` is ignored on update/PATCH.
+        if self.instance is None:
+            if "account_type" in attrs:
+                mapped_is_demo = (attrs["account_type"] == BrokerServer.DEMO)
+                if "is_demo" in attrs and bool(attrs["is_demo"]) != mapped_is_demo:
+                    raise serializers.ValidationError(
+                        {"account_type": "account_type and is_demo disagree; send only account_type."})
+                attrs["is_demo"] = mapped_is_demo
+            elif "is_demo" not in attrs:
+                raise serializers.ValidationError(
+                    {"account_type": "Select an account type: 'demo' or 'live'."})
+
         # T7 (Phase 3 / P3-E): demo/live classification consistency, via the shared config-level check
         # (also enforced at the add-with-mt5-login create endpoint). Scoped to requests that set the
         # classification fields, so it never retroactively blocks an unrelated edit on a legacy
@@ -155,6 +181,9 @@ class TradingAccountSerializer(serializers.ModelSerializer):
                 if "is_demo" in attrs and bool(attrs.get("is_demo")) != bool(getattr(inst, "is_demo", False)):
                     raise serializers.ValidationError(
                         {"is_demo": "Hosted account classification is managed via the workspace bind step and cannot be changed here."})
+        # ``account_type`` is a write-only input that has already been mapped to ``is_demo`` above; it is not
+        # a model field, so drop it before create()/update() build the model instance.
+        attrs.pop("account_type", None)
         return attrs
 
     def create(self, validated_data):

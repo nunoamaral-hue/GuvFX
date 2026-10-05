@@ -14,6 +14,30 @@
 
 ## Execution workstream log
 
+- **2026-10-05 - STREAM D2: EXPLICIT REQUIRED ADD-ACCOUNT TYPE (demo/live) — API + UX, backward compatible.**
+  Builds on D1 (centralized `account_policy`, merged `4225140`/#449, DARK-deployed+certified). Per the approved
+  Stream-D design §4: the Add-Account create contract now REQUIRES an explicit `account_type ∈ {demo, live}` with
+  NO silent default; missing/null/invalid ⇒ 400. BACKEND: `TradingAccountSerializer` gains a write-only
+  `account_type` ChoiceField that maps to the stored `is_demo` (demo→True, live→False), enforced create-only in
+  `validate()` BEFORE the existing T7 `classification_error` cross-check (so the mapped value is checked against
+  `broker_server.environment`); `views_account_add.py` no longer silently defaults `is_demo=True`. BACKWARD
+  COMPATIBLE: an explicit legacy `is_demo` still satisfies the requirement, so internal/seed/admin (ModelForm +
+  direct ORM) and the hosted bind path are unaffected; `is_demo` stays the stored truth (no model/DB migration).
+  Hosted add (`onboarding_views.py`) is demo-locked (§2; LIVE hosted is D3) and untouched. FRONTEND: new shared
+  `AccountTypeSelector` (no default, LIVE=real-money amber treatment + warning; registered in
+  `parity/components.json`) replaces the pre-checked "This is a demo account" checkbox in BOTH the default
+  Closed-Beta inline form (`accounts/page.tsx`) and the `BrokerAccountWizard` legacy mode; submit disabled until a
+  type is chosen; `createAccount`/add-with-mt5-login now send `account_type`; wizard HOSTED mode drops the checkbox
+  (always demo). i18n en+ja (`accounts.accountType*`). SAFETY: creating a LIVE account is inert — D1's centralized
+  demo-only walls fail-closed block any LIVE observe/match/execute until D3/D4; no real-money path. Tests: new
+  `AccountTypeRequiredTests` (mapping, cross-check, missing/null/invalid/disagree→400, legacy backward-compat,
+  update-not-required, both endpoint paths); updated the stale `test_create_on_demo_server_omitting_is_demo_is_rejected`
+  (now keyed `account_type`); `tests_beta_account_cap` create fixtures now send `account_type` (cap assertions
+  unchanged); wizard vitest updated + a no-default gating test. Local: backend classification+cap+account_service
+  green; full backend suite green; frontend eslint 0 errors, build (parity+typecheck) green, wizard/accounts vitest
+  18/18. (Pre-existing LOCAL-only vitest failures in login/support `localStorage` are environment drift after the
+  host reboot — confirmed identical on a clean tree; CI runs them green.)
+
 - **2026-09-29 - MT5 FIRST-LAUNCH BROKER-DISCOVERY UX SAFEGUARD (member guidance; identity enforcement UNCHANGED).**
   New members opening MT5 for the first time can click MetaTrader's *Next* before their broker finishes appearing in
   the list (discovery takes minutes and MetaQuotes shows first), landing on the wrong server. Fix: a prominent,

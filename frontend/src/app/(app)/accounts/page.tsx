@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import { brokerConnectivityEnabled } from "@/lib/flags";
 import { BrokerAccountsContent } from "@/components/broker/BrokerAccountsContent";
+import { AccountTypeSelector, type AccountType } from "@/components/broker/AccountTypeSelector";
 import { getBrokerAccountsUxEnabled } from "@/lib/broker-api";
 import { HostedWorkspaceStatus } from "@/components/accounts/HostedWorkspaceStatus";
 import { fetchJourney, type HostedJourney } from "@/lib/hosted-journey";
@@ -456,7 +457,8 @@ function AccountsContent() {
   const [brokerName, setBrokerName] = useState<string>("");
   const [accountNumber, setAccountNumber] = useState<string>("");
   const [platformPassword, setPlatformPassword] = useState<string>("");
-  const [isDemo, setIsDemo] = useState<boolean>(true);
+  // D2 (Stream D): no default — the customer must explicitly choose Demo or Live before adding.
+  const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [selectedBrokerServer, setSelectedBrokerServer] = useState<BrokerServerSuggestion | null>(null);
   const [brokerSuggestions, setBrokerSuggestions] = useState<BrokerServerSuggestion[]>([]);
 
@@ -526,6 +528,12 @@ function AccountsContent() {
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    // D2 (Stream D): defence-in-depth — the submit button is disabled until a type is chosen, but never
+    // post a create without an explicit account type (the server also rejects a missing/null type).
+    if (accountType === null) {
+      setError(t(lang, "accounts.accountTypeMissing"));
+      return;
+    }
     setCreating(true);
     setError(null);
     setInfo(null);
@@ -546,7 +554,7 @@ function AccountsContent() {
           broker_name: brokerName, // free-text server name (or switch to broker_server later)
           account_number: accountNumber,
           password: platformPassword,
-          is_demo: isDemo,
+          account_type: accountType,
         }),
       });
 
@@ -963,38 +971,25 @@ return (
               </div>
 
               <div>
-                <span
-                  style={{
-                    display: "block",
-                    fontSize: "0.85rem",
-                    color: "#cbd5f5",
-                    marginBottom: "0.25rem",
+                <AccountTypeSelector
+                  value={accountType}
+                  onChange={(v) => {
+                    // D2: changing the type clears any broker-server selection + suggestions (they are
+                    // filtered by demo/live) — preserves the prior checkbox side-effect.
+                    setAccountType(v);
+                    setSelectedBrokerServer(null);
+                    setBrokerSuggestions([]);
                   }}
-                >
-                  {t(lang, "accounts.accountType")}
-                </span>
-                <label
-                  style={{
-                    fontSize: "0.85rem",
-                    color: "#e5f4ff",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    cursor: "pointer",
+                  disabled={creating}
+                  labels={{
+                    legend: t(lang, "accounts.accountTypeRequired"),
+                    demoTitle: t(lang, "accounts.accountTypeDemoTitle"),
+                    demoDesc: t(lang, "accounts.accountTypeDemoDesc"),
+                    liveTitle: t(lang, "accounts.accountTypeLiveTitle"),
+                    liveDesc: t(lang, "accounts.accountTypeLiveDesc"),
+                    liveWarning: t(lang, "accounts.accountTypeLiveWarning"),
                   }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isDemo}
-                    onChange={(e) => {
-                      setIsDemo(e.target.checked);
-                      setSelectedBrokerServer(null);
-                      setBrokerSuggestions([]);
-                    }}
-                    style={{ cursor: "pointer" }}
-                  />
-                  {t(lang, "accounts.demoAccount")}
-                </label>
+                />
               </div>
             </div>
 
@@ -1005,7 +1000,7 @@ return (
                 justifyContent: "flex-end",
               }}
             >
-              <Button type="submit" disabled={creating}>
+              <Button type="submit" disabled={creating || accountType === null}>
                 {creating ? t(lang, "accounts.creating") : t(lang, "accounts.addAccount")}
               </Button>
             </div>

@@ -18,16 +18,39 @@ describe("BrokerAccountWizard — legacy (traditional) mode", () => {
   });
 
   it("creates the account then validates it, then shows the result", async () => {
+    createAccount.mockClear();
     const onAdded = vi.fn();
     render(<BrokerAccountWizard open onClose={() => {}} onAdded={onAdded} />);
     await userEvent.type(screen.getByLabelText(/^broker$/i), "IS6");
     await userEvent.type(screen.getByLabelText(/account number/i), "1302575");
     await userEvent.type(screen.getByLabelText(/^password$/i), "secret");
+    // D2: an explicit account type must be chosen (no default) before the account can be created.
+    await userEvent.click(screen.getByRole("radio", { name: /demo account/i }));
     await userEvent.click(screen.getByRole("button", { name: /add & validate/i }));
     await waitFor(() => expect(createAccount).toHaveBeenCalledTimes(1));
+    expect(createAccount).toHaveBeenCalledWith(expect.objectContaining({ account_type: "demo" }));
     expect(testConnection).toHaveBeenCalledWith(42);
     expect(onAdded).toHaveBeenCalled();
     expect(await screen.findByText(/added and validated/i)).toBeInTheDocument();
+  });
+
+  it("D2: disables Add & validate until an account type is chosen (no default)", async () => {
+    createAccount.mockClear();
+    render(<BrokerAccountWizard open onClose={() => {}} onAdded={() => {}} />);
+    await userEvent.type(screen.getByLabelText(/^broker$/i), "IS6");
+    await userEvent.type(screen.getByLabelText(/account number/i), "1302575");
+    await userEvent.type(screen.getByLabelText(/^password$/i), "secret");
+    // No type chosen yet → submit disabled and neither radio is pre-selected (no default).
+    const submit = screen.getByRole("button", { name: /add & validate/i });
+    expect(submit).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /demo account/i })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("radio", { name: /live account/i })).toHaveAttribute("aria-checked", "false");
+    // Choosing Live enables it and maps to the live account type.
+    await userEvent.click(screen.getByRole("radio", { name: /live account/i }));
+    expect(submit).toBeEnabled();
+    await userEvent.click(submit);
+    await waitFor(() => expect(createAccount).toHaveBeenCalledTimes(1));
+    expect(createAccount).toHaveBeenCalledWith(expect.objectContaining({ account_type: "live" }));
   });
 });
 
