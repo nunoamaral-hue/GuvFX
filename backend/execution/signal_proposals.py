@@ -160,6 +160,12 @@ def _validate(approval: PendingSignalApproval, account, lot: Decimal) -> dict:
         raise ProposalRejected(
             "account_not_demo", "proposals are demo-only in E1a (account is not demo)"
         )
+    # Record-only: the broker server's environment label, persisted on the proposal as a display/audit
+    # observation (NOT a gate — the demo-only decision above is authoritative). Preserved verbatim from
+    # the broker server so the stored value is byte-identical to the pre-policy behaviour.
+    env = ""
+    if account.broker_server_id:
+        env = account.broker_server.environment or ""
 
     if ProposedSignalOrder.objects.filter(approval=approval).exists():
         existing = ProposedSignalOrder.objects.get(approval=approval)

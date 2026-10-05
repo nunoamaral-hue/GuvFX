@@ -240,6 +240,12 @@ def plan_demo_execution(
     from trading.account_policy import is_demo_environment
     if not is_demo_environment(account):
         _reject("account_not_demo", "planning is demo-only")
+    # Record-only: the broker server's environment label, persisted on the plan as a display/audit
+    # observation (NOT a gate — the demo/live decision above is authoritative). Preserved verbatim
+    # from the broker server so the stored value is byte-identical to the pre-policy behaviour.
+    env = ""
+    if account.broker_server_id:
+        env = account.broker_server.environment or ""
 
     # 5. Symbol allowlist.
     symbol = (approval.symbol or "").upper()

@@ -230,8 +230,10 @@ class FanoutRouteTests(_FanoutBase):
         self.assertEqual([p.account_id for p in self._plans(appr)], [self.acctA.id])  # only A
 
     def test_partial_failure_does_not_block_sibling(self):
-        # Customer B's account is demo-flagged but points at a LIVE broker server → plan rejects
-        # "account_live" for B only. A must still be planned + promoted; B records a deferral.
+        # Customer B's account is demo-flagged but points at a LIVE broker server (a demo/live mismatch) →
+        # the D1 centralized policy fails closed and plan rejects B with "account_not_demo" (the former
+        # "account_live" code was folded into this one authoritative gate). A must still be planned +
+        # promoted; B records a deferral. (This test asserts the routing outcome, not the reject code.)
         live = BrokerServer.objects.create(
             broker_display_name="X", server_name="live-1", environment=BrokerServer.LIVE)
         self.acctB.broker_server = live

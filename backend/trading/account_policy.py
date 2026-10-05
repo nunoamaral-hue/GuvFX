@@ -35,9 +35,20 @@ def account_environment(account) -> str:
     Derived from ``account.is_demo``; reuses the write-time ``trading.classification.classification_error`` rule to
     assert ``BrokerServer.environment`` agrees. On any disagreement / unrecognised server environment it raises
     ``AccountEnvironmentIntegrityError`` (fail closed — never silently resolve a mismatch)."""
+    from django.core.exceptions import ObjectDoesNotExist
     from trading.classification import classification_error
     is_demo = bool(getattr(account, "is_demo", None))
-    broker_server = getattr(account, "broker_server", None)
+    # ``getattr(..., None)`` swallows only AttributeError. An UNBOUND/absent server (``broker_server_id`` NULL)
+    # resolves to None here — safe, cross-checked as "no server". But a bound ``broker_server_id`` whose
+    # BrokerServer row is gone (a stale/orphaned FK — only reachable by a raw delete that bypasses
+    # ``on_delete=PROTECT``) raises ObjectDoesNotExist from the descriptor, NOT AttributeError. We cannot
+    # confirm the server environment, so for a money-bearing account we FAIL CLOSED with a sanitised integrity
+    # error rather than guess or let DoesNotExist crash the many callers now routed through this policy.
+    try:
+        broker_server = getattr(account, "broker_server", None)
+    except ObjectDoesNotExist:
+        raise AccountEnvironmentIntegrityError(
+            "broker_server could not be resolved (stale/orphaned FK); cannot classify the account")
     err = classification_error(is_demo, broker_server)
     if err:
         raise AccountEnvironmentIntegrityError(str(err))

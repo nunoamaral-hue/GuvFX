@@ -53,6 +53,23 @@ class AccountPolicyTests(SimpleTestCase):
         a = _Acct(True, _srv("weird"))
         self.assertFalse(is_demo_environment(a))           # never silently treat an unknown env as demo
 
+    def test_stale_broker_server_fk_fails_closed(self):
+        # A bound broker_server_id whose BrokerServer row is gone (stale/orphaned FK) makes the FK descriptor
+        # raise DoesNotExist, NOT AttributeError. The policy must fail CLOSED (sanitised integrity error) and
+        # the gate helpers must return False — never propagate DoesNotExist and crash a DEMO-lifecycle caller.
+        class _StaleAcct:
+            is_demo = True
+
+            @property
+            def broker_server(self):
+                raise BrokerServer.DoesNotExist("orphaned FK")
+
+        a = _StaleAcct()
+        with self.assertRaises(AccountEnvironmentIntegrityError):
+            account_environment(a)
+        self.assertFalse(is_demo_environment(a))
+        self.assertFalse(is_live_environment(a))
+
     def test_demo_accounts_q(self):
         from django.db.models import Q
         self.assertEqual(demo_accounts_q(), Q(is_demo=True))

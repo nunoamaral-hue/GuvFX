@@ -100,6 +100,11 @@ class ProposalBridgeTests(TestCase):
         self.assertTrue(self._rejected("account_not_demo"))
 
     def test_live_broker_environment_rejected(self):
+        # is_demo=True but the broker server is LIVE: a demo/live DISAGREEMENT (bad data). The invariant
+        # under test is that such an account is REJECTED fail-closed with NO proposal created. Under the D1
+        # centralized policy this disagreement raises an integrity error internally, so the single
+        # authoritative demo gate rejects it as "account_not_demo" (the former separate "account_live"
+        # string-compare was folded into this one predicate — both fail closed; the code changed by design).
         server = BrokerServer.objects.create(
             broker_display_name="LiveBroker", server_name="live-1", environment=BrokerServer.LIVE
         )
@@ -109,8 +114,8 @@ class ProposalBridgeTests(TestCase):
         )
         with self.assertRaises(bridge.ProposalRejected) as ctx:
             bridge.propose_order_from_approval(_approval("m4"), account=acct, actor=self.user)
-        self.assertEqual(ctx.exception.code, "account_live")
-        self.assertEqual(ProposedSignalOrder.objects.count(), 0)
+        self.assertEqual(ctx.exception.code, "account_not_demo")   # fail-closed on the demo/live mismatch
+        self.assertEqual(ProposedSignalOrder.objects.count(), 0)   # no order created — the safety invariant
 
     # ----- kill switch / disable -----------------------------------------
 
