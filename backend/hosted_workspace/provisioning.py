@@ -517,7 +517,17 @@ def bind_broker_identity(user, workspace, *, expected_login, expected_server="",
         if str(getattr(acct, "readiness_provider", "")) != PERSISTENT_WORKSPACE:
             return BindResult(False, BIND_NOT_HOSTED)         # Provider-B hosted accounts only
         if acct.is_demo is not True:
-            return BindResult(False, BIND_LIVE_FORBIDDEN)     # Closed Beta is DEMO-only; never self-authorize live
+            # Closed Beta is DEMO-only; never self-authorize live. D3 (DARK): a LIVE account may bind FOR
+            # MONITORING only when HOSTED_LIVE_MONITORING_ENABLED is on. Only the account's is_demo is gated
+            # here — pre-bind the account has no broker_server, so a policy env-check would be VACUOUS; the
+            # authoritative demo/live CONSISTENCY is enforced below against the SERVER actually being bound
+            # (fail-closed on any mismatch), never a mismatched write-once identity. Binding is identity-only
+            # — it NEVER authorizes execution (readiness condition 11 + the live order-time bridge gate keep
+            # every LIVE order blocked; no §3 authz until D4). Byte-identical when the flag is off (any
+            # non-demo account is still forbidden here).
+            from hosted_workspace.flags import hosted_live_monitoring_enabled
+            if not hosted_live_monitoring_enabled():
+                return BindResult(False, BIND_LIVE_FORBIDDEN)
         if str(ws.canonical_state) not in (S.PROVISIONING, S.WAITING_FOR_LOGIN):
             return BindResult(False, BIND_WRONG_STATE)        # only before the workspace connects
         prior_login = str(acct.account_number or "").strip()
@@ -529,7 +539,20 @@ def bind_broker_identity(user, workspace, *, expected_login, expected_server="",
             return BindResult(False, BIND_ALREADY)
         server = None
         if server_name:
-            server, _ = BrokerServer.objects.get_or_create(server_name=server_name)
+            if acct.is_demo:
+                # DEMO (and the only pre-D3 case): unchanged — a newly-created server takes the model default.
+                server, _ = BrokerServer.objects.get_or_create(server_name=server_name)
+            else:
+                # D3 LIVE (flag-gated path only): a NEWLY-created server inherits the LIVE environment so a
+                # LIVE account never silently binds a demo-default server; then cross-check the account's
+                # is_demo against the (possibly pre-existing) server and FAIL CLOSED on any demo/live
+                # disagreement — never write a mismatched, write-once identity (the same T7 rule the serializer
+                # applies at create). This closes the adversarial finding (2026-10-05).
+                server, _ = BrokerServer.objects.get_or_create(
+                    server_name=server_name, defaults={"environment": BrokerServer.LIVE})
+                from trading.classification import classification_error
+                if classification_error(acct.is_demo, server):
+                    return BindResult(False, BIND_LIVE_FORBIDDEN)
         acct.account_number = login
         acct.broker_server = server
         try:

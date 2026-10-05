@@ -31,6 +31,9 @@ TRADING_STOPPED = "TRADING_STOPPED"
 PREPARING = "PREPARING"
 TRADING = "TRADING"
 ATTENTION = "ATTENTION"
+# D3 — a LIVE account that is connected + identity-matched and being MONITORED, but whose automated
+# execution is NOT authorized (no §3 LiveExecutionAuthorization until D4). Derived, never stored.
+CONNECTED_MONITORING_EXEC_UNAUTHORIZED = "CONNECTED_MONITORING_EXEC_UNAUTHORIZED"
 
 _LABELS = {
     BROKER_LOGIN_REQUIRED: "Broker login required",
@@ -39,7 +42,18 @@ _LABELS = {
     PREPARING: "Preparing automated trading",
     TRADING: "Trading",
     ATTENTION: "Action required",
+    CONNECTED_MONITORING_EXEC_UNAUTHORIZED: "Connected — monitoring only",
 }
+
+
+def _live_monitoring_enabled() -> bool:
+    """D3 DARK gate (import-local; fail-closed). When OFF, the LIVE-monitoring display branch below is
+    skipped entirely and a live account's display is byte-identical to the pre-D3 behaviour."""
+    try:
+        from hosted_workspace.flags import hosted_live_monitoring_enabled
+        return hosted_live_monitoring_enabled()
+    except Exception:  # noqa: BLE001 — a read-model must never raise into the serializer
+        return False
 
 
 def _has_active_strategy(account) -> bool:
@@ -96,6 +110,19 @@ def resolve_trading_state(account) -> dict:
     matched = bool(getattr(ws, "proj_account_match", False)) if ws is not None else False
     margin = getattr(ws, "proj_margin_mode", None) if ws is not None else None
     is_demo = getattr(account, "is_demo", False) is True
+
+    # D3 (DARK) — LIVE accounts are MONITORING-capable but never execution-authorized in this programme (no
+    # §3 LiveExecutionAuthorization until D4). With the flag ON, a live persistent-workspace account shows a
+    # dedicated monitoring state from the SAME connected+matched projection — never a false "Trading" and
+    # never the misleading demo-only "action required". With the flag OFF this branch is skipped and the
+    # pre-D3 display is byte-identical. A demo account never enters here.
+    if _live_monitoring_enabled() and not is_demo:
+        if ws is not None and connected and matched:
+            return {"state": CONNECTED_MONITORING_EXEC_UNAUTHORIZED,
+                    "label": _LABELS[CONNECTED_MONITORING_EXEC_UNAUTHORIZED],
+                    "detail": "Connected and monitored. Automated trading is not enabled for live accounts yet."}
+        return {"state": BROKER_LOGIN_REQUIRED, "label": _LABELS[BROKER_LOGIN_REQUIRED],
+                "detail": "Open MT5 and log in to your live broker account."}
 
     if is_active:
         # Started, but not order-capable. The readiness reason CANNOT be used here (evaluate short-circuits at

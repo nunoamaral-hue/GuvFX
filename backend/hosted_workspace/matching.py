@@ -95,10 +95,20 @@ def evaluate_active_account_match(obs: WorkspaceObservation, expected: ExpectedA
         return MatchDecision(False, "active_account_login_mismatch")
     if str(obs.server) != str(expected.server):
         return MatchDecision(False, "active_account_server_mismatch")
-    # Demo/live classification agreement (mirrors evaluate_binding).
+    # Demo/live classification agreement — the observed terminal's environment must EXACTLY EQUAL the
+    # account's expected environment, fail-closed in BOTH directions: a DEMO account must never match a LIVE
+    # terminal, and a LIVE account must never match a DEMO terminal. (The prior check was asymmetric — it only
+    # caught demo-expected↔live-observed — which was safe only because the expected environment was always
+    # hardcoded demo; D3 lets a LIVE account carry its real environment, so the symmetric check is required.)
+    # This is an IDENTITY/ENVIRONMENT match, NOT an execution authorization: execution for a LIVE account is
+    # gated separately (readiness condition 11 + the §3 authorization in D4 + the live order-time bridge
+    # gate), never here. Byte-identical for a demo-expected account (the only case before D3).
     is_demo_account = (obs.trade_mode == TRADE_MODE_DEMO)
-    if expected.is_demo and not is_demo_account:
+    if is_demo_account != expected.is_demo:
         return MatchDecision(False, "classification_mismatch")
+    # A LIVE account may be MATCHED only when live matching is explicitly permitted for it (``allow_live``);
+    # with it False a live terminal is refused, so a LIVE account stays inert unless the D3 producer opts it
+    # in (flag-gated). DEMO is always permitted. This remains an identity gate, not an order authorization.
     if not is_demo_account and not expected.allow_live:
         return MatchDecision(False, "live_execution_not_authorised")
     return MatchDecision(True, "ok")
