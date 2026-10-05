@@ -252,8 +252,9 @@ class Command(BaseCommand):
                 )
                 continue
 
-            # Safety: Demo only
-            if not account.is_demo:
+            # Safety: Demo only (centralized policy; fail-closed on demo/live mismatch)
+            from trading.account_policy import is_demo_environment
+            if not is_demo_environment(account):
                 self.stdout.write(
                     f"  [SKIP] account={account.id} is not demo"
                 )

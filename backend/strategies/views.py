@@ -904,10 +904,11 @@ class StrategyViewSet(viewsets.ModelViewSet):
                            "detail": f"Strategy '{strategy.name}' is_active=True"})
 
         # 2. Account active + demo
+        from trading.account_policy import is_demo_environment
         if not account.is_active:
             checks.append({"name": "account_active", "status": "FAIL",
                            "detail": f"Account {account_id} is_active=False"})
-        elif not account.is_demo:
+        elif not is_demo_environment(account):
             checks.append({"name": "account_demo", "status": "WARN",
                            "detail": f"Account {account_id} is_demo=False"})
         else:
@@ -1490,8 +1491,9 @@ class StrategyViewSet(viewsets.ModelViewSet):
         # validation + runtime readiness + execution controls + the self-serve-arm operational flag
         # (all enforced below) — NOT by spare runtime capacity or registration state.
 
-        # Classification + credentials.
-        if not (account.is_demo and account.is_active):
+        # Classification + credentials (centralized policy: fail-closed on demo/live mismatch).
+        from trading.account_policy import is_demo_environment
+        if not (is_demo_environment(account) and account.is_active):
             return Response({"status": "account_not_ready",
                              "detail": "Account must be demo and active."},
                             status=status.HTTP_409_CONFLICT)
@@ -1620,7 +1622,8 @@ class StrategyViewSet(viewsets.ModelViewSet):
         account = acc_qs.first()
         if not account:
             return Response({"detail": "account not found"}, status=status.HTTP_404_NOT_FOUND)
-        if not (account.is_demo and account.is_active):
+        from trading.account_policy import is_demo_environment
+        if not (is_demo_environment(account) and account.is_active):
             return Response({"status": "account_not_ready", "detail": "Account must be demo and active."},
                             status=status.HTTP_409_CONFLICT)
 

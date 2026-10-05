@@ -112,7 +112,8 @@ def supervised_single_tenant_beta_active(workspace) -> bool:
         )
         if is_customer_zero_account(acct_id):                                 # (3)
             return False
-        if getattr(acct, "is_demo", False) is not True:                      # (4) demo-only wall
+        from trading.account_policy import is_demo_environment
+        if not is_demo_environment(acct):                                    # (4) demo-only wall (policy)
             return False
         node = getattr(workspace, "execution_node", None)                    # (5)
         node_id = getattr(node, "pk", None)

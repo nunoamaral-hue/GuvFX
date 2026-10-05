@@ -167,12 +167,11 @@ def _validate(plan: SignalExecutionPlan, *, now,
     if cfg is None or not cfg.auto_demo_execution_enabled:
         raise PromotionRejected("source_not_enabled", f"source {plan.source} is not enabled for auto-demo")
 
-    if not plan.account.is_demo:
+    # Demo-only (centralized policy: fail-closed on LIVE and on any demo/live disagreement). Folds the former
+    # separate account_not_demo + broker_server.environment=='live' checks into one authoritative predicate.
+    from trading.account_policy import is_demo_environment
+    if not is_demo_environment(plan.account):
         raise PromotionRejected("account_not_demo", "promotion is demo-only")
-    if plan.account.broker_server_id:
-        env = (plan.account.broker_server.environment or "")
-        if env.lower() == "live":
-            raise PromotionRejected("account_live", "live accounts are not permitted")
 
     # WP1B/WP2 (ADR-0029): broker-validation execution gate on the auto-execution funnel. Transparent while
     # BROKER_CONNECTIVITY_EXECUTION_GATE is OFF (existing behaviour unchanged); when ON, a non-validated or

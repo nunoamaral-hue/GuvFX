@@ -849,7 +849,8 @@ class CreateDemoTradeJobView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not account.is_demo:
+        from trading.account_policy import is_demo_environment  # centralized demo gate (fail-closed on mismatch)
+        if not is_demo_environment(account):
             debug_info = {}
             if django_settings.DEBUG:
                 debug_info = {

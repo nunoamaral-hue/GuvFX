@@ -54,7 +54,8 @@ def _arm_preconditions(account) -> ArmResult:
         return ArmResult(False, "broker_account_inactive")
     if getattr(account, "disconnected_at", None) is not None:
         return ArmResult(False, "broker_account_disconnected")
-    if getattr(account, "is_demo", False) is not True:          # demo-only wall
+    from trading.account_policy import is_demo_environment
+    if not is_demo_environment(account):                        # demo-only wall (policy; fail-closed on mismatch)
         return ArmResult(False, R.RW_REAL_ACCOUNT_NOT_ENABLED)
     ws = getattr(account, "hosted_workspace", None)
     if ws is None:

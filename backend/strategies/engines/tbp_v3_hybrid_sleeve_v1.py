@@ -204,9 +204,10 @@ def evaluate_tbp_v3_hybrid_sleeve_v1(
     }
 
     # =================================================================
-    # 1. HARD GUARD — demo only
+    # 1. HARD GUARD — demo only (centralized policy; fail-closed on demo/live mismatch)
     # =================================================================
-    if not getattr(account, "is_demo", False):
+    from trading.account_policy import is_demo_environment
+    if not is_demo_environment(account):
         return _no_action(
             assignment, symbol, DEMO_ONLY_GUARD,
             StrategyRuntimeEvent.EVENT_SIGNAL_SKIPPED,
