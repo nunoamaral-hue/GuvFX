@@ -234,14 +234,12 @@ def plan_demo_execution(
     if cfg is None or not cfg.auto_demo_execution_enabled:
         _reject("source_not_enabled", f"source {source} is not enabled for auto-demo")
 
-    # 4. Demo-only.
-    if not account.is_demo:
+    # 4. Demo-only (centralized policy: fail-closed on LIVE and on any demo/live disagreement). Folds the former
+    # separate account_not_demo + broker_server.environment=='live' checks into the single authoritative predicate;
+    # a demo/live mismatch (bad data) now rejects as account_not_demo rather than account_live (both fail closed).
+    from trading.account_policy import is_demo_environment
+    if not is_demo_environment(account):
         _reject("account_not_demo", "planning is demo-only")
-    env = ""
-    if account.broker_server_id:
-        env = account.broker_server.environment or ""
-        if env.lower() == "live":
-            _reject("account_live", "live accounts are not permitted")
 
     # 5. Symbol allowlist.
     symbol = (approval.symbol or "").upper()

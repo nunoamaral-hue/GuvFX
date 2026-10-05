@@ -153,18 +153,13 @@ def _validate(approval: PendingSignalApproval, account, lot: Decimal) -> dict:
     if blocked:
         raise ProposalRejected(blocked, "execution control blocks proposals")
 
-    if not account.is_demo:
+    # Demo-only (centralized policy: fail-closed on LIVE and on any demo/live disagreement; folds the former
+    # separate account_not_demo + broker_server.environment=='live' checks into one authoritative predicate).
+    from trading.account_policy import is_demo_environment
+    if not is_demo_environment(account):
         raise ProposalRejected(
             "account_not_demo", "proposals are demo-only in E1a (account is not demo)"
         )
-
-    env = ""
-    if account.broker_server_id:
-        env = account.broker_server.environment or ""
-        if env.lower() == "live":
-            raise ProposalRejected(
-                "account_live", "live accounts are not permitted in E1a"
-            )
 
     if ProposedSignalOrder.objects.filter(approval=approval).exists():
         existing = ProposedSignalOrder.objects.get(approval=approval)

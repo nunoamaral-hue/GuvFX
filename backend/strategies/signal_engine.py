@@ -273,8 +273,9 @@ def validate_signal_safety(
     if not config.enabled:
         return False, "strategy_disabled"
 
-    # 2. Account must be demo (hard requirement for MVP)
-    if not account.is_demo:
+    # 2. Account must be demo (hard requirement for MVP) — centralized policy (fail-closed on demo/live mismatch)
+    from trading.account_policy import is_demo_environment
+    if not is_demo_environment(account):
         return False, "account_not_demo"
 
     # 3. Account must be active

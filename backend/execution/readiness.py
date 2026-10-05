@@ -141,7 +141,8 @@ class PersistentWorkspaceProvider:
             return ReadinessDecision(False, g.R_ACCOUNT_INACTIVE, self.key)
         if getattr(account, "disconnected_at", None) is not None:
             return ReadinessDecision(False, g.R_ACCOUNT_DISCONNECTED, self.key)
-        if getattr(account, "is_demo", False) is not True:  # condition 11 — DEMO-ONLY subsystem, fail-closed
+        from trading.account_policy import is_demo_environment
+        if not is_demo_environment(account):  # condition 11 — DEMO-ONLY (centralized policy; fail-closed on mismatch)
             return ReadinessDecision(False, RW_REAL_ACCOUNT_NOT_ENABLED, self.key)
         ws = getattr(account, "hosted_workspace", None)
         if ws is None:
