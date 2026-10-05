@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-10-05 - STREAM D3: LIVE ACCOUNT MONITORING (environment-aware; execution STILL blocked) — DARK.**
+  Builds on D1 (centralized `account_policy`) + D2 (explicit `account_type`, merged `cce9d04`/#450,
+  deployed+certified). Per approved design §2/§13.3: a LIVE (real-money) account may reach CONNECTED/MONITORING
+  (observe / identity-match / confirm / bind / dashboard) WITHOUT execution authority, behind
+  `HOSTED_LIVE_MONITORING_ENABLED` (default OFF). **HARD INVARIANT (tested):** execution for a LIVE account
+  stays BLOCKED — `ReadinessDecision.eligible` (PersistentWorkspaceProvider.evaluate) and `broker_gate` are
+  UNTOUCHED; a LIVE account still fails closed at condition 11 (`is_demo_environment` →
+  `RW_REAL_ACCOUNT_NOT_ENABLED`) even with every execution flag on; no §3 LiveExecutionAuthorization exists
+  until D4; the order-time bridge gate remains authoritative. Changes (all DARK / byte-identical for DEMO +
+  flag-off): flags.py `hosted_live_monitoring_enabled`; readiness.py ADDITIVE `evaluate_monitoring` +
+  `evaluate_monitoring_readiness` (env-AGNOSTIC: connected+matched+confirmed+fresh, omitting exec flag/arm/
+  authz/trade_allowed/demo-only); matching.py SYMMETRIC env check (observed env must EQUAL expected — fixes a
+  latent asymmetry where a LIVE-expected account matched a DEMO terminal; enables LIVE match only with explicit
+  `allow_live`); producer.py `RawWorkspaceSnapshot.expected_is_demo/expected_allow_live` (default None ⇒
+  demo-only, every pre-D3 caller unchanged); live_observe.py sets expected env from the policy under the flag;
+  provisioning.py `bind_broker_identity` relaxes `BIND_LIVE_FORBIDDEN` for a CLEAN live identity under the flag
+  (mismatch fail-closed; identity-only, never execution); trading_state.py new derived
+  `CONNECTED_MONITORING_EXEC_UNAUTHORIZED` display state. `agent.py`'s alternate snapshot path left demo-only
+  (fail-closed: won't match a LIVE account). Tests: `execution/tests_d3_live_monitoring.py` (17). Local: D3
+  17/17; matcher + ratchet guard green; full hosted_workspace+execution regression green. Branch
+  `feat/stream-d3-live-monitoring` (`188dde8`); adversarial review in progress; PR/CI/DARK-deploy next.
+  ACTIVATION (flipping the flag + selecting the first real LIVE monitoring account) is Sponsor-gated.
+
 - **2026-10-05 - STREAM D2: EXPLICIT REQUIRED ADD-ACCOUNT TYPE (demo/live) — API + UX, backward compatible.**
   Builds on D1 (centralized `account_policy`, merged `4225140`/#449, DARK-deployed+certified). Per the approved
   Stream-D design §4: the Add-Account create contract now REQUIRES an explicit `account_type ∈ {demo, live}` with

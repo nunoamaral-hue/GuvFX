@@ -234,17 +234,17 @@ def build_observation_from_host(workspace, result, *, now=None):
     collected_at = _num_or_none(corr.get("collected_at"))
     # D3 — supply the account's EXPECTED environment so the certified matcher can identity-match a LIVE
     # account (observed env must EQUAL expected env). DARK: only when HOSTED_LIVE_MONITORING_ENABLED is on;
-    # otherwise None/False ⇒ the producer stays demo-only (byte-identical). Even with the flag on, a DEMO
-    # account resolves to (is_demo=True, allow_live=False) — identical to the demo-only default — so only a
-    # LIVE account's matching changes. Routed through the authoritative account_policy (fail-closed: a
-    # mismatch yields is_demo=False + allow_live=False, which the matcher denies). This feeds the IDENTITY
+    # otherwise None/False ⇒ the producer stays demo-only (byte-identical). Crucially we opt in ONLY a
+    # CLEAN LIVE account (``is_live_environment``): a DEMO account — whether its broker-server env is
+    # consistent OR a legacy/admin-edited mismatch — is left at the demo-only default, so NO demo account's
+    # matching changes when the flag is armed (adversarial finding, 2026-10-05). This feeds the IDENTITY
     # match only; execution for a LIVE account remains blocked at readiness condition 11 + the bridge gate.
     exp_is_demo, exp_allow_live = None, False
     from hosted_workspace.flags import hosted_live_monitoring_enabled
     if hosted_live_monitoring_enabled():
-        from trading.account_policy import is_demo_environment, is_live_environment
-        exp_is_demo = is_demo_environment(acct)
-        exp_allow_live = is_live_environment(acct)
+        from trading.account_policy import is_live_environment
+        if is_live_environment(acct):
+            exp_is_demo, exp_allow_live = False, True
     snapshot = RawWorkspaceSnapshot(
         workspace_id=str(getattr(workspace, "workspace_uuid", "") or getattr(workspace, "id", "") or ""),
         expected_login=_str_or_none(getattr(acct, "account_number", None)),

@@ -55,6 +55,10 @@ FLAGS = dict(
 )
 
 
+# D3 — same beta flag set PLUS the LIVE-monitoring gate armed (used only by D3LiveBindTests).
+FLAGS_D3 = {**FLAGS, "HOSTED_LIVE_MONITORING_ENABLED": True}
+
+
 def _mk_user(email="beta.deferred@example.invalid"):
     return User.objects.create_user(username=email.split("@")[0], email=email, password="x")
 
@@ -211,6 +215,54 @@ class BindBrokerIdentityTests(TestCase):
         res = P.bind_broker_identity(user, ws, expected_login=EXPECTED_LOGIN, expected_server=EXPECTED_SERVER)
         self.assertFalse(res.ok)
         self.assertEqual(res.reason, P.BIND_WRONG_STATE)   # the pre-connected state guard fires first
+
+
+@override_settings(**FLAGS_D3)
+class D3LiveBindTests(TestCase):
+    """D3 — under HOSTED_LIVE_MONITORING_ENABLED a LIVE account may bind its identity FOR MONITORING, but a
+    NEWLY-created broker server inherits the LIVE environment and any demo/live disagreement fails closed — a
+    LIVE account must never silently bind a demo-default server and brick itself (adversarial finding fix)."""
+
+    def _wfl_live(self, user=None):
+        user = user or _mk_user()
+        req = P.request_hosted_workspace(user, expected_login="", is_demo=True)
+        _mk_node()
+        P.allocate_workspace_node(req.workspace)
+        ws = req.workspace
+        ws.refresh_from_db()
+        # Make it a LIVE hosted account (bypass the save() write-once/classification guards to set the precondition).
+        TradingAccount.objects.filter(pk=ws.trading_account_id).update(is_demo=False)
+        ws.refresh_from_db()
+        return user, ws
+
+    def test_live_bind_creates_a_live_server_not_demo_default(self):
+        user, ws = self._wfl_live()
+        res = P.bind_broker_identity(user, ws, expected_login="500500", expected_server="LiveFX-Real")
+        self.assertTrue(res.ok, res.reason)
+        acct = ws.trading_account
+        acct.refresh_from_db()
+        self.assertFalse(acct.is_demo)
+        self.assertEqual(acct.broker_server.server_name, "LiveFX-Real")
+        self.assertEqual(acct.broker_server.environment, BrokerServer.LIVE)   # inherited LIVE, not demo default
+        from trading.classification import classification_error
+        self.assertIsNone(classification_error(acct.is_demo, acct.broker_server))   # consistent, not bricked
+
+    def test_live_bind_to_existing_demo_server_fails_closed(self):
+        BrokerServer.objects.create(server_name="SharedName", environment=BrokerServer.DEMO)
+        user, ws = self._wfl_live()
+        res = P.bind_broker_identity(user, ws, expected_login="500501", expected_server="SharedName")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, P.BIND_LIVE_FORBIDDEN)   # mismatch fail-closed — never write is_demo=False+demo-server
+        acct = ws.trading_account
+        acct.refresh_from_db()
+        self.assertEqual((acct.account_number or "").strip(), "")   # still UNBOUND, not bricked
+
+    @override_settings(HOSTED_LIVE_MONITORING_ENABLED=False)
+    def test_live_bind_forbidden_when_flag_off(self):   # byte-identical pre-D3
+        user, ws = self._wfl_live()
+        res = P.bind_broker_identity(user, ws, expected_login="500502", expected_server="LiveFX-Real")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, P.BIND_LIVE_FORBIDDEN)
 
 
 @override_settings(**FLAGS)

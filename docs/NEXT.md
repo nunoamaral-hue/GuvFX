@@ -1,22 +1,26 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Stream D (Real/LIVE MT5) — D1 DEPLOYED+CERTIFIED, D2 built; D3 next (2026-10-05)
-Sponsor authorized D1→D4 (governed PR/test/adversarial/CI/deploy). **D1** (centralized `account_policy`, PR #449
-`4225140`) is merged + DARK-deployed + certified in prod (demo/live/mismatch/stale-FK fail-closed proven in the
-running image; no migration, no flags armed). **D2** (explicit required Add-Account `account_type`, §4) is built on
-branch `feat/stream-d2-account-type`: write-only `account_type` on `TradingAccountSerializer` → `is_demo`
-(create-only, 400 on missing/null/invalid, cross-checked by `classification_error`), `views_account_add` no silent
-default; backward compatible (explicit legacy `is_demo` still accepted; internal/seed/admin/hosted untouched; no
-migration); shared no-default `AccountTypeSelector` (LIVE=amber real-money) in both the inline accounts form and the
-wizard legacy mode; hosted stays demo-locked (§2). Creating a LIVE account is inert — D1's demo-only walls block
-LIVE observe/match/execute until D3/D4. Local: full backend suite green; frontend eslint 0-err + build green +
-wizard/accounts vitest 18/18. **Single next action:** open the D2 PR → Auto-fix CI monitor → on GREEN+CLEAN merge →
-DARK deploy (code-only, recreate ONLY guvfx-backend + guvfx-frontend, never `--remove-orphans`) → then **D3** (LIVE
-monitoring: observer/matcher/confirm/bind environment-aware via the policy; `monitoring_eligible` split in
-`readiness.py`; LIVE can connect+monitor, execution still blocked by absence of §3 `LiveExecutionAuthorization`).
+## ▶ Stream D (Real/LIVE MT5) — D1+D2 DEPLOYED+CERTIFIED, D3 built; D4 next (2026-10-05)
+Sponsor authorized D1→D4 (governed PR/test/adversarial/CI/deploy). **D1** (centralized `account_policy`, #449
+`4225140`) and **D2** (explicit required Add-Account `account_type`, #450 `cce9d04`) are both merged + DARK-deployed
+(backend+frontend) + certified in prod (D2: missing-type→400, demo→is_demo True, live→False, legacy-is_demo
+backward-compat — all proven in the running image; no migration). **D3** (LIVE monitoring, §2/§13.3) is built on
+branch `feat/stream-d3-live-monitoring` (`188dde8`): a LIVE account may reach CONNECTED/MONITORING (observe /
+match / confirm / bind / display) WITHOUT execution, behind `HOSTED_LIVE_MONITORING_ENABLED` (default OFF).
+Additive `evaluate_monitoring` split (execution `eligible` untouched); SYMMETRIC matcher (observed env == expected,
+fixes a latent asymmetry); `RawWorkspaceSnapshot.expected_is_demo/allow_live` threaded via live_observe under the
+flag; `bind_broker_identity` relaxes `BIND_LIVE_FORBIDDEN` for a clean live identity under the flag (mismatch
+fail-closed, identity-only); derived `CONNECTED_MONITORING_EXEC_UNAUTHORIZED` state. HARD INVARIANT (tested 17/17):
+LIVE execution stays blocked at readiness condition 11 even with every exec flag on; monitoring never authorises an
+order. Local: D3 17/17; matcher + ratchet green; full hosted_workspace+execution regression green. Adversarial
+review in progress. **Single next action:** finish the D3 adversarial review (address confirmed findings) → open
+the D3 PR → Auto-fix CI monitor → on GREEN+CLEAN merge → DARK deploy (recreate ONLY guvfx-backend, never
+`--remove-orphans`) → then **D4** (`LiveExecutionAuthorization` model + human-gated ceremony + arm/planning/
+promotion/routing gates + per-runtime `MT5_ALLOW_LIVE` + LIVE recovery semantics; simulated-bridge tests only).
 Invariants held throughout: no real-money order; self-connect OFF; Account 33 quarantined; Cold-Boot V2 paused;
-support@ entitlement 20; 25/35/36 untouched. Stop only for a genuinely new Sponsor-level architecture/live-money
-decision (e.g. the §3 LIVE-execution-authorization ceremony in D4, or the first real LIVE monitoring account).
+support@ entitlement 20; 25/35/36 untouched. **STOP (genuinely new Sponsor-level live-money decisions):** arming
+the §3 LIVE-execution ceremony in D4, flipping `HOSTED_LIVE_MONITORING_ENABLED`, and selecting the FIRST real LIVE
+monitoring account (per the D1-checkpoint: a fresh Model-A account, monitoring-only, NOT Account 43).
 
 ## ▶ Cold-boot recovery P0-P5 DEPLOYED + probe-only CERTIFIED; reboot-READY pending flat window + arm (2026-09-30)
 Sponsor-authorized deploy DONE: (1) P4/P5 backend deployed DARK (mig 0014, flags present+OFF, 25/35/36 untouched);
