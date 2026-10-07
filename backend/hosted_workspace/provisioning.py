@@ -182,10 +182,17 @@ def node_occupant_count(node) -> int:
     ``execution_node`` (regardless of the intent account's ``is_active``). See ``_node_has_capacity`` for
     why the union (not the sum of two filtered counts) is the robust definition."""
     from trading.models import TradingAccount
+    from hosted_workspace.decommission import CLEANUP_SUCCEEDED
     occupants = set(
         TradingAccount.objects.filter(terminal_node_id=node.pk, is_active=True).values_list("id", flat=True)
     )
-    occupants |= set(node.bound_hosted_workspaces.values_list("trading_account_id", flat=True))
+    # Defensive capacity accounting (resource-leak fix): a workspace whose physical decommission has SUCCEEDED no
+    # longer owns the slot, so it must NOT consume allocatable capacity even if its ``execution_node`` has not yet
+    # been cleared (the success path clears it; this guards a failed/raced clear). Only SUCCEEDED is excluded —
+    # a PENDING/RUNNING/FAILED cleanup still owns the slot and MUST keep counting so a reused port/identity can
+    # never collide with a tenant whose host footprint is still being torn down.
+    occupants |= set(node.bound_hosted_workspaces.exclude(cleanup_state=CLEANUP_SUCCEEDED)
+                     .values_list("trading_account_id", flat=True))
     return len(occupants)
 
 

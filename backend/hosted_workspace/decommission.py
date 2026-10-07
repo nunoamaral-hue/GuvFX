@@ -74,6 +74,33 @@ def _endpoint_port(ws) -> int:
         return 0
 
 
+def reclaim_decommissioned_allocation(ws_pk) -> dict:
+    """Release the ALLOCATABLE resources of a FULLY-DECOMMISSIONED workspace so a removed account stops consuming
+    physical capacity: clear the node slot (``execution_node`` + ``workspace_node``) and RETIRE the execution
+    endpoint (freeing its port). Returns ``{"node_released", "endpoint_retired"}`` rowcounts.
+
+    SAFETY — acts ONLY while ``cleanup_state == CLEANUP_SUCCEEDED`` (physical teardown proven complete). The guard
+    lives in the UPDATE WHERE-clause, so this is idempotent (0 when already reclaimed) and concurrency-safe: a
+    FAILED/RUNNING/PENDING cleanup can never prematurely free a slot or port that a live tenant might still own
+    (which would risk a cross-tenant collision on reuse). Used by the Stage-2 success path AND the one-time
+    ``reclaim_node_allocations`` reconcile command, so the invariant lives in one place."""
+    from hosted_workspace.models import HostedMt5Workspace
+    out = {"node_released": 0, "endpoint_retired": 0}
+    out["node_released"] = (HostedMt5Workspace.objects
+                            .filter(pk=ws_pk, cleanup_state=CLEANUP_SUCCEEDED)
+                            .exclude(execution_node__isnull=True, workspace_node__isnull=True)
+                            .update(execution_node=None, workspace_node=None))
+    try:
+        from execution.models import HostedExecutionEndpoint
+        out["endpoint_retired"] = (HostedExecutionEndpoint.objects
+                                   .filter(workspace_id=ws_pk, workspace__cleanup_state=CLEANUP_SUCCEEDED)
+                                   .exclude(state=HostedExecutionEndpoint.State.RETIRED)
+                                   .update(state=HostedExecutionEndpoint.State.RETIRED))
+    except Exception:  # noqa: BLE001 — endpoint retire is best-effort; never block node reclamation
+        logger.warning("reclaim: endpoint retire failed ws=%s", ws_pk)
+    return out
+
+
 def run_workspace_cleanup(*, executor_resolver=None, now=None) -> dict:
     """One bounded pass of STAGE-2 physical cleanup. Selects tombstoned workspaces whose cleanup is due, and drives
     each through the ordered governed teardown. Never raises into the scheduler; never touches a non-tombstoned
@@ -207,6 +234,15 @@ def _cleanup_one(ws, *, executor_resolver, now) -> tuple:
             logger.warning("hosted cleanup: provisioning-credential retire failed account=%s",
                            getattr(account, "id", None))
         _write(ws, state=CLEANUP_SUCCEEDED, now=now, reason="cleaned", next_retry_at=None)
+        # Resource-leak fix: a SUCCESSFUL physical decommission must RELEASE the workspace's node allocation
+        # (+ retire its endpoint) so the reclaimed slot/port stop consuming allocatable capacity. Best-effort —
+        # a reclaim hiccup never flips a clean teardown back to retry (the reconcile command is the safety net).
+        try:
+            rec = reclaim_decommissioned_allocation(ws.pk)
+            if rec["node_released"] or rec["endpoint_retired"]:
+                logger.info("hosted_cleanup reclaimed allocation account=%s %s", account.id, rec)
+        except Exception:  # noqa: BLE001
+            logger.warning("hosted_cleanup: allocation reclaim failed account=%s", getattr(account, "id", None))
         logger.info("hosted_cleanup_succeeded account=%s attempts=%s", account.id, attempts)
         return "succeeded", "cleaned"
 

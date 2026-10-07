@@ -108,6 +108,56 @@ class HostedLiveOnboardingTests(TestCase):
         self.assertEqual(r.data.get("live_onboarding_available"), True)
 
 
+# Multi-account (Phase-C enforcement armed) + LIVE onboarding on — reproduces support@'s real path (Account-45).
+MULTI = dict(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_WORKSPACE_ONBOARDING_ENABLED="1",
+             CONCURRENT_ACCOUNTS_ENFORCEMENT_ENABLED=True, HOSTED_LIVE_ONBOARDING_ENABLED=True)
+
+
+@override_settings(**MULTI)
+class MultiAccountLiveOnboardingTests(TestCase):
+    """D5.1 — a MULTI-account hosted user (the Account-45 defect) must still get the LIVE option: the journey's
+    ``multiple_accounts`` chooser response now carries ``live_onboarding_available`` (previously only on the
+    single-account projection), and an explicit Live add creates a genuinely LIVE account."""
+
+    def setUp(self):
+        from billing.models import UserSubscriptionState
+        from trading.account_entitlement import grant_concurrent_enforcement
+        self.user = User.objects.create_user(username="d5multi", email="d5multi@x.invalid", password="x")
+        UserSubscriptionState.objects.update_or_create(user=self.user, defaults=dict(
+            current_plan=UserSubscriptionState.Plan.BETA,
+            plan_status=UserSubscriptionState.PlanStatus.ACTIVE, viewer_mode=False))
+        grant_concurrent_enforcement(self.user)
+        self.c = APIClient(); self.c.force_authenticate(self.user)
+
+    def _add(self, login, server, account_type):
+        return self.c.post(ADD_URL, {"broker_name": "B", "expected_login": login,
+                                     "expected_server": server, "account_type": account_type}, format="json")
+
+    def test_multi_account_user_can_add_a_live_account(self):
+        # existing MULTIPLE accounts (so the journey returns the multi-account chooser)
+        self.assertEqual(self._add("md1", "IS6-Demo", "demo").status_code, 201)
+        self.assertEqual(self._add("md2", "PepperstoneUK-Demo", "demo").status_code, 201)
+        j = self.c.get(JOURNEY_URL)
+        self.assertEqual(j.status_code, 200, j.data)
+        self.assertEqual(j.data.get("status"), "multiple_accounts")
+        self.assertTrue(j.data.get("live_onboarding_available"), j.data)   # the Account-45 fix
+        # Add Account -> Live -> genuinely LIVE (not DEMO)
+        r = self._add("55442", "TradersWay-Live", "live")
+        self.assertEqual(r.status_code, 201, r.data)
+        acct = TradingAccount.objects.get(pk=r.data["trading_account_id"])
+        self.assertFalse(acct.is_demo)
+        self.assertEqual(acct.broker_server.environment, BrokerServer.LIVE)
+        self.assertEqual(account_environment(acct), Environment.LIVE)
+
+    def test_multi_account_live_unavailable_when_flag_off(self):
+        with override_settings(HOSTED_LIVE_ONBOARDING_ENABLED=False):
+            self.assertEqual(self._add("md1", "IS6-Demo", "demo").status_code, 201)
+            self.assertEqual(self._add("md2", "PepperstoneUK-Demo", "demo").status_code, 201)
+            j = self.c.get(JOURNEY_URL)
+            self.assertEqual(j.data.get("status"), "multiple_accounts")
+            self.assertFalse(j.data.get("live_onboarding_available"))
+
+
 @override_settings(**LIVE_ON)
 class HostedLiveOnboardingServiceTests(TestCase):
     """Service-level guards on ``request_hosted_workspace`` (defence in depth below the view)."""

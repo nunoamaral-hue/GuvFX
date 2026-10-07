@@ -198,8 +198,13 @@ class OnboardingJourneyView(_OnboardingBase):
             owned = list(HostedMt5Workspace.objects.filter(trading_account__user=request.user)
                          .select_related("trading_account__broker_server").order_by("id"))
             if len(owned) > 1:
+                # D5.1 — a multi-account hosted user must ALSO learn whether LIVE onboarding is available, else
+                # the Add-Account wizard stays demo-locked for them (the Account-45 defect: the field was only
+                # emitted on the single-account _projection path). It is a global (per-flag) value, so expose it
+                # on the chooser response too; the frontend reads ``journey?.live_onboarding_available``.
                 return Response({"status": "multiple_accounts",
-                                 "accounts": [_account_summary(w) for w in owned]})
+                                 "accounts": [_account_summary(w) for w in owned],
+                                 "live_onboarding_available": hosted_live_onboarding_enabled()})
         account = ws.trading_account if ws is not None else None
         return Response(_projection(request.user, ws, account))
 
