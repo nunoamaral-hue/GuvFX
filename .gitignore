@@ -85,3 +85,7 @@ deploy/beta-provisioner/beta-provisioner.secret.env*
 
 # Node-2 dispatch worker — filled env-file holds secrets, never commit (template is committed)
 deploy/node2-dispatch-worker/node2-dispatch-worker.env
+
+# Broker-intelligence raw evidence store (WP2) — raw broker messages must never enter Git (data rule)
+backend/var/
+var/broker_intelligence_evidence/

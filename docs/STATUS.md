@@ -43,8 +43,25 @@
     success — account stays LIVE with intact credentials. **Fix `a39f27e`:** wrap the retire UPDATE in its own
     savepoint (mirrors the create path), + regression `test_retire_db_error_does_not_poison_enclosing_tombstone_txn`
     (verified FAILS on bare-update with `TransactionManagementError`, PASSES with the savepoint). Other 4 candidates
-    REFUTED. Focused 11 + affected 45 OK; `check` clean. AWAITING green CI → merge → DARK deploy (recreate backend +
-    migrate `broker_intelligence 0001`), then WP2.
+    REFUTED. Focused 11 + affected 45 OK; `check` clean. **WP1 MERGED #464 (squash `f37ca0f`) + DARK-DEPLOYED
+    2026-10-07** (backend image `eb1f176f`, recreated `--force-recreate --no-deps`, NO `--remove-orphans`;
+    `broker_intelligence.0001_initial` applied). Post-deploy verified DARK: `broker_email_identity_enabled=False`,
+    `BrokerEmailAlias rows=0`, CSRF 200, logs clean, all 14 containers Up (5 workers intact).
+  - **PART A WP2 (Evidence + event/withdrawal schema) — BUILT (DARK), awaiting review→PR→deploy:** added
+    `EvidenceBlob` (content-addressed, write-once, **pointer-not-inline** — hash+storage_key+size only, raw bytes in a
+    configurable fs store `evidence.EvidenceStore` outside DB/Git), `BrokerEvent` (append-only EVIDENCE — evidential
+    fields write-once via app `save()` guard AND a DB BEFORE-UPDATE trigger that rejects any evidential-column
+    change; only `correlation_status` may advance in WP5; money as `Decimal`; amount/currency/occurred_at/ref-id
+    NULLABLE = never fabricated; `provenance` defaults SYNTHETIC, never silently REAL), `Withdrawal` (durable;
+    idempotent via partial-unique `(trading_account, broker_reference_id)`), mig `0002` (+2 immutability triggers;
+    reversible). No forward FK from alias; no writers wired; no execution/strategy/credential authority. Adversarial
+    review → **2 CONFIRMED (1 MEDIUM + 1 LOW), both fixed before PR:** the instance-level `delete()` guard + an
+    absolute "never deleted" docstring overstated protection — Django's BULK `QuerySet.delete()` (and raw SQL)
+    bypasses the instance method, and 0002 had only BEFORE-UPDATE triggers → an unreferenced `EvidenceBlob`/
+    `BrokerEvent` row was bulk-deletable (violating "quarantine, never destroy"; enabling a delete+re-put metadata
+    rewrite). FIX: added BEFORE-DELETE triggers on both tables (never in a CASCADE chain — all inbound FKs PROTECT —
+    so no lifecycle breaks; TRUNCATE teardown unaffected) + corrected docstrings + 2 bulk-delete regression tests.
+    Tests 33 OK (20 WP2); affected regression 1605 OK; `check` clean.
 
 - **2026-10-07 - RECOVERY D5.1 + CAPACITY RESOURCE-LEAK FIX (Account-45 + node-slot leak) — DARK, backend-only.**
   Sponsor-authorized after the replacement LIVE account (Account 45) ALSO came out DEMO + provisioning stalled.
