@@ -33,6 +33,16 @@
   server LIVE) + `tests_capacity_reclaim` (release/gated/idempotent/occupant-exclusion/freed-slot-reusable) + C3 +
   ratchet green; full affected regression (hosted_workspace+execution+trading) **2825 OK**. No migration. No
   monitoring/recovery/execution enabled; no authz; no MT5_ALLOW_LIVE; no order.
+  **MERGED + DEPLOYED + DATA-OPS DONE + VERIFIED (2026-10-07):** #461 `2e9a30b`; backend img `f73947ab`
+  (rollback `guvfx-prod-guvfx-backend:rollback-preRECOVERY`=`66dfbdc4`); recreated ONLY guvfx-backend (no
+  migration, no frontend rebuild, no `--remove-orphans`); API 200 (one transient 502 on gunicorn warmup).
+  DATA-OPS: **Account 45 removed** via Model-A (endpoint retired; Stage-2 RUNNING — its node-2 slot frees on
+  SUCCEEDED via the new fix); `TradersWay-Live` (capital) corrected demo→LIVE (no active dep — canonical for the
+  re-create; lowercase `Tradersway-Live`=LIVE tombstone artifact remains, server-name canonicalization noted as a
+  follow-up); `reclaim_node_allocations --apply` freed 5 stale node-2 slots (37/39/40/43/44) + retired acct40's
+  leaked READY endpoint. **VERIFIED via `hosted_capacity_report`: node 2 `unexpected_tombstoned_allocations=0`,
+  available=4 (→5 after acct45 teardown), "capacity is honest"; node 1 clean; 25/35/36 untouched.** STOPPED —
+  Sponsor to create the next fresh LIVE account via the now-truly-fixed UI (NOT server-side).
 
 - **2026-10-07 - STREAM D5 (hosted LIVE-onboarding fix — the Account-44 D2 gap) — DARK.**
   Sponsor-directed after Account 44 (support@, login 55442, TradersWay-Live) was created DEMO despite selecting

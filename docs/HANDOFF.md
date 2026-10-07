@@ -25,13 +25,17 @@
 - **Exact tests.** `manage.py test hosted_workspace execution trading` → **2825 OK**. Focused: D5 (incl. multi-
   account E2E) + `tests_capacity_reclaim` (6) + C3 + ratchet → **49 OK**. `manage.py check` clean; both new commands
   import.
-- **Commit / branch state.** Branch `fix/hosted-capacity-leak-and-d51` off `28cb118`; PR/push + data-ops pending.
-- **One bounded next action.** Push → PR → Auto-fix CI → merge → backend deploy (recreate ONLY `guvfx-backend`; no
-  migration; NEVER `--remove-orphans`) → **data-ops:** remove Account 45 (Model-A) + reconcile TradersWay servers to
-  one canonical LIVE + `reclaim_node_allocations --apply` (frees 37/39/40/43/44) → verify node-2 reusable capacity +
-  zero unexpected tombstoned allocations via `hosted_capacity_report` → STOP and tell the Sponsor to create the next
-  fresh LIVE account via the UI. Keep LIVE monitoring/recovery/execution OFF. **Then:** Withdrawal Intelligence V1 is
-  the top product priority (5–7d investor demo / 7–10d pilot) — ahead of Cold-Boot V2 + catalogue.
+- **Commit / branch state.** Merged to main as squash `2e9a30b` (#461). **DEPLOYED + DATA-OPS DONE + VERIFIED
+  2026-10-07:** backend img `f73947ab` (rollback `rollback-preRECOVERY`=`66dfbdc4`); recreate-only guvfx-backend;
+  no migration; no frontend rebuild. Account 45 removed (Model-A; Stage-2 RUNNING); `TradersWay-Live` corrected
+  demo→LIVE; `reclaim_node_allocations --apply` freed 5 slots + acct40 endpoint. `hosted_capacity_report`: node-2
+  `unexpected_tombstoned_allocations=0`, available=4(→5), honest; 25/35/36 untouched.
+- **One bounded next action.** STOP — the Sponsor creates the next fresh LIVE account via the now-truly-fixed UI
+  (Add Account → Live; real MT5 server; do NOT log in until monitoring enabled). That new instance is the
+  monitoring-cert target → then `docs/FIRST_LIVE_MONITORING_RUNBOOK.md` (monitoring ON, recovery/execution OFF,
+  self-connect OFF). Keep LIVE flags OFF. Watch acct45's Stage-2 teardown (P2 verify-attach respawn edge).
+  **Then — top product priority:** Withdrawal Intelligence V1 (investor demo 5–7 working days / production pilot
+  7–10 working days), ahead of Cold-Boot V2 + catalogue (E/F) work.
 
 ## 2026-10-07 — Stream D5: hosted LIVE-onboarding fix (the Account-44 D2 gap, DARK)
 
