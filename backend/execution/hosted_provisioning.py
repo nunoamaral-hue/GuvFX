@@ -55,8 +55,12 @@ def _arm_preconditions(account) -> ArmResult:
     if getattr(account, "disconnected_at", None) is not None:
         return ArmResult(False, "broker_account_disconnected")
     from trading.account_policy import is_demo_environment
-    if not is_demo_environment(account):                        # demo-only wall (policy; fail-closed on mismatch)
-        return ArmResult(False, R.RW_REAL_ACCOUNT_NOT_ENABLED)
+    if not is_demo_environment(account):                        # demo-only by default; D4c opens a gated LIVE arm
+        # D4c: a LIVE account may ARM ONLY with the D4 flag ON AND a valid §3 LiveExecutionAuthorization —
+        # mirroring readiness condition 11 so arm and dispatch agree. DEMO is unaffected (is_demo_environment
+        # True skips this branch); flag-off byte-identical. §3 is ADDITIONAL to ADR-0047 (both required below).
+        if not (R._hosted_live_execution_enabled() and R._is_live_execution_authorized(account)):
+            return ArmResult(False, R.RW_REAL_ACCOUNT_NOT_ENABLED)
     ws = getattr(account, "hosted_workspace", None)
     if ws is None:
         return ArmResult(False, ARM_NO_WORKSPACE)

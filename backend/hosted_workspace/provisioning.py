@@ -56,6 +56,22 @@ AUTHZ_NOT_CONFIRMED = "account_not_confirmed"          # must have confirmed ide
 AUTHZ_NOT_READY = "workspace_not_execution_ready"      # authorize only a connected+matched, EXECUTION_READY ws
 AUTHZ_OK = "authorized"
 AUTHZ_ALREADY = "already_authorized"
+# D4c (§3): the explicit HUMAN LIVE-execution authorization ceremony + revoke. DARK (gated on the D4 flag).
+LIVE_AUTHZ_OK = "live_execution_authorized"
+LIVE_AUTHZ_ALREADY = "already_live_authorized"
+LIVE_AUTHZ_NOT_OWNER = "not_owner"
+LIVE_AUTHZ_NOT_ENABLED = "live_execution_not_enabled"      # DARK flag OFF ⇒ ceremony unavailable
+LIVE_AUTHZ_NOT_LIVE = "account_not_live"                   # a demo/mismatch account does not use the §3 ceremony
+LIVE_AUTHZ_NOT_CONFIRMED = "account_not_confirmed"         # identity ACK must precede authorization
+LIVE_AUTHZ_NOT_READY = "workspace_not_connected_matched"   # observed CONNECTED + matched required
+LIVE_AUTHZ_NO_STRATEGY = "no_active_strategy_selected"     # a strategy must be selected + sized
+LIVE_AUTHZ_ACK_REQUIRED = "live_acknowledgement_required"  # the exact LIVE acknowledgement text must be supplied
+LIVE_REVOKE_OK = "live_execution_revoked"
+LIVE_REVOKE_NONE = "no_active_live_authorization"
+LIVE_AUTHZ_VERSION = 1
+# The exact acknowledgement a human must affirm to authorize automated LIVE execution (its hash is recorded).
+LIVE_ACK_TEXT = ("This is a live trading account using real funds. GuvFX strategies may place, modify and "
+                 "close real orders.")
 # Deferred broker-identity binding (Beta UX Correction, Sponsor 2026-08-15).
 BIND_OK = "bound"
 BIND_IDEMPOTENT = "already_bound_identical"
@@ -105,6 +121,33 @@ class AuthorizeResult:
     ok: bool
     reason: str
     arm_reason: str = ""   # the arm outcome (armed / a precondition reason) once authorization is recorded
+
+
+@dataclass(frozen=True)
+class LiveAuthzResult:
+    ok: bool
+    reason: str
+    authorization_id: int = 0
+
+
+def live_ack_hash() -> str:
+    """The sha256 of the canonical LIVE acknowledgement text — recorded on the authorization as proof the
+    exact copy (version ``LIVE_AUTHZ_VERSION``) was affirmed."""
+    import hashlib
+    return hashlib.sha256(LIVE_ACK_TEXT.encode("utf-8")).hexdigest()
+
+
+def sizing_snapshot_for(assignment) -> dict:
+    """A fingerprint of ``assignment``'s leg sizing (lot_per_leg + version) for the authorization snapshot and
+    the material-change invalidation. ``{}`` when no sizing row exists yet (its later creation is itself a
+    material change that invalidates a prior authorization). Never raises."""
+    try:
+        sizing = assignment.leg_sizing
+    except Exception:  # noqa: BLE001 — reverse OneToOne DoesNotExist / any error ⇒ no fingerprint
+        return {}
+    if sizing is None:
+        return {}
+    return {"lot_per_leg": str(sizing.lot_per_leg), "version": int(sizing.version)}
 
 
 def _mask(login: str) -> str:
@@ -480,6 +523,105 @@ def authorize_workspace_execution(user, workspace, *, actor="", request=None, al
     arm = arm_hosted_workspace_execution(acct, actor=actor, request=request)
     _audit(request, "HOSTED_EXECUTION_AUTHORIZED", acct, actor)
     return AuthorizeResult(True, AUTHZ_ALREADY if already else AUTHZ_OK, arm_reason=arm.reason_code)
+
+
+def authorize_live_execution(user, workspace, *, acknowledgement_text="", strategy_assignment_id=None,
+                             actor="", request=None) -> LiveAuthzResult:
+    """D4c (§3) — the customer's EXPLICIT, durable LIVE-execution authorization ceremony. Writes ONE
+    ``execution.LiveExecutionAuthorization`` for a LIVE account after the server-enforced order: the D4 flag is
+    ON, the account is authoritatively LIVE, identity is CONFIRMED + observed CONNECTED+matched, a strategy is
+    selected (+ sized), and the EXACT live acknowledgement text is supplied (its hash is recorded). Owner-scoped
+    (IDOR-safe), idempotent, audited. Accepts NO secret; places no order; grants no arm by itself — arm still
+    re-proves §3 + ADR-0047 + the full conjunction, and the order-time bridge gate remains the sole money-path
+    authority. DARK: a demo/mismatch account, or the flag OFF, returns a no-op reason — so demo + flag-off are
+    byte-identical (nothing in those paths calls this)."""
+    ok, reason = hosted_workspace_admission(user)
+    if not ok:
+        return LiveAuthzResult(False, reason)
+    from hosted_workspace.flags import hosted_live_execution_enabled
+    if not hosted_live_execution_enabled():
+        return LiveAuthzResult(False, LIVE_AUTHZ_NOT_ENABLED)   # DARK — ceremony unavailable
+    from django.utils import timezone
+    from execution.models import LiveExecutionAuthorization
+    from strategies.models import StrategyAssignment
+    from trading.account_policy import is_live_environment
+
+    with transaction.atomic():
+        # Only select_related the REQUIRED trading_account FK — NOT the nullable broker_server (Postgres cannot
+        # FOR UPDATE the nullable side of an outer join); broker_server lazy-loads below.
+        ws = (HostedMt5Workspace.objects.select_for_update()
+              .select_related("trading_account").get(pk=workspace.pk))
+        acct = ws.trading_account
+        if acct.user_id != getattr(user, "pk", None):
+            return LiveAuthzResult(False, LIVE_AUTHZ_NOT_OWNER)         # owner-scoped (IDOR-safe)
+        if not is_live_environment(acct):                              # demo / mismatch ⇒ no §3 ceremony (fail-closed)
+            return LiveAuthzResult(False, LIVE_AUTHZ_NOT_LIVE)
+        if acct.workspace_confirmed_at is None:                        # identity ACK precedes authorization
+            return LiveAuthzResult(False, LIVE_AUTHZ_NOT_CONFIRMED)
+        if ws.proj_connected is not True or ws.proj_account_match is not True:
+            return LiveAuthzResult(False, LIVE_AUTHZ_NOT_READY)
+        if (acknowledgement_text or "").strip() != LIVE_ACK_TEXT:      # explicit human acknowledgement required
+            return LiveAuthzResult(False, LIVE_AUTHZ_ACK_REQUIRED)
+        # Strategy selection: the explicit assignment, else the account's UNIQUE active LIVE assignment.
+        asn_qs = StrategyAssignment.objects.filter(
+            account=acct, is_active=True, stage=StrategyAssignment.STAGE_LIVE)
+        if strategy_assignment_id is not None:
+            asn = asn_qs.filter(pk=strategy_assignment_id).first()
+        else:
+            asn = asn_qs.first() if asn_qs.count() == 1 else None
+        if asn is None:
+            return LiveAuthzResult(False, LIVE_AUTHZ_NO_STRATEGY)
+        # Idempotent: an existing active, non-revoked authorization for THIS account instance ⇒ no duplicate
+        # (the partial-unique constraint also enforces this at the DB).
+        existing = LiveExecutionAuthorization.objects.filter(
+            trading_account=acct, is_active=True, revoked_at__isnull=True).first()
+        if existing is not None:
+            return LiveAuthzResult(True, LIVE_AUTHZ_ALREADY, authorization_id=existing.pk)
+        server_name = str(getattr(acct.broker_server, "server_name", "") or "").strip()
+        authz = LiveExecutionAuthorization.objects.create(
+            trading_account=acct, user=user, created_by=user,
+            broker_identity_snapshot={"login": str(acct.account_number or "").strip(), "server": server_name},
+            strategy_assignment=asn,
+            strategy_snapshot={"assignment_id": asn.pk, "strategy_id": asn.strategy_id,
+                               "signal_source": asn.signal_source},
+            sizing_snapshot=sizing_snapshot_for(asn),
+            authorization_version=LIVE_AUTHZ_VERSION,
+            acknowledgement_text_hash=live_ack_hash())
+    _audit(request, "HOSTED_LIVE_EXECUTION_AUTHORIZED", acct, actor)
+    return LiveAuthzResult(True, LIVE_AUTHZ_OK, authorization_id=authz.pk)
+
+
+def revoke_live_execution(user, workspace, *, reason="disable_live", actor="", request=None) -> LiveAuthzResult:
+    """D4c (§3) — explicit "disable live trading": REVOKE the active LiveExecutionAuthorization (immutable —
+    set ``is_active=False`` + ``revoked_at``/``revoked_by``/reason, never edit) AND disarm execution. Distinct
+    from Stop Trading (which disarms but does NOT revoke). Owner-scoped, idempotent. After this, a LIVE account
+    is execution-blocked again (readiness condition 11 + the arm gate fail closed with no valid authorization)
+    until a fresh ceremony. Always fail-safe (revoking/disarming is always allowed)."""
+    ok, admreason = hosted_workspace_admission(user)
+    if not ok:
+        return LiveAuthzResult(False, admreason)
+    from django.utils import timezone
+    from execution.models import LiveExecutionAuthorization
+    from execution.hosted_provisioning import disarm_hosted_workspace_execution
+
+    with transaction.atomic():
+        ws = (HostedMt5Workspace.objects.select_for_update()
+              .select_related("trading_account").get(pk=workspace.pk))
+        acct = ws.trading_account
+        if acct.user_id != getattr(user, "pk", None):
+            return LiveAuthzResult(False, LIVE_AUTHZ_NOT_OWNER)
+        active = list(LiveExecutionAuthorization.objects.filter(
+            trading_account=acct, is_active=True, revoked_at__isnull=True))
+        for authz in active:
+            authz.is_active = False
+            authz.revoked_at = timezone.now()
+            authz.revoked_by = user
+            authz.revocation_reason = (reason or "disable_live")[:64]
+            authz.save(update_fields=["is_active", "revoked_at", "revoked_by", "revocation_reason"])
+    # Disarm outside the authz lock (fail-safe, idempotent, durable against autonomous re-arm).
+    disarm_hosted_workspace_execution(acct, actor=actor, request=request)
+    _audit(request, "HOSTED_LIVE_EXECUTION_REVOKED", acct, actor)
+    return LiveAuthzResult(True, LIVE_REVOKE_OK if active else LIVE_REVOKE_NONE)
 
 
 def bind_broker_identity(user, workspace, *, expected_login, expected_server="", actor="", request=None) -> BindResult:

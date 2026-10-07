@@ -12,8 +12,10 @@ from hosted_workspace.delivery_views import (
 from hosted_workspace.onboarding_views import (
     OnboardingAddBrokerAccountView,
     OnboardingAuthorizeExecutionView,
+    OnboardingAuthorizeLiveView,
     OnboardingBindView,
     OnboardingConfirmView,
+    OnboardingDisableLiveView,
     OnboardingJourneyView,
     OnboardingOpsView,
     OnboardingRequestView,
@@ -38,5 +40,8 @@ urlpatterns = [
     # ADR-0047 — the customer's EXPLICIT "Enable automated trading" authorization (the only path that arms).
     path("onboarding/authorize-execution/", OnboardingAuthorizeExecutionView.as_view(),
          name="onboarding-authorize-execution"),
+    # D4c (§3) — the explicit human LIVE-execution authorization ceremony + "disable live trading" (DARK).
+    path("onboarding/authorize-live/", OnboardingAuthorizeLiveView.as_view(), name="onboarding-authorize-live"),
+    path("onboarding/disable-live/", OnboardingDisableLiveView.as_view(), name="onboarding-disable-live"),
     path("onboarding/ops/", OnboardingOpsView.as_view(), name="onboarding-ops"),
 ]
