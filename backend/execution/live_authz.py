@@ -84,7 +84,44 @@ def is_live_execution_authorized(account) -> bool:
         login, server = _current_identity(account)
         if not login:
             return False   # an unpinned identity can never be authorized
-        return (str(snap.get("login", "")).strip() == login
-                and str(snap.get("server", "")).strip() == server)
+        if not (str(snap.get("login", "")).strip() == login
+                and str(snap.get("server", "")).strip() == server):
+            return False   # identity drift
+        return _material_facts_unchanged(authz, account)
     except Exception:  # noqa: BLE001 — total fail-closed
+        return False
+
+
+def _material_facts_unchanged(authz, account) -> bool:
+    """D4c invalidation: the authorized STRATEGY + SIZING must still match what was authorized. A reassigned,
+    removed, deactivated, or resized strategy is a MATERIAL change that makes the authorization stale ⇒ invalid
+    (a fresh ceremony is required). Fail-closed on any error. The sizing fingerprint uses the SAME function the
+    ceremony wrote with, so the comparison is exact."""
+    try:
+        from strategies.models import StrategyAssignment
+        from hosted_workspace.provisioning import sizing_snapshot_for
+        asn = getattr(authz, "strategy_assignment", None)
+        if asn is None:
+            # A GENUINELY minimal authorization (no strategy ever written) is identity-only. But every
+            # ceremony-written authz records a non-empty strategy_snapshot; if its strategy FK is now None, the
+            # authorized assignment was HARD-DELETED (on_delete=SET_NULL) — a material change — so FAIL CLOSED
+            # rather than silently degrade a ceremony authz into identity-only and admit a different,
+            # never-acknowledged strategy (adversarial finding, 2026-10-07).
+            return not (getattr(authz, "strategy_snapshot", None) or {})
+        if not getattr(asn, "is_active", False):
+            return False
+        acct_id = getattr(account, "id", None) or getattr(account, "pk", None)
+        if getattr(asn, "account_id", None) != acct_id:
+            return False
+        if str(getattr(asn, "stage", "")) != StrategyAssignment.STAGE_LIVE:
+            return False
+        # The authorized assignment must be the account's SOLE active LIVE assignment: a newly-added OR a
+        # swapped-in different strategy is a material change that invalidates (so the authz can never admit a
+        # strategy it did not authorize).
+        active_live = list(StrategyAssignment.objects.filter(
+            account_id=acct_id, is_active=True, stage=StrategyAssignment.STAGE_LIVE).values_list("pk", flat=True))
+        if active_live != [asn.pk]:
+            return False
+        return sizing_snapshot_for(asn) == (authz.sizing_snapshot or {})
+    except Exception:  # noqa: BLE001 — fail-closed
         return False

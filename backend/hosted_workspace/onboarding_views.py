@@ -319,6 +319,73 @@ class OnboardingAuthorizeExecutionView(_OnboardingBase):
         return Response(body, status=http.HTTP_200_OK)
 
 
+class OnboardingAuthorizeLiveView(_OnboardingBase):
+    """POST — the customer's EXPLICIT LIVE-execution authorization ceremony (D4c §3). Owner-scoped; requires the
+    D4 live-execution flag, a LIVE account, confirmed identity, observed CONNECTED + matched, a selected
+    strategy, and the EXACT live acknowledgement text in the body. Writes a durable LiveExecutionAuthorization;
+    idempotent; accepts no secret; places no order (arm still re-proves every gate; the bridge remains sole
+    order authority). DARK: 404 while the live-execution capability is off."""
+
+    def post(self, request):
+        dark = self._dark()
+        if dark is not None:
+            return dark
+        if _body_has_secret(request.data):
+            return Response({"detail": "Request must not contain secrets.", "reason": P.REQ_PASSWORD_FORBIDDEN},
+                            status=http.HTTP_400_BAD_REQUEST)
+        ws, err = _resolve_or_error(request)
+        if err is not None:
+            return err
+        data = request.data if isinstance(request.data, dict) else {}
+        ack = str(data.get("acknowledgement_text", "") or "")
+        sel = data.get("strategy_assignment_id")
+        try:
+            sel = int(sel) if sel not in (None, "") else None
+        except (TypeError, ValueError):
+            sel = None
+        res = P.authorize_live_execution(request.user, ws, acknowledgement_text=ack,
+                                         strategy_assignment_id=sel, request=request)
+        if not res.ok:
+            if res.reason in _ADMISSION_HTTP:
+                status = _ADMISSION_HTTP[res.reason]
+                return _NOT_FOUND if status == http.HTTP_404_NOT_FOUND else Response(
+                    {"detail": "Not permitted.", "reason": res.reason}, status=status)
+            if res.reason in (P.LIVE_AUTHZ_NOT_OWNER, P.LIVE_AUTHZ_NOT_ENABLED):
+                return _NOT_FOUND                                  # owner-scoped / DARK capability ⇒ invisible
+            return Response({"detail": "Live trading cannot be authorized yet.", "reason": res.reason},
+                            status=http.HTTP_409_CONFLICT)
+        ws.refresh_from_db()
+        body = {"status": res.reason, "authorization_id": res.authorization_id,
+                **_projection(request.user, ws, ws.trading_account)}
+        return Response(body, status=http.HTTP_200_OK)
+
+
+class OnboardingDisableLiveView(_OnboardingBase):
+    """POST — explicit "disable live trading": REVOKE the active LiveExecutionAuthorization + disarm. Owner-scoped,
+    idempotent. Distinct from Stop Trading (which only disarms, keeping the authorization)."""
+
+    def post(self, request):
+        dark = self._dark()
+        if dark is not None:
+            return dark
+        ws, err = _resolve_or_error(request)
+        if err is not None:
+            return err
+        res = P.revoke_live_execution(request.user, ws, request=request)
+        if not res.ok:
+            if res.reason in _ADMISSION_HTTP:
+                status = _ADMISSION_HTTP[res.reason]
+                return _NOT_FOUND if status == http.HTTP_404_NOT_FOUND else Response(
+                    {"detail": "Not permitted.", "reason": res.reason}, status=status)
+            if res.reason == P.LIVE_AUTHZ_NOT_OWNER:
+                return _NOT_FOUND
+            return Response({"detail": "Could not disable live trading.", "reason": res.reason},
+                            status=http.HTTP_409_CONFLICT)
+        ws.refresh_from_db()
+        body = {"status": res.reason, **_projection(request.user, ws, ws.trading_account)}
+        return Response(body, status=http.HTTP_200_OK)
+
+
 class OnboardingBindView(_OnboardingBase):
     """POST to DECLARE the customer's expected broker identity (login + server) for their already-provisioned
     workspace — the deferred-bind step (Beta UX Correction). Body: ``expected_login`` (required),

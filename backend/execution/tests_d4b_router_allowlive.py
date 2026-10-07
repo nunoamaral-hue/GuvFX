@@ -38,8 +38,15 @@ class D4bRouterAllowLiveTests(TestCase):
             signal_source=source, is_active=True, stage=StrategyAssignment.STAGE_LIVE)
 
     def _authz_live(self):
+        # A real authorization always references the account's active LIVE strategy (the ceremony writes it +
+        # a sizing snapshot); validity requires it to still match. Reuse the account's assignment, else make one.
+        from hosted_workspace.provisioning import sizing_snapshot_for
+        asn = (StrategyAssignment.objects.filter(
+                   account=self.live, is_active=True, stage=StrategyAssignment.STAGE_LIVE).first()
+               or self._asn(self.live, "srcAuthz"))
         return LiveExecutionAuthorization.objects.create(
-            trading_account=self.live, user=self.op, broker_identity_snapshot={"login": "L1", "server": ""})
+            trading_account=self.live, user=self.op, broker_identity_snapshot={"login": "L1", "server": ""},
+            strategy_assignment=asn, sizing_snapshot=sizing_snapshot_for(asn))
 
     # ---- DEMO EQUIVALENCE ----
     def test_demo_routing_identical_flag_off_and_on(self):

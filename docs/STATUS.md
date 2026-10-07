@@ -14,6 +14,31 @@
 
 ## Execution workstream log
 
+- **2026-10-07 - STREAM D4 (LIVE EXECUTION AUTHORIZATION) — D4a+D4b SHIPPED, D4c in flight; all DARK, no real order.**
+  Sponsor-decomposed into D4a→D4d, each governed (tests → full affected regression → adversarial review → CI →
+  merge → DARK deploy), independently rollbackable, with DEMO-equivalence a HARD merge criterion for D4a/D4b.
+  **D4a** (#452 `9631129`, deployed+certified): `execution.LiveExecutionAuthorization` model (mig 0034,
+  partial-unique active-per-account, immutable/revoke) + `execution.live_authz.is_live_execution_authorized`
+  (fail-closed validity: active+non-revoked+identity-match) + readiness condition-11 gate (LIVE passes ONLY
+  with the D4 flag + a valid authz; DEMO byte-identical). **D4b** (#453 `9979b7b`, deployed+certified):
+  `live_execution_permitted` (flag + authz) wired into `auto_router` (demo-only filter now flag-gated via
+  `_routable_base`/`_account_env_admitted`; flag-off byte-identical) + planning/promotion walls + per-runtime
+  `MT5_ALLOW_LIVE` (`bridge_config.render_bridge_env(allow_live=)` + `allow_live_for_account`, never global) +
+  the standalone bridge rails (`validate_job_safety` admits non-demo only with `MT5_ALLOW_LIVE`;
+  `evaluate_hosted_startup_config` permits hosted-live only with the mandatory pin+guard). Two independent
+  fail-closed layers (backend admission + bridge refusal). **D4c** (branch `feat/stream-d4c-live-ceremony`):
+  the explicit HUMAN ceremony — `authorize_live_execution` (server-enforced order: flag→LIVE→confirmed→
+  connected/matched→strategy selected→exact acknowledgement hash→WRITE authz) + `revoke_live_execution`
+  (disable-live: revoke+disarm) + endpoints `onboarding/authorize-live`+`disable-live` + the arm gate
+  (`_arm_preconditions` now mirrors condition-11: LIVE arms only with flag+authz) + material-change
+  invalidation (a ceremony authz's strategy/sizing must still match — reassign/deactivate/resize invalidates;
+  a minimal no-strategy authz stays identity-only). DARK flag `HOSTED_LIVE_EXECUTION_ENABLED` (default OFF).
+  **D4d** (next): widen the TWO pure-infra recovery predicates (liveness relaunch, session restore) to LIVE
+  (monitoring_eligible) — recover infrastructure only, never create authz; `capability_recovery` deliberately
+  LEFT demo-only (it writes AllowLiveTrading=1 — Amber, Sponsor-gated). Adversarial reviews: D4a + D4b clean
+  (0 confirmed). SPONSOR-GATED (NOT crossed): enabling LIVE for a real account, making the ceremony available
+  for real execution, granting a prod runtime `MT5_ALLOW_LIVE`, the first LIVE account, any real order.
+
 - **2026-10-05 - STREAM D3: LIVE ACCOUNT MONITORING (environment-aware; execution STILL blocked) — DARK.**
   Builds on D1 (centralized `account_policy`) + D2 (explicit `account_type`, merged `cce9d04`/#450,
   deployed+certified). Per approved design §2/§13.3: a LIVE (real-money) account may reach CONNECTED/MONITORING
