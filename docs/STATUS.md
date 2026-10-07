@@ -35,6 +35,21 @@
   missing/invalid→400; env-mismatch fail-closed; drift-guard) + C3 updated to the account_type contract + wizard
   vitest (incl. new LIVE case) + ratchet green; full affected regression (hosted_workspace+execution+trading) green.
   Account 44 is NOT the cert target and will be removed via the corrected Model-A lifecycle; LIVE monitoring stays OFF.
+  **D5 MERGED + DEPLOYED + CERTIFIED (2026-10-07):** #459 squash `9b67c07`; backend img `66dfbdc4`
+  (rollback `guvfx-prod-guvfx-backend:rollback-preD5`=`5703cecc`) + frontend img `c69a0af4`
+  (rollback `guvfx-prod-guvfx-frontend:rollback-preD5`=`570f2324`); recreated guvfx-backend+guvfx-frontend
+  (`--force-recreate --no-deps`, NO `--remove-orphans`); **no migration**. Frontend built from canonical
+  `guvfx-app/frontend` with `NEXT_PUBLIC_API_BASE_URL=https://api.guvfx.com` + `GIT_COMMIT=9b67c07`, capability
+  flags UNSET=DARK (verified `/build-info.json` gitCommit=9b67c07, flags false — UI behaviour unchanged).
+  Deployed-instance cert: `_resolve_is_demo(live)→is_demo=False`, `(demo)→True`, `(missing)→400`. **Creation gate
+  `HOSTED_LIVE_ONBOARDING_ENABLED=1` ARMED in beta.env** (rollback copy `beta.env.preD5ONBOARD`) while LIVE
+  monitoring/recovery/execution all remain **OFF** (a LIVE account created now is inert). **Account 44 REMOVED via
+  the corrected Model-A lifecycle:** tombstoned, TradingAccount + AccountProvisioning `password_enc` destroyed,
+  provisioning status RETIRED, entitlement freed, host `cleanup_state=RUNNING` (cron Stage-2, watch the P2
+  verify-attach respawn edge). Orphaned mislabeled server `Tradersway-Live` corrected demo→LIVE (only tombstoned
+  refs). 25/35/36 untouched. **STOPPED — awaiting the Sponsor to create the replacement fresh LIVE account via the
+  now-fixed UI (that new instance, NOT 44, is the monitoring-cert target); LIVE monitoring stays OFF until it is
+  correctly provisioned.**
 
 - **2026-10-07 - STREAM D4e (dedicated LIVE-recovery flag — DECOUPLE recovery from monitoring) — DARK.**
   Sponsor-directed Amber isolation improvement before the first LIVE-monitoring certification. Introduces a
