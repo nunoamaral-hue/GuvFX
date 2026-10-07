@@ -1,5 +1,48 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-07 — Stream D5: hosted LIVE-onboarding fix (the Account-44 D2 gap, DARK)
+
+- **Scope / decision.** During the first LIVE-monitoring cert, the Sponsor created a "Live" hosted account (Account
+  44, support@/user29, login 55442, server TradersWay-Live, $200) via the real UI — but it persisted as **DEMO**
+  (`is_demo=True`). STOPPED the cert (per the Sponsor's own fail-safe instruction), diagnosed, and the Sponsor
+  authorised fixing the hosted LIVE-onboarding gap as a small governed DARK PR before any cert. Branch
+  `fix/hosted-live-onboarding-account-type` off main `f2bd663`.
+- **Verified fact vs assumption.** *Verified (read-only prod + source):* Account 44 `is_demo=True`,
+  `account_environment=DEMO`, `is_active=False`, `canonical_state=WAITING_FOR_LOGIN`, not matched/confirmed, **0
+  ExecutionJobs**; 25/35/36 unaffected (armed demo, their own job history); monitoring never enabled; no authz; no
+  MT5_ALLOW_LIVE — **no safety breach** (the system stayed fail-closed; a demo-expected observer could never match
+  the live terminal). ROOT CAUSE: frontend `BrokerAccountWizard` demo-locked (always `is_demo:true`); backend
+  `OnboardingAddBrokerAccountView` read `is_demo` default True (ignored D2 `account_type`);
+  `request_hosted_workspace` `get_or_create`'d the `BrokerServer` with the model default `environment=demo`.
+  *Assumption:* the real TradersWay login 55442 is a live account (Sponsor-stated); GuvFX only mis-classified it.
+- **What changed.** `hosted_workspace/flags.py` (+`hosted_live_onboarding_enabled`, DARK). `onboarding_views.py`
+  (`_resolve_is_demo` REQUIRES `account_type` demo|live → 400 on missing/invalid; add view uses it; new reason
+  HTTP mapping; `_projection` exposes `live_onboarding_available`). `provisioning.py` (new reasons
+  `REQ_LIVE_ONBOARDING_DISABLED`/`REQ_ENV_MISMATCH`; LIVE request fail-closed when the flag is OFF; `BrokerServer`
+  env classified per `is_demo` + fail-closed on disagreement; **idempotent-return paths now fail closed on an
+  environment disagreement** — adversarial-review hardening for the "frontend LIVE → DEMO result" drift class).
+  Frontend: `BrokerAccountWizard` (hosted Demo/Live selector when `liveOnboardingAvailable`, sends `account_type`,
+  real-funds warning; demo-only otherwise), `broker-api.addHostedAccount` (`account_type`), `hosted-journey`
+  (`live_onboarding_available`), `BrokerAccountsContent` (passes it). Tests: `tests_d5_live_onboarding.py` (new),
+  `tests_c3_add_account.py` + `BrokerAccountWizard.test.tsx` updated to the `account_type` contract. **No migration.**
+- **Deviation / finding.** Adversarial review: 5 candidates, **0 confirmed** — all the LIVE↔DEMO drift mechanisms
+  refuted (no account is mis-CREATED; the idempotent path returns an honestly-pre-existing demo workspace). Because
+  the Sponsor explicitly asked to eliminate any "frontend says LIVE but result is DEMO" path, the idempotent-return
+  mechanism was hardened regardless (fail closed on env disagreement). `BrokerServer.server_name` case-sensitivity
+  (review finding 4) is a pre-existing catalogue-hygiene nit (a differently-cased name creates a new, correctly-LIVE
+  server — no drift) and is left out of scope.
+- **Exact tests.** `manage.py test hosted_workspace execution trading` → **green** (re-running after the drift-guard
+  hardening at handoff time). Focused: `tests_d5_live_onboarding` (Account-44 reproduction + inverse + all guards +
+  drift-guard), `tests_c3_add_account`, `tests_concurrent_funnel`, ratchet → **48 OK**. Frontend: wizard vitest 6/6
+  (incl. new LIVE case); `eslint` clean; `npm run build` OK.
+- **Commit / branch state.** Branch `fix/hosted-live-onboarding-account-type` off `f2bd663`; PR/push pending at
+  handoff time; nothing deployed yet.
+- **One bounded next action.** Push → PR → Auto-fix CI → merge → deploy BOTH backend + frontend → certify the UI/API
+  path creates a LIVE account (enable `HOSTED_LIVE_ONBOARDING_ENABLED`; verify Live→is_demo=False, Demo→Demo) →
+  remove Account 44 via the corrected Model-A lifecycle (correct the orphaned `TradersWay-Live` server env if it
+  blocks a clean LIVE re-create) → STOP and tell the Sponsor to create the replacement fresh LIVE account. Keep LIVE
+  monitoring/recovery/execution OFF.
+
 ## 2026-10-07 — Stream D4e: dedicated HOSTED_LIVE_RECOVERY_ENABLED (decouple recovery from monitoring, DARK)
 
 - **Scope / decision.** Sponsor-directed Amber isolation improvement (recorded during D4d) made concrete, BEFORE

@@ -7,8 +7,15 @@ reads the dedicated flag, not `HOSTED_LIVE_MONITORING_ENABLED`. Monitoring ON �
 recovery inert; DEMO + flag-off byte-identical; review 0 code defects (1 LOW flag-name-collision, mitigated by
 docstrings). Regression 2805 OK. **D4e MERGED #457 `e937f13` + DARK-DEPLOYED + CERTIFIED** (image `5703cecc`;
 rollback `rollback-preD4e`=`c3845f40`; no migration; decouple proven — demo masters ON but LIVE recovery OFF).
-**Single next action: STOP — await explicit Sponsor authorization to RUN the first LIVE-monitoring cert** per the
-delivered `docs/FIRST_LIVE_MONITORING_RUNBOOK.md` (config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
+**UPDATE 2026-10-07 — first cert attempt surfaced a prerequisite defect (Account 44).** The Sponsor created a
+"Live" hosted account via the UI but it persisted as DEMO (`is_demo=True`): the hosted Add-Account path ignored D2's
+`account_type` (frontend demo-locked + backend `is_demo` default True + `BrokerServer` default env=demo). No safety
+breach (fail-closed; 0 ExecutionJobs; 25/35/36 intact; monitoring never enabled). **Stream D5 (built, branch
+`fix/hosted-live-onboarding-account-type`) fixes it end-to-end** behind DARK `HOSTED_LIVE_ONBOARDING_ENABLED`
+(creation gate only). **Revised sequence (Sponsor-approved):** ship D5 (tests→CI→merge→FE+BE deploy) → certify the
+UI/API path creates LIVE → remove Account 44 via corrected Model-A lifecycle → **STOP + tell Sponsor to create the
+replacement fresh LIVE account** → then the first LIVE-monitoring cert per `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`
+(config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
 OFF; first account = a FRESH Model-A instance, NOT acct43, real MT5 zero/negligible balance; cert target =
 provisioning→human login→exact LIVE identity/env match→CONNECTED/MONITORING→balances/equity/positions/manual-trade
 visibility→dashboard/analytics, while PROVING automated execution impossible; no real order). Activation of that

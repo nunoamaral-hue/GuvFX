@@ -45,7 +45,9 @@ def _override(user, capability, value):
 
 def _add(user, login, server="IS6-Demo", is_demo=True, broker="B"):
     """Add a broker account via the C3 API endpoint (proves ownership + the endpoint contract)."""
-    body = {"expected_login": login, "expected_server": server, "broker_name": broker, "is_demo": is_demo}
+    # D5: the hosted Add-Account path now takes the explicit D2 ``account_type`` (demo|live), not ``is_demo``.
+    body = {"expected_login": login, "expected_server": server, "broker_name": broker,
+            "account_type": ("demo" if is_demo else "live")}
     req = APIRequestFactory().post("/api/hosted-workspace/accounts/add/", body, format="json")
     force_authenticate(req, user=user)
     return OnboardingAddBrokerAccountView.as_view()(req)
@@ -98,6 +100,7 @@ class AddBrokerAccountFlow(TestCase):
         self.assertEqual(_add(u, "222", server="PepperstoneUK-Demo", broker="Pepperstone").status_code, 201)
         self.assertEqual(_ws_count(u), 2)
 
+    @override_settings(HOSTED_LIVE_ONBOARDING_ENABLED=True)   # D5: LIVE hosted creation is gated fail-closed
     def test_demo_and_live_mixture(self):
         u = _user("f6")
         r_demo = _add(u, "111", server="IS6-Demo", is_demo=True)

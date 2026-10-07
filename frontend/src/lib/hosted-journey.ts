@@ -44,6 +44,9 @@ export interface HostedJourney {
   execution_authorized?: boolean;
   execution_armed?: boolean;
   can_enable_automated_trading?: boolean;
+  /** D5 — whether the hosted Add-Account UI may offer the LIVE (real-funds) option. CREATION gate only; it does
+   *  NOT grant monitoring/execution. Optional so an older payload degrades to demo-only (false). */
+  live_onboarding_available?: boolean;
 }
 
 // ---- Customer-facing view model --------------------------------------------------------------------------

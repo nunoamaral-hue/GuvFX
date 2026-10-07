@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from django.db import IntegrityError, transaction
 
 from hosted_workspace.entitlement import hosted_workspace_admission
-from hosted_workspace.flags import hosted_deferred_identity_bind_enabled
+from hosted_workspace.flags import hosted_deferred_identity_bind_enabled, hosted_live_onboarding_enabled
 from hosted_workspace.models import HostedMt5Workspace
 from hosted_workspace.provisioning_timing import (
     STAGE_NODE_ALLOCATED,
@@ -40,6 +40,12 @@ REQ_EXISTS = "exists"
 # Phase C2 — the user's owned-broker-account entitlement is reached (only reachable when the Phase-C
 # enforcement flag is ON; while DARK the funnel keeps its legacy one-workspace-per-user behaviour).
 REQ_LIMIT_REACHED = "broker_account_limit_reached"
+# D5 — a LIVE account was requested but LIVE hosted onboarding is not enabled (fail-closed; the create path
+# never silently downgrades a live request to demo).
+REQ_LIVE_ONBOARDING_DISABLED = "live_onboarding_disabled"
+# D5 — the requested broker server already exists with the OPPOSITE environment (e.g. a live account on a server
+# recorded as demo). A money-bearing account's environment must never be guessed or silently overridden.
+REQ_ENV_MISMATCH = "broker_server_environment_mismatch"
 ALLOC_NO_CAPACITY = "no_node_capacity"
 ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
 ALLOC_CZ_NODE_FORBIDDEN = "cz_node_forbidden"         # ADR-0043 Addendum B: refuse a non-CZ tenant on a CZ node
@@ -202,6 +208,11 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
     ok, reason = hosted_workspace_admission(user)
     if not ok:
         return RequestResult(False, reason)
+    # D5 — fail-closed LIVE onboarding gate: a LIVE (real-funds) account may be CREATED only when the dedicated
+    # HOSTED_LIVE_ONBOARDING_ENABLED gate is on. DEMO is unaffected. The create path NEVER silently downgrades a
+    # live request to demo (that is exactly the Account-44 defect) — it refuses.
+    if not bool(is_demo) and not hosted_live_onboarding_enabled():
+        return RequestResult(False, REQ_LIVE_ONBOARDING_DISABLED)
     login = str(expected_login or "").strip()
     # DEFERRED IDENTITY BIND (Beta UX Correction): when the flag is ON the customer may request the workspace
     # WITHOUT declaring a broker login/server up front — the intent account is created with an empty identity
@@ -246,6 +257,12 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
                        else match_q.filter(trading_account__broker_server__isnull=True))
             match = match_q.first()
             if match is not None:
+                # D5 — idempotent ONLY when the existing account's environment AGREES with the request. A
+                # demo/live disagreement must never silently return the wrong-environment account (the LIVE->DEMO
+                # drift class the create-path gate also closes): fail closed so a LIVE request can never resolve
+                # to an existing DEMO account (nor a DEMO request to a LIVE one).
+                if bool(getattr(match.trading_account, "is_demo", True)) != bool(is_demo):
+                    return RequestResult(False, REQ_ENV_MISMATCH)
                 return RequestResult(True, REQ_EXISTS, match, False)
             from rest_framework.exceptions import ValidationError as _DRFValidationError
             from trading.account_entitlement import check_can_add_account
@@ -257,12 +274,24 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
         else:
             existing = owned.first()
             if existing is not None:
+                # D5 — same environment-agreement guard for the one-workspace-per-user idempotent return: never
+                # silently hand back a DEMO workspace for a LIVE request (or vice versa).
+                if bool(getattr(existing.trading_account, "is_demo", True)) != bool(is_demo):
+                    return RequestResult(False, REQ_ENV_MISMATCH)
                 return RequestResult(True, REQ_EXISTS, existing, False)
 
         server = None
         srv_name = str(expected_server or "").strip()
         if srv_name:
-            server, _ = BrokerServer.objects.get_or_create(server_name=srv_name)
+            # D5 — classify the broker server by the account's environment so account_environment resolves
+            # CLEANLY: a NEW server is created with the matching environment (demo→demo, live→live); an EXISTING
+            # server whose environment DISAGREES fails closed (never silently override a money-bearing server's
+            # classification). DEMO on a new/consistent server is byte-identical to before.
+            desired_env = BrokerServer.DEMO if bool(is_demo) else BrokerServer.LIVE
+            server, created_server = BrokerServer.objects.get_or_create(
+                server_name=srv_name, defaults={"environment": desired_env})
+            if not created_server and server.environment != desired_env:
+                return RequestResult(False, REQ_ENV_MISMATCH)
         # ``brokeridentity_present`` requires a broker_server OR a non-empty broker_name. The customer may
         # supply neither identifier at request time, so default broker_name to a safe placeholder (display
         # only — the certified matcher keys on broker_server.server_name, never on this string).

@@ -99,7 +99,10 @@ export type HostedAddResult = { status: "created" | "exists"; trading_account_id
  * `expected_server` is stored as the account's broker server identity (used for the execution identity pin),
  * so pass the broker's real MT5 server name. Owner-scoped + entitlement-bounded on the backend. */
 export function addHostedAccount(input: {
-  broker_name: string; expected_login: string; expected_server: string; is_demo: boolean;
+  // D5 — the explicit demo/live choice (D2 vocabulary) is now honoured end-to-end for hosted accounts: the
+  // backend requires `account_type` (missing/invalid → 400), maps it to is_demo (demo→True, live→False), and
+  // rejects `live` fail-closed unless LIVE hosted onboarding is enabled. A LIVE server is classified LIVE.
+  broker_name: string; expected_login: string; expected_server: string; account_type: "demo" | "live";
 }): Promise<HostedAddResult> {
   return apiFetch<HostedAddResult>(`/api/hosted-workspace/accounts/add/`, {
     method: "POST", body: JSON.stringify(input),

@@ -19,7 +19,13 @@ import type { ValidationAttempt } from "@/types/broker";
  *    Posts to the certified hosted onboarding endpoint.
  *  • LEGACY (traditional shared-instance) — unchanged: password is submitted write-only to the create
  *    endpoint and validated; never stored/echoed. */
-type Props = { open: boolean; onClose: () => void; onAdded: () => void; hosted?: boolean };
+type Props = {
+  open: boolean; onClose: () => void; onAdded: () => void; hosted?: boolean;
+  /** D5 — when true, the HOSTED wizard offers the explicit Demo/Live choice (real-funds warning included) and
+   *  sends the chosen account_type. When false (default) the hosted path stays demo-only, byte-identical. It is a
+   *  CREATION gate only — a created LIVE account is inert until monitoring/execution are separately armed. */
+  liveOnboardingAvailable?: boolean;
+};
 
 const label: React.CSSProperties = { display: "block", fontSize: "0.82rem", color: "#9fb0c8", margin: "0.7rem 0 0.3rem" };
 const input: React.CSSProperties = {
@@ -27,14 +33,14 @@ const input: React.CSSProperties = {
   background: "rgba(8,12,32,0.9)", color: "#e5f4ff", fontSize: "0.9rem", outline: "none",
 };
 
-export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, hosted = false }) => {
+export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, hosted = false, liveOnboardingAvailable = false }) => {
   const [name, setName] = useState("");
   const [broker, setBroker] = useState("");
   const [server, setServer] = useState("");
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
-  // D2 (Stream D): no default — the LEGACY path requires an explicit Demo/Live choice. HOSTED is
-  // demo-locked (§2; LIVE hosted is D3), so it does not use this selector and always creates a demo account.
+  // D2 (Stream D): no default — the LEGACY path requires an explicit Demo/Live choice. D5: the HOSTED path uses
+  // the same selector when `liveOnboardingAvailable`; otherwise it stays demo-only (sends account_type="demo").
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -54,13 +60,17 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
     try {
       if (hosted) {
         // Hosted: broker + account number + server, NO password (entered in MT5 after provisioning).
-        // Hosted is demo-locked (§2) — always a demo account; LIVE hosted is D3.
+        // D5: when LIVE onboarding is available the customer must choose Demo/Live (no default); otherwise the
+        // hosted path stays demo-only. The explicit choice is sent as account_type and honoured end-to-end.
         if (!broker.trim() || !login.trim() || !server.trim()) {
           setError("Broker, account number and server are required."); setBusy(false); return;
         }
+        if (liveOnboardingAvailable && accountType === null) {
+          setError("Please choose Demo or Live."); setBusy(false); return;
+        }
         await addHostedAccount({
-          broker_name: broker.trim(), expected_login: login.trim(),
-          expected_server: server.trim(), is_demo: true,
+          broker_name: broker.trim(), expected_login: login.trim(), expected_server: server.trim(),
+          account_type: liveOnboardingAvailable ? (accountType as AccountType) : "demo",
         });
         setHostedDone(true);
         onAdded();
@@ -130,9 +140,9 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
               <input id="ba-password" type="password" style={input} value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} required autoComplete="new-password" />
             </>
           )}
-          {/* D2: LEGACY requires an explicit Demo/Live choice (no default). HOSTED is demo-locked (§2), so
-              no selector is shown — it always creates a demo account. */}
-          {!hosted && (
+          {/* D2: LEGACY requires an explicit Demo/Live choice (no default). D5: HOSTED shows the same explicit
+              choice ONLY when LIVE onboarding is available; otherwise it stays demo-only (byte-identical). */}
+          {(!hosted || liveOnboardingAvailable) && (
             <div style={{ margin: "0.7rem 0 0" }}>
               <AccountTypeSelector
                 value={accountType}
@@ -158,7 +168,7 @@ export const BrokerAccountWizard: React.FC<Props> = ({ open, onClose, onAdded, h
           {error && <div style={{ marginTop: 12 }}><Alert type="error">{error}</Alert></div>}
           <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <Button type="button" variant="secondary" onClick={close} disabled={busy}>Cancel</Button>
-            <Button type="submit" disabled={busy || (!hosted && accountType === null)}>{busy ? (hosted ? "Setting up…" : "Validating…") : (hosted ? "Add account" : "Add & validate")}</Button>
+            <Button type="submit" disabled={busy || ((!hosted || liveOnboardingAvailable) && accountType === null)}>{busy ? (hosted ? "Setting up…" : "Validating…") : (hosted ? "Add account" : "Add & validate")}</Button>
           </div>
         </form>
       )}
