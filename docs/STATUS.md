@@ -34,7 +34,17 @@
     all-rows-unique local-part → never reused, write-once token+bind, RETIRED terminal) + `BROKER_EMAIL_IDENTITY_
     ENABLED` (+ `_OPEN_NEW_ENABLED`) flags + mint/retire service + lifecycle hooks (create_customer_account mint,
     remove_account retire — flag-gated, savepoint/best-effort, DEMO+existing byte-identical when OFF) + mig 0001.
-    Tests 12 OK; ratchet green.
+    Tests 12 OK; ratchet green. **PR #464.** Adversarial review (3 lenses → refute-by-default verify) returned **1
+    CONFIRMED HIGH, fixed before merge:** the retire hook ran a bare `QuerySet.update()` INSIDE `remove_account`'s
+    tombstone `atomic()`; on a `DatabaseError` (realistic trigger: master flag armed before mig 0001 lands → missing
+    relation on every removal; or a transient lock/serialization failure) `mark_for_rollback_on_error` set
+    `needs_rollback` on the enclosing txn, the swallowed exception couldn't clear it, and the WHOLE tombstone
+    (credential destruction + `disconnected_at` + Stage-2 enqueue) silently rolled back while removal reported
+    success — account stays LIVE with intact credentials. **Fix `a39f27e`:** wrap the retire UPDATE in its own
+    savepoint (mirrors the create path), + regression `test_retire_db_error_does_not_poison_enclosing_tombstone_txn`
+    (verified FAILS on bare-update with `TransactionManagementError`, PASSES with the savepoint). Other 4 candidates
+    REFUTED. Focused 11 + affected 45 OK; `check` clean. AWAITING green CI → merge → DARK deploy (recreate backend +
+    migrate `broker_intelligence 0001`), then WP2.
 
 - **2026-10-07 - RECOVERY D5.1 + CAPACITY RESOURCE-LEAK FIX (Account-45 + node-slot leak) — DARK, backend-only.**
   Sponsor-authorized after the replacement LIVE account (Account 45) ALSO came out DEMO + provisioning stalled.

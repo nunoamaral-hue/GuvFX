@@ -11,8 +11,10 @@ create the fresh LIVE cert account via the UI (support@, Add Account → Live; n
 monitoring enabled). Cert flags: `HOSTED_LIVE_MONITORING_ENABLED=1`, recovery/execution OFF, self-connect OFF; no
 authz; no MT5_ALLOW_LIVE; no order. **Withdrawal V1 immediate Sponsor deps:** pilot broker = TradersWay (approved) + real sample emails
 (REQUESTED+COMPLETED) + pilot-mailbox decision + ingestion-service deploy target (plan §13).
-**STATUS (2026-10-07):** WP1 STARTED — `broker_intelligence` app + `BrokerEmailAlias` + mint/retire hooks + DARK
-flags (`BROKER_EMAIL_IDENTITY_ENABLED`), mig 0001, 12 tests green. Next WP2 (BrokerEvent/Withdrawal schema) → WP3
+**STATUS (2026-10-07):** WP1 — `broker_intelligence` app + `BrokerEmailAlias` + mint/retire hooks + DARK
+flags (`BROKER_EMAIL_IDENTITY_ENABLED`), mig 0001. **PR #464; adversarial review → 1 CONFIRMED HIGH fixed
+(`a39f27e`): retire hook savepoint-isolated so a DB error can't silently revert the tombstone; regression added.**
+AWAITING green CI → merge → DARK deploy (recreate backend + migrate `broker_intelligence 0001`). Next WP2 (BrokerEvent/Withdrawal schema) → WP3
 correlation/metrics → WP4 APIs → WP5 UX → WP6 isolated ingestion skeleton. **T1 Telegram migration = STOPPED
 (`SIGNAL_SOURCE_SAFETY_AMBIGUITY`):** `AcquiredMessage` dedup lacks chat_id → new-channel ids (low) collide with
 recorded 15–889 → signals would be dropped; smallest fix = add chat_id to the dedup; awaiting Sponsor authorize-fix
