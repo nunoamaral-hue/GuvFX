@@ -55,23 +55,43 @@ describe("BrokerAccountWizard — legacy (traditional) mode", () => {
 });
 
 describe("BrokerAccountWizard — hosted mode (member onboarding)", () => {
-  it("collects NO password and posts to the hosted endpoint with broker/login/server/is_demo", async () => {
+  it("D5: demo-only by default (no live option) — posts account_type=demo, no password", async () => {
     createAccount.mockClear(); addHostedAccount.mockClear();
     const onAdded = vi.fn();
     render(<BrokerAccountWizard open hosted onClose={() => {}} onAdded={onAdded} />);
     // no password field in hosted mode (login happens in MT5)
     expect(screen.queryByLabelText(/^password$/i)).not.toBeInTheDocument();
+    // live onboarding unavailable ⇒ no account-type selector is shown (demo-locked, byte-identical)
+    expect(screen.queryByRole("radio", { name: /live account/i })).not.toBeInTheDocument();
     await userEvent.type(screen.getByLabelText(/^broker$/i), "Taurex");
     await userEvent.type(screen.getByLabelText(/^server$/i), "Taurex-Demo");
     await userEvent.type(screen.getByLabelText(/account number/i), "830227146");
     await userEvent.click(screen.getByRole("button", { name: /^add account$/i }));
     await waitFor(() => expect(addHostedAccount).toHaveBeenCalledWith({
-      broker_name: "Taurex", expected_login: "830227146", expected_server: "Taurex-Demo", is_demo: true,
+      broker_name: "Taurex", expected_login: "830227146", expected_server: "Taurex-Demo", account_type: "demo",
     }));
     expect(createAccount).not.toHaveBeenCalled();   // never the plain/password path
     expect(onAdded).toHaveBeenCalled();
     expect(await screen.findByText(/being set up/i)).toBeInTheDocument();
     expect(screen.getByText(/Open MT5/i)).toBeInTheDocument();
+  });
+
+  it("D5: when live onboarding is available, an explicit Live choice posts account_type=live", async () => {
+    // This is the exact Account-44 reproduction: hosted 'Add Account → Live' must create a LIVE account.
+    addHostedAccount.mockClear();
+    render(<BrokerAccountWizard open hosted liveOnboardingAvailable onClose={() => {}} onAdded={() => {}} />);
+    await userEvent.type(screen.getByLabelText(/^broker$/i), "TradersWay");
+    await userEvent.type(screen.getByLabelText(/^server$/i), "TradersWay-Live");
+    await userEvent.type(screen.getByLabelText(/account number/i), "55442");
+    // No default — submit is blocked until a type is chosen.
+    const submit = screen.getByRole("button", { name: /^add account$/i });
+    expect(submit).toBeDisabled();
+    await userEvent.click(screen.getByRole("radio", { name: /live account/i }));
+    expect(submit).toBeEnabled();
+    await userEvent.click(submit);
+    await waitFor(() => expect(addHostedAccount).toHaveBeenCalledWith({
+      broker_name: "TradersWay", expected_login: "55442", expected_server: "TradersWay-Live", account_type: "live",
+    }));
   });
 
   it("requires a server in hosted mode (needed for the broker identity)", async () => {

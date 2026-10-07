@@ -462,6 +462,26 @@ def hosted_live_recovery_enabled() -> bool:
     return _flag("HOSTED_LIVE_RECOVERY_ENABLED")
 
 
+def hosted_live_onboarding_enabled() -> bool:
+    """Stream D5 (2026-10-07) — the gate that allows the HOSTED Add-Account path to CREATE a LIVE (real-funds)
+    broker account from the customer's explicit D2 ``account_type=live`` selection. DEFAULT OFF.
+
+    This is a CREATION gate ONLY. It is DISTINCT from, and grants none of, the LIVE monitoring / recovery /
+    execution capabilities: ``HOSTED_LIVE_MONITORING_ENABLED``, ``HOSTED_LIVE_RECOVERY_ENABLED``,
+    ``HOSTED_LIVE_EXECUTION_ENABLED`` and the per-runtime ``MT5_ALLOW_LIVE`` boundary all remain separate and OFF.
+    A LIVE account created while this is ON is therefore INERT — it cannot be observed/matched (monitoring OFF),
+    recovered (recovery OFF) or executed (execution OFF, no §3 authorization) until each of those is separately
+    Sponsor-armed.
+
+    While OFF, the hosted Add-Account path is byte-identical to before: a ``account_type=live`` selection is
+    rejected fail-closed and the frontend does not offer the LIVE option (the journey projection reports it
+    unavailable), so only DEMO hosted accounts can be created — exactly as today. While ON, an explicit
+    ``account_type=live`` creates ``is_demo=False`` AND requires the broker server to classify consistently as
+    LIVE (a demo/live disagreement fails closed). DEMO creation is unaffected either way. It is additionally
+    ANDed with the master ``HOSTED_PERSISTENT_MT5_ENABLED``. Arming it is a Sponsor decision."""
+    return _flag("HOSTED_LIVE_ONBOARDING_ENABLED")
+
+
 def hosted_session_reconciler_arm_selfconnect_enabled() -> bool:
     """P4-c ARM gate for the SESSION reconciler's actual system-initiated guacd self-connect (the security-posture
     change: it decrypts the tenant's Windows password into a short-lived guacamole-auth-json token and drives

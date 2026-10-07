@@ -30,7 +30,9 @@ from hosted_workspace.entitlement import (
     DENY_ONBOARDING_DARK,
     DENY_SUBSYSTEM_DARK,
 )
-from hosted_workspace.flags import hosted_persistent_mt5_enabled, hosted_workspace_onboarding_enabled
+from hosted_workspace.flags import (
+    hosted_live_onboarding_enabled, hosted_persistent_mt5_enabled, hosted_workspace_onboarding_enabled,
+)
 from hosted_workspace.models import HostedMt5Workspace
 from hosted_workspace.onboarding_ops import onboarding_fleet_projection
 from hosted_workspace.onboarding_read_model import onboarding_journey_projection
@@ -67,7 +69,26 @@ _ADMISSION_HTTP = {
     DENY_ONBOARDING_DARK: http.HTTP_404_NOT_FOUND,
     DENY_NOT_ENTITLED: http.HTTP_403_FORBIDDEN,
     DENY_NO_USER: http.HTTP_403_FORBIDDEN,
+    # D5 — LIVE onboarding is dark (403, honest "not available") / a demo-live server disagreement (409).
+    P.REQ_LIVE_ONBOARDING_DISABLED: http.HTTP_403_FORBIDDEN,
+    P.REQ_ENV_MISMATCH: http.HTTP_409_CONFLICT,
 }
+
+# D2/D5 — the hosted Add-Account path honours the customer's EXPLICIT demo/live choice. ``account_type`` is
+# REQUIRED (missing/invalid → 400) and maps to ``is_demo`` (demo→True, live→False). This REPLACES the legacy
+# ``is_demo`` body field so a hosted LIVE selection is never silently dropped (the Account-44 defect).
+_ACCOUNT_TYPES = {"demo": True, "live": False}
+
+
+def _resolve_is_demo(data):
+    """Return ``(is_demo, None)`` from the body's required ``account_type`` (demo|live), or ``(None, Response)``
+    with a 400 when it is missing/invalid. Never defaults — an unspecified type fails closed."""
+    raw = data.get("account_type", None)
+    at = str(raw).strip().lower() if raw is not None else ""
+    if at not in _ACCOUNT_TYPES:
+        return None, Response({"detail": "An account type (demo or live) is required.",
+                               "reason": "account_type_required"}, status=http.HTTP_400_BAD_REQUEST)
+    return _ACCOUNT_TYPES[at], None
 
 
 def _subsystem_visible() -> bool:
@@ -147,6 +168,9 @@ def _projection(request_user, ws, account):
     staff = bool(getattr(request_user, "is_staff", False))
     body = onboarding_journey_projection(ws, account, staff=staff)
     body["assignment"] = strategy_assignment_eligibility(account, user=request_user)
+    # D5 — tell the client whether the hosted Add-Account UI may offer the LIVE option (creation gate only;
+    # NOT monitoring/execution). OFF ⇒ the wizard stays demo-only, byte-identical.
+    body["live_onboarding_available"] = hosted_live_onboarding_enabled()
     return body
 
 
@@ -236,12 +260,15 @@ class OnboardingAddBrokerAccountView(_OnboardingBase):
         if _body_has_secret(data):
             return Response({"detail": "A broker password must never be submitted.",
                              "reason": P.REQ_PASSWORD_FORBIDDEN}, status=http.HTTP_400_BAD_REQUEST)
+        is_demo, type_err = _resolve_is_demo(data)   # D5 — explicit demo/live; missing/invalid → 400
+        if type_err is not None:
+            return type_err
         res = P.request_hosted_workspace(
             request.user,
             expected_login=str(data.get("expected_login", "") or ""),
             expected_server=str(data.get("expected_server", "") or ""),
             broker_name=str(data.get("broker_name", "") or ""),
-            is_demo=bool(data.get("is_demo", True)),
+            is_demo=is_demo,
             request=request)
         if not res.ok:
             if res.reason in (P.REQ_LOGIN_REQUIRED, P.REQ_IDENTITY_INVALID):
@@ -249,6 +276,13 @@ class OnboardingAddBrokerAccountView(_OnboardingBase):
                                  "reason": res.reason}, status=http.HTTP_400_BAD_REQUEST)
             if res.reason == P.REQ_LIMIT_REACHED:
                 return Response({"detail": "Broker-account limit reached for your plan.",
+                                 "reason": res.reason}, status=http.HTTP_409_CONFLICT)
+            if res.reason == P.REQ_LIVE_ONBOARDING_DISABLED:
+                return Response({"detail": "Live broker accounts aren't available yet.",
+                                 "reason": res.reason}, status=http.HTTP_403_FORBIDDEN)
+            if res.reason == P.REQ_ENV_MISMATCH:
+                return Response({"detail": "That broker server is already registered with a different "
+                                 "(demo/live) environment. Use the correct server for this account type.",
                                  "reason": res.reason}, status=http.HTTP_409_CONFLICT)
             status = _ADMISSION_HTTP.get(res.reason, http.HTTP_403_FORBIDDEN)
             if status == http.HTTP_404_NOT_FOUND:

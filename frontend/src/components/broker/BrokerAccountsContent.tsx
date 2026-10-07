@@ -305,7 +305,8 @@ export function BrokerAccountsContent() {
 
       {/* This is the hosted (persistent-workspace) member experience: the Add-account flow creates a hosted
           account (private MetaTrader runtime) — no password here; the customer logs in inside MT5. */}
-      <BrokerAccountWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onAdded={() => void load()} hosted />
+      <BrokerAccountWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onAdded={() => void load()} hosted
+        liveOnboardingAvailable={journey?.live_onboarding_available ?? false} />
       <SwitchActiveDialog open={switchTarget !== null} target={switchTarget} currentActive={currentActive()}
         busy={switchBusy} error={switchError} onConfirm={() => void confirmSwitch()}
         onClose={() => { if (!switchBusy) setSwitchTarget(null); }} />

@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-10-07 - STREAM D5 (hosted LIVE-onboarding fix — the Account-44 D2 gap) — DARK.**
+  Sponsor-directed after Account 44 (support@, login 55442, TradersWay-Live) was created DEMO despite selecting
+  "Live". ROOT CAUSE: the hosted Add-Account path ignored D2's `account_type` and forced demo — frontend
+  `BrokerAccountWizard` was demo-locked (always `is_demo:true`); backend `OnboardingAddBrokerAccountView` read
+  `is_demo` (default True) and `request_hosted_workspace` `get_or_create`'d the `BrokerServer` with the default
+  `environment=demo`. FIX (end-to-end, UI→API→onboarding→classification→provisioning): new DARK flag
+  `HOSTED_LIVE_ONBOARDING_ENABLED` (default OFF — a CREATION gate ONLY, NOT monitoring/recovery/execution);
+  `OnboardingAddBrokerAccountView` now REQUIRES `account_type` (missing/invalid→400), maps live→`is_demo=False`;
+  `request_hosted_workspace` fail-closes a LIVE request when the flag is OFF (never downgrades to demo), classifies
+  the broker server LIVE on create, and fails closed (`REQ_ENV_MISMATCH`) on a demo/live server disagreement;
+  the journey projection exposes `live_onboarding_available`; the wizard shows the Demo/Live selector (real-funds
+  warning) only when available + sends `account_type`. Adversarial-review hardening (drift class the Sponsor flagged
+  — "frontend says LIVE but result is DEMO"): the idempotent-return paths now fail closed on an environment
+  disagreement instead of silently returning a wrong-environment existing workspace. Guards: DEMO byte-identical;
+  no monitoring/recovery/execution enabled; no `LiveExecutionAuthorization`; no `MT5_ALLOW_LIVE`; no order; real-funds
+  acknowledgement preserved. Adversarial review: 5 candidates, **0 confirmed** (all the LIVE↔DEMO drift mechanisms
+  refuted — no account mis-created; the idempotent-return mechanism was nonetheless hardened above). Tests: new
+  `tests_d5_live_onboarding` (Account-44 reproduction Live→is_demo=False; inverse Demo→Demo; flag-off reject;
+  missing/invalid→400; env-mismatch fail-closed; drift-guard) + C3 updated to the account_type contract + wizard
+  vitest (incl. new LIVE case) + ratchet green; full affected regression (hosted_workspace+execution+trading) green.
+  Account 44 is NOT the cert target and will be removed via the corrected Model-A lifecycle; LIVE monitoring stays OFF.
+
 - **2026-10-07 - STREAM D4e (dedicated LIVE-recovery flag — DECOUPLE recovery from monitoring) — DARK.**
   Sponsor-directed Amber isolation improvement before the first LIVE-monitoring certification. Introduces a
   dedicated `HOSTED_LIVE_RECOVERY_ENABLED` flag (`hosted_workspace/flags.py`, default OFF) and repoints
