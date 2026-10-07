@@ -1,6 +1,10 @@
 """WP1 — BrokerEmailAlias identity foundation: opaque, per-instance, never-reused, flag-gated mint/retire."""
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.db import DatabaseError, transaction
+from django.db.models.sql.compiler import SQLUpdateCompiler
 from django.test import TestCase, override_settings
 
 from broker_intelligence.models import BrokerEmailAlias, alias_domain
@@ -89,6 +93,36 @@ class AliasModelTests(TestCase):
             BrokerEmailAlias.objects.create(
                 alias_local=al.alias_local, domain_at_creation=alias_domain(),
                 user=a.user, status=BrokerEmailAlias.Status.PENDING)
+
+
+class AliasRetireSavepointTests(TestCase):
+    """Regression (WP1 review HIGH): a DatabaseError on the retire UPDATE must NOT poison the enclosing
+    tombstone transaction. Without the inner savepoint, ``QuerySet.update()``'s mark_for_rollback_on_error sets
+    ``connection.needs_rollback`` on the outer atomic; the swallowed exception can't clear it, so the whole
+    tombstone silently rolls back while removal reports success — leaving the account LIVE with credentials."""
+
+    def test_retire_db_error_does_not_poison_enclosing_tombstone_txn(self):
+        a = _acct()
+        mint_alias_for_account(a)
+        # Stand in for remove_account's tombstone: an outer atomic with a sibling write that MUST survive the
+        # alias retire's DB error. Patching SQLUpdateCompiler.execute_sql to raise drives the error through the
+        # exact mark_for_rollback_on_error path a real lock_timeout / missing-relation would.
+        with transaction.atomic():
+            TradingAccount.objects.filter(pk=a.pk).update(name="TOMBSTONE_MARKER")   # sibling tombstone mutation
+            with mock.patch.object(SQLUpdateCompiler, "execute_sql",
+                                   side_effect=DatabaseError("simulated failure on alias retire UPDATE")):
+                rc = retire_alias_for_account(a)        # swallows + returns 0, WITHOUT marking the outer txn
+            self.assertEqual(rc, 0)
+            # The outer transaction must still be usable (needs_rollback cleared by the savepoint): this write,
+            # run AFTER the error and OUTSIDE the mock, would raise TransactionManagementError if poisoned.
+            TradingAccount.objects.filter(pk=a.pk).update(is_active=False)
+        # Committed: both sibling writes persisted -> the tombstone was NOT silently reverted.
+        a.refresh_from_db()
+        self.assertEqual(a.name, "TOMBSTONE_MARKER")
+        self.assertFalse(a.is_active)
+        # The alias itself stayed un-retired (its UPDATE was rolled back to the savepoint) — the retire is a
+        # best-effort no-op on DB error, never a partial write.
+        self.assertEqual(BrokerEmailAlias.objects.get(trading_account=a).status, BrokerEmailAlias.Status.ACTIVE)
 
 
 class AliasFlagGateTests(TestCase):

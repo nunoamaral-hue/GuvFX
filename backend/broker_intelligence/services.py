@@ -52,12 +52,23 @@ def mint_alias_for_account(account, *, journey=BrokerEmailAlias.Journey.CONNECT_
 
 def retire_alias_for_account(account) -> int:
     """Idempotently RETIRE the account's alias on tombstone. Row + token are RETAINED forever (never deleted,
-    never recycled). Returns rowcount (0 if none / already retired). Best-effort; never raises into a tombstone."""
+    never recycled). Returns rowcount (0 if none / already retired). Best-effort; never raises into a tombstone.
+
+    SAVEPOINT-ISOLATED (required, not cosmetic): the UPDATE runs in its OWN ``transaction.atomic()`` because this
+    runs INSIDE ``remove_account``'s tombstone transaction. A bare ``QuerySet.update()`` routes a DatabaseError
+    through Django's ``mark_for_rollback_on_error``, which sets ``connection.needs_rollback=True`` on the ENCLOSING
+    transaction; the ``except`` below swallows the Python exception but cannot clear that flag, so the whole
+    tombstone (credential destruction, ``disconnected_at``, Stage-2 enqueue) would silently roll back while
+    ``remove_account`` still reports success — leaving the account LIVE with intact credentials. The inner
+    savepoint rolls the DB error back to the savepoint so the tombstone transaction stays clean. Realistic
+    trigger: the master flag armed before migration 0001 lands (UPDATE hits a missing relation on every removal),
+    or a transient lock/serialization failure. Mirrors the create path (``mint_alias_for_account``)."""
     try:
-        return (BrokerEmailAlias.objects
-                .filter(trading_account=account)
-                .exclude(status=BrokerEmailAlias.Status.RETIRED)
-                .update(status=BrokerEmailAlias.Status.RETIRED, retired_at=timezone.now()))
+        with transaction.atomic():      # savepoint — a DB error here must NOT poison the tombstone transaction
+            return (BrokerEmailAlias.objects
+                    .filter(trading_account=account)
+                    .exclude(status=BrokerEmailAlias.Status.RETIRED)
+                    .update(status=BrokerEmailAlias.Status.RETIRED, retired_at=timezone.now()))
     except Exception:  # noqa: BLE001
         logger.warning("broker_email_alias retire failed account=%s", getattr(account, "id", None))
         return 0
