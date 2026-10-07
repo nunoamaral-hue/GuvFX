@@ -50,12 +50,14 @@ def create_customer_account(request, serializer):
     from billing.models import UserSubscriptionState
     from trading.models import TradingAccount
     from trading.views import _find_existing_account, _maybe_enqueue_beta_provisioning
+    from broker_intelligence.services import ensure_broker_email_alias   # DARK no-op unless the flag is on
 
     user = request.user
 
     # Staff: unchanged legacy admin create (no dedicated-runtime provisioning).
     if user.is_staff:
         serializer.save(user=user)
+        ensure_broker_email_alias(serializer.instance)
         return serializer.instance, True
 
     # Canonical identity normalisation (mirrors the DB partial-unique constraints / CheckConstraint).
@@ -75,6 +77,7 @@ def create_customer_account(request, serializer):
     if existing is not None:
         serializer.instance = existing
         _maybe_enqueue_beta_provisioning(user, existing)   # idempotent re-drive of provisioning
+        ensure_broker_email_alias(existing)
         return existing, False
 
     # New account. Serialise THIS user's creates on their row so the per-user account CAP is enforced
@@ -118,7 +121,9 @@ def create_customer_account(request, serializer):
         # is always active — reuse it idempotently. A tombstone never triggers this path (a re-add inserts anew).
         serializer.instance = winner
         _maybe_enqueue_beta_provisioning(user, winner)
+        ensure_broker_email_alias(winner)
         return winner, False
 
     _maybe_enqueue_beta_provisioning(user, serializer.instance)
+    ensure_broker_email_alias(serializer.instance)
     return serializer.instance, created

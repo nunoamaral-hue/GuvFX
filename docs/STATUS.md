@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-10-07 - PROGRAMME PIVOT: Withdrawal Intelligence V1 (P0) + T1 Telegram source migration.** Sponsor packet:
+  finish ONLY the minimum first-LIVE monitoring cert, then STOP LIVE expansion; Withdrawal Intelligence V1 is the
+  main product stream (investor demo 5–7 working days / pilot 7–10). No LIVE execution/ceremony/recovery/Cold-Boot-V2
+  until V1 is investor-demonstrable. Plan: `docs/WITHDRAWAL_INTELLIGENCE_V1_PLAN.md`.
+  - **PART B (T1 Telegram source migration) — read-only audit done → `SIGNAL_SOURCE_SAFETY_AMBIGUITY` → STOPPED
+    (per standing instruction).** Current `ti_signals` provider: ARMED, chat `-1004480146594`, watermark 889, 600s
+    window, last signal today. Config = `signal_intake.SignalProvider.telegram_chat_id`; listener `guvfx-wayond-
+    listener` (`run_wayond_listener --live`); parser `intelligence/ti_signals_source` (ti_signals_v1). Backlog-
+    replay SAFE (600s staleness window → STALE, dismissed before any plan; `SignalExecutionPlan` dedup incl.
+    chat_id). **BUT `AcquiredMessage` dedup is `(provider, message_id)` WITHOUT chat_id (`uniq_provider_message`),
+    checked FIRST** — the current channel recorded message_ids 15–889, so a NEW channel's low ids would collide →
+    genuine new-channel signals silently DROPPED as duplicates (a MISS). **Smallest fix (governed, strengthens):**
+    add chat_id to the `AcquiredMessage` dedup (constraint + `acquire_message` lookup) + reset watermark on switch.
+    NOT switched; awaiting Sponsor: authorize the dedup fix + confirm the NEW immutable channel ID (display name
+    "TI Signals" is ambiguous).
+  - **PART A (Withdrawal Intelligence V1) — WP1 STARTED (DARK):** new `broker_intelligence` app +
+    `BrokerEmailAlias` (opaque `ba<hex>@accounts.guvfx.com`, OneToOne per Model-A instance, NULLABLE for Journey B,
+    all-rows-unique local-part → never reused, write-once token+bind, RETIRED terminal) + `BROKER_EMAIL_IDENTITY_
+    ENABLED` (+ `_OPEN_NEW_ENABLED`) flags + mint/retire service + lifecycle hooks (create_customer_account mint,
+    remove_account retire — flag-gated, savepoint/best-effort, DEMO+existing byte-identical when OFF) + mig 0001.
+    Tests 12 OK; ratchet green.
+
 - **2026-10-07 - RECOVERY D5.1 + CAPACITY RESOURCE-LEAK FIX (Account-45 + node-slot leak) — DARK, backend-only.**
   Sponsor-authorized after the replacement LIVE account (Account 45) ALSO came out DEMO + provisioning stalled.
   **Diagnosis (read-only):** (A) acct45 is_demo=True — the D5 frontend gate `live_onboarding_available` was only

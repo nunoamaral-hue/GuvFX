@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     "operational_events",  # WP5.1 — Operational Event Model (ADR-0032; owner-scoped ops read model, DARK)
     "approvals",  # A5 — generic human-gated artefact-SHA approval primitive (DARK; no auto-promote)
     "broker_catalogue",  # Broker Catalogue V1 — immutable versioned broker-bootstrap store (DARK; approval-gated)
+    "broker_intelligence",  # Withdrawal Intelligence V1 — broker-email identity + evidence (DARK; isolated ingestion)
     "customer_notifications.apps.CustomerNotificationsConfig",  # Customer Telegram plane; DARK
 ]
 
