@@ -1481,3 +1481,62 @@ class HostedExecutionEndpoint(models.Model):
     def is_routable(self) -> bool:
         """A job may be dispatched here ONLY when the endpoint is READY (bridge proven up + pin-certified)."""
         return self.state == self.State.READY
+
+
+class LiveExecutionAuthorization(models.Model):
+    """Stream D4 (§3) — the durable, human-gated, versioned authorization for AUTOMATED LIVE execution.
+
+    This is a SEPARATE authority from the arm bit (``HostedMt5Workspace.execution_enabled``) and from the
+    per-workspace ADR-0047 ``execution_authorized_at``: for a LIVE account, automated execution additionally
+    requires an ACTIVE, non-revoked row here whose ``broker_identity_snapshot`` still matches the account's
+    current pinned identity. It is NEVER system-derivable — only the explicit D4c ceremony writes one. For a
+    DEMO account it is not consulted at all (demo keeps today's behaviour).
+
+    Immutable once written (revoke, never edit — mirrors the Model-A tombstone ethos). Bound to the Model-A
+    lifecycle INSTANCE (``trading_account``): a re-added account is a new instance and needs a new
+    authorization. Writing/validating a row grants NO order authority by itself — the order-time bridge gate
+    (identity pin + per-runtime MT5_ALLOW_LIVE, D4b) remains the final money-path authority.
+    """
+    trading_account = models.ForeignKey(
+        TradingAccount, on_delete=models.PROTECT, related_name="live_execution_authorizations")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="live_execution_authorizations")
+    # Identity + the material facts reviewed at authorization time (immutable snapshots). A LATER material
+    # change to any of these invalidates the authorization (enforced by the D4c ceremony / validity policy).
+    broker_identity_snapshot = models.JSONField(default=dict)   # {"login": ..., "server": ...} at authz time
+    strategy_assignment = models.ForeignKey(
+        StrategyAssignment, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="live_execution_authorizations")
+    strategy_snapshot = models.JSONField(default=dict, blank=True)
+    sizing_snapshot = models.JSONField(default=dict, blank=True)
+    authorization_version = models.IntegerField(default=1)      # the acknowledgement-copy version reviewed
+    acknowledgement_text_hash = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_live_execution_authorizations")
+    # Revocation (never edit): an explicit "disable live trading", or an invalidating material change.
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="revoked_live_execution_authorizations")
+    revocation_reason = models.CharField(max_length=64, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            # At most ONE active, non-revoked authorization per account INSTANCE (partial-unique-on-active,
+            # mirroring the Model-A lifecycle constraints). Revoked rows are retained as immutable history.
+            models.UniqueConstraint(
+                fields=["trading_account"],
+                condition=models.Q(is_active=True, revoked_at__isnull=True),
+                name="uniq_active_live_exec_authz_per_account",
+            ),
+        ]
+        indexes = [models.Index(fields=["trading_account", "is_active"])]
+
+    def __str__(self) -> str:
+        state = "active" if (self.is_active and self.revoked_at is None) else "revoked"
+        return f"LiveExecutionAuthorization(acct={self.trading_account_id}, v{self.authorization_version}, {state})"

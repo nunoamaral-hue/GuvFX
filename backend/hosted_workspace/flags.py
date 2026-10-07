@@ -418,6 +418,22 @@ def hosted_live_monitoring_enabled() -> bool:
     return _flag("HOSTED_LIVE_MONITORING_ENABLED")
 
 
+def hosted_live_execution_enabled() -> bool:
+    """Stream D4 (§3) — the gate for AUTOMATED LIVE EXECUTION authorization. DEFAULT OFF, and DISTINCT from the
+    D3 monitoring flag (``HOSTED_LIVE_MONITORING_ENABLED``): monitoring is environment-agnostic and execution-
+    neutral; this flag gates whether a LIVE account that holds a VALID, human-written ``LiveExecutionAuthorization``
+    (§3, D4c) may pass the demo-only execution wall (readiness condition 11) and the strategy/planning/promotion/
+    routing/arm walls (D4b). DEFAULT OFF ⇒ a LIVE account is execution-blocked exactly as before D4 (byte-identical
+    DEMO behaviour; no LIVE account ever becomes execution-eligible).
+
+    HARD INVARIANT: even ON, a LIVE account is execution-eligible ONLY when it ALSO holds a valid authorization
+    (``execution.live_authz.is_live_execution_authorized``) AND satisfies every existing identity / readiness /
+    capability / arm / ADR-0047 gate AND the per-runtime ``MT5_ALLOW_LIVE`` boundary + the order-time bridge gate
+    (D4b). This is NEVER a global allow-live switch — it only UNBLOCKS the authorization-gated path; authorization
+    itself is per-account, durable and human-written. Arming it in production is a Sponsor decision after cert."""
+    return _flag("HOSTED_LIVE_EXECUTION_ENABLED")
+
+
 def hosted_session_reconciler_arm_selfconnect_enabled() -> bool:
     """P4-c ARM gate for the SESSION reconciler's actual system-initiated guacd self-connect (the security-posture
     change: it decrypts the tenant's Windows password into a short-lived guacamole-auth-json token and drives
