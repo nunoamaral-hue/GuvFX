@@ -1,5 +1,45 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-07 — Stream D4e: dedicated HOSTED_LIVE_RECOVERY_ENABLED (decouple recovery from monitoring, DARK)
+
+- **Scope / decision.** Sponsor-directed Amber isolation improvement (recorded during D4d) made concrete, BEFORE
+  the first LIVE-monitoring certification. Give LIVE infrastructure recovery its OWN gate so LIVE monitoring and
+  LIVE recovery are independently controlled. Small governed DARK PR. Branch `feat/stream-d4e-live-recovery-flag`
+  off main `60f0045`.
+- **Verified fact vs assumption.** *Verified:* after the change, `hosted_live_monitoring_enabled` is referenced
+  ONLY in the monitoring domain (live_observe.py ExpectedAccount, provisioning bind-live, readiness
+  evaluate_monitoring / condition 11) and `_live_recovery_enabled()` (the single helper feeding BOTH
+  liveness_recovery AND session_reconciler) now reads ONLY `hosted_live_recovery_enabled`. DEMO + flag-off
+  byte-identical (both candidate queries re-apply `trading_account__is_demo=True`; `_armed_and_matched`
+  short-circuits). Execution authority (`HOSTED_LIVE_EXECUTION_ENABLED` + per-runtime `MT5_ALLOW_LIVE`) untouched
+  + OFF. *Assumption/gap:* real LIVE recovery never exercised (DARK; flags OFF in prod).
+- **Deviation / finding.** Adversarial review: 1 candidate, **0 confirmed** (REFUTED). The one LOW candidate —
+  the new flag name `HOSTED_LIVE_RECOVERY_ENABLED` is near-identical to the pre-existing master
+  `HOSTED_LIVENESS_RECOVERY_ENABLED` (operator-misconfiguration risk) — was refuted as "fail-safe, NO code
+  defect": every accessor reads its own distinct string, both master gates are unchanged and independently gate,
+  and arming LIVE recovery is structurally impossible with any single-flag typo (it requires BOTH a master gate
+  AND the widen flag ON; any typo → `_flag()` False → demo-only inert). Mitigation kept regardless: a dedicated
+  disambiguating paragraph in the flag docstring + an explicit callout in the runbook/this handoff; the exact
+  Sponsor-specified name is KEPT (no rename).
+  **Operator caution:** the first-LIVE-monitoring cert needs LIVE recovery OFF ⇒ `HOSTED_LIVE_RECOVERY_ENABLED`
+  must be UNSET/absent; do NOT confuse it with `HOSTED_LIVENESS_RECOVERY_ENABLED` (the demo terminal-relaunch
+  master gate).
+- **What changed.** `hosted_workspace/flags.py` (+`hosted_live_recovery_enabled()`, DARK, disambiguating
+  docstring). `hosted_workspace/liveness_recovery.py` (`_live_recovery_enabled()` reads the new flag).
+  `hosted_workspace/tests_d4d_live_recovery.py` (flag switched to the new name + decoupling tests:
+  monitoring-only ⇒ LIVE recovery inert, incl. a DB-backed fully-authorized case; DEMO byte-identical). Docs:
+  STATUS.md, NEXT.md, HANDOFF.md. **No migration.**
+- **Exact tests.** `manage.py test hosted_workspace execution trading` → **Ran 2805, OK** (exit 0). Focused:
+  `tests_d4d_live_recovery` alone **14 OK**; `tests_liveness_recovery` alone **17 OK**; `tests_p4b_session_reconciler`
+  alone **22 OK**; ratchet green. (Note: a cross-module SUBSET run shows a KNOWN pre-existing reserved-id
+  artifact — a demo recovery test whose account auto-id lands on {1,18} is `.exclude`d → candidates=0; run FULL
+  modules. CI runs the full suite deterministically.)
+- **Commit / branch state.** Branch `feat/stream-d4e-live-recovery-flag` off `60f0045`; PR/push pending at handoff
+  time; nothing deployed yet.
+- **One bounded next action.** Push → PR → Auto-fix CI → merge → DARK deploy (recreate ONLY `guvfx-backend`; NO
+  migration; NEVER `--remove-orphans`) → certify DARK no-op → then STOP and deliver the first-LIVE-monitoring
+  runbook (`docs/FIRST_LIVE_MONITORING_RUNBOOK.md`). Do NOT enable LIVE monitoring/recovery/execution.
+
 ## 2026-10-07 — Stream D4d: LIVE recovery semantics (infrastructure-only, DARK)
 
 - **Scope / decision.** Final sub-PR of the Sponsor-decomposed Stream D4 (D4a→D4d), under the existing governed

@@ -434,6 +434,34 @@ def hosted_live_execution_enabled() -> bool:
     return _flag("HOSTED_LIVE_EXECUTION_ENABLED")
 
 
+def hosted_live_recovery_enabled() -> bool:
+    """Stream D4e (2026-10-07) — the gate that INDEPENDENTLY controls whether a clean-LIVE account may become a
+    candidate for INFRASTRUCTURE RECOVERY (terminal relaunch via ``liveness_recovery`` + RDS session restore via
+    ``session_reconciler``). DEFAULT OFF.
+
+    This is deliberately DECOUPLED from the D3 ``HOSTED_LIVE_MONITORING_ENABLED`` gate (which only governs whether
+    a LIVE account participates in observation / identity-match / monitoring / dashboard). The two are orthogonal:
+      * Monitoring ON must NOT imply Recovery ON — with monitoring ON and this flag OFF, a matched LIVE workspace
+        is observed/displayed but its terminal/session is NEVER relaunched or restored (LIVE recovery stays
+        completely inert; DEMO recovery is unaffected).
+      * Recovery OFF ⇒ the shared ``liveness_recovery._live_recovery_enabled()`` returns False ⇒ both candidate
+        queries re-apply ``trading_account__is_demo=True`` and ``_armed_and_matched`` collapses to the demo-only
+        predicate — byte-identical to pre-D4d for DEMO and for the flag-off LIVE path.
+
+    Do NOT confuse this with the similarly-named master gates: ``HOSTED_LIVENESS_RECOVERY_ENABLED`` turns the
+    whole (demo) terminal-relaunch pass on/off, and ``HOSTED_SESSION_RECONCILER_ENABLED`` turns the whole session
+    reconciler on/off. This flag only WIDENS those already-enabled passes to clean-LIVE accounts; with either
+    master gate off, the corresponding pass does nothing regardless of this flag.
+
+    HARD INVARIANT: recovery is INFRASTRUCTURE ONLY — it NEVER creates a ``LiveExecutionAuthorization`` and NEVER
+    sets ``execution_enabled``/``execution_authorized_at``. A LIVE recovery candidate must still be ARMED and
+    still hold a currently-valid §3 authorization (``execution.live_authz.is_live_execution_authorized``); re-arm
+    remains gated on the observe→readiness condition-11→arm chain. This flag grants NO execution authority and is
+    separate from ``HOSTED_LIVE_EXECUTION_ENABLED`` and the per-runtime ``MT5_ALLOW_LIVE`` boundary, both of which
+    remain OFF. It is additionally ANDed with the relevant master gate. Arming it is a Sponsor decision."""
+    return _flag("HOSTED_LIVE_RECOVERY_ENABLED")
+
+
 def hosted_session_reconciler_arm_selfconnect_enabled() -> bool:
     """P4-c ARM gate for the SESSION reconciler's actual system-initiated guacd self-connect (the security-posture
     change: it decrypts the tenant's Windows password into a short-lived guacamole-auth-json token and drives
