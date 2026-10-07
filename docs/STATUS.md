@@ -14,6 +14,26 @@
 
 ## Execution workstream log
 
+- **2026-10-07 - RECOVERY D5.1 + CAPACITY RESOURCE-LEAK FIX (Account-45 + node-slot leak) — DARK, backend-only.**
+  Sponsor-authorized after the replacement LIVE account (Account 45) ALSO came out DEMO + provisioning stalled.
+  **Diagnosis (read-only):** (A) acct45 is_demo=True — the D5 frontend gate `live_onboarding_available` was only
+  emitted on the single-account `_projection`, so MULTI-account hosted users (support@) got the `multiple_accounts`
+  chooser WITHOUT it → wizard demo-locked → `account_type=demo`. (B) provisioning stalled because node 2 (the only
+  node non-CZ beta accounts can use) counted 12/12 but only 7 active — 5 tombstoned accounts (37/39/40/43/44, acct40
+  also with a leaked READY endpoint) still held node-2 slots: **Stage-2 `CLEANUP_SUCCEEDED` never released
+  `execution_node`**. **Fix:** (D5.1) `OnboardingJourneyView.multiple_accounts` now carries
+  `live_onboarding_available` (deployed frontend already reads it — no FE rebuild). (Capacity leak, framed as a
+  lifecycle/resource-leak defect) `decommission.reclaim_decommissioned_allocation(ws_pk)` releases execution_node +
+  workspace_node + retires the endpoint, **gated in the UPDATE WHERE-clause on `cleanup_state==SUCCEEDED`**
+  (idempotent, concurrency-safe; a FAILED/RUNNING/PENDING cleanup is NEVER freed — cross-tenant-collision safe),
+  called from the Stage-2 success path; `node_occupant_count` defensively EXCLUDES SUCCEEDED workspaces (still
+  counts in-progress); new mgmt commands `reclaim_node_allocations` (dry-run default, `--apply`) + read-only
+  `hosted_capacity_report` (physical capacity vs entitlement; flags unexpected tombstoned allocations). Adversarial
+  review **0 confirmed**. Tests: `tests_d5_live_onboarding` multi-account E2E reproduction (Add→Live→is_demo=False +
+  server LIVE) + `tests_capacity_reclaim` (release/gated/idempotent/occupant-exclusion/freed-slot-reusable) + C3 +
+  ratchet green; full affected regression (hosted_workspace+execution+trading) **2825 OK**. No migration. No
+  monitoring/recovery/execution enabled; no authz; no MT5_ALLOW_LIVE; no order.
+
 - **2026-10-07 - STREAM D5 (hosted LIVE-onboarding fix — the Account-44 D2 gap) — DARK.**
   Sponsor-directed after Account 44 (support@, login 55442, TradersWay-Live) was created DEMO despite selecting
   "Live". ROOT CAUSE: the hosted Add-Account path ignored D2's `account_type` and forced demo — frontend

@@ -1,5 +1,38 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-07 — Recovery D5.1 + capacity resource-leak fix (Account-45 + node-slot leak, DARK, backend-only)
+
+- **Scope / decision.** The replacement LIVE account (Account 45) ALSO persisted DEMO and its provisioning stalled.
+  Read-only forensic → two defects; Sponsor authorized fixing both (items 1–3) as one governed change. Branch
+  `fix/hosted-capacity-leak-and-d51` off `28cb118`.
+- **Verified fact vs assumption.** *Verified:* (A) acct45 `is_demo=True` — D5's frontend gate
+  `live_onboarding_available` was only on the single-account `_projection`; multi-account support@ gets the
+  `multiple_accounts` chooser (no field) → wizard demo-locked → `account_type=demo`. (B) node-2 counted 12/12 but
+  only 7 active; 5 tombstoned accounts (37/39/40/43/44) still held `execution_node` slots because Stage-2
+  `CLEANUP_SUCCEEDED` never released them (acct40 additionally had a leaked READY endpoint); node-1 is CZ-isolated
+  (`tenant_node_isolation_enabled=True`) so non-CZ accounts can't use its free slots → acct45 stuck at PROVISIONING.
+  Entitlement reconciled (owned=4; acct44 freed). acct44 host teardown SUCCEEDED (no collision). *Assumption:* none
+  material.
+- **What changed (backend-only).** `onboarding_views.py` (chooser response exposes `live_onboarding_available`);
+  `decommission.py` (`reclaim_decommissioned_allocation` + call on SUCCEEDED); `provisioning.py`
+  (`node_occupant_count` excludes SUCCEEDED, still counts in-progress); new `reclaim_node_allocations` (dry-run/
+  `--apply`) + `hosted_capacity_report` commands; `tests_capacity_reclaim.py` + multi-account E2E in
+  `tests_d5_live_onboarding.py`. **No migration. No frontend rebuild** (deployed FE already reads the field).
+- **Deviation / finding.** Adversarial review: **0 confirmed** (5 lenses clean). The TradersWay BrokerServer rows
+  are a 3-way case-variant mess (`TradersWay-Live`=demo [acct45], `TradersWay-Demo`=demo [orphan], `Tradersway-Live`
+  =live [tombstoned acct44]) — reconcile to one canonical LIVE during the data-ops, after acct45 is removed (then no
+  active dep). Server-name canonicalization left as a noted follow-up (not expanded here).
+- **Exact tests.** `manage.py test hosted_workspace execution trading` → **2825 OK**. Focused: D5 (incl. multi-
+  account E2E) + `tests_capacity_reclaim` (6) + C3 + ratchet → **49 OK**. `manage.py check` clean; both new commands
+  import.
+- **Commit / branch state.** Branch `fix/hosted-capacity-leak-and-d51` off `28cb118`; PR/push + data-ops pending.
+- **One bounded next action.** Push → PR → Auto-fix CI → merge → backend deploy (recreate ONLY `guvfx-backend`; no
+  migration; NEVER `--remove-orphans`) → **data-ops:** remove Account 45 (Model-A) + reconcile TradersWay servers to
+  one canonical LIVE + `reclaim_node_allocations --apply` (frees 37/39/40/43/44) → verify node-2 reusable capacity +
+  zero unexpected tombstoned allocations via `hosted_capacity_report` → STOP and tell the Sponsor to create the next
+  fresh LIVE account via the UI. Keep LIVE monitoring/recovery/execution OFF. **Then:** Withdrawal Intelligence V1 is
+  the top product priority (5–7d investor demo / 7–10d pilot) — ahead of Cold-Boot V2 + catalogue.
+
 ## 2026-10-07 — Stream D5: hosted LIVE-onboarding fix (the Account-44 D2 gap, DARK)
 
 - **Scope / decision.** During the first LIVE-monitoring cert, the Sponsor created a "Live" hosted account (Account

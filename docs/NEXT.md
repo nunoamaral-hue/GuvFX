@@ -14,9 +14,18 @@ breach (fail-closed; 0 ExecutionJobs; 25/35/36 intact; monitoring never enabled)
 `fix/hosted-live-onboarding-account-type`) fixes it end-to-end** behind DARK `HOSTED_LIVE_ONBOARDING_ENABLED`
 (creation gate only). **D5 MERGED #459 `9b67c07` + DEPLOYED (BE `66dfbdc4` + FE `c69a0af4`) + CERTIFIED; gate ARMED;
 Account 44 REMOVED (Model-A lifecycle; `Tradersway-Live` server corrected→LIVE); monitoring/recovery/execution OFF.**
-**Single next action: STOP — the Sponsor creates the replacement fresh LIVE account via the now-fixed UI** (Add
-Account → Live; real MT5 server name; DO NOT log in until monitoring enabled). That new instance (NOT 44) is the
-cert target → then the first LIVE-monitoring cert per `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`
+**UPDATE 2026-10-07b — the replacement (Account 45) ALSO came out DEMO + provisioning stalled → recovery D5.1 +
+capacity-leak fix (branch `fix/hosted-capacity-leak-and-d51`, review 0 confirmed, regression 2825 OK).** (A) D5's
+LIVE gate never reached MULTI-account users (the `multiple_accounts` journey omitted `live_onboarding_available`);
+(B) node-2 counted full because 5 tombstoned accounts' workspaces still held slots (Stage-2 SUCCEEDED didn't
+release `execution_node`). Fixes: expose the gate on the chooser response (backend-only); release node slot +
+retire endpoint on decommission SUCCEEDED (gated, idempotent) + defensive allocator count + `reclaim_node_allocations`
++ `hosted_capacity_report`. **Single next action:** merge → backend deploy → **data-ops** (remove Account 45 via
+Model-A; reconcile the 3 case-variant TradersWay servers to one canonical LIVE after proving no active dep; run
+`reclaim_node_allocations --apply` to free the 5 tombstone slots after eligibility) → verify node-2 reusable
+capacity + zero unexpected tombstoned allocations → **STOP; Sponsor creates the next fresh LIVE account via the
+now-truly-fixed UI** (Add Account → Live; real server; DO NOT log in until monitoring enabled) → then the first
+LIVE-monitoring cert per `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`
 (config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
 OFF; first account = a FRESH Model-A instance, NOT acct43, real MT5 zero/negligible balance; cert target =
 provisioning→human login→exact LIVE identity/env match→CONNECTED/MONITORING→balances/equity/positions/manual-trade
