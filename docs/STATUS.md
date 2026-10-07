@@ -61,7 +61,12 @@
     `BrokerEvent` row was bulk-deletable (violating "quarantine, never destroy"; enabling a delete+re-put metadata
     rewrite). FIX: added BEFORE-DELETE triggers on both tables (never in a CASCADE chain — all inbound FKs PROTECT —
     so no lifecycle breaks; TRUNCATE teardown unaffected) + corrected docstrings + 2 bulk-delete regression tests.
-    Tests 33 OK (20 WP2); affected regression 1605 OK; `check` clean.
+    Tests 33 OK (20 WP2); affected regression 1605 OK; `check` clean. **WP2 MERGED #465 (squash `f33779e`) +
+    DARK-DEPLOYED + CERTIFIED 2026-10-07** (image `2909b298`; `broker_intelligence.0002` applied). Prod cert: all 4
+    immutability triggers present (`bi_evidenceblob_no_update/no_delete`, `bi_brokerevent_no_evidence_update/
+    no_delete`), tables 0/0/0, flag OFF, CSRF 200, 14 containers Up (5 workers intact). (No prod test-row inserted —
+    the DELETE trigger would make it unremovable; `pg_trigger` presence + passing bulk-delete/update tests certify
+    enforcement.) **Next: WP3 isolated ingestion service.**
 
 - **2026-10-07 - RECOVERY D5.1 + CAPACITY RESOURCE-LEAK FIX (Account-45 + node-slot leak) — DARK, backend-only.**
   Sponsor-authorized after the replacement LIVE account (Account 45) ALSO came out DEMO + provisioning stalled.

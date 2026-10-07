@@ -18,8 +18,11 @@ error can't silently revert the tombstone; regression added. **WP2 (evidence + e
 (DARK), awaiting review→PR→deploy:** `EvidenceBlob` (content-addressed write-once, pointer-not-inline), `BrokerEvent`
 (append-only evidence; DB trigger blocks evidential edits, only `correlation_status` mutable; money Decimal; nullable
 = never fabricated; provenance SYNTHETIC-default), `Withdrawal` (durable, idempotent partial-unique), mig `0002` +2
-triggers. 31 tests OK; affected 1605 OK. **NEXT after WP2 merge: WP3 isolated ingestion service** (MailSource +
-alias→account resolver + raw-store + parser invoke; separate deploy, own mailbox credential, no trading coupling) → WP4 parser → WP5 correlation/metrics → WP6 UX
+triggers. **WP2 MERGED #465 (`f33779e`) + DARK-DEPLOYED + CERTIFIED** (mig 0002; 4 immutability triggers live; tables
+0/0/0; flag OFF; review 2 CONFIRMED (MED+LOW) bulk-delete-bypass fixed pre-PR via BEFORE-DELETE triggers). **NOW: WP3
+isolated ingestion service** (MailSource + alias→account resolver + raw-store + parser invoke; separate deploy, own
+mailbox credential via `core/credentials.resolve_secret`, no trading coupling) → WP4 parser → WP5 correlation/metrics
+→ WP6 UX. Targets unchanged: investor-demo 5–7 working days / pilot 7–10.
 correlation/metrics → WP4 APIs → WP5 UX → WP6 isolated ingestion skeleton. **T1 Telegram migration = STOPPED
 (`SIGNAL_SOURCE_SAFETY_AMBIGUITY`):** `AcquiredMessage` dedup lacks chat_id → new-channel ids (low) collide with
 recorded 15–889 → signals would be dropped; smallest fix = add chat_id to the dedup; awaiting Sponsor authorize-fix
