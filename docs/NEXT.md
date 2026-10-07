@@ -5,8 +5,10 @@
 decouples LIVE infrastructure recovery from LIVE monitoring — `liveness_recovery._live_recovery_enabled()` now
 reads the dedicated flag, not `HOSTED_LIVE_MONITORING_ENABLED`. Monitoring ON ≠ recovery ON; recovery OFF ⇒ LIVE
 recovery inert; DEMO + flag-off byte-identical; review 0 code defects (1 LOW flag-name-collision, mitigated by
-docstrings). Regression 2805 OK. **Single next action after D4e merge+DARK-deploy: STOP and produce the exact
-first-LIVE-MONITORING runbook** (config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
+docstrings). Regression 2805 OK. **D4e MERGED #457 `e937f13` + DARK-DEPLOYED + CERTIFIED** (image `5703cecc`;
+rollback `rollback-preD4e`=`c3845f40`; no migration; decouple proven — demo masters ON but LIVE recovery OFF).
+**Single next action: STOP — await explicit Sponsor authorization to RUN the first LIVE-monitoring cert** per the
+delivered `docs/FIRST_LIVE_MONITORING_RUNBOOK.md` (config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
 OFF; first account = a FRESH Model-A instance, NOT acct43, real MT5 zero/negligible balance; cert target =
 provisioning→human login→exact LIVE identity/env match→CONNECTED/MONITORING→balances/equity/positions/manual-trade
 visibility→dashboard/analytics, while PROVING automated execution impossible; no real order). Activation of that

@@ -34,11 +34,15 @@
   alone **22 OK**; ratchet green. (Note: a cross-module SUBSET run shows a KNOWN pre-existing reserved-id
   artifact — a demo recovery test whose account auto-id lands on {1,18} is `.exclude`d → candidates=0; run FULL
   modules. CI runs the full suite deterministically.)
-- **Commit / branch state.** Branch `feat/stream-d4e-live-recovery-flag` off `60f0045`; PR/push pending at handoff
-  time; nothing deployed yet.
-- **One bounded next action.** Push → PR → Auto-fix CI → merge → DARK deploy (recreate ONLY `guvfx-backend`; NO
-  migration; NEVER `--remove-orphans`) → certify DARK no-op → then STOP and deliver the first-LIVE-monitoring
-  runbook (`docs/FIRST_LIVE_MONITORING_RUNBOOK.md`). Do NOT enable LIVE monitoring/recovery/execution.
+- **Commit / branch state.** Merged to main as squash `e937f13` (#457, off `60f0045`); CI 10 green, MERGEABLE/CLEAN.
+  **DARK-DEPLOYED + CERTIFIED 2026-10-07:** VPS ff to `e937f13`, backend image rebuilt (`5703cecc`; rollback tag
+  `guvfx-prod-guvfx-backend:rollback-preD4e` = `c3845f40`), `--force-recreate --no-deps guvfx-backend` (NO
+  `--remove-orphans`), no migration. Certified DARK no-op (new flag + monitoring + execution all False;
+  `_live_recovery_enabled()` → False; demo masters stay ON but LIVE recovery OFF = decouple proven; restarts=0;
+  API 200). Deliverables written: `docs/FIRST_LIVE_MONITORING_RUNBOOK.md` + `docs/BROKER_EMAIL_IDENTITY_DESIGN.md`.
+- **One bounded next action.** STOP — await explicit Sponsor authorization to run the first LIVE-monitoring cert
+  (`docs/FIRST_LIVE_MONITORING_RUNBOOK.md`: monitoring ON, recovery OFF, execution OFF, self-connect OFF; fresh
+  Model-A LIVE account, NOT acct43). Do NOT enable any LIVE flag or place any order without that authorization.
 
 ## 2026-10-07 — Stream D4d: LIVE recovery semantics (infrastructure-only, DARK)
 
