@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ PROGRAMME PIVOT (Sponsor, 2026-10-07) — finish MINIMUM LIVE monitoring cert, then P0 = Withdrawal Intelligence V1
+Complete ONLY the minimum LIVE work to prove: fresh LIVE account created via UI → provisions → CONNECTED/MONITORING
+→ balances/equity/positions visible → automated execution impossible. **Then STOP all LIVE feature expansion** and
+pivot to **Withdrawal Intelligence V1** (investor-demonstrable 5–7 working days; production pilot 7–10). Do NOT start
+LIVE execution/ceremony/recovery activation, Cold-Boot V2, broker-catalogue waves (E/F) or discovery UX until
+Withdrawal V1 reaches the investor-demonstrable milestone. Plan: `docs/WITHDRAWAL_INTELLIGENCE_V1_PLAN.md`.
+**Phase A status:** environment ready + certified-path proven on the deployed backend; AWAITING the Sponsor to
+create the fresh LIVE cert account via the UI (support@, Add Account → Live; not acct 43/44/45; do NOT log in until
+monitoring enabled). Cert flags: `HOSTED_LIVE_MONITORING_ENABLED=1`, recovery/execution OFF, self-connect OFF; no
+authz; no MT5_ALLOW_LIVE; no order. **Withdrawal V1 immediate Sponsor deps:** pilot broker(s) + real sample emails
+(REQUESTED+COMPLETED) + pilot-mailbox decision + ingestion-service deploy target (plan §13).
+
 ## ▶ Stream D (Real/LIVE MT5) — D1–D4e SHIPPED/DARK; NEXT = first LIVE-MONITORING cert (2026-10-07)
 **D4e (dedicated LIVE-recovery flag) built+reviewed+DARK:** new `HOSTED_LIVE_RECOVERY_ENABLED` (default OFF)
 decouples LIVE infrastructure recovery from LIVE monitoring — `liveness_recovery._live_recovery_enabled()` now
