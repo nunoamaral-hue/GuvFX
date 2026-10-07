@@ -92,3 +92,208 @@ class BrokerEmailAlias(models.Model):
 
     def __str__(self) -> str:
         return f"BrokerEmailAlias({self.masked()}, {self.status})"
+
+
+# ======================================================================================================
+# WP2 — Evidence + event/withdrawal schema (DARK; no writers until the WP3 ingestion service).
+# ======================================================================================================
+
+class Provenance(models.TextChoices):
+    """Where a record's data came from. DEFAULT is SYNTHETIC on both BrokerEvent and Withdrawal — it is NEVER
+    allowed to default to REAL, so an un-labelled row can never masquerade as a genuine broker observation
+    (Sponsor rule: synthetic fixtures must be labelled synthetic; only an explicit real-ingestion path sets REAL)."""
+    SYNTHETIC = "SYNTHETIC", "Synthetic fixture (not a real broker email)"
+    SANITISED = "SANITISED", "Real email, sanitised (structure/fields preserved)"
+    REAL = "REAL", "Genuine, un-sanitised broker observation"
+
+
+# Open vocabulary (registry, not a DB CHECK): the withdrawal lifecycle event types the deterministic parser may
+# emit. ``event_type`` is a free CharField so a new broker template can introduce a value without a migration; this
+# tuple is the authoritative reference list used by parsers/tests and surfaced in the admin/read models.
+BROKER_EVENT_TYPES = (
+    "WITHDRAWAL_REQUESTED",
+    "WITHDRAWAL_PROCESSING",
+    "WITHDRAWAL_APPROVED",
+    "WITHDRAWAL_COMPLETED",
+    "WITHDRAWAL_REJECTED",
+    "WITHDRAWAL_CANCELLED",
+)
+
+
+class EvidenceBlob(models.Model):
+    """Immutable, content-addressed pointer to ONE stored raw broker message (the ``evidence_ref`` of the design).
+
+    POINTER, NOT PAYLOAD: the raw bytes live in a configurable external store (see ``evidence.EvidenceStore``);
+    this row holds only the integrity hash + the storage pointer + metadata, never the body inline (data rule:
+    no bulk/raw data in the DB or Git). Content-addressed by ``sha256`` (unique ⇒ identical messages de-dup to one
+    blob), so the store is inherently write-once: a key maps to exactly one byte-sequence. Fully immutable — no
+    UPDATE and no DELETE — enforced at BOTH the app layer (``save()``/``delete()`` overrides) AND the DB layer
+    (BEFORE-UPDATE + BEFORE-DELETE triggers, migration 0002), so the ORM bulk paths (``QuerySet.update()`` /
+    ``QuerySet.delete()``) and raw SQL — none of which call the instance overrides — are blocked too. Raw evidence
+    is quarantined, never destroyed (data rule); an event additionally PROTECTs its blob."""
+
+    class Source(models.TextChoices):
+        EMAIL = "EMAIL", "Broker transactional email"
+
+    sha256 = models.CharField(max_length=64, unique=True, editable=False, db_index=True)
+    storage_backend = models.CharField(max_length=16, default="file", editable=False)
+    storage_key = models.CharField(max_length=255, editable=False)   # pointer within the backend, NOT the payload
+    byte_size = models.PositiveBigIntegerField(editable=False)
+    content_type = models.CharField(max_length=64, default="message/rfc822", editable=False)
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.EMAIL, editable=False)
+    received_at = models.DateTimeField(editable=False)               # when the ingestion service received it
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["sha256"])]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("EvidenceBlob is immutable (content-addressed, write-once)")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("EvidenceBlob is immutable raw evidence; it is never deleted (quarantine, not destroy)")
+
+    def __str__(self) -> str:
+        return f"EvidenceBlob({self.sha256[:12]}…, {self.byte_size}B)"
+
+
+class BrokerEvent(models.Model):
+    """One append-only, evidence-backed observation parsed from a broker message (e.g. a withdrawal was REQUESTED/
+    COMPLETED). Append-only EVIDENCE: every evidential field is write-once and the row is never deleted — enforced
+    at the app layer (``save()``/``delete()``) AND the DB layer (a BEFORE-UPDATE trigger that rejects any change to
+    an evidential column, and a BEFORE-DELETE trigger), so the ORM bulk paths (``QuerySet.update()`` /
+    ``QuerySet.delete()``) and raw SQL are blocked too. Corrections are NEW rows, never edits. The single
+    non-evidential field ``correlation_status`` MAY advance later (WP5) — it records bookkeeping, not what the
+    broker said.
+
+    Amount/currency/occurred_at/reference-id are NULLABLE and NEVER fabricated — absent in the source ⇒ NULL here.
+    The event FKs TO the account (+ the alias it was addressed to, for attribution); there is no forward FK from
+    the alias. ``provenance`` defaults SYNTHETIC so a fixture can never be mistaken for a real broker observation."""
+
+    class CorrelationStatus(models.TextChoices):
+        UNRESOLVED = "UNRESOLVED", "Not yet correlated to a withdrawal"
+        CORRELATED = "CORRELATED", "Correlated to exactly one withdrawal"
+        AMBIGUOUS = "AMBIGUOUS", "Multiple/again candidates — needs review, never guessed"
+
+    # Attribution + resolution. Both nullable: an event can be captured before (or without) account resolution.
+    alias = models.ForeignKey(BrokerEmailAlias, on_delete=models.PROTECT, null=True, blank=True,
+                              related_name="broker_events")
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.PROTECT, null=True, blank=True,
+                                        related_name="broker_events")
+    broker = models.CharField(max_length=64, blank=True, default="")
+    source = models.CharField(max_length=16, choices=EvidenceBlob.Source.choices, default=EvidenceBlob.Source.EMAIL)
+    event_type = models.CharField(max_length=48)                      # open vocab (BROKER_EVENT_TYPES registry)
+    occurred_at = models.DateTimeField(null=True, blank=True)         # broker-stated time (may be unknown → NULL)
+    received_at = models.DateTimeField()                              # when the ingestion service received it
+    broker_reference_id = models.CharField(max_length=128, blank=True, default="")
+    amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)   # never fabricated
+    currency = models.CharField(max_length=8, blank=True, default="")
+    # Pointer to the stored raw message; PROTECT so evidence can't be orphaned by deleting the blob.
+    evidence = models.ForeignKey(EvidenceBlob, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name="events")
+    evidence_hash = models.CharField(max_length=64, blank=True, default="")   # sha256 of the raw msg (tamper-evident)
+    parser_name = models.CharField(max_length=64, blank=True, default="")
+    parser_version = models.CharField(max_length=32, blank=True, default="")
+    confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)   # 0.000–1.000
+    correlation_status = models.CharField(max_length=12, choices=CorrelationStatus.choices,
+                                          default=CorrelationStatus.UNRESOLVED)   # the ONLY mutable field
+    provenance = models.CharField(max_length=12, choices=Provenance.choices, default=Provenance.SYNTHETIC)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Evidential columns — write-once. ``correlation_status`` is deliberately absent (it may advance in WP5).
+    _IMMUTABLE = (
+        "alias_id", "trading_account_id", "broker", "source", "event_type", "occurred_at", "received_at",
+        "broker_reference_id", "amount", "currency", "evidence_id", "evidence_hash", "parser_name",
+        "parser_version", "confidence", "provenance",
+    )
+
+    class Meta:
+        ordering = ["id"]   # chronological, append-only
+        indexes = [
+            models.Index(fields=["trading_account", "id"]),
+            models.Index(fields=["broker_reference_id"]),
+            models.Index(fields=["correlation_status"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        # App-layer mirror of the DB trigger: evidential content is write-once; only correlation_status may change.
+        if self.pk is not None:
+            prior = type(self).objects.filter(pk=self.pk).first()
+            if prior is not None:
+                for f in self._IMMUTABLE:
+                    if getattr(prior, f) != getattr(self, f):
+                        raise ValidationError(f"BrokerEvent.{f} is append-only/immutable; corrections are new rows")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("BrokerEvent is append-only evidence; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"BrokerEvent({self.event_type}, acct={self.trading_account_id}, {self.correlation_status})"
+
+
+class Withdrawal(models.Model):
+    """The durable, correlated withdrawal record projected from one-or-more ``BrokerEvent``s. Unlike an event this
+    IS mutable (status advances as evidence accrues) but only ever on positive evidence — the advance logic + the
+    monotonic-status guard belong to the WP5 correlation engine; this WP2 schema just carries the state + the
+    evidence links. Idempotent correlation is anchored by a partial-unique ``(trading_account, broker_reference_id)``
+    (when a reference id is present) so the same broker withdrawal can never spawn two rows.
+
+    ``status`` semantics: REQUESTED→PROCESSING→COMPLETED/REJECTED/CANCELLED on evidence; **PENDING = requested but
+    completion not yet observed (NOT a failure)**; UNRESOLVED = correlated to an account but otherwise ambiguous."""
+
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Requested"
+        PROCESSING = "PROCESSING", "Processing"
+        COMPLETED = "COMPLETED", "Completed"
+        REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
+        PENDING = "PENDING", "Requested; completion not yet observed"
+        UNRESOLVED = "UNRESOLVED", "Ambiguous / not resolvable"
+
+    class CorrelationMethod(models.TextChoices):
+        REFERENCE_ID = "REFERENCE_ID", "Broker reference id (deterministic)"
+        HEURISTIC = "HEURISTIC", "Bounded heuristic (account+amount+currency+time window)"
+
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.PROTECT,
+                                        related_name="withdrawals")
+    broker_reference_id = models.CharField(max_length=128, blank=True, default="")
+    amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=8, blank=True, default="")
+    requested_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.REQUESTED)
+    requested_event = models.ForeignKey(BrokerEvent, on_delete=models.PROTECT, null=True, blank=True,
+                                        related_name="+")
+    completed_event = models.ForeignKey(BrokerEvent, on_delete=models.PROTECT, null=True, blank=True,
+                                        related_name="+")
+    correlation_method = models.CharField(max_length=16, choices=CorrelationMethod.choices, blank=True, default="")
+    provenance = models.CharField(max_length=12, choices=Provenance.choices, default=Provenance.SYNTHETIC)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+        constraints = [
+            # One withdrawal per (account, reference id) — makes reference-id correlation idempotent. Partial:
+            # only when a reference id is present (blank refs are heuristic/unresolved and not uniqueness-bearing).
+            models.UniqueConstraint(
+                fields=["trading_account", "broker_reference_id"],
+                condition=models.Q(broker_reference_id__gt=""),
+                name="uniq_withdrawal_account_reference"),
+        ]
+        indexes = [
+            models.Index(fields=["trading_account", "status"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def duration_seconds(self):
+        """Completed-minus-requested in whole seconds, or None if not both observed. Pure; no I/O."""
+        if self.requested_at and self.completed_at:
+            return int((self.completed_at - self.requested_at).total_seconds())
+        return None
+
+    def __str__(self) -> str:
+        return f"Withdrawal(acct={self.trading_account_id}, {self.status}, ref={self.broker_reference_id or '-'})"
