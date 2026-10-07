@@ -78,11 +78,55 @@ def _ok(res) -> bool:
     return bool(res) and bool(res.get("ok"))
 
 
+def _live_recovery_enabled() -> bool:
+    """D4d DARK gate for widening recovery to LIVE (import-local; fail-closed). OFF ⇒ recovery is demo-only,
+    byte-identical to pre-D4d. Uses the D3 monitoring flag: LIVE recovery is an environment-agnostic
+    INFRASTRUCTURE restore (observe/monitor domain), never an execution grant."""
+    try:
+        from hosted_workspace.flags import hosted_live_monitoring_enabled
+        return hosted_live_monitoring_enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_live_env(account) -> bool:
+    """Clean-LIVE classification (import-local; fail-closed)."""
+    try:
+        from trading.account_policy import is_live_environment
+        return bool(is_live_environment(account))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_live_authorized(account) -> bool:
+    """D4d defense-in-depth (import-local; fail-closed): a LIVE recovery candidate must ALSO currently hold a
+    VALID §3 ``LiveExecutionAuthorization``. This mirrors readiness condition-11, the arm gate and the order-time
+    bridge — all of which re-derive live authorization — so a LIVE account whose authorization is
+    materially-invalidated (strategy reassigned/removed/resized, identity drift) is NOT relaunched merely because
+    its durable arm bit persists. Recovery still only READS the authorization; it NEVER creates one. DEMO and the
+    flag-off path never reach this (short-circuited), so both remain byte-identical to pre-D4d."""
+    try:
+        from execution.live_authz import is_live_execution_authorized
+        return bool(is_live_execution_authorized(account))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _armed_and_matched(ws, account) -> bool:
-    """The 'should be trading' predicate: an ARMED, account-confirmed, previously-matched demo workspace. This
-    is what makes a terminal-less state a genuine outage (rather than a fresh/unconfirmed onboarding tenant)."""
+    """The 'should be trading' predicate: an ARMED, account-confirmed, previously-matched workspace. This is what
+    makes a terminal-less state a genuine outage (rather than a fresh/unconfirmed onboarding tenant).
+
+    D4d: environment-agnostic INFRASTRUCTURE restore — a DEMO account (byte-identical) OR, when the D4d flag is
+    on, a CLEAN LIVE account that STILL holds a valid §3 authorization. A LIVE candidate is still necessarily
+    ARMED (execution_enabled + execution_authorized_at) — which for a LIVE account required the §3 ceremony — AND
+    its authorization must still be valid now (``_is_live_authorized`` re-derives it exactly as condition-11 / the
+    arm gate / the bridge do), so a revoked, unapproved, mismatched/UNKNOWN or materially-invalidated LIVE account
+    is never a recovery candidate. Recovery relaunches the terminal ONLY; it NEVER creates an authorization and
+    NEVER sets execution_enabled/execution_authorized_at — re-arm stays gated on the observe->readiness
+    condition-11->arm chain (which fails LIVE closed without the flag + a valid §3 authorization)."""
     return (
-        getattr(account, "is_demo", False) is True
+        (getattr(account, "is_demo", False) is True
+         or (_live_recovery_enabled() and _is_live_env(account) and _is_live_authorized(account)))
         and getattr(account, "workspace_confirmed_at", None) is not None
         and ws.execution_enabled is True
         and getattr(ws, "execution_authorized_at", None) is not None
@@ -225,13 +269,16 @@ def run_hosted_liveness_recovery(*, actor: str = SOURCE, executor_resolver=None,
     # (armed AUTO_DEMO tenants only), so the per-candidate read-only observe adds negligible load.
     qs = (HostedMt5Workspace.objects
           .filter(execution_enabled=True, execution_authorized_at__isnull=False, proj_account_match=True,
-                  trading_account__is_demo=True, trading_account__workspace_confirmed_at__isnull=False)
+                  trading_account__workspace_confirmed_at__isnull=False)
           # Never relaunch a REMOVED (tombstoned) account's terminal (removal already disarms execution_enabled, but
           # this is explicit defence in depth so a Stage-2 teardown is never fought by a relaunch).
           .filter(trading_account__disconnected_at__isnull=True)
-          .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS)
-          .select_related("trading_account", "execution_node")
-          .iterator())
+          .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS))
+    # D4d: demo-only pre-filter when the LIVE-recovery flag is OFF (byte-identical); when ON, include LIVE and let
+    # the per-candidate _armed_and_matched env gate decide (clean LIVE + armed only).
+    if not _live_recovery_enabled():
+        qs = qs.filter(trading_account__is_demo=True)
+    qs = qs.select_related("trading_account", "execution_node").iterator()
 
     for ws in qs:
         account = getattr(ws, "trading_account", None)

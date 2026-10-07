@@ -52,7 +52,7 @@ from hosted_workspace.flags import (
     hosted_session_reconciler_arm_selfconnect_enabled,
     hosted_session_reconciler_enabled,
 )
-from hosted_workspace.liveness_recovery import _armed_and_matched   # canonical "should be trading" predicate
+from hosted_workspace.liveness_recovery import _armed_and_matched, _live_recovery_enabled   # canonical "should be trading" predicate
 from hosted_workspace.models import HostedMt5Workspace
 from hosted_workspace.slot_preparation import resolve_host_executor
 
@@ -245,11 +245,14 @@ def run_hosted_session_reconciler(*, actor: str = SOURCE, executor_resolver=None
 
     qs = (HostedMt5Workspace.objects
           .filter(execution_enabled=True, execution_authorized_at__isnull=False, proj_account_match=True,
-                  trading_account__is_demo=True, trading_account__workspace_confirmed_at__isnull=False)
+                  trading_account__workspace_confirmed_at__isnull=False)
           .filter(trading_account__disconnected_at__isnull=True)          # never recover a tombstoned account
-          .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS)          # CZ (1) + account 18 reserved
-          .select_related("trading_account", "execution_node")
-          .iterator())
+          .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS))         # CZ (1) + account 18 reserved
+    # D4d: demo-only pre-filter when the LIVE-recovery flag is OFF (byte-identical); when ON, include LIVE and let
+    # the per-candidate _armed_and_matched env gate decide. (Self-connect stays OFF regardless — restore only.)
+    if not _live_recovery_enabled():
+        qs = qs.filter(trading_account__is_demo=True)
+    qs = qs.select_related("trading_account", "execution_node").iterator()
 
     for ws in qs:
         account = getattr(ws, "trading_account", None)
