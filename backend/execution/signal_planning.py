@@ -237,8 +237,13 @@ def plan_demo_execution(
     # 4. Demo-only (centralized policy: fail-closed on LIVE and on any demo/live disagreement). Folds the former
     # separate account_not_demo + broker_server.environment=='live' checks into the single authoritative predicate;
     # a demo/live mismatch (bad data) now rejects as account_not_demo rather than account_live (both fail closed).
-    from trading.account_policy import is_demo_environment
-    if not is_demo_environment(account):
+    # D4b: a LIVE account is admitted ONLY when §3-authorized (flag + valid authorization); DEMO unchanged.
+    # A demo/live mismatch (bad data) fails both predicates ⇒ rejected (fail closed). Flag-off / DEMO is
+    # byte-identical to the pre-D4 demo-only wall.
+    from trading.account_policy import is_demo_environment, is_live_environment
+    from execution.live_authz import live_execution_permitted
+    if not (is_demo_environment(account)
+            or (is_live_environment(account) and live_execution_permitted(account))):
         _reject("account_not_demo", "planning is demo-only")
     # Record-only: the broker server's environment label, persisted on the plan as a display/audit
     # observation (NOT a gate — the demo/live decision above is authoritative). Preserved verbatim

@@ -120,6 +120,59 @@ def _confidence_ok(provider) -> bool:
         return False
 
 
+def _hosted_live_execution_enabled() -> bool:
+    """D4b DARK gate (import-local; fail-closed). OFF ⇒ the router pre-filters candidates to DEMO accounts
+    exactly as before D4 (byte-identical production routing for the current demo estate, incl. 25/35/36)."""
+    try:
+        from hosted_workspace.flags import hosted_live_execution_enabled
+        return hosted_live_execution_enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _account_env_admitted(account) -> bool:
+    """D4b order-path ENVIRONMENT admission (centralized policy; fail-closed). A DEMO account is always
+    admitted (unchanged); a LIVE account ONLY when §3-permitted (flag + a valid authorization). This widens
+    routing beyond the raw demo-only pre-filter WITHOUT ever admitting an un-authorized LIVE account — and it
+    never admits more than the demo set unless a live account is genuinely authorized."""
+    try:
+        from trading.account_policy import is_demo_environment, is_live_environment
+        if is_demo_environment(account):
+            return True
+        from execution.live_authz import live_execution_permitted
+        return bool(is_live_environment(account) and live_execution_permitted(account))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _routable_base(assignment_mode):
+    """The routable assignment base (mode, stage LIVE, active account). When the D4b flag is OFF the base is
+    additionally pre-filtered to DEMO accounts via ``demo_accounts_q`` — byte-identical to the pre-D4
+    ``account__is_demo=True`` filter — so flag-off routing is unchanged. When ON, the environment admission is
+    applied per-candidate by ``_unique_admitted`` / the fan-out filter instead (so a LIVE account is admitted
+    only when authorized)."""
+    base = StrategyAssignment.objects.filter(
+        execution_mode=assignment_mode,
+        stage=StrategyAssignment.STAGE_LIVE,
+        account__is_active=True,
+    )
+    if not _hosted_live_execution_enabled():
+        from trading.account_policy import demo_accounts_q
+        base = base.filter(demo_accounts_q("account__"))   # == account__is_demo=True (byte-identical, DARK)
+    return base
+
+
+def _unique_admitted(qs):
+    """The single order-path-admitted routable assignment in ``qs``, or None (fail-closed on ambiguity). With
+    the flag OFF ``qs`` is already demo-filtered, so this is the pre-D4 ``[:2]`` uniqueness check unchanged;
+    with it ON it additionally admits only DEMO or §3-permitted LIVE accounts before the uniqueness decision."""
+    if _hosted_live_execution_enabled():
+        admitted = [a for a in qs.select_related("account") if _account_env_admitted(a.account)]
+        return admitted[0] if len(admitted) == 1 else None
+    active = list(qs.select_related("account")[:2])
+    return active[0] if len(active) == 1 else None
+
+
 def _resolve_target(assignment_mode, source=""):
     """The active assignment (stage LIVE, demo account) to auto-execute for this signal's
     ``source`` (the provider slug), or None. Fail-closed: an ambiguous/paused config never fires.
@@ -140,18 +193,12 @@ def _resolve_target(assignment_mode, source=""):
        ``signal_source`` is unset everywhere.
     """
     # Routable set — the only assignments that may ever receive an auto order. account__is_active
-    # is required so deactivating an account is a reliable stop regardless of the assignment flag.
-    base = StrategyAssignment.objects.filter(
-        execution_mode=assignment_mode,
-        stage=StrategyAssignment.STAGE_LIVE,
-        account__is_demo=True,
-        account__is_active=True,
-    )
+    # is required so deactivating an account is a reliable stop regardless of the assignment flag. The
+    # demo/authorized-live admission is handled by _routable_base (DARK pre-filter) + _unique_admitted
+    # (per-candidate), so flag-OFF routing is byte-identical and a LIVE account is admitted only when §3-authorized.
+    base = _routable_base(assignment_mode)
     if source and StrategyAssignment.objects.filter(signal_source=source).exists():
-        active = list(
-            base.filter(signal_source=source, is_active=True).select_related("account")[:2]
-        )
-        return active[0] if len(active) == 1 else None
+        return _unique_admitted(base.filter(signal_source=source, is_active=True))
     # ADR-0020 multi-user isolation (fan-out ONLY): when signal fan-out is enabled, a CONFIGURED source
     # (one that has a ``SignalSourceConfig`` row) must NEVER fall through to an UNBOUND legacy assignment.
     # Otherwise one tenant's catch-all (``signal_source=""``) assignment could silently receive another
@@ -169,10 +216,7 @@ def _resolve_target(assignment_mode, source=""):
         auto_demo_execution_enabled=True
     ).count() > 1:
         return None
-    unbound = list(
-        base.filter(signal_source="", is_active=True).select_related("account")[:2]
-    )
-    return unbound[0] if len(unbound) == 1 else None
+    return _unique_admitted(base.filter(signal_source="", is_active=True))
 
 
 def _resolve_targets(assignment_mode, source=""):
@@ -187,16 +231,14 @@ def _resolve_targets(assignment_mode, source=""):
     suspension). The legacy UNBOUND path stays single-tenant — fan-out applies only to assignments
     explicitly bound to a source via ``signal_source``.
     """
-    base = StrategyAssignment.objects.filter(
-        execution_mode=assignment_mode,
-        stage=StrategyAssignment.STAGE_LIVE,
-        account__is_demo=True,
-        account__is_active=True,
-    )
+    base = _routable_base(assignment_mode)
     if source and StrategyAssignment.objects.filter(signal_source=source).exists():
-        return list(
-            base.filter(signal_source=source, is_active=True).select_related("account")
-        )
+        qs = base.filter(signal_source=source, is_active=True).select_related("account")
+        if _hosted_live_execution_enabled():
+            # Admit each fanned-out destination independently: DEMO always; a LIVE account only when
+            # §3-authorized. A non-admitted (e.g. un-authorized live) destination is dropped, never the others.
+            return [a for a in qs if _account_env_admitted(a.account)]
+        return list(qs)
     # Unbound legacy fallback stays single-tenant (reuses _resolve_target's >1-source fail-closed guard).
     single = _resolve_target(assignment_mode, source)
     return [single] if single is not None else []

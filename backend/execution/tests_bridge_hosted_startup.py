@@ -70,10 +70,18 @@ class HostedStartupConfigTests(SimpleTestCase):
         errs = _BR.evaluate_hosted_startup_config(env)
         self.assertTrue(any("MT5_REQUIRE_IDENTITY_PIN" in e for e in errs))
 
-    def test_live_mode_rejected_demo_only(self):
+    def test_live_mode_permitted_with_pin_and_guard(self):
+        # D4b: a hosted bridge MAY carry MT5_ALLOW_LIVE (per-runtime authorized live, set by the backend only
+        # for a §3-authorized account) WHEN the mandatory identity pin + guarded attach are present. It is no
+        # longer a blanket Phase-1 demo-only abort. (_VALID_HOSTED has pin + guard.)
         env = dict(_VALID_HOSTED); env["MT5_ALLOW_LIVE"] = "1"
+        self.assertEqual(_BR.evaluate_hosted_startup_config(env), [])
+
+    def test_live_mode_without_pin_rejected(self):
+        # Fail-closed: live on a hosted bridge WITHOUT the mandatory pin is refused.
+        env = dict(_VALID_HOSTED); env["MT5_ALLOW_LIVE"] = "1"; env.pop("MT5_REQUIRE_IDENTITY_PIN")
         errs = _BR.evaluate_hosted_startup_config(env)
-        self.assertTrue(any("DEMO-ONLY" in e or "MT5_ALLOW_LIVE" in e for e in errs))
+        self.assertTrue(any("MT5_ALLOW_LIVE" in e or "MT5_REQUIRE_IDENTITY_PIN" in e for e in errs))
 
     def test_credential_login_path_rejected(self):
         for cred in ("MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER"):

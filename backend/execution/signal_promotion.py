@@ -169,8 +169,12 @@ def _validate(plan: SignalExecutionPlan, *, now,
 
     # Demo-only (centralized policy: fail-closed on LIVE and on any demo/live disagreement). Folds the former
     # separate account_not_demo + broker_server.environment=='live' checks into one authoritative predicate.
-    from trading.account_policy import is_demo_environment
-    if not is_demo_environment(plan.account):
+    # D4b: a LIVE account is admitted ONLY when §3-authorized (flag + valid authorization); DEMO unchanged.
+    # A demo/live mismatch fails both predicates ⇒ rejected (fail closed). Flag-off / DEMO byte-identical.
+    from trading.account_policy import is_demo_environment, is_live_environment
+    from execution.live_authz import live_execution_permitted
+    if not (is_demo_environment(plan.account)
+            or (is_live_environment(plan.account) and live_execution_permitted(plan.account))):
         raise PromotionRejected("account_not_demo", "promotion is demo-only")
 
     # WP1B/WP2 (ADR-0029): broker-validation execution gate on the auto-execution funnel. Transparent while

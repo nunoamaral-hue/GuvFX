@@ -389,8 +389,14 @@ def evaluate_hosted_startup_config(env) -> list:
     if not _truthy("MT5_REQUIRE_IDENTITY_PIN"):
         errors.append("MT5_HOSTED_EXECUTION requires MT5_REQUIRE_IDENTITY_PIN=1 (mandatory per-job "
                       "login/server identity pin); refusing to allow un-pinned hosted execution")
-    if _truthy("MT5_ALLOW_LIVE"):
-        errors.append("MT5_HOSTED_EXECUTION is DEMO-ONLY in Phase 1: MT5_ALLOW_LIVE must not be set")
+    # D4b: a hosted bridge MAY be authorized for LIVE per-runtime (MT5_ALLOW_LIVE is set by the backend ONLY
+    # for a §3-authorized account — never globally). This is no longer a blanket demo-only abort. Live on a
+    # hosted bridge still REQUIRES the mandatory identity pin + guarded attach (both asserted above); assert it
+    # again here in the live context as defence-in-depth, so a hosted live bridge can never run un-pinned or
+    # un-guarded even if the earlier assertions were ever relaxed.
+    if _truthy("MT5_ALLOW_LIVE") and not (_truthy("MT5_REQUIRE_IDENTITY_PIN") and _truthy("MT5_GUARDED_ATTACH")):
+        errors.append("MT5_ALLOW_LIVE on a hosted bridge requires MT5_REQUIRE_IDENTITY_PIN=1 and "
+                      "MT5_GUARDED_ATTACH=1; refusing un-pinned/unguarded live execution")
     # Node-aware worker identity (capstone P1): hosted mode authenticates via the modern X-Worker-Id/Secret
     # path so the backend can resolve authorized_nodes. RULE 3: require BOTH — never silently fall back to the
     # shared legacy X-Worker-Token (which carries no authorized_nodes ⇒ a hosted job would be unclaimable, or
@@ -938,9 +944,13 @@ def validate_job_safety(job: Dict) -> tuple[bool, str]:
     if job.get("job_type") != "PLACE_ORDER":
         return False, f"Invalid job type: {job.get('job_type')}"
 
-    # Check demo flag
-    if not payload.get("is_demo", False):
-        return False, "Job not marked as demo. Refusing to execute."
+    # Demo flag. D4b: a non-demo (LIVE) job is refused UNLESS this runtime is EXPLICITLY authorized for live
+    # (MT5_ALLOW_LIVE — set per-runtime by the backend only for a §3-authorized account). A demo job, or any
+    # runtime without MT5_ALLOW_LIVE, is byte-identical to before (refused). This is layer 2 of two: the backend
+    # never routes/authorizes an un-authorized LIVE order, and the bridge independently refuses one here + at
+    # evaluate_binding (identity pin + allow_live). Never a global switch — MT5_ALLOW_LIVE is per bridge process.
+    if not payload.get("is_demo", False) and not _bridge_allow_live():
+        return False, "Job not marked as demo and runtime not live-authorized. Refusing to execute."
 
     # Check symbol is present. MT5-native availability (symbol_info/symbol_select) is
     # validated in execute_mt5_trade, where the terminal is initialised — see
