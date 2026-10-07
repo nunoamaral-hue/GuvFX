@@ -45,6 +45,29 @@ def live_authorization_for(account):
         return None
 
 
+def _hosted_live_execution_enabled() -> bool:
+    """D4 DARK gate (import-local; fail-closed). OFF ⇒ no LIVE account is ever order-path admitted."""
+    try:
+        from hosted_workspace.flags import hosted_live_execution_enabled
+        return hosted_live_execution_enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def live_execution_permitted(account) -> bool:
+    """D4b — the ONE fail-closed order-path predicate every wall uses to ADMIT a LIVE account: the DARK flag
+    is ON **and** a valid, human-written authorization exists (``is_live_execution_authorized``). Mirrors the
+    readiness condition-11 logic exactly so the router / planning / promotion walls and the readiness gate all
+    admit a LIVE account by identical criteria from one place. DEMO is NOT this function's concern — callers
+    admit DEMO via ``is_demo_environment`` and consult this ONLY for a non-demo account. It NEVER authorizes an
+    order by itself: the per-runtime ``MT5_ALLOW_LIVE`` boundary + the order-time bridge identity-pin gate
+    remain the final money-path authority. Fail-closed on any error."""
+    try:
+        return _hosted_live_execution_enabled() and is_live_execution_authorized(account)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def is_live_execution_authorized(account) -> bool:
     """FAIL-CLOSED: ``True`` ONLY when an active, non-revoked authorization exists for THIS account instance
     AND its ``broker_identity_snapshot`` still matches the account's current pinned (login, server), with a
