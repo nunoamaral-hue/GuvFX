@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-07 — Programme pivot: Withdrawal Intelligence V1 (P0) WP1 + T1 Telegram migration STOPPED
+
+- **Scope / decision.** Sponsor packet: finish ONLY the minimum first-LIVE monitoring cert, then STOP LIVE
+  expansion; Withdrawal Intelligence V1 becomes the main product stream (investor demo 5–7 working days / pilot
+  7–10). Plan approved: `docs/WITHDRAWAL_INTELLIGENCE_V1_PLAN.md`. Separate P0: migrate the T1 Telegram source.
+- **Part B (T1 migration) — read-only audit → STOPPED (safety ambiguity), per standing instruction.** *Verified:*
+  current `ti_signals` provider ARMED on chat `-1004480146594` (watermark 889, 600s window, last signal today);
+  config = `signal_intake.SignalProvider.telegram_chat_id`; listener `guvfx-wayond-listener`
+  (`manage.py run_wayond_listener --live`, read-only StringSession); parser `intelligence/ti_signals_source`.
+  Backlog-replay SAFE (600s staleness window → STALE, dismissed *before* any plan; `SignalExecutionPlan` dedup
+  includes chat_id). **Defect:** `AcquiredMessage` dedup is `(provider, message_id)` WITHOUT chat_id
+  (`uniq_provider_message`) and is checked first — the current channel recorded ids 15–889, so a NEW channel's low
+  ids would collide and genuine new signals would be silently DROPPED (MISS). **Not switched.** Smallest fix
+  (governed, strengthens): add chat_id to the `AcquiredMessage` dedup + reset watermark on switch. Awaiting Sponsor:
+  authorize the dedup fix + confirm the NEW immutable channel ID (display "TI Signals" is ambiguous).
+- **Part A (Withdrawal V1) — WP1 built (DARK).** New `broker_intelligence` app (INSTALLED_APPS) + `BrokerEmailAlias`
+  (opaque `ba<128-bit-hex>@<BROKER_EMAIL_ALIAS_DOMAIN|accounts.guvfx.com>`, OneToOne per Model-A `TradingAccount`,
+  NULLABLE for Journey B, all-rows-unique `alias_local` → never reused, write-once token+bind, RETIRED terminal) +
+  `flags.py` (`BROKER_EMAIL_IDENTITY_ENABLED` master + `_OPEN_NEW_ENABLED` sub-gate, default OFF) + `services.py`
+  (mint/bind/retire, CSPRNG token, idempotent) + lifecycle hooks: `account_service.create_customer_account` mints
+  (all return sites, savepoint, best-effort, flag-gated), `account_removal.remove_account` retires inside the
+  tombstone txn. **No LIVE/execution/strategy/credential authority.** mig `broker_intelligence/0001`.
+- **Exact tests.** `manage.py test broker_intelligence trading.tests_account_policy_guard` → **12 OK + ratchet OK**;
+  `manage.py check` clean. Full affected regression (broker_intelligence+trading+hosted_workspace+execution) running
+  at handoff. Flag OFF ⇒ account create/remove byte-identical (hooks no-op).
+- **Commit / branch state.** WP1 on branch `feat/broker-intelligence-wp1-email-alias` off main `cc6f425`; PR pending.
+- **One bounded next action.** WP1 PR → review → CI → merge → DARK deploy (recreate backend; migrate
+  `broker_intelligence 0001`). Then **WP2** (`BrokerEvent` append-only + `Withdrawal` durable + evidence store).
+  Part C: Phase-A LIVE cert still awaits the Sponsor creating the account. Part B: await Sponsor fix-authorization +
+  channel ID. Daily progress against the 5–7 day V1 target.
+
 ## 2026-10-07 — Recovery D5.1 + capacity resource-leak fix (Account-45 + node-slot leak, DARK, backend-only)
 
 - **Scope / decision.** The replacement LIVE account (Account 45) ALSO persisted DEMO and its provisioning stalled.

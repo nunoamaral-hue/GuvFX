@@ -141,6 +141,13 @@ def remove_account(account, *, actor: str = "", request=None) -> dict:
         # (AccountProvisioning.password_enc) + retire the provisioning record, so removal truthfully destroys
         # BOTH credential stores and the provisioning state reflects the tombstone (not a lingering PROVISIONED).
         destroy_runtime_provisioning_credential(account, actor=actor or "account_removal")
+        # 4c) Retire the broker-email alias (DARK no-op unless BROKER_EMAIL_IDENTITY_ENABLED). Inside the tombstone
+        # txn so it commits atomically; the alias row + opaque token are RETAINED forever (never reused). Best-effort.
+        try:
+            from broker_intelligence.services import retire_broker_email_alias
+            retire_broker_email_alias(account)
+        except Exception:  # noqa: BLE001 — never block the authoritative tombstone
+            pass
         # 5) Release the runtime endpoint (idempotent, best-effort).
         if ws is not None:
             try:
