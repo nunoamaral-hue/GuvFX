@@ -53,6 +53,14 @@
   (current reuse is safe + fail-safe in the coverage-drop direction). (2) With a LIVE account authorized + the
   independently-OFF self-connect flag later armed under P4-c, `session_reconciler` self-connect would restore a
   LIVE account's RDS session (environment-agnostic, in-scope, arms nothing) — worth an explicit P4-c re-assessment.
+  **D4d MERGED + DARK-DEPLOYED + CERTIFIED (2026-10-07):** #455 squash `496e20a` on main; VPS ff to `496e20a`,
+  `docker build guvfx-prod-guvfx-backend` → image `c3845f40`, `docker compose up -d --force-recreate --no-deps
+  guvfx-backend` (orphan-warning ignored, NO `--remove-orphans`). Rollback image
+  `guvfx-prod-guvfx-backend:rollback-preD4d` = `2c0320ba`. **No migration.** Certified DARK no-op in prod:
+  `hosted_live_monitoring_enabled`/`hosted_live_execution_enabled`/`_live_recovery_enabled` all False;
+  `_is_live_authorized` present; demo armed+matched→candidate=True, live armed+matched→candidate=False
+  (byte-identical demo-only); `LiveExecutionAuthorization` rows=0; container running restarts=0; API csrf 200.
+  The D4a→D4d DARK foundation is now COMPLETE; all activation remains Sponsor-gated and NOT authorized.
 
 - **2026-10-05 - STREAM D3: LIVE ACCOUNT MONITORING (environment-aware; execution STILL blocked) — DARK.**
   Builds on D1 (centralized `account_policy`) + D2 (explicit `account_type`, merged `cce9d04`/#450,

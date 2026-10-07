@@ -1,6 +1,6 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Stream D (Real/LIVE MT5) — D1–D4c SHIPPED; D4d built+reviewed, PR/CI/merge next (2026-10-07)
+## ▶ Stream D (Real/LIVE MT5) — D1–D4d SHIPPED + DARK-DEPLOYED + CERTIFIED; stream COMPLETE (2026-10-07)
 Sponsor-governed, each sub-PR DARK + adversarial-reviewed + CI + DARK-deployed, independently rollbackable.
 MERGED + DARK-DEPLOYED + CERTIFIED: **D1** centralized `account_policy` (#449); **D2** explicit required
 Add-Account `account_type` (#450, `cce9d04`); **D3** LIVE monitoring (#451, `HOSTED_LIVE_MONITORING_ENABLED`);
@@ -15,12 +15,12 @@ queries, behind `HOSTED_LIVE_MONITORING_ENABLED`; recovery restores INFRASTRUCTU
 and never arms. Adversarial review **0 confirmed** (3 raised, all REFUTED); adopted the one LOW defense-in-depth
 suggestion: a LIVE candidate must ALSO hold a currently-valid §3 authz (`_is_live_authorized`), so
 revoked/unapproved/mismatched/UNKNOWN/materially-invalidated LIVE accounts are fail-closed. `capability_recovery`
-LEFT demo-only (writes AllowLiveTrading=1 — Amber). Local: D4d focused + full liveness/reconciler/ceremony +
-ratchet green; full affected regression (hosted_workspace+execution+trading) green. **Single next action:** push
-`feat/stream-d4d-live-recovery` → PR → Auto-fix CI → merge → DARK deploy (recreate ONLY guvfx-backend; NO
-migration in D4d; NEVER `--remove-orphans`) → certify DARK no-op → then STOP (the D4a→D4d DARK foundation is
-complete). Invariants held: no real-money order; self-connect OFF; Account 33 quarantined; Cold-Boot V2 paused;
-entitlement 20; 25/35/36 untouched. **Amber (future Sponsor decision, NOT defects):** optional dedicated
+LEFT demo-only (writes AllowLiveTrading=1 — Amber). **D4d MERGED #455 `496e20a` + DARK-DEPLOYED + CERTIFIED**
+(backend image `c3845f40`; rollback `rollback-preD4d`=`2c0320ba`; `--force-recreate --no-deps guvfx-backend`, no
+migration, no `--remove-orphans`; certified DARK no-op — all LIVE flags False, demo recovery byte-identical, live
+recovery inert, authz rows=0). **Single next action:** STOP — the D4a→D4d DARK foundation is COMPLETE; await an
+explicit Sponsor decision to cross any activation boundary. Invariants held: no real-money order; self-connect
+OFF; Account 33 quarantined; Cold-Boot V2 paused; entitlement 20; 25/35/36 untouched. **Amber (future Sponsor decision, NOT defects):** optional dedicated
 `HOSTED_LIVE_RECOVERY_ENABLED` to decouple recovery from the D3 monitoring flag; P4-c re-assessment of LIVE
 self-connect session restore when the self-connect flag is eventually armed. **STOP (genuinely new Sponsor-level
 live-money decisions):** enabling LIVE monitoring/execution for a REAL account, making the ceremony available for

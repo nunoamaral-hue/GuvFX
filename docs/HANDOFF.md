@@ -38,12 +38,14 @@
   hosted_workspace.tests_d4c_live_ceremony trading.tests_account_policy_guard` → **Ran 68, OK**. Adversarial
   review (Workflow, 8 agents, read-only): 3 candidates, **0 confirmed**. *Not run here:* frontend (`npm run lint`/
   `build`) — D4d is backend-only; no frontend change. CI will run the full required suite.
-- **Commit / branch state.** Branch `feat/stream-d4d-live-recovery` off `0c90695`; PR + push pending at handoff
-  time; nothing deployed yet.
-- **One bounded next action.** Push → open PR → Auto-fix CI → merge → DARK deploy (recreate ONLY `guvfx-backend`;
-  NO migration; NEVER `--remove-orphans`) → certify DARK no-op. Then STOP: the D4a→D4d DARK foundation is complete;
-  all activation (real LIVE account, ceremony-for-real-execution, prod `MT5_ALLOW_LIVE`, first LIVE account,
-  capability_recovery LIVE widening, any real order) is Sponsor-gated and NOT authorized.
+- **Commit / branch state.** Merged to main as squash `496e20a` (#455, off `0c90695`); CI all green (10 checks),
+  MERGEABLE/CLEAN. **DARK-DEPLOYED + CERTIFIED 2026-10-07:** VPS ff to `496e20a`, backend image rebuilt
+  (`c3845f40`; rollback tag `guvfx-prod-guvfx-backend:rollback-preD4d` = `2c0320ba`), `--force-recreate --no-deps
+  guvfx-backend` (NO `--remove-orphans`), no migration. Certified DARK no-op (all LIVE flags False; demo
+  recovery byte-identical; live recovery inert; authz rows=0; container restarts=0; API 200).
+- **One bounded next action.** STOP — the D4a→D4d DARK foundation is COMPLETE and deployed. All activation (real
+  LIVE account, ceremony-for-real-execution, prod `MT5_ALLOW_LIVE`, first LIVE account, capability_recovery LIVE
+  widening, any real order) is Sponsor-gated and NOT authorized; await an explicit Sponsor decision.
 
 ## 2026-09-29 — Remove Broker Account STAGE-2 physical decommission + tombstone visibility + entitlement UX
 
