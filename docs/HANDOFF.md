@@ -35,13 +35,20 @@
   hardening at handoff time). Focused: `tests_d5_live_onboarding` (Account-44 reproduction + inverse + all guards +
   drift-guard), `tests_c3_add_account`, `tests_concurrent_funnel`, ratchet → **48 OK**. Frontend: wizard vitest 6/6
   (incl. new LIVE case); `eslint` clean; `npm run build` OK.
-- **Commit / branch state.** Branch `fix/hosted-live-onboarding-account-type` off `f2bd663`; PR/push pending at
-  handoff time; nothing deployed yet.
-- **One bounded next action.** Push → PR → Auto-fix CI → merge → deploy BOTH backend + frontend → certify the UI/API
-  path creates a LIVE account (enable `HOSTED_LIVE_ONBOARDING_ENABLED`; verify Live→is_demo=False, Demo→Demo) →
-  remove Account 44 via the corrected Model-A lifecycle (correct the orphaned `TradersWay-Live` server env if it
-  blocks a clean LIVE re-create) → STOP and tell the Sponsor to create the replacement fresh LIVE account. Keep LIVE
-  monitoring/recovery/execution OFF.
+- **Commit / branch state.** Merged to main as squash `9b67c07` (#459). **DEPLOYED + CERTIFIED 2026-10-07:** backend
+  img `66dfbdc4` (rollback `rollback-preD5`=`5703cecc`), frontend img `c69a0af4` (rollback `rollback-preD5`=
+  `570f2324`); recreated guvfx-backend+guvfx-frontend (`--no-deps`, no `--remove-orphans`); no migration. Frontend
+  built from canonical `guvfx-app/frontend`, `NEXT_PUBLIC_API_BASE_URL` set + `GIT_COMMIT=9b67c07`, capability flags
+  UNSET=DARK (build-info verified). Deployed cert: `_resolve_is_demo` live→False/demo→True/missing→400. Creation gate
+  `HOSTED_LIVE_ONBOARDING_ENABLED=1` armed (beta.env, rollback copy `beta.env.preD5ONBOARD`); monitoring/recovery/
+  execution OFF. **Account 44 removed** via corrected Model-A lifecycle (tombstoned, both cred stores destroyed,
+  provisioning RETIRED, entitlement freed, host `cleanup_state=RUNNING`); orphaned `Tradersway-Live` server corrected
+  demo→LIVE. 25/35/36 untouched.
+- **One bounded next action.** STOP — await the Sponsor to create the replacement fresh LIVE account via the now-fixed
+  UI (hosted Add Account → **Live**; the real MT5 server name; do NOT log in until monitoring is enabled). That new
+  Model-A instance (NOT Account 44) is the monitoring-cert target. Then run `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`
+  (monitoring ON, recovery OFF, execution OFF, self-connect OFF). Keep LIVE monitoring/recovery/execution OFF until
+  then. Watch Account 44's host `cleanup_state` through the Stage-2 cron (P2 verify-attach respawn edge).
 
 ## 2026-10-07 — Stream D4e: dedicated HOSTED_LIVE_RECOVERY_ENABLED (decouple recovery from monitoring, DARK)
 

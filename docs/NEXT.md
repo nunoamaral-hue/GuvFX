@@ -12,9 +12,11 @@ rollback `rollback-preD4e`=`c3845f40`; no migration; decouple proven — demo ma
 `account_type` (frontend demo-locked + backend `is_demo` default True + `BrokerServer` default env=demo). No safety
 breach (fail-closed; 0 ExecutionJobs; 25/35/36 intact; monitoring never enabled). **Stream D5 (built, branch
 `fix/hosted-live-onboarding-account-type`) fixes it end-to-end** behind DARK `HOSTED_LIVE_ONBOARDING_ENABLED`
-(creation gate only). **Revised sequence (Sponsor-approved):** ship D5 (tests→CI→merge→FE+BE deploy) → certify the
-UI/API path creates LIVE → remove Account 44 via corrected Model-A lifecycle → **STOP + tell Sponsor to create the
-replacement fresh LIVE account** → then the first LIVE-monitoring cert per `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`
+(creation gate only). **D5 MERGED #459 `9b67c07` + DEPLOYED (BE `66dfbdc4` + FE `c69a0af4`) + CERTIFIED; gate ARMED;
+Account 44 REMOVED (Model-A lifecycle; `Tradersway-Live` server corrected→LIVE); monitoring/recovery/execution OFF.**
+**Single next action: STOP — the Sponsor creates the replacement fresh LIVE account via the now-fixed UI** (Add
+Account → Live; real MT5 server name; DO NOT log in until monitoring enabled). That new instance (NOT 44) is the
+cert target → then the first LIVE-monitoring cert per `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`
 (config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
 OFF; first account = a FRESH Model-A instance, NOT acct43, real MT5 zero/negligible balance; cert target =
 provisioning→human login→exact LIVE identity/env match→CONNECTED/MONITORING→balances/equity/positions/manual-trade
