@@ -1,5 +1,50 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-07 — Stream D4d: LIVE recovery semantics (infrastructure-only, DARK)
+
+- **Scope / decision.** Final sub-PR of the Sponsor-decomposed Stream D4 (D4a→D4d), under the existing governed
+  DARK workflow (focused tests → full affected regression → adversarial review → PR → CI → merge → DARK
+  deploy/certify), independently rollbackable. D4d widens the two PURE-INFRASTRUCTURE recovery predicates —
+  `liveness_recovery` (terminal relaunch) and `session_reconciler` (RDS session restore) — from demo-only to
+  (demo OR clean-LIVE) behind the D3 `HOSTED_LIVE_MONITORING_ENABLED` flag. Recovery restores infrastructure
+  ONLY; it never creates an authorization and never arms. `capability_recovery` (writes AllowLiveTrading=1) is
+  deliberately LEFT demo-only — Amber, Sponsor-gated. Branch `feat/stream-d4d-live-recovery` off `0c90695` (D4c).
+- **Verified fact vs assumption.** *Verified:* the shared `_armed_and_matched` gate + both candidate queries are
+  byte-identical for DEMO and flag-off (query re-applies `trading_account__is_demo=True` when
+  `_live_recovery_enabled()` is False; predicate short-circuits on `is_demo` / flag). Recovery writes only infra
+  (liveness_recovery_count/at, session state, alerts) — grep + `never-authorizes` review lens confirm no
+  `execution_enabled` / `execution_authorized_at` assignment and no authz creation. A LIVE candidate re-derives a
+  valid §3 authorization (`is_live_execution_authorized`) exactly as condition-11 / arm-gate / bridge do.
+  `capability_recovery` references none of the LIVE helpers (structural test). *Assumption/gap:* real LIVE
+  recovery is never exercised here (all LIVE flags OFF in prod, 0 authz rows); DARK no-op only.
+- **Deviation (adopted defense-in-depth, not a defect).** The adversarial review returned **0 confirmed** (3
+  raised, all REFUTED). The one LOW suggestion — the candidate gate did not re-check CURRENT §3 validity, so a
+  materially-invalidated-but-not-revoked armed LIVE account could be a recovery candidate (relaunch only; no order
+  can flow) — was adopted: added `_is_live_authorized` to the LIVE branch of `_armed_and_matched`, so revoked /
+  unapproved / mismatched / UNKNOWN / materially-invalidated LIVE accounts are fail-closed. DEMO + flag-off stay
+  byte-identical (short-circuited). Two further review notes are **Amber, for a future Sponsor decision, not
+  changed here:** (1) optional dedicated `HOSTED_LIVE_RECOVERY_ENABLED` to decouple recovery from the D3
+  monitoring flag; (2) P4-c re-assessment of LIVE self-connect session restore once the (independently-OFF)
+  self-connect flag is armed.
+- **What changed.** `hosted_workspace/liveness_recovery.py` (`_live_recovery_enabled`, `_is_live_env`,
+  `_is_live_authorized`; widened `_armed_and_matched`; flag-gated candidate query). `hosted_workspace/
+  session_reconciler.py` (import `_live_recovery_enabled`; same flag-gated query; self-connect gate UNCHANGED).
+  `hosted_workspace/tests_d4d_live_recovery.py` (new: DB-free gate equivalence/fail-closed + DB-backed
+  authorized/invalidated/revoked LIVE recovery + capability_recovery-not-widened structural test). Docs:
+  `STATUS.md`, `NEXT.md`, `HANDOFF.md`. **No migration.**
+- **Exact tests.** `cd backend && .venv/bin/python manage.py test hosted_workspace execution trading` → **Ran
+  2802, OK** (exit 0). Focused: `manage.py test hosted_workspace.tests_d4d_live_recovery
+  hosted_workspace.tests_liveness_recovery hosted_workspace.tests_p4b_session_reconciler
+  hosted_workspace.tests_d4c_live_ceremony trading.tests_account_policy_guard` → **Ran 68, OK**. Adversarial
+  review (Workflow, 8 agents, read-only): 3 candidates, **0 confirmed**. *Not run here:* frontend (`npm run lint`/
+  `build`) — D4d is backend-only; no frontend change. CI will run the full required suite.
+- **Commit / branch state.** Branch `feat/stream-d4d-live-recovery` off `0c90695`; PR + push pending at handoff
+  time; nothing deployed yet.
+- **One bounded next action.** Push → open PR → Auto-fix CI → merge → DARK deploy (recreate ONLY `guvfx-backend`;
+  NO migration; NEVER `--remove-orphans`) → certify DARK no-op. Then STOP: the D4a→D4d DARK foundation is complete;
+  all activation (real LIVE account, ceremony-for-real-execution, prod `MT5_ALLOW_LIVE`, first LIVE account,
+  capability_recovery LIVE widening, any real order) is Sponsor-gated and NOT authorized.
+
 ## 2026-09-29 — Remove Broker Account STAGE-2 physical decommission + tombstone visibility + entitlement UX
 
 - **Scope / decision.** Sponsor-authorized pre-20-account packet: safe physical Windows-host teardown for removed

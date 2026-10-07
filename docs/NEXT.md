@@ -1,26 +1,31 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Stream D (Real/LIVE MT5) — D1–D3 + D4a + D4b SHIPPED; D4c in flight, D4d next (2026-10-07)
+## ▶ Stream D (Real/LIVE MT5) — D1–D4c SHIPPED; D4d built+reviewed, PR/CI/merge next (2026-10-07)
 Sponsor-governed, each sub-PR DARK + adversarial-reviewed + CI + DARK-deployed, independently rollbackable.
 MERGED + DARK-DEPLOYED + CERTIFIED: **D1** centralized `account_policy` (#449); **D2** explicit required
-Add-Account `account_type` (#450); **D3** LIVE monitoring (#451, `HOSTED_LIVE_MONITORING_ENABLED`); **D4a**
-`LiveExecutionAuthorization` model + `is_live_execution_authorized` + readiness condition-11 (#452, mig 0034);
-**D4b** router/exec + per-runtime `MT5_ALLOW_LIVE` + bridge rails (#453, `HOSTED_LIVE_EXECUTION_ENABLED`). All
-flags DEFAULT OFF; DEMO + flag-off byte-identical (proven); no authorization exists in prod (0 rows); no real
-order possible. **D4c** (built, branch `feat/stream-d4c-live-ceremony`): the explicit HUMAN ceremony
-(`authorize_live_execution` writes the authz after flag→LIVE→confirmed→connected/matched→strategy→exact-ack;
-`revoke_live_execution` = disable-live revoke+disarm; endpoints `onboarding/authorize-live`+`disable-live`; arm
-gate `_arm_preconditions` mirrors condition-11; material-change invalidation on strategy/sizing drift). Local:
-D4c + D4a + D4b + ratchet 38 green; full affected regression running. **Single next action:** finish the D4c
-adversarial review (address confirmed findings) → PR → Auto-fix CI → merge → DARK deploy (recreate ONLY
-guvfx-backend; mig only if present) → then **D4d** (widen the two PURE-INFRA recovery predicates — liveness
-relaunch + session restore — to LIVE via monitoring_eligible; recover infrastructure only, NEVER create authz;
-leave `capability_recovery` demo-only — Amber/Sponsor-gated as it writes AllowLiveTrading=1). Invariants held:
-no real-money order; self-connect OFF; Account 33 quarantined; Cold-Boot V2 paused; entitlement 20; 25/35/36
-untouched. **STOP (genuinely new Sponsor-level live-money decisions):** enabling LIVE monitoring/execution for a
-REAL account, making the ceremony available for real execution, granting a prod runtime `MT5_ALLOW_LIVE`,
-selecting the FIRST LIVE account (per the D1-checkpoint: a fresh Model-A account, monitoring-only, NOT Account
-43), the `capability_recovery` LIVE widening, or any real order.
+Add-Account `account_type` (#450, `cce9d04`); **D3** LIVE monitoring (#451, `HOSTED_LIVE_MONITORING_ENABLED`);
+**D4a** `LiveExecutionAuthorization` model + `is_live_execution_authorized` + readiness condition-11 (#452, mig
+0034); **D4b** router/exec + per-runtime `MT5_ALLOW_LIVE` + bridge rails (#453, `HOSTED_LIVE_EXECUTION_ENABLED`);
+**D4c** the explicit HUMAN ceremony + revoke/disarm + arm-gate + material-change invalidation (#454, `0c90695`).
+All flags DEFAULT OFF; DEMO + flag-off byte-identical (proven); no authorization exists in prod (0 rows); no real
+order possible. **D4d** (built, branch `feat/stream-d4d-live-recovery`): widen the two PURE-INFRA recovery
+predicates — `liveness_recovery` (terminal relaunch) + `session_reconciler` (RDS session restore) — from
+demo-only to (demo OR clean-LIVE with a VALID §3 authz) via the shared `_armed_and_matched` gate + both candidate
+queries, behind `HOSTED_LIVE_MONITORING_ENABLED`; recovery restores INFRASTRUCTURE ONLY, never creates an authz
+and never arms. Adversarial review **0 confirmed** (3 raised, all REFUTED); adopted the one LOW defense-in-depth
+suggestion: a LIVE candidate must ALSO hold a currently-valid §3 authz (`_is_live_authorized`), so
+revoked/unapproved/mismatched/UNKNOWN/materially-invalidated LIVE accounts are fail-closed. `capability_recovery`
+LEFT demo-only (writes AllowLiveTrading=1 — Amber). Local: D4d focused + full liveness/reconciler/ceremony +
+ratchet green; full affected regression (hosted_workspace+execution+trading) green. **Single next action:** push
+`feat/stream-d4d-live-recovery` → PR → Auto-fix CI → merge → DARK deploy (recreate ONLY guvfx-backend; NO
+migration in D4d; NEVER `--remove-orphans`) → certify DARK no-op → then STOP (the D4a→D4d DARK foundation is
+complete). Invariants held: no real-money order; self-connect OFF; Account 33 quarantined; Cold-Boot V2 paused;
+entitlement 20; 25/35/36 untouched. **Amber (future Sponsor decision, NOT defects):** optional dedicated
+`HOSTED_LIVE_RECOVERY_ENABLED` to decouple recovery from the D3 monitoring flag; P4-c re-assessment of LIVE
+self-connect session restore when the self-connect flag is eventually armed. **STOP (genuinely new Sponsor-level
+live-money decisions):** enabling LIVE monitoring/execution for a REAL account, making the ceremony available for
+real execution, granting a prod runtime `MT5_ALLOW_LIVE`, selecting the FIRST LIVE account (per the D1-checkpoint:
+a fresh Model-A account, monitoring-only, NOT Account 43), the `capability_recovery` LIVE widening, or any real order.
 
 ## ▶ Cold-boot recovery P0-P5 DEPLOYED + probe-only CERTIFIED; reboot-READY pending flat window + arm (2026-09-30)
 Sponsor-authorized deploy DONE: (1) P4/P5 backend deployed DARK (mig 0014, flags present+OFF, 25/35/36 untouched);
