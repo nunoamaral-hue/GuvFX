@@ -31,6 +31,14 @@
   byte-identical). Local: D4e focused + full liveness/reconciler/ceremony + ratchet green; full affected
   regression (hosted_workspace+execution+trading) 2805 OK. CERTIFICATION CONFIG this unlocks: LIVE monitoring ON,
   LIVE recovery OFF, LIVE execution OFF, self-connect OFF.
+  **D4e MERGED + DARK-DEPLOYED + CERTIFIED (2026-10-07):** #457 squash `e937f13`; VPS ff; backend image `5703cecc`;
+  rollback img `guvfx-prod-guvfx-backend:rollback-preD4e` = `c3845f40`; `--force-recreate --no-deps guvfx-backend`
+  (orphan-warning ignored, NO `--remove-orphans`); **no migration**. Certified DARK no-op in prod:
+  `hosted_live_recovery_enabled`/`hosted_live_monitoring_enabled`/`hosted_live_execution_enabled` all False;
+  `_live_recovery_enabled()` reads the new flag → False; the demo masters `HOSTED_LIVENESS_RECOVERY_ENABLED` +
+  `HOSTED_SESSION_RECONCILER_ENABLED` remain ON yet LIVE recovery is OFF — proving the decouple (pre-D4e, LIVE
+  recovery rode the monitoring flag while those masters were already on). Container restarts=0; API 200; 0
+  migrations. Runbook for the first LIVE-monitoring cert: `docs/FIRST_LIVE_MONITORING_RUNBOOK.md`.
 
 - **2026-10-07 - STREAM D4 (LIVE EXECUTION AUTHORIZATION) — D4a+D4b+D4c SHIPPED, D4d built+reviewed; all DARK, no real order.**
   Sponsor-decomposed into D4a→D4d, each governed (tests → full affected regression → adversarial review → CI →
