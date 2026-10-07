@@ -1,8 +1,9 @@
 """Stream D4d — LIVE recovery semantics (DARK). Recovery restores INFRASTRUCTURE only; it NEVER creates a
 LiveExecutionAuthorization and NEVER sets execution_enabled/execution_authorized_at. The shared
 ``_armed_and_matched`` candidate gate (used by BOTH liveness_recovery and session_reconciler) widens from
-demo-only to (demo OR clean-LIVE-with-a-valid-§3-authorization) only when the D4d flag is on; DEMO + flag-off
-are byte-identical.
+demo-only to (demo OR clean-LIVE-with-a-valid-§3-authorization) only when the dedicated
+``HOSTED_LIVE_RECOVERY_ENABLED`` flag is on (D4e — decoupled from ``HOSTED_LIVE_MONITORING_ENABLED``, so LIVE
+monitoring ON does NOT imply LIVE recovery ON); DEMO + flag-off are byte-identical.
 
 Invariants pinned:
   * DEMO armed+matched ⇒ candidate regardless of the flag (byte-identical).
@@ -26,7 +27,9 @@ from hosted_workspace.models import HostedMt5Workspace
 from hosted_workspace.state_machine import WorkspaceLifecycleState as S
 from trading.models import BrokerServer
 
-ON = {"HOSTED_LIVE_MONITORING_ENABLED": "1"}
+# D4e: LIVE recovery is gated by its OWN dedicated flag, DECOUPLED from LIVE monitoring.
+ON = {"HOSTED_LIVE_RECOVERY_ENABLED": "1"}                 # recovery widened to clean-LIVE
+MON_ONLY = {"HOSTED_LIVE_MONITORING_ENABLED": "1"}         # monitoring ON but recovery OFF ⇒ LIVE recovery inert
 
 
 def _ws():
@@ -52,6 +55,19 @@ class ArmedAndMatchedGateTests(SimpleTestCase):
     def test_live_not_candidate_when_flag_off(self):
         ws, acct = _ws(), _acct(is_demo=False)                        # live (no server ⇒ is_live_environment True)
         self.assertFalse(_armed_and_matched(ws, acct))               # flag off ⇒ demo-only ⇒ not a candidate
+
+    def test_monitoring_on_recovery_off_live_inert(self):
+        # D4e DECOUPLING: LIVE monitoring ON must NOT imply LIVE recovery ON. With only the monitoring flag set
+        # (recovery flag OFF), a clean-LIVE armed+matched workspace is NOT a recovery candidate.
+        ws, acct = _ws(), _acct(is_demo=False)
+        with override_settings(**MON_ONLY):
+            self.assertFalse(_armed_and_matched(ws, acct))
+
+    def test_demo_candidate_under_monitoring_only(self):
+        # DEMO byte-identical: monitoring-only (recovery OFF) still recovers DEMO exactly as before.
+        ws, acct = _ws(), _acct(is_demo=True)
+        with override_settings(**MON_ONLY):
+            self.assertTrue(_armed_and_matched(ws, acct))
 
     def test_live_not_candidate_without_authorization(self):
         # Flag ON + clean-LIVE + armed + matched + confirmed, but NO valid §3 authorization ⇒ fail-closed.
@@ -129,10 +145,16 @@ class LiveAuthorizedRecoveryTests(TestCase):
         return self.acct
 
     def test_authorized_live_is_candidate_only_with_flag_on(self):
-        # Flag OFF ⇒ demo-only ⇒ not a candidate even though fully authorized + armed.
+        # Recovery flag OFF ⇒ demo-only ⇒ not a candidate even though fully authorized + armed.
         self.assertFalse(_armed_and_matched(self.ws, self._acct_fresh()))
         with override_settings(**ON):
             self.assertTrue(_armed_and_matched(self.ws, self._acct_fresh()))
+
+    def test_authorized_live_inert_under_monitoring_only(self):
+        # D4e DECOUPLING (the certification config): a fully-authorized, armed, matched LIVE account is NOT a
+        # recovery candidate when ONLY monitoring is ON (recovery flag OFF) — monitoring ON ≠ recovery ON.
+        with override_settings(**MON_ONLY):
+            self.assertFalse(_armed_and_matched(self.ws, self._acct_fresh()))
 
     @override_settings(**ON)
     def test_materially_invalidated_live_not_candidate(self):

@@ -79,12 +79,13 @@ def _ok(res) -> bool:
 
 
 def _live_recovery_enabled() -> bool:
-    """D4d DARK gate for widening recovery to LIVE (import-local; fail-closed). OFF ⇒ recovery is demo-only,
-    byte-identical to pre-D4d. Uses the D3 monitoring flag: LIVE recovery is an environment-agnostic
-    INFRASTRUCTURE restore (observe/monitor domain), never an execution grant."""
+    """D4e DARK gate for widening recovery to LIVE (import-local; fail-closed). OFF ⇒ recovery is demo-only,
+    byte-identical to pre-D4d. Reads the DEDICATED ``HOSTED_LIVE_RECOVERY_ENABLED`` flag — independent of the D3
+    ``HOSTED_LIVE_MONITORING_ENABLED`` gate, so LIVE monitoring ON does NOT imply LIVE infrastructure recovery ON
+    (Sponsor D4e). LIVE recovery is an environment-agnostic INFRASTRUCTURE restore, never an execution grant."""
     try:
-        from hosted_workspace.flags import hosted_live_monitoring_enabled
-        return hosted_live_monitoring_enabled()
+        from hosted_workspace.flags import hosted_live_recovery_enabled
+        return hosted_live_recovery_enabled()
     except Exception:  # noqa: BLE001
         return False
 

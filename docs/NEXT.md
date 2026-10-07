@@ -1,6 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
-## ▶ Stream D (Real/LIVE MT5) — D1–D4d SHIPPED + DARK-DEPLOYED + CERTIFIED; stream COMPLETE (2026-10-07)
+## ▶ Stream D (Real/LIVE MT5) — D1–D4e SHIPPED/DARK; NEXT = first LIVE-MONITORING cert (2026-10-07)
+**D4e (dedicated LIVE-recovery flag) built+reviewed+DARK:** new `HOSTED_LIVE_RECOVERY_ENABLED` (default OFF)
+decouples LIVE infrastructure recovery from LIVE monitoring — `liveness_recovery._live_recovery_enabled()` now
+reads the dedicated flag, not `HOSTED_LIVE_MONITORING_ENABLED`. Monitoring ON ≠ recovery ON; recovery OFF ⇒ LIVE
+recovery inert; DEMO + flag-off byte-identical; review 0 code defects (1 LOW flag-name-collision, mitigated by
+docstrings). Regression 2805 OK. **Single next action after D4e merge+DARK-deploy: STOP and produce the exact
+first-LIVE-MONITORING runbook** (config: LIVE monitoring ON, LIVE recovery OFF, LIVE execution OFF, self-connect
+OFF; first account = a FRESH Model-A instance, NOT acct43, real MT5 zero/negligible balance; cert target =
+provisioning→human login→exact LIVE identity/env match→CONNECTED/MONITORING→balances/equity/positions/manual-trade
+visibility→dashboard/analytics, while PROVING automated execution impossible; no real order). Activation of that
+config is a SEPARATE Sponsor step — do NOT enable. In parallel (design/read-only ONLY, NOT implemented): the
+Broker Email Identity stream (`docs/BROKER_EMAIL_IDENTITY_DESIGN.md`) — one opaque never-reused
+`<opaque>@accounts.guvfx.com` alias per Model-A instance; journeys (A) connect-existing, (B) open-new
+(alias minted before brokerage registration, MT5 bound back later); NO mailbox ingestion yet. After LIVE
+monitoring cert, priority = BrokerEmailAlias → BrokerEvent/Withdrawal foundation → isolated email ingestion →
+Withdrawal Intelligence V1. Streams E/F + P2 decommission fix stay QUEUED unless prerequisites. Cold-Boot V2 paused.
+
+## ▶ (SUPERSEDED by the line above) Stream D D1–D4d — SHIPPED + DARK-DEPLOYED + CERTIFIED (2026-10-07)
 Sponsor-governed, each sub-PR DARK + adversarial-reviewed + CI + DARK-deployed, independently rollbackable.
 MERGED + DARK-DEPLOYED + CERTIFIED: **D1** centralized `account_policy` (#449); **D2** explicit required
 Add-Account `account_type` (#450, `cce9d04`); **D3** LIVE monitoring (#451, `HOSTED_LIVE_MONITORING_ENABLED`);

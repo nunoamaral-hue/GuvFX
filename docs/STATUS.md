@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-10-07 - STREAM D4e (dedicated LIVE-recovery flag — DECOUPLE recovery from monitoring) — DARK.**
+  Sponsor-directed Amber isolation improvement before the first LIVE-monitoring certification. Introduces a
+  dedicated `HOSTED_LIVE_RECOVERY_ENABLED` flag (`hosted_workspace/flags.py`, default OFF) and repoints
+  `liveness_recovery._live_recovery_enabled()` to read it INSTEAD OF the D3 `HOSTED_LIVE_MONITORING_ENABLED`.
+  LIVE monitoring and LIVE infrastructure recovery are now INDEPENDENTLY gated: monitoring ON no longer implies
+  recovery ON; recovery OFF leaves LIVE terminal/session recovery completely inert; DEMO + flag-off byte-identical
+  (both candidate queries re-apply `is_demo=True`; `_armed_and_matched` short-circuits). The single helper feeds
+  BOTH `liveness_recovery` and `session_reconciler`. Monitoring domain unchanged (`hosted_live_monitoring_enabled`
+  still gates only observer/matcher/bind-live/`evaluate_monitoring`). LIVE execution authority
+  (`HOSTED_LIVE_EXECUTION_ENABLED` + per-runtime `MT5_ALLOW_LIVE`) untouched + OFF. Adversarial review: 1 candidate,
+  **0 confirmed** (the LOW flag-name collision `HOSTED_LIVE_RECOVERY_ENABLED` vs the pre-existing master
+  `HOSTED_LIVENESS_RECOVERY_ENABLED` was REFUTED — fail-safe, NO code defect, arming impossible on any single-flag
+  typo; mitigated by disambiguating docstrings + runbook callout; Sponsor-specified name kept). New decoupling
+  tests (monitoring-only ⇒ LIVE recovery inert; DEMO
+  byte-identical). Local: D4e focused + full liveness/reconciler/ceremony + ratchet green; full affected
+  regression (hosted_workspace+execution+trading) 2805 OK. CERTIFICATION CONFIG this unlocks: LIVE monitoring ON,
+  LIVE recovery OFF, LIVE execution OFF, self-connect OFF.
+
 - **2026-10-07 - STREAM D4 (LIVE EXECUTION AUTHORIZATION) — D4a+D4b+D4c SHIPPED, D4d built+reviewed; all DARK, no real order.**
   Sponsor-decomposed into D4a→D4d, each governed (tests → full affected regression → adversarial review → CI →
   merge → DARK deploy), independently rollbackable, with DEMO-equivalence a HARD merge criterion for D4a/D4b.
