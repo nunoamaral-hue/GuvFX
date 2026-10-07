@@ -102,8 +102,12 @@ def _material_facts_unchanged(authz, account) -> bool:
         from hosted_workspace.provisioning import sizing_snapshot_for
         asn = getattr(authz, "strategy_assignment", None)
         if asn is None:
-            return True    # minimal (no-strategy) authorization ⇒ identity-only validity; nothing to invalidate.
-                           # Every ceremony-written authz HAS a strategy, so the full material check below applies.
+            # A GENUINELY minimal authorization (no strategy ever written) is identity-only. But every
+            # ceremony-written authz records a non-empty strategy_snapshot; if its strategy FK is now None, the
+            # authorized assignment was HARD-DELETED (on_delete=SET_NULL) — a material change — so FAIL CLOSED
+            # rather than silently degrade a ceremony authz into identity-only and admit a different,
+            # never-acknowledged strategy (adversarial finding, 2026-10-07).
+            return not (getattr(authz, "strategy_snapshot", None) or {})
         if not getattr(asn, "is_active", False):
             return False
         acct_id = getattr(account, "id", None) or getattr(account, "pk", None)

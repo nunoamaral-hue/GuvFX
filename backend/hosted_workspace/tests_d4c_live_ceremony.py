@@ -136,6 +136,15 @@ class CeremonyTests(TestCase):
         sz.save(update_fields=["lot_per_leg", "version"])
         self.assertFalse(is_live_execution_authorized(self.acct))
 
+    def test_strategy_hard_delete_invalidates(self):
+        # Hard-deleting the authorized assignment (never-traded ⇒ perform_destroy hard-deletes) nulls the authz
+        # FK via on_delete=SET_NULL. A ceremony authz (non-empty strategy_snapshot) with a nulled FK must FAIL
+        # CLOSED — never silently degrade to identity-only and admit a different, never-acknowledged strategy.
+        self.assertTrue(self._authorize().ok)
+        self.assertTrue(is_live_execution_authorized(self.acct))
+        StrategyAssignment.objects.filter(account=self.acct).delete()
+        self.assertFalse(is_live_execution_authorized(self.acct))
+
 
 class ArmGateTests(TestCase):
     def setUp(self):
