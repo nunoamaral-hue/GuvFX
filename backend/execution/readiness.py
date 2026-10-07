@@ -93,6 +93,26 @@ def _hosted_live_monitoring_enabled() -> bool:
         return False
 
 
+def _hosted_live_execution_enabled() -> bool:
+    """D4 DARK gate for the authorization-gated LIVE execution path (import-local; fail-closed). OFF ⇒ a LIVE
+    account is execution-blocked exactly as before D4 (demo-only wall byte-identical)."""
+    try:
+        from hosted_workspace.flags import hosted_live_execution_enabled
+        return hosted_live_execution_enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_live_execution_authorized(account) -> bool:
+    """D4 §3 — does this account hold a VALID, human-written LiveExecutionAuthorization? (import-local;
+    fail-closed on any error/absence/identity-drift)."""
+    try:
+        from execution.live_authz import is_live_execution_authorized
+        return is_live_execution_authorized(account)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _execution_permitted_under_posture(ws) -> bool:
     """ADR-0044 — the execution-side supervised-posture gate (import-local; fail-closed). True unless we are in
     the supervised posture (cert off, supervised flag on) AND the bounded single-tenant carve-out does not
@@ -154,8 +174,16 @@ class PersistentWorkspaceProvider:
         if getattr(account, "disconnected_at", None) is not None:
             return ReadinessDecision(False, g.R_ACCOUNT_DISCONNECTED, self.key)
         from trading.account_policy import is_demo_environment
-        if not is_demo_environment(account):  # condition 11 — DEMO-ONLY (centralized policy; fail-closed on mismatch)
-            return ReadinessDecision(False, RW_REAL_ACCOUNT_NOT_ENABLED, self.key)
+        if not is_demo_environment(account):  # condition 11 — DEMO-ONLY by default; D4a opens a gated LIVE path
+            # D4a (DARK): a LIVE account passes this wall ONLY with (a) HOSTED_LIVE_EXECUTION_ENABLED on AND
+            # (b) a VALID human-written §3 LiveExecutionAuthorization (active, non-revoked, identity-matched).
+            # Otherwise it stays blocked, exactly as before. DEMO is unaffected (is_demo_environment True ⇒ this
+            # branch is skipped), and with the flag off this is byte-identical to the pre-D4 demo-only wall.
+            # Passing condition 11 is NECESSARY, never SUFFICIENT — the rest of the conjunction (connected /
+            # matched / confirmed / trade_allowed / fresh / arm / ADR-0047) + the per-runtime MT5_ALLOW_LIVE +
+            # the order-time bridge gate (D4b) still all apply before any order can flow.
+            if not (_hosted_live_execution_enabled() and _is_live_execution_authorized(account)):
+                return ReadinessDecision(False, RW_REAL_ACCOUNT_NOT_ENABLED, self.key)
         ws = getattr(account, "hosted_workspace", None)
         if ws is None:
             return ReadinessDecision(False, RW_WORKSPACE_MISSING, self.key)

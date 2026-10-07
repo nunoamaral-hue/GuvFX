@@ -1,0 +1,67 @@
+"""Stream D4 (§3) — the ONE centralized LIVE-execution authorization validity/invalidation policy.
+
+Every execution/strategy wall that must additionally gate a LIVE account on a durable, human-written
+authorization calls ``is_live_execution_authorized`` here (never re-deriving it), so the rule lives in one
+fail-closed place. This module is DEMO-agnostic: a DEMO account's execution is gated solely by the existing
+``is_demo_environment`` path and never touches this — callers only consult this for a LIVE account.
+
+Validity (all required, fail-closed on any absence/ambiguity/error):
+  * an ACTIVE, non-revoked ``LiveExecutionAuthorization`` row exists for THIS account lifecycle instance
+    (a re-added Model-A account is a new instance ⇒ needs a new authorization — the FK binds the instance);
+  * its ``broker_identity_snapshot`` still equals the account's CURRENT pinned identity (login + server) —
+    identity drift (a different/absent identity than was reviewed) invalidates it.
+
+This grants NO order authority by itself: it is a precondition the readiness gate (D4a) and the strategy/
+planning/promotion/routing walls (D4b) AND the arm gate consult; the per-runtime ``MT5_ALLOW_LIVE`` boundary
+(D4b) and the order-time bridge identity-pin gate remain the final money-path authority. No real order is
+possible from this module.
+"""
+from __future__ import annotations
+
+
+def _current_identity(account):
+    """The account's current pinned (login, server) as trimmed strings. Never raises."""
+    login = str(getattr(account, "account_number", "") or "").strip()
+    try:
+        server = str(getattr(getattr(account, "broker_server", None), "server_name", "") or "").strip()
+    except Exception:  # noqa: BLE001 — a stale/unresolvable FK must not raise into a gate
+        server = ""
+    return login, server
+
+
+def live_authorization_for(account):
+    """The single ACTIVE, non-revoked ``LiveExecutionAuthorization`` for this account instance, else ``None``.
+    Never raises (absence/error ⇒ None ⇒ the caller fails closed)."""
+    try:
+        from execution.models import LiveExecutionAuthorization
+        acct_id = getattr(account, "id", None) or getattr(account, "pk", None)
+        if acct_id is None:
+            return None
+        return (LiveExecutionAuthorization.objects
+                .filter(trading_account_id=acct_id, is_active=True, revoked_at__isnull=True)
+                .order_by("-created_at")
+                .first())
+    except Exception:  # noqa: BLE001 — fail closed: any DB/import error ⇒ not authorized
+        return None
+
+
+def is_live_execution_authorized(account) -> bool:
+    """FAIL-CLOSED: ``True`` ONLY when an active, non-revoked authorization exists for THIS account instance
+    AND its ``broker_identity_snapshot`` still matches the account's current pinned (login, server), with a
+    non-empty login. Any absence, identity drift, malformed snapshot, or error ⇒ ``False``.
+
+    NOTE this is NOT about DEMO vs LIVE classification (that is ``account_policy``) and it NEVER authorizes an
+    order — it only reports whether the durable human authorization is currently valid; callers gate LIVE on
+    it IN ADDITION to the environment policy, the arm bit, ADR-0047, readiness and the order-time bridge gate."""
+    try:
+        authz = live_authorization_for(account)
+        if authz is None:
+            return False
+        snap = authz.broker_identity_snapshot or {}
+        login, server = _current_identity(account)
+        if not login:
+            return False   # an unpinned identity can never be authorized
+        return (str(snap.get("login", "")).strip() == login
+                and str(snap.get("server", "")).strip() == server)
+    except Exception:  # noqa: BLE001 — total fail-closed
+        return False
