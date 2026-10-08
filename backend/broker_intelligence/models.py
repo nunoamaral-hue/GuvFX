@@ -107,11 +107,28 @@ class Provenance(models.TextChoices):
     REAL = "REAL", "Genuine, un-sanitised broker observation"
 
 
-# Open vocabulary (registry, not a DB CHECK): the withdrawal lifecycle event types the deterministic parser may
+class TransactionCategory(models.TextChoices):
+    """WHAT KIND of money movement a message is about — DISTINCT from the lifecycle status (``event_type``). The
+    Withdrawal projection (WP5) counts ONLY ``EXTERNAL_WITHDRAWAL``; INTERNAL_TRANSFER/DEPOSIT/UNKNOWN never pollute
+    withdrawal statistics. A message is EXTERNAL_WITHDRAWAL ONLY with positive evidence money LEFT the broker
+    (external destination / payment method / receiving institution / explicit external type) — NEVER from the word
+    'withdrawal', the subject, the sender, an amount or an account number alone. Ambiguous ⇒ UNKNOWN (never guess).
+    (Sponsor packet 2026-10-08 §8: a TradersWay 'confirm your withdrawal request' email was in fact an internal
+    transfer; it must classify as NOT-external and never enter withdrawal metrics.)"""
+    EXTERNAL_WITHDRAWAL = "EXTERNAL_WITHDRAWAL", "Money leaving the broker environment"
+    INTERNAL_TRANSFER = "INTERNAL_TRANSFER", "Transfer between accounts inside the broker"
+    DEPOSIT = "DEPOSIT", "Money entering the broker environment"
+    UNKNOWN = "UNKNOWN", "Transaction type not resolvable from evidence (never guessed)"
+
+
+# Open vocabulary (registry, not a DB CHECK): the withdrawal LIFECYCLE event types the deterministic parser may
 # emit. ``event_type`` is a free CharField so a new broker template can introduce a value without a migration; this
-# tuple is the authoritative reference list used by parsers/tests and surfaced in the admin/read models.
+# tuple is the authoritative reference list used by parsers/tests and surfaced in the admin/read models. Lifecycle is
+# orthogonal to category: a CONFIRMATION_REQUIRED email can be an internal transfer (category UNKNOWN/INTERNAL).
 BROKER_EVENT_TYPES = (
     "WITHDRAWAL_REQUESTED",
+    "WITHDRAWAL_CONFIRMATION_REQUIRED",
+    "WITHDRAWAL_CONFIRMED",
     "WITHDRAWAL_PROCESSING",
     "WITHDRAWAL_APPROVED",
     "WITHDRAWAL_COMPLETED",
@@ -184,7 +201,11 @@ class BrokerEvent(models.Model):
                                         related_name="broker_events")
     broker = models.CharField(max_length=64, blank=True, default="")
     source = models.CharField(max_length=16, choices=EvidenceBlob.Source.choices, default=EvidenceBlob.Source.EMAIL)
-    event_type = models.CharField(max_length=48)                      # open vocab (BROKER_EVENT_TYPES registry)
+    event_type = models.CharField(max_length=48)                      # open vocab (BROKER_EVENT_TYPES registry) = LIFECYCLE
+    # WHAT KIND of movement (orthogonal to lifecycle). Defaults UNKNOWN — never guessed external. The withdrawal
+    # projection counts ONLY EXTERNAL_WITHDRAWAL, so an internal transfer / ambiguous message can never inflate stats.
+    transaction_category = models.CharField(max_length=24, choices=TransactionCategory.choices,
+                                            default=TransactionCategory.UNKNOWN)
     occurred_at = models.DateTimeField(null=True, blank=True)         # broker-stated time (may be unknown → NULL)
     received_at = models.DateTimeField()                              # when the ingestion service received it
     broker_reference_id = models.CharField(max_length=128, blank=True, default="")
@@ -204,8 +225,8 @@ class BrokerEvent(models.Model):
 
     # Evidential columns — write-once. ``correlation_status`` is deliberately absent (it may advance in WP5).
     _IMMUTABLE = (
-        "alias_id", "trading_account_id", "broker", "source", "event_type", "occurred_at", "received_at",
-        "broker_reference_id", "amount", "currency", "evidence_id", "evidence_hash", "parser_name",
+        "alias_id", "trading_account_id", "broker", "source", "event_type", "transaction_category", "occurred_at",
+        "received_at", "broker_reference_id", "amount", "currency", "evidence_id", "evidence_hash", "parser_name",
         "parser_version", "confidence", "provenance",
     )
 
@@ -222,6 +243,7 @@ class BrokerEvent(models.Model):
             models.Index(fields=["trading_account", "id"]),
             models.Index(fields=["broker_reference_id"]),
             models.Index(fields=["correlation_status"]),
+            models.Index(fields=["transaction_category"]),   # the withdrawal projection filters EXTERNAL_WITHDRAWAL
         ]
 
     def save(self, *args, **kwargs):

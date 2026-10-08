@@ -17,8 +17,12 @@ from typing import List, Optional, Protocol, runtime_checkable
 @dataclass(frozen=True)
 class ParsedBrokerEvent:
     """The deterministic extraction from one message. Absent fields stay None/'' — NEVER coerced to 0/placeholder
-    (never fabricated). ``event_type`` is from the open ``BROKER_EVENT_TYPES`` registry (see models)."""
+    (never fabricated). ``event_type`` is the LIFECYCLE (open ``BROKER_EVENT_TYPES`` registry); ``transaction_category``
+    is the orthogonal kind-of-movement (``TransactionCategory``) and DEFAULTS to ``UNKNOWN`` — a parser must set
+    ``EXTERNAL_WITHDRAWAL`` only on positive evidence money left the broker, never from the word 'withdrawal' alone.
+    Parsers MUST NOT place a confirmation URL / authorization token in any field here (sensitive; evidence-only)."""
     event_type: str
+    transaction_category: str = "UNKNOWN"
     broker: str = ""
     amount: Optional[Decimal] = None
     currency: str = ""
