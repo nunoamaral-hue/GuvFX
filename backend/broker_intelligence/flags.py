@@ -33,3 +33,11 @@ def broker_email_identity_open_new_enabled() -> bool:
     brokerage a receivable address and must stay dark until the mailbox/MX infra exists. Journey A
     (CONNECT_EXISTING) needs no inbound mail and is gated only by the master flag above."""
     return _flag("BROKER_EMAIL_IDENTITY_OPEN_NEW_ENABLED")
+
+
+def broker_intelligence_ingest_enabled() -> bool:
+    """Gate for the WP3b standalone ingestion WORKER (whether it polls the mailbox and ingests). DEFAULT OFF. The
+    ingestion pipeline function itself is pure/testable; this flag only governs the live worker loop + real MailSource
+    so the whole ingestion plane ships DARK until the pilot mailbox/credential exist and the Sponsor arms it. Grants
+    NO execution/strategy/credential authority."""
+    return _flag("BROKER_INTELLIGENCE_INGEST_ENABLED")

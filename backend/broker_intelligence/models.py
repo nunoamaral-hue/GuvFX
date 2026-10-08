@@ -211,6 +211,13 @@ class BrokerEvent(models.Model):
 
     class Meta:
         ordering = ["id"]   # chronological, append-only
+        constraints = [
+            # Idempotency backstop: one message (one EvidenceBlob) -> at most one BrokerEvent. Structural guarantee
+            # (not just the app-layer filter-then-create), so a concurrent/redelivered re-ingest cannot persist a
+            # duplicate event. Partial (evidence present) — events without a blob are not constrained.
+            models.UniqueConstraint(fields=["evidence"], condition=models.Q(evidence__isnull=False),
+                                    name="uniq_brokerevent_evidence"),
+        ]
         indexes = [
             models.Index(fields=["trading_account", "id"]),
             models.Index(fields=["broker_reference_id"]),
