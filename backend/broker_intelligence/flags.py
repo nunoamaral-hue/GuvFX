@@ -41,3 +41,13 @@ def broker_intelligence_ingest_enabled() -> bool:
     so the whole ingestion plane ships DARK until the pilot mailbox/credential exist and the Sponsor arms it. Grants
     NO execution/strategy/credential authority."""
     return _flag("BROKER_INTELLIGENCE_INGEST_ENABLED")
+
+
+def broker_withdrawal_correlation_enabled() -> bool:
+    """Gate for the WP5 withdrawal CORRELATION run loop (the management command / scheduled pass that projects
+    EXTERNAL_WITHDRAWAL events into Withdrawal records). DEFAULT OFF. The correlation engine
+    (``broker_intelligence.correlation``) is pure/testable and operates only on already-ingested events; this flag
+    only governs whether the LIVE pass executes, so the projection plane ships DARK until the Sponsor arms it. It
+    writes ONLY broker_intelligence withdrawal projections — NO execution/strategy/credential authority, never a
+    financial action."""
+    return _flag("BROKER_WITHDRAWAL_CORRELATION_ENABLED")
