@@ -28,7 +28,10 @@ const STR = {
   loading: { en: "Loading positions…", ja: "ポジションを読み込み中…" },
   unavailable: { en: "Positions unavailable", ja: "ポジションを取得できません" },
   partial: { en: "partial", ja: "一部" },
-  staleAccts: { en: (n: number) => `${n} account${n === 1 ? "" : "s"} not reachable`, ja: (n: number) => `${n}口座が取得不可` },
+  // Truthful wording (Sponsor direction): a stale account's live POSITIONS could not be read; the account itself
+  // may be reachable (its balance/equity read can succeed) — so this is "live positions unavailable", not the
+  // broader, misleading "not reachable".
+  staleAccts: { en: (n: number) => `${n} account${n === 1 ? "" : "s"}: live positions unavailable`, ja: (n: number) => `${n}口座: ポジション取得不可` },
   showing: { en: (x: number, y: number) => `Showing ${x} of ${y}`, ja: (x: number, y: number) => `${y}件中${x}件を表示` },
   updated: { en: (s: number) => `Updated ${s}s ago`, ja: (s: number) => `${s}秒前に更新` },
   reconnecting: { en: "reconnecting", ja: "再接続中" },
@@ -136,7 +139,11 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
             {money(floating?.total_usd ?? null)} USD
           </span>
           {floating?.basis === "PARTIAL" && (
-            <span title="Some accounts use a currency that could not be converted to USD"> · {STR.partial[L]}</span>
+            // Attribute the PARTIAL basis to its ACTUAL reason: an unreadable account (stale_read — live positions
+            // could not be read) vs a currency that could not be converted to USD. Previously hardcoded to currency.
+            <span title={staleAccts > 0
+              ? "Some accounts' live positions could not be read and are excluded from the total"
+              : "Some accounts use a currency that could not be converted to USD"}> · {STR.partial[L]}</span>
           )}
         </div>
         <div style={meta}>

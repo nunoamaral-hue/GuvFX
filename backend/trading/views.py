@@ -1184,7 +1184,14 @@ class SyncNowView(APIView):
         _inner = data.get("data") if isinstance(data.get("data"), dict) else {}
         observed_login = data.get("account_login", _inner.get("account_login"))
         observed_server = data.get("account_server", _inner.get("account_server"))
-        _idc = verify_snapshot_identity(account, observed_login, observed_server)
+        # Invariant 5 (LIVE read-only monitoring): this user-facing "Sync now" path is the THIRD deals-ingest
+        # consumer (alongside the async worker + analytics reads) — it must enforce the SAME DEMO/LIVE environment
+        # verification so a LIVE account's deals are never persisted off a wrong-environment terminal. Skipped
+        # automatically when the bridge did not report trade_mode (pre-redeploy backend-safe).
+        observed_trade_mode = (data.get("trade_mode")
+                               if data.get("trade_mode") is not None else _inner.get("trade_mode"))
+        _idc = verify_snapshot_identity(account, observed_login, observed_server,
+                                        observed_trade_mode=observed_trade_mode, require_environment=True)
         if not _idc.ok:
             logger.warning("sync-now identity firewall refused: acct=%s reason=%s", account.id, _idc.reason_code)
             return Response(

@@ -51,6 +51,7 @@ ID_NO_EXPECTED_LOGIN = "snapshot_identity_no_expected_login"   # account has no 
 ID_OBSERVED_MISSING = "snapshot_identity_observed_missing"     # bridge returned no observed login/server
 ID_LOGIN_MISMATCH = "snapshot_identity_login_mismatch"         # observed login != expected (WRONG tenant)
 ID_SERVER_MISMATCH = "snapshot_identity_server_mismatch"       # observed server != expected server
+ID_ENVIRONMENT_MISMATCH = "snapshot_identity_environment_mismatch"  # observed DEMO/LIVE != account's expected env
 
 
 @dataclass(frozen=True)
@@ -152,14 +153,46 @@ def expected_identity(account) -> tuple[str, str]:
     return login, server
 
 
-def verify_snapshot_identity(account, observed_login, observed_server, *, require_server=False) -> IdentityCheck:
+def expected_is_demo(account) -> bool | None:
+    """The account's AUTHORITATIVE expected DEMO/LIVE environment as a tri-state:
+    ``True`` (clean DEMO), ``False`` (clean LIVE), or ``None`` when it cannot be cleanly resolved.
+
+    Reuses the single canonical classifier ``trading.account_policy.account_environment`` (the same source the
+    hosted monitoring matcher uses via ``is_live_environment``), so this read firewall and the observation matcher
+    agree about an account's environment. A classification integrity error (an ambiguous / mismatched env) yields
+    ``None`` — the environment check is then SKIPPED rather than failing a monitoring READ closed, because the
+    login(exact)+server pin already bind the tenant; surfacing an integrity error is a separate concern and must
+    not silently blank an owner's monitoring data on a read."""
+    try:
+        from trading.account_policy import account_environment, Environment
+        env = account_environment(account)
+        if env == Environment.DEMO:
+            return True
+        if env == Environment.LIVE:
+            return False
+        return None
+    except Exception:  # noqa: BLE001 — any classification error -> unknown -> skip (never fail a read closed here)
+        return None
+
+
+def verify_snapshot_identity(account, observed_login, observed_server, *, require_server=False,
+                             observed_trade_mode=None, require_environment=False) -> IdentityCheck:
     """Downstream firewall: the observed MT5 session identity MUST match the account's expected identity.
 
     ``observed_*`` come from the bridge's own ``account_info`` in the SAME session that produced the payload.
     Fail-closed: a missing expected login, a missing observation, or ANY mismatch refuses the whole payload —
     the caller persists / returns ZERO customer rows. ``require_server`` additionally enforces the server
     name (kept optional because a hosted workspace's server may be a placeholder until broker bind; the login
-    == account_number check is the load-bearing tenant discriminator)."""
+    == account_number check is the load-bearing tenant discriminator).
+
+    ``require_environment`` (invariant 5 for LIVE read-only monitoring — ADR LIVE_READONLY_MONITORING_SAFETY_DESIGN):
+    when ON and the bridge reported an ``observed_trade_mode`` (0=DEMO, else LIVE/CONTEST) AND the account's expected
+    environment resolves cleanly, a DEMO/LIVE DISAGREEMENT refuses the read (``ID_ENVIRONMENT_MISMATCH``). It is
+    SKIPPED when the bridge did not report trade_mode (an older bridge not yet redeployed — so the backend firewall
+    deploys safely BEFORE any bridge redeploy, byte-identical until then) or when the expected environment is
+    ambiguous. Default OFF ⇒ every existing caller is byte-identical. This never authorises execution; it only
+    confirms a monitoring read reached the environment it expected (a LIVE read must be a LIVE terminal, a DEMO read
+    a DEMO terminal)."""
     exp_login, exp_server = expected_identity(account)
     obs_login = _norm(observed_login)
     obs_server = _norm(observed_server)
@@ -176,4 +209,16 @@ def verify_snapshot_identity(account, observed_login, observed_server, *, requir
     # server is the same broker server, and the login check already gated the tenant.
     if require_server and exp_server and obs_server and obs_server.casefold() != exp_server.casefold():
         return IdentityCheck(False, ID_SERVER_MISMATCH, exp_login, obs_login)
+    # Invariant 5 — DEMO/LIVE environment verification (additive; only when explicitly required AND both sides
+    # are known). trade_mode 0 == DEMO; anything else (1=CONTEST, 2=REAL) is treated as non-demo — DELIBERATELY
+    # consistent with the hosted monitoring matcher (hosted_workspace.matching: is_demo_account = trade_mode == 0),
+    # so this request-time firewall and the observation matcher agree. A DEMO-classified account whose terminal
+    # reports CONTEST is therefore refused fail-closed (an environment disagreement surfaced, not silently read);
+    # contest terminals are not a production reality and fail-closed is the governance-correct posture.
+    if require_environment and observed_trade_mode is not None:
+        exp_demo = expected_is_demo(account)
+        if exp_demo is not None:
+            obs_demo = (observed_trade_mode == 0)
+            if obs_demo != exp_demo:
+                return IdentityCheck(False, ID_ENVIRONMENT_MISMATCH, exp_login, obs_login)
     return IdentityCheck(True, ID_OK, exp_login, obs_login)

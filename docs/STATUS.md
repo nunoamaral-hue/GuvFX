@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-10-08 - LIVE READ-ONLY MT5 MONITORING (P1, separately governed; Withdrawal V1 stays P0).** Sponsor-approved
+  stream to support complete READ-ONLY monitoring of LIVE accounts (balance/equity/positions/floating P&L/deals/
+  analytics), independent of LIVE execution. **Phase-1 safety review: SAFE_SEPARATION_PROVEN** (5 audit lenses + 2
+  adversarial escalation hunts; `docs/LIVE_READONLY_MONITORING_SAFETY_DESIGN.md`). **IMPLEMENTED on branch
+  `feat/live-readonly-monitoring` (`a76ba56`), NOT deployed:** bridge removes the `account_not_demo` refusal from the
+  two READ handlers only (`fetch_positions`, `fetch_deals_snapshot`) → flat LIVE returns 200-empty not 400; all three
+  read handlers report observed `trade_mode`/identity; **every order/close/modify demo gate byte-for-byte unchanged**.
+  Backend firewall `verify_snapshot_identity(require_environment=…)` (additive, default-OFF) verifies invariant-5
+  DEMO/LIVE env against observed `trade_mode`, fail-closed on known disagreement, **skipped when trade_mode absent (so
+  backend deploys safely BEFORE any bridge redeploy)**; wired into balance/positions/balance-ops + both ingest paths
+  (async worker + `SyncNowView` — the latter a review-caught 3rd path). Dashboard: empty-state N/A + "Insufficient
+  data"; trading-health account-scoped; "Monitoring only" vs "Status unavailable"; truthful "live positions
+  unavailable" relabel + partial-reason tooltip. **Tests green** (86+2615+348+25 backend; frontend build clean; the
+  6 frontend vitest failures are a pre-existing local `localStorage` polyfill issue, identical on clean `main`).
+  Adversarial diff-review: safety lens PASS, no LIVE-order path; 1 MEDIUM (SyncNowView env gap) FIXED, 2 LOW accepted
+  by-design. **GATED: production BRIDGE RESTART is an operational mutation requiring a separate Sponsor safety gate +
+  maintenance plan** (prereqs: guarded-attach armed, `MT5_ALLOW_LIVE` unset, per-tenant only; Account 46 flat window).
+  Account 46 production cert of live endpoints deferred behind that gate.
 - **2026-10-08 - CONSOLIDATED SPONSOR PACKET: TradersWay primary pilot + multi-mailbox email architecture + T1 new channel.**
   - **WP3a (ingestion core) MERGED #467 (`05cb55a`) + DARK-DEPLOYED + CERTIFIED** (image `3c6c677`, mig `0003`):
     parser contract + MailSource + read-only alias→account resolver + `ingest_message` pipeline +

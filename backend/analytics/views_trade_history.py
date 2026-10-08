@@ -101,7 +101,12 @@ def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]
                               or _inner_id.get("login") or data.get("login"))
             observed_server = (data.get("account_server") or _inner_id.get("account_server")
                                or _inner_id.get("server") or data.get("server"))
-            _idc = verify_snapshot_identity(account, observed_login, observed_server)
+            # Invariant 5 (LIVE read-only monitoring): verify observed DEMO/LIVE == account's expected environment.
+            # Skipped automatically if the bridge did not report trade_mode (pre-redeploy) — backend-safe.
+            observed_trade_mode = (data.get("trade_mode")
+                                   if data.get("trade_mode") is not None else _inner_id.get("trade_mode"))
+            _idc = verify_snapshot_identity(account, observed_login, observed_server,
+                                            observed_trade_mode=observed_trade_mode, require_environment=True)
             if not _idc.ok:
                 logger.warning("MT5 balance identity firewall refused for account %s: %s",
                                getattr(account, "id", None), _idc.reason_code)
@@ -168,13 +173,18 @@ def _fetch_mt5_open_positions(account, windows_username: str) -> Optional[list]:
                      or _inner.get("login") or adata.get("login"))
         obs_server = (adata.get("account_server") or _inner.get("account_server")
                       or _inner.get("server") or adata.get("server"))
+        obs_trade_mode = (adata.get("trade_mode")
+                          if adata.get("trade_mode") is not None else _inner.get("trade_mode"))
         # The hosted per-tenant base is already tenant-isolated by construction; the endpoint-less LEGACY global
         # agent is shared, so on that path the server name must additionally match AND be present — a missing
         # observed server is a refusal, not a pass (M2 fail-closed). Two legacy accounts on different brokers can
         # otherwise share a login and read each other via the one global agent. Per-tenant reads (the whole
         # certified estate) keep require_server=False, so their behaviour is byte-identical.
+        # Invariant 5 (LIVE read-only monitoring): additionally verify observed DEMO/LIVE == expected environment
+        # (skipped when the bridge did not report trade_mode — pre-redeploy backend-safe).
         _legacy = not getattr(st, "per_tenant", False)
-        if not verify_snapshot_identity(account, obs_login, obs_server, require_server=_legacy).ok \
+        if not verify_snapshot_identity(account, obs_login, obs_server, require_server=_legacy,
+                                        observed_trade_mode=obs_trade_mode, require_environment=True).ok \
                 or (_legacy and not str(obs_server or "").strip()):
             logger.warning("MT5 positions identity firewall refused for account %s", getattr(account, "id", None))
             return None
@@ -245,7 +255,12 @@ def _fetch_mt5_balance_ops(account, windows_username: str) -> Optional[dict]:
     _inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     observed_login = data.get("account_login", _inner.get("account_login"))
     observed_server = data.get("account_server", _inner.get("account_server"))
-    _idc = verify_snapshot_identity(account, observed_login, observed_server)
+    # Invariant 5 (LIVE read-only monitoring): verify observed DEMO/LIVE == expected environment (skipped when
+    # the bridge did not report trade_mode — pre-redeploy backend-safe).
+    observed_trade_mode = (data.get("trade_mode")
+                           if data.get("trade_mode") is not None else _inner.get("trade_mode"))
+    _idc = verify_snapshot_identity(account, observed_login, observed_server,
+                                    observed_trade_mode=observed_trade_mode, require_environment=True)
     if not _idc.ok:
         logger.warning("MT5 balance-ops identity firewall refused for account %s: %s",
                        getattr(account, "id", None), _idc.reason_code)
