@@ -1,5 +1,25 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★ CONSOLIDATED PACKET (Sponsor, 2026-10-08) — P0 = Withdrawal Intelligence V1, TradersWay primary pilot
+**Immediate target: `TRADERSWAY_WITHDRAWAL_PILOT_READY`** — then STOP and ask the Sponsor to perform a genuine external
+withdrawal (GuvFX NEVER initiates/confirms a financial transaction). Done so far: WP1✓ WP2✓ WP3a✓ (all MERGED +
+DARK-DEPLOYED + certified); WP4 (TradersWay parser #1 + transaction classification + internal-transfer NEGATIVE test +
+token redaction) BUILT, in review → PR→deploy. Design: `docs/WITHDRAWAL_V1_EMAIL_ARCHITECTURE.md`.
+**Build order (DARK, governed):** (next) multi-mailbox foundation (ConnectedMailbox + BrokerEmailIdentity +
+identity-aware resolver; backfill six emails PENDING; TradersWay identity→acct 46) → WP3b standalone ingestion worker
++ **Gmail OAuth** (readonly) MailSource → WP5 correlation + metrics projection → WP6 member Withdrawals UX.
+Sample-independent work proceeds now; live receipt gated on Gmail OAuth consent (human) + a genuine external-withdrawal
+email. **Processing-duration (broker ack→processed) is V1's metric; funds-receipt is separate; no completion ⇒ PENDING,
+never FAILED.** Public WAYOND scoring OUT. Targets unchanged (demo 5–7 / pilot 7–10 working days).
+**T1 Telegram (separate, must not block V1):** new channel `-1003840218545` (format-correct from `t.me/c/3840218545/11`);
+A2 source-aware dedup `(provider, chat_id, message_id)` + chat-aware PendingSignalApproval — Sponsor-APPROVED, build as
+governed PR; switch gated on live-verify (BLOCKED: 2nd Telethon client risks `AuthKeyDuplicatedError` → needs a
+controlled listener-maintenance window or Sponsor out-of-band verify), parser-compat, dedup+replay cert.
+**OUTSTANDING SPONSOR:** (a) T1 live-verify method (listener-maintenance window vs out-of-band); (b) **Gmail OAuth
+consent** for `guvfx01@gmail.com`/`nrfda1111@googlemail.com` (create Google Cloud OAuth client + grant readonly —
+human); (c) ingestion-service deploy sign-off; (d) genuine external-withdrawal email (after pilot ready); (e) Part-C
+first-LIVE-monitoring cert account (support@, Add Account→Live, not 43/44/45).
+
 ## ★ PROGRAMME PIVOT (Sponsor, 2026-10-07) — finish MINIMUM LIVE monitoring cert, then P0 = Withdrawal Intelligence V1
 Complete ONLY the minimum LIVE work to prove: fresh LIVE account created via UI → provisions → CONNECTED/MONITORING
 → balances/equity/positions visible → automated execution impossible. **Then STOP all LIVE feature expansion** and

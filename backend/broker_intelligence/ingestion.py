@@ -79,6 +79,7 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
             return BrokerEvent.objects.create(
                 alias=alias, trading_account=account, broker=parsed.broker,
                 source=BrokerEvent._meta.get_field("source").default, event_type=parsed.event_type,
+                transaction_category=parsed.transaction_category,
                 occurred_at=parsed.occurred_at, received_at=message.received_at,
                 broker_reference_id=parsed.broker_reference_id or "", amount=parsed.amount,
                 currency=parsed.currency or "", evidence=blob, evidence_hash=blob.sha256,

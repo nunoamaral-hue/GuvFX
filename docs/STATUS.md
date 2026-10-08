@@ -14,6 +14,43 @@
 
 ## Execution workstream log
 
+- **2026-10-08 - CONSOLIDATED SPONSOR PACKET: TradersWay primary pilot + multi-mailbox email architecture + T1 new channel.**
+  - **WP3a (ingestion core) MERGED #467 (`05cb55a`) + DARK-DEPLOYED + CERTIFIED** (image `3c6c677`, mig `0003`):
+    parser contract + MailSource + read-only alias→account resolver + `ingest_message` pipeline +
+    `BROKER_INTELLIGENCE_INGEST_ENABLED` (OFF). Review 2 LOW fixed pre-PR (parse() sandbox; idempotency DB backstop
+    `uniq_brokerevent_evidence` partial-unique index + savepoint recovery). Prod verify: index present, 4 WP2
+    immutability triggers intact, flags OFF, CSRF 200. (#466 docs/T1-audit merged too.)
+  - **PILOT PIVOT: primary = TradersWay** (reg email `nrfda1111@googlemail.com`, MT5 55442, server TradersWay-Live =
+    GuvFX BrokerAccount **id 46**, LIVE, active — NOT 43/44/45). IS6 = secondary (no genuine withdrawal evidence yet).
+  - **CRITICAL (packet §7): the genuine TradersWay "confirm your withdrawal request" email (acct 55442, 200 USD, ref
+    4112808) was an INTERNAL TRANSFER, not an external withdrawal.** It is now the permanent NEGATIVE regression; its
+    confirmation URL/token is sensitive (never clicked/logged/exposed/followed).
+  - **WP4 (TradersWay parser #1 + transaction classification + token safety) — BUILT (DARK), in review:** new
+    `TransactionCategory` (EXTERNAL_WITHDRAWAL/INTERNAL_TRANSFER/DEPOSIT/UNKNOWN) on `BrokerEvent` (evidential-immutable
+    — added to `_IMMUTABLE` AND the DB trigger via mig `0004`); lifecycle vocab += WITHDRAWAL_CONFIRMATION_REQUIRED/
+    CONFIRMED; deterministic `TradersWayParser` (no LLM, registered only via `register_default_parsers()` — inert
+    until WP3b); `redaction.py` masks URLs/tokens. **CRITICAL DESIGN (after TWO review rounds found the prose
+    classifier bypassable — "rather than withdrawn to your bank", "transferred to your wallet", FAQ boilerplate):
+    the V1 parser has NO prose→EXTERNAL_WITHDRAWAL path at all** — it emits INTERNAL_TRANSFER (explicit internal
+    evidence) or UNKNOWN; the positive external classifier is certified against a GENUINE external-withdrawal sample
+    (§9/§11). Structural proof: executable parser code never references EXTERNAL_WITHDRAWAL. Under-claiming safe,
+    over-claiming (metric pollution, forbidden §8) impossible. Amount extraction is LABEL-anchored only (no free
+    scan → no account-number/fragment mis-grab; currency whitelisted). The internal-transfer email →
+    `WITHDRAWAL_CONFIRMATION_REQUIRED` + UNKNOWN + ref `4112808` + NO token in any field. Review rounds: 3 CONFIRMED
+    (1 CRIT+1 MED+1 LOW) then 9 CONFIRMED residual (classifier/amount/redaction) — ALL resolved by the structural
+    redesign + label-anchored amount + broadened redaction. 68 tests OK (battery of ex-bypass triggers → never
+    external); ratchet 2 OK; `check` clean; mig `0004` reversible.
+  - **Email architecture design** (multi-mailbox): `docs/WITHDRAWAL_V1_EMAIL_ARCHITECTURE.md` — 3 separate models
+    (ConnectedMailbox / BrokerEmailIdentity / BrokerEmailAlias), Gmail OAuth (readonly) plan, six IS6 registration
+    emails → only `support@guvfx.com` is a GuvFX user; GuvFX holds ONE IS6 account (id 1) → the six are PENDING/UNBOUND
+    identities (attribution UNRESOLVED; `googlemail`≡`gmail` needs provider identity, not string). Pilot mailbox
+    `guvfx01@gmail.com`.
+  - **T1 NEW CHANNEL** = `-1003840218545` (from `t.me/c/3840218545/11`; derivation format-correct). **Live verify
+    BLOCKED on safety:** a 2nd Telethon client on the live StringSession risks `AuthKeyDuplicatedError` → kills the
+    live listener. Dedup fix (A2) now Sponsor-approved: source-aware `(provider, chat_id, message_id)` + chat-aware
+    PendingSignalApproval. Not switched. Immediate target: **TRADERSWAY_WITHDRAWAL_PILOT_READY** (gated on Gmail OAuth
+    consent — human).
+
 - **2026-10-07 - PROGRAMME PIVOT: Withdrawal Intelligence V1 (P0) + T1 Telegram source migration.** Sponsor packet:
   finish ONLY the minimum first-LIVE monitoring cert, then STOP LIVE expansion; Withdrawal Intelligence V1 is the
   main product stream (investor demo 5–7 working days / pilot 7–10). No LIVE execution/ceremony/recovery/Cold-Boot-V2
