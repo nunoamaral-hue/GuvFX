@@ -169,6 +169,11 @@ def verify_snapshot_identity(account, observed_login, observed_server, *, requir
         return IdentityCheck(False, ID_OBSERVED_MISSING, exp_login, obs_login)
     if obs_login != exp_login:
         return IdentityCheck(False, ID_LOGIN_MISMATCH, exp_login, obs_login)
-    if require_server and exp_server and obs_server and obs_server != exp_server:
+    # Server is a case-INSENSITIVE MT5 identifier (mirrors hosted_workspace.matching._norm_server): compare it
+    # casefolded so this persistence/identity firewall AGREES with the monitoring matcher about the broker server
+    # (e.g. observed 'TradersWay-Live' vs stored 'Tradersway-Live' — Account 46, 2026-10-08). LOGIN stays EXACT
+    # above (the tenant discriminator); only the server branch is case-normalized. No weakening: a casefold-equal
+    # server is the same broker server, and the login check already gated the tenant.
+    if require_server and exp_server and obs_server and obs_server.casefold() != exp_server.casefold():
         return IdentityCheck(False, ID_SERVER_MISMATCH, exp_login, obs_login)
     return IdentityCheck(True, ID_OK, exp_login, obs_login)

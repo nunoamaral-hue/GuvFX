@@ -162,6 +162,27 @@ class SnapshotIdentityFirewall(TestCase):
         acct = self._acct("1302575")
         self.assertTrue(st.verify_snapshot_identity(acct, 1302575, "S").ok)  # MT5 returns an int login
 
+    def test_server_match_is_case_insensitive_when_required(self):
+        # Account-46 class (2026-10-08): stored 'Tradersway-Live' vs observed 'TradersWay-Live' (case only).
+        # The identity firewall must AGREE with the (case-insensitive) matcher so the durable equity ledger writes.
+        acct = self._acct("55442", server_name="Tradersway-Live")
+        self.assertNotEqual("TradersWay-Live", "Tradersway-Live")   # exact compare (old) would refuse
+        r = st.verify_snapshot_identity(acct, "55442", "TradersWay-Live", require_server=True)
+        self.assertTrue(r.ok, r.reason_code)                        # case-insensitive -> OK
+        self.assertEqual(r.reason_code, st.ID_OK)
+
+    def test_genuinely_different_server_still_refused_when_required(self):
+        acct = self._acct("55442", server_name="Tradersway-Live")
+        self.assertEqual(
+            st.verify_snapshot_identity(acct, "55442", "OtherBroker-Live", require_server=True).reason_code,
+            st.ID_SERVER_MISMATCH)                                  # different server still denied
+
+    def test_case_server_but_wrong_login_still_refused(self):
+        acct = self._acct("55442", server_name="Tradersway-Live")
+        self.assertEqual(
+            st.verify_snapshot_identity(acct, "99999", "TradersWay-Live", require_server=True).reason_code,
+            st.ID_LOGIN_MISMATCH)                                   # login stays EXACT
+
 
 @override_settings(**HOSTED_ON)
 @mock.patch("hosted_workspace.provisioning.hosted_workspace_admission", return_value=(True, "admit_ok"))
