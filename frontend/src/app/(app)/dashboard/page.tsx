@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLang } from "@/components/AppShell";
 import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
+import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
 import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
 import type { PortfolioSummary } from "@/types/portfolio";
 import { localeFor, type Lang } from "@/lib/i18n";
@@ -834,6 +835,11 @@ export default function DashboardPage() {
           account-attributed, scoped by the portfolio selector. */}
       <div style={{ flex: "0 1 350px", minWidth: 300 }}>
         <OpenTradesPanel scope={scope} lang={lang} />
+      </div>
+      {/* Withdrawals (WP6) — read-only member summary; self-hides (renders null) while the feature is DARK
+          (metrics endpoint 404 until BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
+      <div style={{ flex: "0 1 350px", minWidth: 300 }}>
+        <WithdrawalsPanel lang={lang} />
       </div>
       </div>
 
