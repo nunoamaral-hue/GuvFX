@@ -326,3 +326,115 @@ class Withdrawal(models.Model):
 
     def __str__(self) -> str:
         return f"Withdrawal(acct={self.trading_account_id}, {self.status}, ref={self.broker_reference_id or '-'})"
+
+
+# ======================================================================================================
+# WP5 — Multi-mailbox foundation (DARK; no ingestion/OAuth wired here — that is WP3b).
+# Three DISTINCT identities (Sponsor packet 2026-10-08 §4, do NOT conflate):
+#   ConnectedMailbox   = a real inbox GuvFX reads (owns the encrypted OAuth token ref + sync cursor)
+#   BrokerEmailIdentity = an address a broker sends to (0/1 BrokerAccount; 0/1 receiving mailbox)
+#   BrokerEmailAlias   = the permanent opaque GuvFX alias (defined above, unchanged)
+# ======================================================================================================
+
+class ConnectedMailbox(models.Model):
+    """A mailbox GuvFX is authorised to READ for broker mail. Holds only a POINTER to an encrypted OAuth token in the
+    ingestion service's own store (``credential_ref``) — never the token itself (no secret in the DB). One GuvFX user
+    may own many mailboxes. Dedup is by the PROVIDER-STABLE id, never the email string, so a Gmail mailbox addressed
+    as both ``…@gmail.com`` and ``…@googlemail.com`` cannot be connected twice (§5). Grants NO trading/MT5/execution
+    authority and NO send/delete scope."""
+
+    class Provider(models.TextChoices):
+        GMAIL = "GMAIL", "Gmail (personal or Workspace)"
+        IMAP = "IMAP", "Generic IMAP"
+        OUTLOOK = "OUTLOOK", "Microsoft Outlook"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Awaiting OAuth consent"
+        CONNECTED = "CONNECTED", "Connected (read-only)"
+        REVOKED = "REVOKED", "Disconnected / consent revoked"
+        ERROR = "ERROR", "Needs re-auth"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="connected_mailboxes")
+    provider = models.CharField(max_length=16, choices=Provider.choices, default=Provider.GMAIL)
+    # Provider-stable mailbox identity (e.g. Gmail account id / 'sub') — the dedup anchor (NOT the email string).
+    provider_mailbox_id = models.CharField(max_length=255)
+    primary_email = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    credential_ref = models.CharField(max_length=255, blank=True, default="")   # pointer to the encrypted token; NOT the token
+    scopes = models.CharField(max_length=512, blank=True, default="")           # granted read-only scope(s)
+    cursor_state = models.CharField(max_length=255, blank=True, default="")     # Gmail historyId / IMAP UIDVALIDITY+UID
+    last_successful_sync = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # One row per underlying mailbox: dedup by (provider, provider-stable id), NOT the email — so gmail vs
+            # googlemail (same Google account) cannot double-connect (§5).
+            models.UniqueConstraint(fields=["provider", "provider_mailbox_id"], name="uniq_connectedmailbox_provider_id"),
+        ]
+        indexes = [models.Index(fields=["user", "status"])]
+
+    def masked_email(self) -> str:
+        e = self.primary_email or ""
+        if "@" not in e:
+            return "***"
+        local, _, dom = e.partition("@")
+        head = local[:2] if len(local) > 2 else "*"
+        return f"{head}…@{dom}"
+
+    def __str__(self) -> str:
+        return f"ConnectedMailbox({self.provider}:{self.masked_email()}, {self.status})"
+
+
+class BrokerEmailIdentity(models.Model):
+    """An email address registered AT A BROKER (the address a broker's transactional mail is sent to). Distinct from
+    a mailbox (what GuvFX reads) and from a GuvFX alias. Bound to 0/1 BrokerAccount lifecycle (NULLABLE until the
+    account is onboarded) and 0/1 receiving ConnectedMailbox (NULLABLE until the routing relationship is verified).
+    A GuvFX user is attached only once ownership/authorisation is established — NEVER merely because the address was
+    listed (§4). Unverified broker-registration identities are retained as PENDING/unbound."""
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Registered at the broker; ownership/routing not yet verified"
+        VERIFIED = "VERIFIED", "Mailbox routing + ownership verified"
+        UNRESOLVED = "UNRESOLVED", "Cannot be attributed to an account from available evidence"
+        RETIRED = "RETIRED", "No longer in use"
+
+    class Origin(models.TextChoices):
+        BROKER_REGISTERED = "BROKER_REGISTERED", "A pre-existing address registered directly with the broker"
+        GUVFX_ALIAS = "GUVFX_ALIAS", "A GuvFX-controlled accounts.guvfx.com alias"
+
+    email = models.CharField(max_length=255)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="broker_email_identities")   # attached only after ownership is verified
+    broker_name = models.CharField(max_length=64, blank=True, default="")
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.SET_NULL, null=True, blank=True,
+                                        related_name="broker_email_identities")
+    connected_mailbox = models.ForeignKey(ConnectedMailbox, on_delete=models.SET_NULL, null=True, blank=True,
+                                          related_name="broker_email_identities")   # the verified receiving mailbox
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    origin = models.CharField(max_length=20, choices=Origin.choices, default=Origin.BROKER_REGISTERED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # Idempotent registry: one identity row per (email, broker). Re-running the backfill is a no-op.
+            models.UniqueConstraint(fields=["email", "broker_name"], name="uniq_brokeremailidentity_email_broker"),
+        ]
+        indexes = [
+            models.Index(fields=["email"]),
+            models.Index(fields=["trading_account"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def masked_email(self) -> str:
+        e = self.email or ""
+        if "@" not in e:
+            return "***"
+        local, _, dom = e.partition("@")
+        head = local[:2] if len(local) > 2 else "*"
+        return f"{head}…@{dom}"
+
+    def __str__(self) -> str:
+        return f"BrokerEmailIdentity({self.masked_email()}@{self.broker_name or '?'}, {self.status})"

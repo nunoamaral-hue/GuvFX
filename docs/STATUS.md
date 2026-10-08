@@ -45,6 +45,14 @@
     emails → only `support@guvfx.com` is a GuvFX user; GuvFX holds ONE IS6 account (id 1) → the six are PENDING/UNBOUND
     identities (attribution UNRESOLVED; `googlemail`≡`gmail` needs provider identity, not string). Pilot mailbox
     `guvfx01@gmail.com`.
+  - **WP5 (multi-mailbox foundation) — BUILT (DARK), in review→PR→deploy:** `ConnectedMailbox` (dedup by
+    (provider, provider_mailbox_id) → gmail/googlemail can't double-connect; `credential_ref`=pointer, never a token;
+    PENDING default), `BrokerEmailIdentity` (nullable account/mailbox/user; PENDING default; unique email+broker),
+    identity-aware `resolver` + idempotent dry-run-default backfill (six IS6 emails + TradersWay→acct 46, all PENDING
+    user=NULL — never binds a user merely because listed). mig `0005` (no triggers — mutable durable records).
+    Review → **1 MEDIUM fixed** (broker-blind resolution: email-alone `.first()` lowest-pk could mis-resolve to a
+    wrong/cross-user account OR let a PENDING other-broker row shadow a VERIFIED one → FIX: resolve the account from
+    the UNIQUE verified account, fail-closed on 0/>1). 82 tests OK; affected 98 OK; `check` clean.
   - **T1 NEW CHANNEL** = `-1003840218545` (from `t.me/c/3840218545/11`; derivation format-correct). **Live verify
     BLOCKED on safety:** a 2nd Telethon client on the live StringSession risks `AuthKeyDuplicatedError` → kills the
     live listener. Dedup fix (A2) now Sponsor-approved: source-aware `(provider, chat_id, message_id)` + chat-aware
