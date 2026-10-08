@@ -112,6 +112,54 @@ class NormalizeObservationTests(SimpleTestCase):
         self.assertFalse(evaluate_active_account_match(o, _exp()).ok)
 
 
+class ServerCaseNormalizationTests(SimpleTestCase):
+    """Regression (Account-46, 2026-10-08): the SERVER identity match must be case-INSENSITIVE (MT5 server names
+    are case-insensitive identifiers), while LOGIN stays EXACT and DEMO/LIVE environment stays EXACT. Kept OUT of
+    the shared CASES oracle so `test_exactly_two_permitted_paths_all_else_deny` still holds."""
+
+    def test_case_only_server_difference_matches(self):
+        # The proven Account-46 case: observed 'TradersWay-Live' vs stored 'Tradersway-Live' (differ only by 'W').
+        self.assertNotEqual("TradersWay-Live", "Tradersway-Live")   # exact compare (old code) would DENY
+        d = evaluate_active_account_match(
+            _obs(server="TradersWay-Live", login="55442", trade_mode=2),
+            _exp(server="Tradersway-Live", login="55442", is_demo=False, allow_live=True))
+        self.assertTrue(d.ok, d.reason)                             # case-insensitive server -> MATCH
+        self.assertEqual(d.reason, "ok")
+
+    def test_whitespace_server_difference_matches(self):
+        d = evaluate_active_account_match(_obs(server=" Broker-Demo "), _exp(server="Broker-Demo"))
+        self.assertTrue(d.ok, d.reason)
+
+    def test_genuinely_different_server_still_denies(self):
+        d = evaluate_active_account_match(_obs(server="TradersWay-Live", login="55442", trade_mode=2),
+                                          _exp(server="OtherBroker-Live", login="55442", is_demo=False, allow_live=True))
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "active_account_server_mismatch")
+
+    def test_case_server_match_but_wrong_login_denies(self):
+        d = evaluate_active_account_match(_obs(server="TradersWay-Live", login="55442", trade_mode=2),
+                                          _exp(server="Tradersway-Live", login="99999", is_demo=False, allow_live=True))
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "active_account_login_mismatch")   # login stays EXACT
+
+    def test_case_server_match_but_wrong_environment_denies(self):
+        # Server casefold-equal + login equal, but observed LIVE vs expected DEMO -> classification mismatch (env EXACT).
+        d = evaluate_active_account_match(_obs(server="TradersWay-Live", login="55442", trade_mode=2),
+                                          _exp(server="Tradersway-Live", login="55442", is_demo=True, allow_live=False))
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "classification_mismatch")
+
+    def test_missing_and_unconfigured_server_still_fail_closed(self):
+        self.assertEqual(evaluate_active_account_match(_obs(server=None), _exp()).reason,
+                         "active_server_unavailable")
+        self.assertEqual(evaluate_active_account_match(_obs(), _exp(server="")).reason,
+                         "expected_server_unconfigured")
+
+    def test_demo_case_insensitive_unchanged_ok(self):
+        d = evaluate_active_account_match(_obs(server="broker-demo"), _exp(server="Broker-Demo"))
+        self.assertTrue(d.ok, d.reason)
+
+
 # ── AST operator-mutation adequacy (mirrors execution/tests_mutation_binding.py) ──
 
 _SWAP = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Is: ast.IsNot, ast.IsNot: ast.Is,
@@ -158,6 +206,7 @@ def _compile_mutant(tree) -> object:
         "ExpectedAccount": ExpectedAccount,
         "MatchDecision": MatchDecision,
         "TRADE_MODE_DEMO": M.TRADE_MODE_DEMO,
+        "_norm_server": M._norm_server,   # server-name normalization helper used by the matcher
         "__builtins__": __builtins__,
     }
     exec(compile(tree, "<mutant>", "exec"), ns)

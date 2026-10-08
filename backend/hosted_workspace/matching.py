@@ -31,6 +31,16 @@ from typing import Mapping, Optional
 TRADE_MODE_DEMO = 0
 
 
+def _norm_server(s) -> str:
+    """Normalize a broker SERVER name for comparison: strip + casefold. MT5 server names are case-INSENSITIVE
+    identifiers (the terminal connects to the same server regardless of the case typed), so the identity match on
+    the server must compare case-insensitively — otherwise a stored ``Tradersway-Live`` never matches the terminal's
+    ``TradersWay-Live`` (observed Account-46 case mismatch, 2026-10-08). This normalizes ONLY the server field;
+    ``login`` stays an EXACT string match and the DEMO/LIVE environment stays an EXACT match — neither is weakened.
+    No new identity collision: a casefold-equal server is the same broker server, and login+environment still gate."""
+    return (str(s) if s is not None else "").strip().casefold()
+
+
 @dataclass(frozen=True)
 class WorkspaceObservation:
     """A point-in-time read of the user's persistent MT5 terminal, as plain scalars a host-side attach
@@ -91,9 +101,9 @@ def evaluate_active_account_match(obs: WorkspaceObservation, expected: ExpectedA
     if not expected.server:
         return MatchDecision(False, "expected_server_unconfigured")
     # The active account must be EXACTLY the bound account.
-    if str(obs.login) != str(expected.login):
+    if str(obs.login) != str(expected.login):              # login EXACT (unchanged) — the tenant discriminator
         return MatchDecision(False, "active_account_login_mismatch")
-    if str(obs.server) != str(expected.server):
+    if _norm_server(obs.server) != _norm_server(expected.server):   # server CASE-INSENSITIVE (MT5 identifier semantics)
         return MatchDecision(False, "active_account_server_mismatch")
     # Demo/live classification agreement — the observed terminal's environment must EXACTLY EQUAL the
     # account's expected environment, fail-closed in BOTH directions: a DEMO account must never match a LIVE
