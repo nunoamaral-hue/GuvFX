@@ -27,12 +27,19 @@
     confirmation URL/token is sensitive (never clicked/logged/exposed/followed).
   - **WP4 (TradersWay parser #1 + transaction classification + token safety) — BUILT (DARK), in review:** new
     `TransactionCategory` (EXTERNAL_WITHDRAWAL/INTERNAL_TRANSFER/DEPOSIT/UNKNOWN) on `BrokerEvent` (evidential-immutable
-    — added to `_IMMUTABLE` AND the DB trigger via mig `0004`); `EXTERNAL_WITHDRAWAL` set ONLY on positive external
-    evidence (never from the word "withdrawal"/subject/sender/amount/account) else UNKNOWN; lifecycle vocab +=
-    WITHDRAWAL_CONFIRMATION_REQUIRED/CONFIRMED; deterministic `TradersWayParser` (no LLM, registered only via
-    `register_default_parsers()` — inert until WP3b); `redaction.py` masks URLs/tokens. The internal-transfer email →
-    `WITHDRAWAL_CONFIRMATION_REQUIRED` + category UNKNOWN + ref `4112808` + NO token in any field (negative test
-    PASSES); Withdrawal projection will count only EXTERNAL_WITHDRAWAL. 58 tests OK; ratchet 2 OK; `check` clean.
+    — added to `_IMMUTABLE` AND the DB trigger via mig `0004`); lifecycle vocab += WITHDRAWAL_CONFIRMATION_REQUIRED/
+    CONFIRMED; deterministic `TradersWayParser` (no LLM, registered only via `register_default_parsers()` — inert
+    until WP3b); `redaction.py` masks URLs/tokens. **CRITICAL DESIGN (after TWO review rounds found the prose
+    classifier bypassable — "rather than withdrawn to your bank", "transferred to your wallet", FAQ boilerplate):
+    the V1 parser has NO prose→EXTERNAL_WITHDRAWAL path at all** — it emits INTERNAL_TRANSFER (explicit internal
+    evidence) or UNKNOWN; the positive external classifier is certified against a GENUINE external-withdrawal sample
+    (§9/§11). Structural proof: executable parser code never references EXTERNAL_WITHDRAWAL. Under-claiming safe,
+    over-claiming (metric pollution, forbidden §8) impossible. Amount extraction is LABEL-anchored only (no free
+    scan → no account-number/fragment mis-grab; currency whitelisted). The internal-transfer email →
+    `WITHDRAWAL_CONFIRMATION_REQUIRED` + UNKNOWN + ref `4112808` + NO token in any field. Review rounds: 3 CONFIRMED
+    (1 CRIT+1 MED+1 LOW) then 9 CONFIRMED residual (classifier/amount/redaction) — ALL resolved by the structural
+    redesign + label-anchored amount + broadened redaction. 68 tests OK (battery of ex-bypass triggers → never
+    external); ratchet 2 OK; `check` clean; mig `0004` reversible.
   - **Email architecture design** (multi-mailbox): `docs/WITHDRAWAL_V1_EMAIL_ARCHITECTURE.md` — 3 separate models
     (ConnectedMailbox / BrokerEmailIdentity / BrokerEmailAlias), Gmail OAuth (readonly) plan, six IS6 registration
     emails → only `support@guvfx.com` is a GuvFX user; GuvFX holds ONE IS6 account (id 1) → the six are PENDING/UNBOUND

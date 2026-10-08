@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import re
 
-# Links: an explicit http(s):// URL, OR a scheme-less "domain.tld/path" confirmation link (TradersWay links can be
-# scheme-less in text). Both mask the whole run so no clickable authorization target survives in a log/projection.
-_URL = re.compile(r"(?:https?://|(?:[a-z0-9-]+\.)+[a-z]{2,}/)\S+", re.IGNORECASE)
-# A token-like run: long AND containing BOTH a letter and a digit (real opaque auth tokens mix both), over the
-# base64/base64url alphabet (so +/=/_/- tokens are caught whole). This still excludes content that must NOT be
-# over-redacted: UPPER_SNAKE enum values (no digit, e.g. WITHDRAWAL_CONFIRMATION_REQUIRED) and pure-numeric broker
-# references (no letter, e.g. 4112808). A long all-letter/all-digit run is deliberately left alone (references).
-_TOKEN = re.compile(r"(?<![A-Za-z0-9+/=_\-])(?=[A-Za-z0-9+/=_\-]*[A-Za-z])(?=[A-Za-z0-9+/=_\-]*\d)"
-                    r"[A-Za-z0-9+/=_\-]{20,}")
+# Links: an explicit http(s):// URL, OR a scheme-less "domain.tld" followed by a path '/', a query '?', or a
+# ':port' (TradersWay confirmation links can be scheme-less in text). Masks the whole run so no clickable
+# authorization target survives in a log/projection.
+_URL = re.compile(r"(?:https?://|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?[/?])\S*", re.IGNORECASE)
+# BEST-EFFORT token masking for LOG LINES ONLY (defence in depth). A contiguous run (base64-standard alphabet, no
+# hyphen — so UUIDs/correlation-ids split rather than mask whole) that is long AND mixes a letter and a digit. This
+# excludes what must not be over-masked here: UPPER_SNAKE enum values (no digit) and pure-numeric references (no
+# letter). NOTE: the PRIMARY guarantee is that the parser never EMITS a URL/token into a stored BrokerEvent field
+# (structured fields are rendered from DB columns, never via redact()); this helper only sanitises free text in logs,
+# where bounded over-masking of a long opaque identifier is acceptable.
+_TOKEN = re.compile(r"(?<![A-Za-z0-9+/=_])(?=[A-Za-z0-9+/=_]*[A-Za-z])(?=[A-Za-z0-9+/=_]*\d)[A-Za-z0-9+/=_]{20,}")
 _REDACTED = "[REDACTED]"
 
 

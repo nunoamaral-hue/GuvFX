@@ -50,8 +50,9 @@ REAL_INTERNAL_TRANSFER = dict(
           "Confirm here: https://tradersway.com/confirm?t=PLACEHOLDER_TOKEN_647390_do_not_follow\n\n"
           "Thank you, TradersWay Payments"))
 
-# A SYNTHETIC positive external-withdrawal fixture (labelled) — has explicit external-destination evidence.
-SYNTHETIC_EXTERNAL = dict(
+# SYNTHETIC "external-sounding" prose fixture (labelled). In V1 this must NOT auto-classify EXTERNAL_WITHDRAWAL —
+# the parser never derives external from prose; the positive path is certified against a genuine external sample.
+SYNTHETIC_EXTERNAL_PROSE = dict(
     from_address="payments@tradersway.com",
     subject="Your withdrawal request has been received",
     body=("Your withdrawal request has been received for trading account 55442.\n"
@@ -80,12 +81,48 @@ class TransactionClassifierTests(TestCase):
             self.assertFalse(redaction.contains_sensitive(field or ""),
                              f"emitted field leaked sensitive material: {field!r}")
 
-    def test_synthetic_external_withdrawal_classifies_external(self):
-        parsed = self.p.parse(**SYNTHETIC_EXTERNAL)
-        self.assertEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+    def test_prose_never_classifies_external(self):
+        # V1 invariant: the parser has NO prose->EXTERNAL path. Even strongly external-sounding prose must NOT
+        # auto-classify EXTERNAL_WITHDRAWAL (that is certified against a genuine sample). Lifecycle still parses.
+        parsed = self.p.parse(**SYNTHETIC_EXTERNAL_PROSE)
         self.assertEqual(parsed.event_type, "WITHDRAWAL_REQUESTED")
+        self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
         self.assertEqual(parsed.amount, Decimal("150.00"))
         self.assertEqual(parsed.currency, "USD")
+
+    def test_no_prose_input_ever_yields_external(self):
+        # Battery of the residual-bypass triggers the re-review found. NONE may classify EXTERNAL_WITHDRAWAL.
+        bodies = [
+            "Please confirm your withdrawal request for account 55442. Amount: 200.00 USD\n"
+            "These funds will be moved internally, rather than withdrawn to your bank account.\n",
+            "Please confirm your withdrawal request for account 55442. Amount: 200.00 USD\n"
+            "Your funds have been transferred to your wallet.\n",
+            "Please confirm your withdrawal request for account 55442. Amount: 200.00 USD\n"
+            "We moved your money from one of your profiles to the linked one. Normally funds are sent to your bank account.\n",
+            "Please confirm your withdrawal request for account 55442. Amount: 200.00 USD\n"
+            "FAQ: withdrawals are normally sent to your bank account within 3 days.\n",
+            "Amount: 150.00 USD credited to your trading account instead of sent to your bank account.\n",
+        ]
+        for b in bodies:
+            parsed = self.p.parse(from_address="payments@tradersway.com",
+                                  subject="Please confirm your withdrawal request", body=b)
+            if parsed is not None:
+                self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL,
+                                    f"prose over-claimed EXTERNAL: {b!r}")
+
+    def test_european_decimal_amount_not_fragment_grabbed(self):
+        parsed = self.p.parse(from_address="payments@tradersway.com",
+                              subject="Please confirm your withdrawal request",
+                              body="Please confirm your withdrawal request for account 55442. Amount: 12,34 EUR\n")
+        self.assertEqual(parsed.amount, Decimal("12.34"))        # not 34
+        self.assertEqual(parsed.currency, "EUR")
+
+    def test_no_amount_label_yields_none(self):
+        parsed = self.p.parse(from_address="payments@tradersway.com",
+                              subject="Please confirm your withdrawal request",
+                              body="Your withdrawal from MT5 account 55442 USD is awaiting confirmation.\n")
+        self.assertIsNone(parsed.amount)                         # no 'Amount:' label -> never grab the account number
+        self.assertEqual(parsed.transaction_category, TransactionCategory.UNKNOWN)
 
     def test_word_withdrawal_alone_is_not_external(self):
         parsed = self.p.parse(from_address="payments@tradersway.com",
@@ -142,8 +179,12 @@ class TransactionClassifierTests(TestCase):
     def test_base64_token_and_schemeless_link_are_redacted(self):
         self.assertIn("[REDACTED]", redaction.redact("token A1b2C3d4+E5f6/G7h8=i9J0kLmNoPqR here"))
         self.assertIn("[REDACTED]", redaction.redact("confirm at tradersway.com/w/confirm/4112808abcDEF now"))
+        # Scheme-less query-only and :port confirmation links (re-review #9) must also be masked.
+        self.assertIn("[REDACTED]", redaction.redact("Confirm at tradersway.com?confirm=yes&id=4112808 now"))
+        self.assertIn("[REDACTED]", redaction.redact("go to tradersway.com:8443/confirm/abc now"))
         self.assertFalse(redaction.contains_sensitive("WITHDRAWAL_CONFIRMATION_REQUIRED"))   # enum not over-redacted
         self.assertFalse(redaction.contains_sensitive("4112808"))                            # numeric ref not redacted
+        self.assertFalse(redaction.contains_sensitive("support@guvfx.com"))                  # email not masked as a link
 
     def test_non_tradersway_sender_not_claimed(self):
         self.assertFalse(self.p.can_parse(from_address="payments@someonelse.com",

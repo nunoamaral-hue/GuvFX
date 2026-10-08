@@ -27,43 +27,29 @@ _SENDER_DOMAIN = "tradersway.com"
 _CURRENCIES = {"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD", "HKD", "ZAR", "SEK", "NOK", "DKK",
                "PLN", "CZK", "AED", "MXN", "CNH", "CNY"}
 
-# EXTERNAL evidence must be DIRECTIONAL + POSITIVE (money leaving the broker to an external destination) — NEVER a
-# bare token like "bank account" that also appears in negations/boilerplate/footers. Two high-precision forms:
-#   (1) a payout VERB followed (within a short span) by "to your <external destination>";
-#   (2) an explicit structured "Withdrawal method/type/destination: <external>" label.
-_EXTERNAL_PAYOUT = re.compile(
-    r"\b(withdrawn|sent|paid|payout|transferred|credited|disbursed|remitted)\b[^.\n]{0,40}?"
-    r"\bto\s+your\s+(bank|card|e-?wallet|wallet|visa|mastercard|maestro|paypal|skrill|neteller|crypto|"
-    r"bank\s+account|card\s+ending)\b", re.IGNORECASE)
-_EXTERNAL_METHOD = re.compile(
-    r"\bwithdrawal\s+(type|method|destination)\s*[:\-]\s*"
-    r"(bank|wire|card|crypto|e-?wallet|wallet|external|skrill|neteller|paypal|visa|mastercard)\b", re.IGNORECASE)
-# INTERNAL evidence — broadened so realistic phrasing ("between your MT5 accounts", "between your two accounts",
-# "to your other account", "internal transfer", "account-to-account") is caught.
+# EXTERNAL classification is DELIBERATELY NOT derived from free-text prose in V1.
+# ---------------------------------------------------------------------------------------------------------------
+# Three review rounds proved that any prose heuristic for "did money LEAVE the broker?" is bypassable (negation
+# words the list misses — "rather than", "instead of"; ambiguous destinations — a broker cabinet "wallet" is
+# internal; policy/FAQ boilerplate; co-occurring phrases). The FORBIDDEN error is OVER-claiming EXTERNAL_WITHDRAWAL
+# (it would inflate the investor-facing withdrawal metrics, Sponsor §8). So the V1 parser has **no prose→external
+# path at all**: it emits INTERNAL_TRANSFER (only on explicit positive internal evidence) or UNKNOWN. The positive
+# EXTERNAL_WITHDRAWAL classifier is built and certified against a GENUINE external-withdrawal email (the Sponsor's
+# pilot withdrawal, §9/§11) — never guessed from prose. Under-claiming (a real external read as UNKNOWN) is safe;
+# over-claiming is not. This invariant is STRUCTURAL: there is no code path from parser text to EXTERNAL_WITHDRAWAL.
 _INTERNAL_EVIDENCE = re.compile(
     r"\b(internal transfer|transfer between (your )?[\w ]{0,24}accounts?|between (your )?[\w ]{0,24}accounts?|"
     r"to another of your accounts?|to your other [\w ]{0,12}account|account[- ]to[- ]account|"
-    r"between accounts?|inter[- ]?account)\b", re.IGNORECASE)
-# Negation immediately preceding an external phrase disqualifies it (context-awareness the substring test lacked).
-_NEGATION = re.compile(r"\b(not|no|never|cannot|can['’]?t|won['’]?t|will not|isn['’]?t|"
-                       r"aren['’]?t|do not|don['’]?t)\b", re.IGNORECASE)
+    r"between accounts?|inter[- ]?account|moved internally|internally between)\b", re.IGNORECASE)
 
-# Money: optional leading symbol/code, a grouped-or-plain number, optional trailing code. Currency is VALIDATED
-# against _CURRENCIES (not "any 3 uppercase letters"), so "NET"/"VAT" etc. are not treated as currencies.
-_MONEY = re.compile(r"(?P<cur1>\$|[A-Za-z]{3})?\s*(?P<amt>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
-                    r"\s*(?P<cur2>[A-Za-z]{3})?")
-_AMOUNT_LABEL = re.compile(r"(?:withdrawal\s+)?(?:amount|total)\s*[:\-]?\s*", re.IGNORECASE)
+# Amount is extracted ONLY from an explicit "Amount:"/"Total:" LABEL (never a free scan of the body), so an account
+# number or other stray integer can never be mis-grabbed. Currency is VALIDATED against _CURRENCIES.
+_LABELED_AMOUNT = re.compile(
+    r"(?:withdrawal\s+)?(?:amount|total)\s*[:\-]?\s*(?:(?P<cur1>[A-Za-z]{3}|\$)\s*)?"
+    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?|\d+)\s*(?P<cur2>[A-Za-z]{3})?", re.IGNORECASE)
 _ACCOUNT = re.compile(r"(?:trading\s+)?account(?:\s*(?:number|no\.?|#|:))?\s*[:#]?\s*(\d{4,12})", re.IGNORECASE)
 _REFERENCE = re.compile(r"\b(?:reference|ref(?:erence)?\s*(?:id|no\.?|#)?)\s*[:#]?\s*([A-Za-z0-9\-]{3,32})",
                         re.IGNORECASE)
-
-
-def _has_unnegated(pattern, text: str) -> bool:
-    """True if ``pattern`` matches at least once WITHOUT a negation word in the 40 chars immediately before it."""
-    for m in pattern.finditer(text):
-        if not _NEGATION.search(text[max(0, m.start() - 40):m.start()]):
-            return True
-    return False
 
 
 def _norm_currency(tok: str) -> str:
@@ -96,57 +82,34 @@ def _classify_lifecycle(subject: str, body: str) -> Optional[str]:
 
 
 def _classify_category(subject: str, body: str) -> str:
-    """Conservative + directional. EXTERNAL_WITHDRAWAL ONLY on positive, un-negated external-payout evidence (a
-    payout verb → 'to your <external destination>', or a structured 'Withdrawal method: <external>' label). INTERNAL
-    only on positive internal evidence. Conflicting signals OR no positive evidence ⇒ UNKNOWN (never guessed, never
-    inferred from the word 'withdrawal'/subject/sender/amount/account). Under-claiming (a genuine external read as
-    UNKNOWN) is safe and is tightened by the real-sample certification; over-claiming an internal/ambiguous email as
-    EXTERNAL is the forbidden error (§8) and cannot happen here."""
-    t = f"{subject}\n{body}"
-    internal = bool(_INTERNAL_EVIDENCE.search(t))
-    external = _has_unnegated(_EXTERNAL_PAYOUT, t) or _has_unnegated(_EXTERNAL_METHOD, t)
-    if internal and external:
-        return "UNKNOWN"                 # conflicting signals — never guess
-    if internal:
+    """V1 (bypass-free): INTERNAL_TRANSFER on explicit positive internal evidence, else UNKNOWN. There is NO
+    prose→EXTERNAL_WITHDRAWAL path — external is never guessed from email text (see the module note above); it is
+    certified against a genuine external-withdrawal sample. So no boilerplate / negation / ambiguous-destination
+    input can ever over-claim an external withdrawal."""
+    if _INTERNAL_EVIDENCE.search(f"{subject}\n{body}"):
         return "INTERNAL_TRANSFER"
-    if external:
-        return "EXTERNAL_WITHDRAWAL"
-    return "UNKNOWN"                      # no positive evidence either way — never guessed
-
-
-def _parse_money(text: str):
-    """First valid money token in ``text``: skips account-number-like grabs (preceded by 'account'), requires a
-    WHITELISTED currency or an explicit decimal (so a bare integer isn't taken as an amount), and refuses an
-    ambiguous comma (e.g. European '200,00') rather than mis-scaling it. Never fabricates a currency."""
-    for m in _MONEY.finditer(text):
-        raw = m.group("amt")
-        if "account" in text[max(0, m.start() - 12):m.start()].lower():
-            continue                     # don't grab an account number as an amount
-        if "," in raw:
-            if not re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d{1,2})?", raw):
-                continue                 # ambiguous comma (not clean thousands grouping) — never mis-scale
-            raw = raw.replace(",", "")
-        cur = _norm_currency(m.group("cur2")) or _norm_currency(m.group("cur1"))
-        if not cur and "." not in raw:
-            continue                     # bare integer without a valid currency — likely not an amount
-        try:
-            val = Decimal(raw)
-        except (InvalidOperation, ValueError):
-            continue
-        if val > 0:
-            return val, cur
-    return None, ""
+    return "UNKNOWN"
 
 
 def _extract_amount(body: str):
-    """Prefer the money adjacent to an explicit 'Amount:' label (robust against account numbers earlier in the
-    body); fall back to the first valid currency-qualified money anywhere."""
-    lbl = _AMOUNT_LABEL.search(body)
-    if lbl:
-        val, cur = _parse_money(body[lbl.end():lbl.end() + 40])
-        if val is not None:
-            return val, cur
-    return _parse_money(body)
+    """Extract the amount ONLY from an explicit 'Amount:'/'Total:' label (never a free scan), so a stray integer
+    (e.g. an account number) can never be mis-grabbed. Number normalisation: US grouping '1,234.56' → strip commas;
+    European decimal '12,34' → dot; plain otherwise — so neither a 100x mis-scale nor a fractional-part grab occurs.
+    Currency is whitelist-validated (never fabricated). No label ⇒ (None, '') — amount unknown, never guessed."""
+    m = _LABELED_AMOUNT.search(body)
+    if not m:
+        return None, ""
+    raw = m.group("num")
+    if re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d{1,2})?", raw):
+        raw = raw.replace(",", "")           # US thousands grouping
+    elif re.fullmatch(r"\d+,\d{1,2}", raw):
+        raw = raw.replace(",", ".")          # European decimal comma
+    cur = _norm_currency(m.group("cur2")) or _norm_currency(m.group("cur1"))
+    try:
+        val = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None, ""
+    return (val, cur) if val > 0 else (None, "")
 
 
 class TradersWayParser:
