@@ -116,7 +116,7 @@ describe("OpenTradesPanel", () => {
     api.apiFetch.mockResolvedValue(result(many, { count: 400, truncated: true, stale_accounts: [7, 9] }));
     render(<OpenTradesPanel scope="ALL" />);
     await waitFor(() => expect(screen.getByText(/400 open/)).toBeTruthy());   // full count, not the capped 300
-    expect(screen.getByText(/2 accounts not reachable/)).toBeTruthy();
+    expect(screen.getByText(/2 accounts: live positions unavailable/)).toBeTruthy();
     expect(screen.getByText(/Showing 300 of 400/)).toBeTruthy();
   });
 

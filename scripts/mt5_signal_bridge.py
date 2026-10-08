@@ -1804,8 +1804,14 @@ def fetch_deals_snapshot(username: str) -> Dict[str, Any]:
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
-        if account_info.trade_mode != 0:
-            return {"ok": False, "error": "account_not_demo"}
+        # LIVE READ-ONLY MONITORING (ADR: LIVE_READONLY_MONITORING_SAFETY_DESIGN): this is a PURE READ
+        # (history_deals_get only — never order_send). It is environment-agnostic, exactly like
+        # fetch_account_snapshot which has always served LIVE balances. The old `trade_mode != 0` refusal
+        # is removed HERE ONLY; DEMO/LIVE environment is now *verified* at the backend read firewall
+        # (verify_snapshot_identity require_environment=True) against the observed trade_mode returned below.
+        # Every ORDER/CLOSE/MODIFY demo gate stays byte-for-byte (execute_demo_order, close_position,
+        # modify_position, shadow_order_check, evaluate_mutation_identity send-time re-assert). A read can
+        # never place a trade.
 
         from datetime import datetime, timezone, timedelta
         now = datetime.now(timezone.utc) + timedelta(days=1)
@@ -1846,6 +1852,9 @@ def fetch_deals_snapshot(username: str) -> Dict[str, Any]:
             "count": len(deal_list),
             "account_login": str(getattr(account_info, "login", "") or ""),
             "account_server": str(getattr(account_info, "server", "") or ""),
+            # Observed DEMO/LIVE classification (0=DEMO,1=CONTEST,2=REAL) so the backend read firewall can
+            # verify invariant 5 (observed environment == account's expected environment). Reporting only.
+            "trade_mode": getattr(account_info, "trade_mode", None),
         }
     except Exception as e:
         logger.exception(f"[deals] Exception: {e}")
@@ -1884,6 +1893,9 @@ def fetch_account_snapshot(username: str) -> Dict[str, Any]:
             "balance": getattr(account_info, "balance", None),
             "equity": getattr(account_info, "equity", None),
             "currency": getattr(account_info, "currency", None),
+            # Observed DEMO/LIVE classification (0=DEMO,1=CONTEST,2=REAL) for the backend read firewall's
+            # invariant-5 environment verification. This is the identity source the positions read binds to.
+            "trade_mode": getattr(account_info, "trade_mode", None),
         }
     except Exception as e:
         logger.exception(f"[account] Exception: {e}")
@@ -1914,8 +1926,12 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
-        if account_info.trade_mode != 0:
-            return {"ok": False, "error": "account_not_demo"}
+        # LIVE READ-ONLY MONITORING (ADR: LIVE_READONLY_MONITORING_SAFETY_DESIGN): PURE READ (positions_get
+        # only — never order_send). Environment-agnostic like fetch_account_snapshot; the old
+        # `trade_mode != 0` refusal is removed HERE ONLY so LIVE accounts can be monitored read-only. A flat
+        # account now returns ok:true with an EMPTY list (HTTP 200), not account_not_demo (HTTP 400).
+        # DEMO/LIVE environment is verified at the backend read firewall against the observed identity below;
+        # all ORDER/CLOSE/MODIFY demo gates are untouched. A read can never place/modify/close a trade.
 
         if symbol:
             positions = mt5.positions_get(symbol=symbol)
@@ -1940,7 +1956,17 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
                 "comment": p.comment,
             })
 
-        return {"ok": True, "positions": pos_list, "count": len(pos_list)}
+        # Return the OBSERVED session identity alongside the positions so the backend read firewall can bind
+        # the batch to this account directly (login EXACT + server + environment), the same downstream-firewall
+        # contract fetch_deals_snapshot/fetch_account_snapshot already satisfy. trade_mode: 0=DEMO,1=CONTEST,2=REAL.
+        return {
+            "ok": True,
+            "positions": pos_list,
+            "count": len(pos_list),
+            "account_login": str(getattr(account_info, "login", "") or ""),
+            "account_server": str(getattr(account_info, "server", "") or ""),
+            "trade_mode": getattr(account_info, "trade_mode", None),
+        }
 
     except Exception as e:
         return {"ok": False, "error": "exception", "detail": str(e)}

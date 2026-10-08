@@ -1129,7 +1129,12 @@ def main():
             _inner = _obs.get("data") if isinstance(_obs.get("data"), dict) else {}
             observed_login = _obs.get("account_login", _inner.get("account_login"))
             observed_server = _obs.get("account_server", _inner.get("account_server"))
-            _idc = verify_snapshot_identity(account, observed_login, observed_server)
+            # Invariant 5 (LIVE read-only monitoring): verify observed DEMO/LIVE == the account's expected
+            # environment (skipped when the bridge did not report trade_mode — pre-redeploy backend-safe).
+            observed_trade_mode = (_obs.get("trade_mode")
+                                   if _obs.get("trade_mode") is not None else _inner.get("trade_mode"))
+            _idc = verify_snapshot_identity(account, observed_login, observed_server,
+                                            observed_trade_mode=observed_trade_mode, require_environment=True)
             if not _idc.ok:
                 # Redacted, safe operational evidence — never the raw counterpart login in the customer-facing
                 # failure (mask to last 4). This is the exact cross-tenant defence the breach lacked.

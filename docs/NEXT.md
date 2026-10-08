@@ -18,7 +18,11 @@ controlled listener-maintenance window or Sponsor out-of-band verify), parser-co
 **OUTSTANDING SPONSOR:** (a) T1 live-verify method (listener-maintenance window vs out-of-band); (b) **Gmail OAuth
 consent** for `guvfx01@gmail.com`/`nrfda1111@googlemail.com` (create Google Cloud OAuth client + grant readonly —
 human); (c) ingestion-service deploy sign-off; (d) genuine external-withdrawal email (after pilot ready); (e) Part-C
-first-LIVE-monitoring cert account (support@, Add Account→Live, not 43/44/45).
+first-LIVE-monitoring cert account (support@, Add Account→Live, not 43/44/45); (f) **LIVE read-only monitoring bridge
+deploy** — operational safety gate + maintenance plan to redeploy Account 46's per-tenant bridge (code merged on
+`feat/live-readonly-monitoring`; backend is DARK-safe to deploy first; bridge restart = operational mutation, NOT done;
+prereqs: guarded-attach armed, `MT5_ALLOW_LIVE` unset, per-tenant only, flat window — see
+`docs/LIVE_READONLY_MONITORING_SAFETY_DESIGN.md` §7).
 
 ## ★ PROGRAMME PIVOT (Sponsor, 2026-10-07) — finish MINIMUM LIVE monitoring cert, then P0 = Withdrawal Intelligence V1
 Complete ONLY the minimum LIVE work to prove: fresh LIVE account created via UI → provisions → CONNECTED/MONITORING

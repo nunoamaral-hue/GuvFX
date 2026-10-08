@@ -372,11 +372,10 @@ export default function DashboardPage() {
   // Opportunity Radar — cross-market rows from the existing strategy-selection endpoint
   const [radarRows, setRadarRows] = useState<{ sym: string; category: string; catColor: "green" | "blue" | "gray" | "red" | "yellow"; note: string; conf: string; confLevel: number }[]>([]);
 
-  // RX-2 trading health — authoritative trader-facing availability (header status source)
+  // RX-2 trading health — authoritative trader-facing availability (header status source). Fetched ACCOUNT-scoped
+  // below (keyed on the selected account), not once-on-mount: a global/no-account fetch returned UNKNOWN for a beta
+  // member (IDOR scoping) and GLOBAL operator health for staff — neither reflects the selected account.
   const [tradingHealth, setTradingHealth] = useState<RxHealth | null>(null);
-  useEffect(() => {
-    apiFetch<RxHealth>("/api/reliability/trading-health/", {}).then((h) => setTradingHealth(h || null)).catch(() => setTradingHealth(null));
-  }, []);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [normFlag, setNormFlag] = useState<string | null>(null);
@@ -404,6 +403,15 @@ export default function DashboardPage() {
     apiFetch<AcctStatus>(`/api/onboarding/account-status/?account_id=${id}`, {})
       .then((s) => setAcctStatus(s || null)).catch(() => setAcctStatus(null));
   }, [primaryAcct?.id]);
+
+  // RX-2 trading-health, ACCOUNT-scoped: for a specific account pass its account_id (IDOR-safe, owner-scoped);
+  // for ALL scope fetch portfolio/global. Re-fetches on scope change so the header status reflects the selection.
+  useEffect(() => {
+    const id = isAll ? null : primaryAcct?.id;
+    if (!isAll && !id) return;   // specific scope with no primary yet — leave as-is
+    const path = id ? `/api/reliability/trading-health/?account_id=${id}` : "/api/reliability/trading-health/";
+    apiFetch<RxHealth>(path, {}).then((h) => setTradingHealth(h || null)).catch(() => setTradingHealth(null));
+  }, [primaryAcct?.id, isAll]);
 
   // Per-account performance + today's realized P/L for the SELECTED account (H2). Keyed on the scoped primary so a
   // scope change refetches; each result is tagged with its account id and trusted only for that account below, so a
@@ -555,15 +563,23 @@ export default function DashboardPage() {
   const rising = snap.series.length > 1 ? snap.series[snap.series.length - 1] >= snap.series[0] : (netPnl != null && netPnl >= 0);
   const pctOfEquity = netPnl != null && snap.equity ? (netPnl / snap.equity) * 100 : null;
 
-  const trend = netPnl == null ? { label: "No data", color: "#64748b", badge: "gray" as const, icon: "minus" }
+  // Performance empty-state (Sponsor direction, LIVE read-only monitoring): a newly connected account with NO
+  // closed trades has INSUFFICIENT history — its performance metrics must read N/A / "Insufficient data", NOT a
+  // measured zero (the backend returns 0.0 for win_rate/drawdown/net_pnl when there are no round-trips). A genuine
+  // measured zero is preserved once observations exist (totalTrades > 0), so "0% win rate after real trades" still
+  // shows 0%. hasHistory is the single sufficiency gate.
+  const hasHistory = (snap.totalTrades ?? 0) > 0;
+
+  const trend = !hasHistory ? { label: "Insufficient data", color: "#64748b", badge: "gray" as const, icon: "minus" }
+    : netPnl == null ? { label: "No data", color: "#64748b", badge: "gray" as const, icon: "minus" }
     : netPnl > 0 && rising ? { label: "Improving", color: "#86efac", badge: "green" as const, icon: "trending-up" }
     : netPnl < 0 ? { label: "Needs Attention", color: "#fca5a5", badge: "red" as const, icon: "trending-down" }
     : { label: "Stable", color: "#fbbf24", badge: "yellow" as const, icon: "minus" };
 
-  const pfLabel = snap.profitFactor == null ? null : snap.profitFactor === Infinity || snap.profitFactor >= 1.3 ? { t: "Good", c: "#86efac" } : snap.profitFactor >= 1.0 ? { t: "Moderate", c: "#fbbf24" } : { t: "Low", c: "#fca5a5" };
-  const ddLabel = snap.ddPct != null ? (snap.ddPct < 10 ? { t: "Low", c: "#86efac" } : snap.ddPct < 25 ? { t: "Moderate", c: "#fbbf24" } : { t: "High", c: "#fca5a5" }) : null;
-  const expLabel = snap.expMoney == null ? null : snap.expMoney >= 0 ? { t: "Positive", c: "#86efac" } : { t: "Negative", c: "#fca5a5" };
-  const wrLabel = snap.winRatePct != null ? (snap.winRatePct >= 50 ? { c: "#86efac" } : { c: "#fbbf24" }) : null;
+  const pfLabel = !hasHistory || snap.profitFactor == null ? null : snap.profitFactor === Infinity || snap.profitFactor >= 1.3 ? { t: "Good", c: "#86efac" } : snap.profitFactor >= 1.0 ? { t: "Moderate", c: "#fbbf24" } : { t: "Low", c: "#fca5a5" };
+  const ddLabel = hasHistory && snap.ddPct != null ? (snap.ddPct < 10 ? { t: "Low", c: "#86efac" } : snap.ddPct < 25 ? { t: "Moderate", c: "#fbbf24" } : { t: "High", c: "#fca5a5" }) : null;
+  const expLabel = !hasHistory || snap.expMoney == null ? null : snap.expMoney >= 0 ? { t: "Positive", c: "#86efac" } : { t: "Negative", c: "#fca5a5" };
+  const wrLabel = hasHistory && snap.winRatePct != null ? (snap.winRatePct >= 50 ? { c: "#86efac" } : { c: "#fbbf24" }) : null;
 
   // Snapshot-ledger equity curve for the current scope (trusted only when it belongs to this scope). ALL scope uses
   // the portfolio equity_usd series; account scope uses that account's equity series.
@@ -615,10 +631,16 @@ export default function DashboardPage() {
               // It proves trading capability, not terminal connectivity — so the
               // wording is "Able to trade", never "Connected".
               const st = tradingHealth?.ok ? (tradingHealth.state || "UNKNOWN") : "UNKNOWN";
+              // LIVE read-only monitoring: a selected account whose live balance/equity READ succeeded
+              // (equityRef != null) is broker-connected and being observed, even with no reliability snapshot
+              // (so trading-health is UNKNOWN). Show the truthful "Monitoring only" instead of the alarming
+              // "Status unavailable" — it asserts observation, NOT trade capability (execution stays separate).
+              const monitoringOnly = !isAll && equityRef != null;
               const view =
                 st === "HEALTHY" && tradingHealth?.can_trade ? { text: "Able to trade", c: "#86efac", dot: "#34d399", known: true }
                 : st === "DEGRADED" || st === "IMPAIRED" ? { text: "Attention needed", c: "#fbbf24", dot: "#fbbf24", known: true }
                 : st === "DOWN" || (tradingHealth?.ok && tradingHealth?.can_trade === false) ? { text: "Unavailable", c: "#fca5a5", dot: "#f87171", known: true }
+                : monitoringOnly ? { text: "Monitoring only", c: "#9fb4d6", dot: "#60a5fa", known: true }
                 : { text: "Status unavailable", c: "#8b9bb4", dot: "#64748b", known: false };
               return (
                 <div title={(tradingHealth?.reasons || []).length ? localizeBackendCustomerText(lang, tradingHealth?.reasons?.[0], "account-detail") : undefined} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: view.known ? "0.95rem" : "0.85rem", fontWeight: view.known ? 600 : 500, color: view.c }}>
@@ -722,10 +744,10 @@ export default function DashboardPage() {
           {/* Secondary metrics — dense strip */}
           <div style={{ flex: 1, minWidth: 300, display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
             <MetricTile label="Net PnL" value={<span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, snap.currency)}</span>} sub={pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined} />
-            <MetricTile label="Win Rate" value={snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={snap.wins != null || snap.losses != null ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
-            <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={snap.profitFactor == null ? "—" : snap.profitFactor === Infinity ? "∞" : snap.profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
-            <MetricTile label="Max Drawdown" value={snap.ddPct != null ? `${snap.ddPct}%` : snap.ddMoney != null ? money(lang, snap.ddMoney, snap.currency) : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
-            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, snap.expMoney, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
+            <MetricTile label="Win Rate" value={!hasHistory ? "N/A" : snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={hasHistory && (snap.wins != null || snap.losses != null) ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : hasHistory ? undefined : "Insufficient history"} subColor={wrLabel?.c} />
+            <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={!hasHistory ? "N/A" : snap.profitFactor == null ? "—" : snap.profitFactor === Infinity ? "∞" : snap.profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
+            <MetricTile label="Max Drawdown" value={!hasHistory ? "N/A" : snap.ddPct != null ? `${snap.ddPct}%` : snap.ddMoney != null ? money(lang, snap.ddMoney, snap.currency) : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
+            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={!hasHistory ? "N/A" : snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, snap.expMoney, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
           </div>
 
           {/* Equity curve — compact context (per-account observed series; the portfolio view has no single curve) */}
