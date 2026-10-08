@@ -43,6 +43,14 @@ def broker_intelligence_ingest_enabled() -> bool:
     return _flag("BROKER_INTELLIGENCE_INGEST_ENABLED")
 
 
+def broker_withdrawal_ux_enabled() -> bool:
+    """Member-facing gate for the Withdrawals UX + its metrics API. DEFAULT OFF. While OFF the metrics endpoint
+    responds 404 (feature absent) so the half-built member feature never surfaces; the projection
+    (``broker_intelligence.metrics``) is pure/testable regardless. Read-only member data only — NO execution/
+    strategy/credential authority, never a financial action."""
+    return _flag("BROKER_WITHDRAWAL_UX_ENABLED")
+
+
 def broker_withdrawal_correlation_enabled() -> bool:
     """Gate for the WP5 withdrawal CORRELATION run loop (the management command / scheduled pass that projects
     EXTERNAL_WITHDRAWAL events into Withdrawal records). DEFAULT OFF. The correlation engine

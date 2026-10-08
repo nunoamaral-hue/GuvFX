@@ -49,6 +49,8 @@ urlpatterns = [
     # ADR-0034 M3c Hosted Workspace read model — DARK (404 while HOSTED_PERSISTENT_MT5_ENABLED is off).
     path("api/hosted-workspace/", include("hosted_workspace.urls")),
     path("api/wims/", include("wims.urls")),
+    # WP6 Withdrawal Intelligence member API — DARK (404 while BROKER_WITHDRAWAL_UX_ENABLED is off).
+    path("api/broker-intelligence/", include("broker_intelligence.urls")),
     path("health/", health),
     # Windows Agent MVP endpoints (direct wiring)
     path(
