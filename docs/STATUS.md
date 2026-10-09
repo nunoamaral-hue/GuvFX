@@ -71,6 +71,17 @@
     Review → **1 MEDIUM fixed** (broker-blind resolution: email-alone `.first()` lowest-pk could mis-resolve to a
     wrong/cross-user account OR let a PENDING other-broker row shadow a VERIFIED one → FIX: resolve the account from
     the UNIQUE verified account, fail-closed on 0/>1). 82 tests OK; affected 98 OK; `check` clean.
+    **WP5 MERGED #469 (`374db16`) + DARK-DEPLOYED + verified** (image `da4b15e7`, mig `0005`): both new unique
+    constraints present, 4 WP2 immutability triggers intact, tables 0/0, flags OFF, CSRF 200, trading unaffected
+    (rollback = image `708b96f` / `migrate broker_intelligence 0004`). Backfill dry-run confirmed (TradersWay
+    nrfda1111@googlemail.com → acct 46); `--apply` deferred to arming.
+  - **ACCOUNT 46 (TradersWay LIVE 55442) read-only diagnosis** (`docs/ACCOUNT_46_LIVE_MONITORING_DIAGNOSIS.md`):
+    single root cause — LIVE account but `HOSTED_LIVE_MONITORING_ENABLED=OFF`, so the matcher expects a DEMO identity
+    (`live_observe.py:242-247`) and the connected LIVE terminal fails `proj_account_match` (canonical
+    `WAITING_FOR_LOGIN`) → all three symptoms (0 trades, "unreachable", first-setup warning) cascade. MT5 bridge
+    HEALTHY (`proj_connected=True`, obs_version 3628); `is_active=False` is downstream (post-match activation,
+    ADR-0044). Smallest safe fix = the Sponsor-gated first-LIVE-monitoring cert (enable the flag; exec/recovery stay
+    OFF; read-only observation; no code change). NOT implemented (Account 46 is REAL+FUNDED → Sponsor review).
   - **T1 NEW CHANNEL** = `-1003840218545` (from `t.me/c/3840218545/11`; derivation format-correct). **Live verify
     BLOCKED on safety:** a 2nd Telethon client on the live StringSession risks `AuthKeyDuplicatedError` → kills the
     live listener. Dedup fix (A2) now Sponsor-approved: source-aware `(provider, chat_id, message_id)` + chat-aware
