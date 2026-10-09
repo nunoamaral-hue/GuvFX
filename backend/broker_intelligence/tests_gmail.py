@@ -271,8 +271,12 @@ class GmailApiClientTests(TestCase):
         self.assertEqual([m["provider_message_id"] for m in msgs], ["mX"])
         self.assertEqual(cursor, "150")                 # advanced to the history historyId, never jumped to now
 
-    def test_oversized_message_is_skipped(self):
-        big = base64.urlsafe_b64encode(b"x" * (GS.GmailApiClient.MAX_RAW_BYTES + 1000)).decode().rstrip("=")
+    @override_settings(BROKER_INTELLIGENCE_MAX_RAW_BYTES="1024")
+    def test_oversized_message_fails_closed_not_dropped(self):
+        # Durable-preservation: an oversized message must NOT be silently dropped while the cursor advances past it
+        # (permanent silent loss). It RAISES so the batch fails and the cursor is left un-advanced (retryable); an
+        # operator can raise BROKER_INTELLIGENCE_MAX_RAW_BYTES to admit a legitimately large email.
+        big = base64.urlsafe_b64encode(b"x" * 4096).decode().rstrip("=")   # > the 1024-byte test ceiling
 
         def http_get(url, headers):
             if url.endswith("/messages?maxResults=50"):
@@ -284,8 +288,22 @@ class GmailApiClientTests(TestCase):
             return 404, "{}"
 
         client = GS.GmailApiClient(self.mb, client_id="CID", client_secret="SEC", http_get=http_get)
-        msgs, cursor = client.list_new_messages("")      # initial sync
-        self.assertEqual(msgs, [])                       # oversized message skipped, never buffered/ingested
+        with self.assertRaises(GS.MessageCaptureError):
+            client.list_new_messages("")                 # initial sync — raises rather than silently dropping
+
+    def test_empty_raw_message_fails_closed(self):
+        # A message Gmail returns with an empty 'raw' field must RAISE (never silently drop + advance the cursor).
+        def http_get(url, headers):
+            if "/history?startHistoryId=100" in url:
+                return 200, json.dumps({"historyId": "150",
+                                        "history": [{"messagesAdded": [{"message": {"id": "empty"}}]}]})
+            if "/messages/empty" in url:
+                return 200, json.dumps({"id": "empty", "raw": ""})
+            return 404, "{}"
+
+        client = GS.GmailApiClient(self.mb, client_id="CID", client_secret="SEC", http_get=http_get)
+        with self.assertRaises(GS.MessageCaptureError):
+            client.list_new_messages("100")              # incremental — raises on the empty-raw message
 
     def test_expired_token_is_refreshed_readonly(self):
         # Store an EXPIRED token; the client must refresh (read-only) before calling the API.

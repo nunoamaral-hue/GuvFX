@@ -14,9 +14,11 @@
 
 ## Execution workstream log
 
-- **2026-10-09 - WITHDRAWAL V1 / WP3b Gmail ingestion worker + member OAuth connection (DARK, synthetic-certified).**
-  Branch `feat/gmail-ingestion-worker` (`f5f4dd0` + review-fix `c2676af`). Completes the Gmail half of Withdrawal
-  Intelligence V1 behind DARK flags; **no model change (no migration); nothing deployed; no real consent requested.**
+- **2026-10-09 - WITHDRAWAL V1 / WP3b Gmail ingestion worker + member OAuth connection — MERGED #477 (`bf7f3ed`) + DARK-DEPLOYED.**
+  Backend image `8cfda006dc33`; rollback `guvfx-prod-guvfx-backend:rollback-preGMAILWORKER` (`aac6984a2b3b`); MT5
+  trade-ingest/node2-order/shadow/validate workers NOT recreated (LIVE execution untouched). Prod-verified: CSRF 200,
+  mailbox routes 401 unauth (wired, not 404/500), all DARK flags unset, `run_mailbox_ingest` refuses. Completes the
+  Gmail half of Withdrawal Intelligence V1 behind DARK flags; **no model change (no migration); no real consent requested.**
   (a) **Member OAuth connection flow** — new flag `broker_mailbox_connect_enabled` (default OFF → endpoints 404):
   `MailboxConnectView` (Google consent URL; signed, user-bound, 600 s CSRF state; `gmail.readonly` scope only),
   `MailboxCallbackView` (verifies state signature + age + issued-to-THIS-user; exchanges code read-only; stores the

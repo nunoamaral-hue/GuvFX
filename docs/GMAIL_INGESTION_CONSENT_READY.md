@@ -11,19 +11,29 @@ The flow is built and proven end-to-end against synthetic fixtures only.
 
 ## 1. Production status (what is live, what is dark)
 
+**PR #477 merged** (`bf7f3ed`, squash) and **DARK-deployed** to production 2026-10-09 (backend image
+`8cfda006dc33`; rollback image `guvfx-prod-guvfx-backend:rollback-preGMAILWORKER` = `aac6984a2b3b`). The MT5
+trade-ingest / node2-order / shadow / validate workers were **not** recreated (left on their running
+containers) — LIVE execution/recovery untouched.
+
 | Component | State on production |
 |---|---|
-| Gmail OAuth flow (`gmail_oauth.py`) | Code merged; **inert** — no client credentials provisioned |
-| Encrypted credential store (`credential_store.py`, #476) | Code merged; **inert** — `BROKER_INTELLIGENCE_CREDENTIAL_KEY`/`_ROOT` unset |
-| `GmailMailSource` / `GmailApiClient` (#476) | Code merged; exercised by unit tests only |
-| Connect / callback / revoke endpoints | Merged DARK — **404** (`BROKER_MAILBOX_CONNECT_ENABLED` unset) |
-| Standalone ingestion worker (`run_mailbox_ingest`) | Merged DARK — refuses unless `BROKER_INTELLIGENCE_INGEST_ENABLED` or `--force` |
-| Withdrawal correlation (#473) | Merged DARK (`broker_withdrawal_correlation_enabled` unset) |
-| Withdrawal metrics API + member UX (#474/#475) | Merged DARK (`broker_withdrawal_ux_enabled` unset) → 404 / self-hiding panel |
-| Broker-email alias master (`BROKER_EMAIL_IDENTITY_ENABLED`, #464) | Merged DARK — unset |
+| Gmail OAuth flow (`gmail_oauth.py`) | Deployed; **inert** — no client credentials provisioned |
+| Encrypted credential store (`credential_store.py`, #476) | Deployed; **inert** — `BROKER_INTELLIGENCE_CREDENTIAL_KEY`/`_ROOT` unset |
+| `GmailMailSource` / `GmailApiClient` (#476) | Deployed; exercised by unit tests only |
+| Connect / callback / revoke endpoints | **Deployed DARK** — routes wired (401 unauth) but **404 when authed** (`BROKER_MAILBOX_CONNECT_ENABLED` unset) |
+| Standalone ingestion worker (`run_mailbox_ingest`) | **Deployed DARK** — command refuses unless `BROKER_INTELLIGENCE_INGEST_ENABLED` or `--force` (verified on prod); no scheduler wired |
+| Withdrawal correlation (#473) | Deployed DARK (`broker_withdrawal_correlation_enabled` unset) |
+| Withdrawal metrics API + member UX (#474/#475) | Deployed DARK (`broker_withdrawal_ux_enabled` unset) → 404 / self-hiding panel |
+| Broker-email alias master (`BROKER_EMAIL_IDENTITY_ENABLED`, #464) | Deployed DARK — unset |
 
 **Net:** no mailbox can be connected, no email is polled, no credential key exists, and no member-facing
-surface renders. Arming requires an explicit, separate Sponsor action on each flag below.
+surface renders. Verified on prod post-deploy: CSRF `200`; mailbox routes return `401` unauthenticated (wired,
+auth-protected, not 404/500); all DARK flags unset; ingestion command refuses. Arming requires an explicit,
+separate Sponsor action on each flag below.
+
+**Rollback (one step):**
+`docker tag guvfx-prod-guvfx-backend:rollback-preGMAILWORKER guvfx-prod-guvfx-backend:latest && cd /home/ubuntu/guvfx-prod && docker compose up -d --force-recreate --no-deps guvfx-backend`
 
 ---
 
@@ -84,6 +94,7 @@ Provision these as environment variables on the backend service only (production
 | `GMAIL_OAUTH_REDIRECT_URI` | `https://api.guvfx.com/api/broker-intelligence/mailboxes/callback/` |
 | `BROKER_INTELLIGENCE_CREDENTIAL_KEY` | Fernet key (`cryptography`) encrypting stored OAuth tokens at rest |
 | `BROKER_INTELLIGENCE_CREDENTIAL_ROOT` | Directory (created `0700`) holding the encrypted token files |
+| `BROKER_INTELLIGENCE_MAX_RAW_BYTES` *(optional)* | Per-message raw capture ceiling in bytes (default 25 MiB). A larger message is **never silently dropped** — the fetch fails loud and the cursor does not advance; raise this to admit a legitimately large email. |
 
 - The DB stores only an **opaque `credential_ref`** (`"cr" + token_hex(16)`), never the token.
 - Tokens are written with `tempfile.mkstemp` (atomic, `0600`) then `os.replace`; the root is `0700`.
@@ -150,7 +161,7 @@ Arming is **two independent gates** — connect first, verify the connection, po
   parsers (the registry is empty at import by design); an armed worker would have quarantined every message
   as unparseable and produced **zero** events. The worker now calls `register_default_parsers()` at start-up
   (idempotent).
-- **Adversarial review:** a 4-lens review (security / correctness+cursor+txn / isolation+DARK+evidence /
+- **Adversarial review (pre-merge):** a 4-lens review (security / correctness+cursor+txn / isolation+DARK+evidence /
   test-quality) with 3 independent refute-by-default verifiers per finding surfaced 6 confirmed findings
   (deduped to 4 real defects): worker per-mailbox isolation (a `commit_cursor()`/construction error aborting
   the whole pass), a callback cursor fast-forward that would skip un-ingested mail on re-connect, a cross-user
@@ -158,6 +169,15 @@ Arming is **two independent gates** — connect first, verify the connection, po
   reason. **All four were fixed** (commit `c2676af`) with added coverage; 3 further coverage nitpicks were
   adversarially refuted (the behaviour was already correct). No HIGH finding; the cross-user attribution
   firewall, CSRF state verification, read-only scope, and DARK gating all held.
+- **Post-deploy safety sweep (EMAIL_CAPTURE_READY):** a 3-agent adversarial sweep proved **no email-derived
+  financial action is possible** and **withdrawal metrics cannot be polluted by UNKNOWN/INTERNAL/DEPOSIT**
+  (both CONFIRMED structurally), and found **one real durable-preservation defect**: the DARK Gmail fetch layer
+  silently dropped an un-capturable message (empty `raw`, or raw > the 5 MB cap) **and advanced the cursor past
+  it** → permanent silent loss. **Fixed:** `GmailApiClient._fetch_message` now **raises `MessageCaptureError`**
+  instead of dropping (the cursor is not advanced; the message resurfaces as a visible, retryable failure), the
+  per-message ceiling is **configurable** (`BROKER_INTELLIGENCE_MAX_RAW_BYTES`, default raised to 25 MiB), and
+  initial-sync is documented as deliberately **forward-only** (capture begins at connect; no historical
+  backfill — a privacy + scope choice). Tests updated to assert fail-closed (oversize + empty-raw both raise).
 
 ---
 

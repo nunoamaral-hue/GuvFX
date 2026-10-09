@@ -121,14 +121,37 @@ HttpGet = Callable[[str, dict], "Tuple[int, str]"]   # (url, headers) -> (status
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 
+class MessageCaptureError(Exception):
+    """A single message could NOT be captured (empty raw payload, or raw exceeding the capture ceiling). Raising this
+    (instead of silently dropping the message) is the durable-preservation contract: the enclosing batch fails and the
+    cursor is NOT advanced past the un-captured message, so it resurfaces next pass as a visible, retryable failure —
+    raw broker evidence is never lost. An operator can raise ``BROKER_INTELLIGENCE_MAX_RAW_BYTES`` to admit a
+    legitimately large email (e.g. one carrying a PDF statement)."""
+
+
+def _max_raw_bytes() -> int:
+    """Per-message raw-size ceiling, CONFIGURABLE (settings-then-env ``BROKER_INTELLIGENCE_MAX_RAW_BYTES``, bytes) so an
+    operator can admit a larger broker email without a code change. Defaults to ``GmailApiClient.MAX_RAW_BYTES``."""
+    import os
+    from django.conf import settings
+    v = getattr(settings, "BROKER_INTELLIGENCE_MAX_RAW_BYTES", None)
+    if v is None:
+        v = os.getenv("BROKER_INTELLIGENCE_MAX_RAW_BYTES", "")
+    try:
+        return int(v) if str(v).strip() else GmailApiClient.MAX_RAW_BYTES
+    except (TypeError, ValueError):
+        return GmailApiClient.MAX_RAW_BYTES
+
+
 class GmailApiClient:
     """Resolves the encrypted token for ``mailbox.credential_ref`` (refreshing read-only when expired), then lists +
     fetches raw messages via the Gmail REST API. ``http_get`` is injected (default: urllib) so tests drive it with
     fixtures. Never sends/modifies mail; only gmail.readonly endpoints are called."""
 
-    # Cap the raw bytes buffered per message so a single huge (or adversarial) email cannot exhaust memory. A larger
-    # message is skipped (logged), never partially ingested. Broker withdrawal notices are tiny.
-    MAX_RAW_BYTES = 5 * 1024 * 1024
+    # Default per-message raw-size ceiling (bytes), overridable via BROKER_INTELLIGENCE_MAX_RAW_BYTES. Comfortably
+    # above a withdrawal email carrying a PDF statement, below Gmail's own message ceiling. A message ABOVE the
+    # (resolved) ceiling is NEVER silently dropped — the fetch RAISES so the cursor does not advance past it.
+    MAX_RAW_BYTES = 25 * 1024 * 1024
     # Bound the number of history/list pages followed in one pass (defence against an unbounded page walk).
     MAX_PAGES = 20
 
@@ -139,6 +162,7 @@ class GmailApiClient:
         self._client_secret = client_secret
         self._http_get = http_get or _default_http_get
         self._max = max_messages
+        self._max_raw_bytes = _max_raw_bytes()
 
     def _access_token(self) -> str:
         from .credential_store import load_token, store_token
@@ -165,17 +189,22 @@ class GmailApiClient:
             raise RuntimeError(f"gmail api http {status}")
         return json.loads(body)
 
-    def _fetch_message(self, mid: str) -> Optional[dict]:
-        """Fetch + decode ONE raw message, skipping (None) a message whose raw exceeds MAX_RAW_BYTES."""
+    def _fetch_message(self, mid: str) -> dict:
+        """Fetch + decode ONE raw message. NEVER silently drops a message: one that cannot be captured — an empty raw
+        payload, or raw exceeding the capture ceiling — RAISES ``MessageCaptureError`` so the batch fails WITHOUT
+        advancing the cursor (durable-preservation contract). The pre-decode check on the base64 length bounds memory
+        (a huge message is rejected before it is decoded), so an oversized message is never buffered whole."""
         full = self._get_json(f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=raw")
         raw_b64 = full.get("raw", "")
         if not raw_b64:
-            return None
-        if len(raw_b64) * 3 // 4 > self.MAX_RAW_BYTES:   # base64 decodes to ~3/4 its length
-            return None   # oversized -> skip (never buffer/partial-ingest a huge message)
+            raise MessageCaptureError(f"message {mid}: empty raw payload — cannot capture (not advancing cursor)")
+        if len(raw_b64) * 3 // 4 > self._max_raw_bytes:   # base64 decodes to ~3/4 its length (bound memory pre-decode)
+            raise MessageCaptureError(
+                f"message {mid}: raw exceeds capture ceiling {self._max_raw_bytes}B — "
+                "raise BROKER_INTELLIGENCE_MAX_RAW_BYTES to admit it (not advancing cursor; message not lost)")
         raw_bytes = base64.urlsafe_b64decode(raw_b64 + "=" * (-len(raw_b64) % 4))
-        if len(raw_bytes) > self.MAX_RAW_BYTES:
-            return None
+        if len(raw_bytes) > self._max_raw_bytes:
+            raise MessageCaptureError(f"message {mid}: raw exceeds capture ceiling {self._max_raw_bytes}B")
         return {"provider_message_id": mid, "raw_bytes": raw_bytes, **parse_rfc822(raw_bytes)}
 
     def list_new_messages(self, cursor_state: str) -> "Tuple[List[dict], str]":
@@ -209,7 +238,13 @@ class GmailApiClient:
                 if m is not None:
                     out.append(m)
             return out, new_cursor
-        # initial sync
+        # INITIAL sync (no cursor yet): anchor the cursor to the account's current profile historyId, and capture the
+        # most-recent page as a convenience sample. Capture is DELIBERATELY FORWARD-ONLY from connect time — the pilot
+        # withdrawal is made AFTER the mailbox is connected, and everything from the anchored historyId onward is then
+        # captured durably + incrementally (history.list, above). Full historical backfill is intentionally out of V1
+        # scope (we want broker withdrawal mail going forward, not the member's entire inbox history — a privacy and
+        # scope choice, documented in docs/GMAIL_INGESTION_CONSENT_READY.md). An un-capturable message still RAISES
+        # (via _fetch_message) rather than being silently dropped.
         listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}")
         for m0 in (listing.get("messages") or []):
             m = self._fetch_message(m0["id"])
