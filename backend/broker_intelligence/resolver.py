@@ -29,14 +29,23 @@ def _bare_address(address: str) -> str:
     return a.strip("<>").strip()
 
 
-def resolve_alias(to_addresses: Iterable[str]) -> Optional[BrokerEmailAlias]:
+def resolve_alias(to_addresses: Iterable[str], *, owner_user=None) -> Optional[BrokerEmailAlias]:
     """The first address whose opaque local-part matches a ``BrokerEmailAlias.alias_local`` (globally unique),
-    or None. Match is on the opaque local-part only — never the display name. Read-only."""
+    or None. Match is on the opaque local-part only — never the display name. Read-only.
+
+    ``owner_user`` (SECURITY — cross-user attribution firewall): recipient headers (To/Delivered-To/X-Original-To)
+    are attacker-controllable, so when a message is ingested from a specific owner's mailbox the resolution MUST be
+    scoped to that owner — a spoofed header carrying another member's opaque alias then cannot attribute the message
+    to that other member. When set, only an alias bound to one of ``owner_user``'s accounts can match (an unbound
+    alias has no owner and is excluded, fail-closed)."""
     for addr in to_addresses or ():
         lp = _local_part(addr)
         if not lp:
             continue
-        alias = BrokerEmailAlias.objects.filter(alias_local=lp).first()
+        qs = BrokerEmailAlias.objects.filter(alias_local=lp)
+        if owner_user is not None:
+            qs = qs.filter(user=owner_user)   # the alias's own owner (covers unbound Journey-B aliases too)
+        alias = qs.first()
         if alias is not None:
             return alias
     return None
@@ -53,17 +62,21 @@ def resolve_account(alias: Optional[BrokerEmailAlias]):
     return alias.trading_account
 
 
-def identities_for(to_addresses: Iterable[str]):
+def identities_for(to_addresses: Iterable[str], *, owner_user=None):
     """ALL ``BrokerEmailIdentity`` rows matching any of the given bare addresses (case-insensitive), de-duplicated.
     One email legitimately maps to MANY rows (unique is per email+broker), so this returns a list, never a single
-    pk-ordered pick. Read-only."""
+    pk-ordered pick. Read-only. ``owner_user`` scopes to that member's own identities (cross-user firewall — see
+    ``resolve_alias``)."""
     out, seen_addr, seen_pk = [], set(), set()
     for addr in to_addresses or ():
         bare = _bare_address(addr)
         if not bare or bare in seen_addr:
             continue
         seen_addr.add(bare)
-        for identity in BrokerEmailIdentity.objects.filter(email__iexact=bare):
+        qs = BrokerEmailIdentity.objects.filter(email__iexact=bare)
+        if owner_user is not None:
+            qs = qs.filter(trading_account__user=owner_user)
+        for identity in qs:
             if identity.pk not in seen_pk:
                 seen_pk.add(identity.pk)
                 out.append(identity)
@@ -77,9 +90,13 @@ def resolve_identity(to_addresses: Iterable[str]) -> Optional[BrokerEmailIdentit
     return matches[0] if matches else None
 
 
-def resolve(to_addresses: Iterable[str]) -> Tuple[Optional[BrokerEmailAlias], object]:
+def resolve(to_addresses: Iterable[str], *, owner_user=None) -> Tuple[Optional[BrokerEmailAlias], object]:
     """Read-only resolution to (alias-or-None, account-or-None). The GuvFX opaque alias is tried first (ACTIVE ⇒ its
     account). Otherwise the account is resolved from broker-registration identities, FAIL-CLOSED on ambiguity:
+
+    ``owner_user`` (SECURITY): when a message is ingested from a known mailbox, pass that mailbox's owner so BOTH the
+    alias and the identity lookups are scoped to that member — attacker-controllable recipient headers (To/
+    Delivered-To/X-Original-To) can then NEVER attribute the message to a different member's account.
       * gather the distinct accounts carried by the VERIFIED identities for these addresses;
       * EXACTLY ONE distinct verified account ⇒ resolve it;
       * ZERO ⇒ no account (nothing verified-and-bound yet);
@@ -87,10 +104,10 @@ def resolve(to_addresses: Iterable[str]) -> Tuple[Optional[BrokerEmailAlias], ob
     Resolution is deliberately broker-BLIND-SAFE: it never relies on row order and never lets a PENDING/other-broker
     row for the same address shadow or mis-select a verified one. A PENDING/UNRESOLVED/RETIRED identity and a
     PENDING/RETIRED alias both yield no account (routing/ownership must be verified first, §4)."""
-    alias = resolve_alias(to_addresses)
+    alias = resolve_alias(to_addresses, owner_user=owner_user)
     if alias is not None:
         return alias, resolve_account(alias)
-    verified = [i for i in identities_for(to_addresses)
+    verified = [i for i in identities_for(to_addresses, owner_user=owner_user)
                 if i.status == BrokerEmailIdentity.Status.VERIFIED and i.trading_account_id is not None]
     distinct_accounts = {i.trading_account_id for i in verified}
     if len(distinct_accounts) == 1:
