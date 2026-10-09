@@ -219,6 +219,16 @@ class GmailApiClient:
         return out, new_cursor
 
 
+def fetch_profile(access_token: str, *, http_get: Optional[HttpGet] = None) -> dict:
+    """Read the connected account's Gmail profile (emailAddress + historyId) with a bearer token — used by the
+    connect callback to learn the mailbox's provider id + an initial cursor. Read-only; HTTP injected for tests."""
+    get = http_get or _default_http_get
+    status, body = get(f"{_GMAIL_API}/profile", {"Authorization": "Bearer " + access_token})
+    if status != 200:
+        raise RuntimeError(f"gmail profile http {status}")
+    return json.loads(body)
+
+
 def _default_http_get(url: str, headers: dict) -> "Tuple[int, str]":
     req = urllib.request.Request(url, method="GET", headers=headers)
     try:

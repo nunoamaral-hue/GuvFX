@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-10-09 - WITHDRAWAL V1 / WP3b Gmail ingestion worker + member OAuth connection (DARK, synthetic-certified).**
+  Branch `feat/gmail-ingestion-worker` (`f5f4dd0` + review-fix `c2676af`). Completes the Gmail half of Withdrawal
+  Intelligence V1 behind DARK flags; **no model change (no migration); nothing deployed; no real consent requested.**
+  (a) **Member OAuth connection flow** — new flag `broker_mailbox_connect_enabled` (default OFF → endpoints 404):
+  `MailboxConnectView` (Google consent URL; signed, user-bound, 600 s CSRF state; `gmail.readonly` scope only),
+  `MailboxCallbackView` (verifies state signature + age + issued-to-THIS-user; exchanges code read-only; stores the
+  token ENCRYPTED via `credential_store` — DB holds only an opaque ref; records `ConnectedMailbox`),
+  `MailboxRevokeView` (owner-scoped; destroys the credential + marks REVOKED). `gmail_source.fetch_profile` added.
+  (b) **Standalone ingestion worker** `mailbox_ingest.ingest_mailbox`/`run_mailbox_ingest` + DARK management command
+  `run_mailbox_ingest` (gated by `BROKER_INTELLIGENCE_INGEST_ENABLED`): per-mailbox isolation; cursor advances ONLY
+  after a batch is durably ingested (crash-safe, content-hash idempotent); **every `ingest_message` passes
+  `owner_user=mailbox.user`** (cross-user attribution firewall vs spoofed To/Delivered-To/X-Original-To).
+  **FIX:** the worker now calls `register_default_parsers()` at start-up — the registry is empty at import by design,
+  so without it an armed worker would quarantine every message as unparseable (zero events).
+  **Adversarial review** (4 lenses, 3 refute-by-default verifiers/finding): 6 confirmed → 4 real defects, ALL FIXED
+  (`c2676af`): worker isolation (commit/construction error aborting the pass), callback cursor fast-forward (skipped
+  un-ingested mail on re-connect → anchor cursor only on CREATE), cross-user mailbox clash (500 + orphaned credential
+  → clean 409 before store), DARK revoke test passing for the wrong reason. No HIGH; firewall/CSRF/readonly/DARK all
+  held. **Tests:** `broker_intelligence` 139 (11 in `tests_mailbox`); full backend 5477 pass (1 skipped); no migration.
+  Deliverable `docs/GMAIL_INGESTION_CONSENT_READY.md`. **NOT `TRADERSWAY_WITHDRAWAL_PILOT_READY`** — headline gap:
+  the TradersWay parser STRUCTURALLY never emits `EXTERNAL_WITHDRAWAL` until a genuine external sample certifies the
+  positive classifier, so parsed TradersWay mail classifies UNKNOWN/INTERNAL and yields no `Withdrawal` yet.
 - **2026-10-08 - LIVE READ-ONLY MT5 MONITORING (P1, separately governed; Withdrawal V1 stays P0).** Sponsor-approved
   stream to support complete READ-ONLY monitoring of LIVE accounts (balance/equity/positions/floating P&L/deals/
   analytics), independent of LIVE execution. **Phase-1 safety review: SAFE_SEPARATION_PROVEN** (5 audit lenses + 2

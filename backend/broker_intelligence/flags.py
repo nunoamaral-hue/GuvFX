@@ -43,6 +43,14 @@ def broker_intelligence_ingest_enabled() -> bool:
     return _flag("BROKER_INTELLIGENCE_INGEST_ENABLED")
 
 
+def broker_mailbox_connect_enabled() -> bool:
+    """Gate for the member mailbox CONNECT/callback/revoke endpoints (the OAuth connection flow). DEFAULT OFF → the
+    endpoints 404 until the Sponsor arms connecting + the Google OAuth client credentials are provisioned. Kept
+    SEPARATE from the ingestion-worker gate so a mailbox can be connected + verified BEFORE live polling is armed.
+    Read-only member action (connect/revoke a mailbox); NO execution/strategy/MT5 authority."""
+    return _flag("BROKER_MAILBOX_CONNECT_ENABLED")
+
+
 def broker_withdrawal_ux_enabled() -> bool:
     """Member-facing gate for the Withdrawals UX + its metrics API. DEFAULT OFF. While OFF the metrics endpoint
     responds 404 (feature absent) so the half-built member feature never surfaces; the projection

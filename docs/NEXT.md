@@ -5,10 +5,15 @@
 withdrawal (GuvFX NEVER initiates/confirms a financial transaction). Done so far: WP1✓ WP2✓ WP3a✓ (all MERGED +
 DARK-DEPLOYED + certified); WP4 (TradersWay parser #1 + transaction classification + internal-transfer NEGATIVE test +
 token redaction) BUILT, in review → PR→deploy. Design: `docs/WITHDRAWAL_V1_EMAIL_ARCHITECTURE.md`.
-**Build order (DARK, governed):** (next) multi-mailbox foundation (ConnectedMailbox + BrokerEmailIdentity +
-identity-aware resolver; backfill six emails PENDING; TradersWay identity→acct 46) → WP3b standalone ingestion worker
-+ **Gmail OAuth** (readonly) MailSource → WP5 correlation + metrics projection → WP6 member Withdrawals UX.
-Sample-independent work proceeds now; live receipt gated on Gmail OAuth consent (human) + a genuine external-withdrawal
+**Build order (DARK, governed):** WP4✓ WP5✓ (correlation, #473) WP6✓ (metrics #474 + member UX #475) and **WP3b✓
+standalone ingestion worker + Gmail OAuth (readonly) connection flow + encrypted credential store** — on branch
+`feat/gmail-ingestion-worker` (`c2676af`), synthetic-certified + adversarially reviewed, **not yet merged/deployed**;
+see `docs/GMAIL_INGESTION_CONSENT_READY.md`. **Remaining before pilot-ready:** (1) a GENUINE external-withdrawal email
+sample to build+certify the positive `EXTERNAL_WITHDRAWAL` classifier — the parser structurally emits only UNKNOWN/
+INTERNAL today, so no `Withdrawal` is produced yet (biggest gap); (2) Google Cloud OAuth client + backend credential
+provisioning (human); (3) real readonly consent for `nrfda1111@googlemail.com` (human); (4) deliberate arming of the
+connect → ingest → correlation → metrics → UX flags with verification at each step.
+Sample-independent work is complete; live receipt gated on Gmail OAuth consent (human) + a genuine external-withdrawal
 email. **Processing-duration (broker ack→processed) is V1's metric; funds-receipt is separate; no completion ⇒ PENDING,
 never FAILED.** Public WAYOND scoring OUT. Targets unchanged (demo 5–7 / pilot 7–10 working days).
 **T1 Telegram (separate, must not block V1):** new channel `-1003840218545` (format-correct from `t.me/c/3840218545/11`);
