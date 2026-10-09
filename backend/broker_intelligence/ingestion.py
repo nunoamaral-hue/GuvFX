@@ -34,13 +34,19 @@ logger = logging.getLogger("guvfx.broker_intelligence.ingestion")
 
 
 def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = None,
-                   provenance: str = Provenance.SYNTHETIC) -> Optional[BrokerEvent]:
+                   provenance: str = Provenance.SYNTHETIC, owner_user=None) -> Optional[BrokerEvent]:
     """Ingest ONE message. Returns the created (or pre-existing, on re-ingest) BrokerEvent, or None when the message
-    is unparseable (evidence is still stored). Idempotent by evidence content-hash."""
+    is unparseable (evidence is still stored). Idempotent by evidence content-hash.
+
+    ``owner_user`` (SECURITY — cross-user attribution firewall): when a message comes from a known mailbox, pass that
+    mailbox's owner so recipient-header resolution is scoped to that member. The live mail worker MUST pass it (a
+    mailbox always has an owner) — attacker-controllable To/Delivered-To/X-Original-To headers then cannot attribute
+    a message to a different member's account. Default None keeps the global lookup for non-mailbox/legacy callers."""
     store = store or EvidenceStore()
 
-    # 1) resolve recipient -> alias/account (read-only; unknown -> (None, None))
-    alias, account = resolve(message.to_addresses)
+    # 1) resolve recipient -> alias/account (read-only; unknown -> (None, None)); owner-scoped when a mailbox owner
+    #    is supplied, so spoofed recipient headers can never cross-attribute to another member.
+    alias, account = resolve(message.to_addresses, owner_user=owner_user)
 
     # 2) store raw bytes write-once (always — quarantine even unparseable mail; never drop raw evidence)
     blob, _created = store.put(message.raw_bytes, content_type="message/rfc822",
