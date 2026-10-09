@@ -111,24 +111,70 @@ class IdentityCanonicalMatchTests(TestCase):
         self.assertIsNone(account)
 
 
-# ── R3b: Authentication-Results verdict parsing ──────────────────────────────────────────────────────────
+# ── R3b: Authentication-Results verdict parsing (DMARC pass OR From-aligned DKIM pass) ───────────────────
+@override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.com")
 class AuthVerdictParseTests(SimpleTestCase):
-    def _verdict(self, *ar_lines: str):
+    def _verdict(self, *ar_lines: str, from_addr: str = "payments@tradersway.com"):
         ar = b"".join((f"Authentication-Results: {ln}\r\n").encode() for ln in ar_lines if ln)
-        raw = b"From: x@tradersway.com\r\n" + ar + b"Subject: s\r\n\r\nbody"
+        raw = (f"From: {from_addr}\r\n").encode() + ar + b"Subject: s\r\n\r\nbody"
         return parse_rfc822(raw)["auth_verdict"]
 
     def test_dmarc_pass_on_trusted_header(self):
         self.assertEqual(self._verdict("mx.google.com; spf=pass; dkim=pass; dmarc=pass"), "pass")
 
-    def test_spf_dkim_pass_without_dmarc_is_not_trusted(self):
-        # SPF/DKIM authenticate the sender's OWN domain, NOT the From — with no DMARC alignment this is NOT a pass.
-        self.assertEqual(self._verdict("mx.google.com; spf=pass; dkim=pass"), "fail")
+    def test_aligned_dkim_pass_without_dmarc_passes(self):
+        # The REAL TradersWay case: valid DKIM signed by the From's own broker domain, but DMARC fails (no published
+        # DMARC record). A From-ALIGNED DKIM pass within the approved broker domain IS authentic.
+        self.assertEqual(self._verdict("mx.google.com; spf=pass smtp.mailfrom=bounce.icpbounce.com; "
+                                       "dkim=pass header.i=@tradersway.com header.d=tradersway.com; "
+                                       "dmarc=fail (p=NONE) header.from=tradersway.com"), "pass")
 
-    def test_spf_dkim_pass_but_dmarc_fail_is_fail(self):
-        # The core spoof: valid SPF/DKIM for the attacker's domain + dmarc=fail for the spoofed From => NOT a pass.
+    def test_aligned_dkim_subdomain_passes(self):
+        self.assertEqual(self._verdict("mx.google.com; dkim=pass header.d=mail.tradersway.com; dmarc=fail"), "pass")
+
+    def test_aligned_dkim_via_header_i_only_passes(self):
+        # Gmail commonly reports the DKIM signing identity via the AUID header.i=@domain with NO separate header.d.
+        # A From-aligned header.i is just as authentic (RFC 8601).
+        self.assertEqual(self._verdict("mx.google.com; dkim=pass header.i=@tradersway.com header.s=google header.b=Ab; "
+                                       "spf=pass smtp.mailfrom=bounce.icpbounce.com; "
+                                       "dmarc=fail (p=NONE) header.from=tradersway.com"), "pass")
+
+    def test_dkim_pass_token_inside_spf_comment_is_fail(self):
+        # SPOOF: real dkim=fail/dmarc=fail, but 'dkim=pass header.d=tradersway.com' is planted inside the SPF resinfo's
+        # CFWS comment. Comments are stripped + only each resinfo's LEADING method=result counts -> must be "fail".
+        self.assertEqual(self._verdict("mx.google.com; dkim=fail header.d=tradersway.com; "
+                                       "spf=pass (google.com: dkim=pass header.d=tradersway.com designates 1.2.3.4) "
+                                       "smtp.mailfrom=x@evil.com; dmarc=fail header.from=tradersway.com"), "fail")
+
+    def test_semicolon_inside_comment_does_not_split_resinfo(self):
+        # SPOOF: a ';' planted inside a comment must NOT create an attacker pseudo-resinfo.
+        self.assertEqual(self._verdict("mx.google.com; dkim=fail; "
+                                       "spf=pass (note: dkim=pass header.d=tradersway.com ; trust me) "
+                                       "smtp.mailfrom=x@evil.com; dmarc=fail"), "fail")
+
+    def test_quoted_value_injection_is_fail(self):
+        # SPOOF: 'dkim=pass header.d=tradersway.com' hidden in a quoted smtp.mailfrom value of the SPF resinfo.
+        self.assertEqual(self._verdict('mx.google.com; dkim=fail; '
+                                       'spf=pass smtp.mailfrom="dkim=pass header.d=tradersway.com"@evil.com; '
+                                       'dmarc=fail'), "fail")
+
+    def test_unaligned_dkim_d_evil_is_fail(self):
+        # Core spoof: attacker signs with THEIR OWN domain (header.d=evil.com) but forges From: tradersway.com.
+        # DKIM d is not aligned to the broker From -> NOT a pass.
         self.assertEqual(self._verdict("mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com; "
                                        "dkim=pass header.d=evil.com; dmarc=fail header.from=tradersway.com"), "fail")
+
+    def test_dkim_aligned_but_from_not_broker_is_fail(self):
+        # DKIM d aligned to the From, but the From domain is NOT an approved broker -> not accepted.
+        self.assertEqual(self._verdict("mx.google.com; dkim=pass header.d=notbroker.example; dmarc=fail",
+                                       from_addr="x@notbroker.example"), "fail")
+
+    def test_dkim_pass_without_header_d_is_fail(self):
+        self.assertEqual(self._verdict("mx.google.com; spf=pass; dkim=pass"), "fail")
+
+    def test_spf_only_is_fail(self):
+        # SPF authenticates the envelope sender (often an unaligned bounce domain), never the From -> never sufficient.
+        self.assertEqual(self._verdict("mx.google.com; spf=pass smtp.mailfrom=bounce.icpbounce.com; dmarc=fail"), "fail")
 
     def test_present_but_failing_is_fail(self):
         self.assertEqual(self._verdict("mx.google.com; spf=fail; dkim=fail; dmarc=fail"), "fail")
@@ -138,14 +184,13 @@ class AuthVerdictParseTests(SimpleTestCase):
 
     def test_untrusted_authserv_only_is_none(self):
         # An A-R header from a NON-trusted authserv-id (attacker-chosen) is ignored entirely -> no trusted verdict.
-        self.assertIsNone(self._verdict("spoof.attacker.example; dmarc=pass"))
+        self.assertIsNone(self._verdict("spoof.attacker.example; dkim=pass header.d=tradersway.com; dmarc=pass"))
 
-    def test_injected_foreign_pass_does_not_override_trusted_fail(self):
-        # Attacker injects their own 'mx... dmarc=pass'-looking header with a FOREIGN authserv-id, while the genuine
-        # Gmail header says dmarc=fail. Only the trusted (mx.google.com) header is consulted => "fail".
-        self.assertEqual(self._verdict("spoof.example; dmarc=pass",
-                                       "mx.google.com; spf=pass; dkim=pass; dmarc=fail header.from=tradersway.com"),
-                         "fail")
+    def test_injected_foreign_aligned_dkim_does_not_override_trusted_fail(self):
+        # Attacker injects a foreign-authserv-id header carrying an aligned-looking dkim=pass; the genuine Gmail header
+        # says dkim=fail/dmarc=fail. Only the trusted (mx.google.com) header is consulted => "fail".
+        self.assertEqual(self._verdict("spoof.example; dkim=pass header.d=tradersway.com",
+                                       "mx.google.com; dkim=fail header.d=tradersway.com; dmarc=fail"), "fail")
 
     @override_settings(BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS="mail.guvfx.example")
     def test_trusted_authserv_is_configurable(self):
