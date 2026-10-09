@@ -219,7 +219,14 @@ class GmailMailSourceTests(TestCase):
         self.assertIsNotNone(self.mb.last_successful_sync)
 
 
-@override_settings(**CRED_SETTINGS)
+def _meta_from(value: str = "no-reply@tradersway.com") -> str:
+    """A Gmail format=metadata response carrying a single From header (for the R1 acquisition pre-check)."""
+    return json.dumps({"payload": {"headers": [{"name": "From", "value": value}]}})
+
+
+# R1: the acquisition filter is active, so these tests configure the broker-sender allowlist and their http_get stubs
+# answer the metadata (From) pre-check. SYNTHETIC_RAW is from no-reply@tradersway.com (allowlisted).
+@override_settings(**CRED_SETTINGS, BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.com")
 class GmailApiClientTests(TestCase):
     def setUp(self):
         self.u = User.objects.create_user(username="ga", email="ga@x.invalid", password="x")
@@ -237,8 +244,11 @@ class GmailApiClientTests(TestCase):
 
         def http_get(url, headers):
             seen_auth.append(headers.get("Authorization"))
-            if url.endswith("/messages?maxResults=50"):
+            if "/messages?maxResults=50" in url:                 # now carries &q=from:(tradersway.com)
+                self.assertIn("q=from", url)
                 return 200, json.dumps({"messages": [{"id": "m1"}]})
+            if "/messages/m1" in url and "format=metadata" in url:
+                return 200, _meta_from()
             if "/messages/m1" in url:
                 return 200, json.dumps({"id": "m1", "raw": raw_b64})
             if url.endswith("/profile"):
@@ -262,6 +272,8 @@ class GmailApiClientTests(TestCase):
             if "/history?startHistoryId=100" in url:
                 return 200, json.dumps({"historyId": "150",
                                         "history": [{"messagesAdded": [{"message": {"id": "mX"}}]}]})
+            if "/messages/mX" in url and "format=metadata" in url:
+                return 200, _meta_from()
             if "/messages/mX" in url:
                 return 200, json.dumps({"id": "mX", "raw": raw_b64})
             return 404, "{}"
@@ -271,16 +283,55 @@ class GmailApiClientTests(TestCase):
         self.assertEqual([m["provider_message_id"] for m in msgs], ["mX"])
         self.assertEqual(cursor, "150")                 # advanced to the history historyId, never jumped to now
 
+    def test_incremental_skips_non_broker_sender(self):
+        # R1 acquisition filter: a non-broker (personal) message's full raw is NEVER fetched — only its From metadata
+        # is read, it is skipped, and the cursor still advances (the message was deliberately not acquired/retained).
+        fetched_raw = []
+
+        def http_get(url, headers):
+            if "/history?startHistoryId=100" in url:
+                return 200, json.dumps({"historyId": "150",
+                                        "history": [{"messagesAdded": [{"message": {"id": "personal"}}]}]})
+            if "/messages/personal" in url and "format=metadata" in url:
+                return 200, _meta_from("mum@familymail.example")      # NOT an allowlisted broker sender
+            if "/messages/personal" in url and "format=raw" in url:
+                fetched_raw.append("personal")                       # must NEVER happen
+                return 200, json.dumps({"id": "personal", "raw": "x"})
+            return 404, "{}"
+
+        client = GS.GmailApiClient(self.mb, client_id="CID", client_secret="SEC", http_get=http_get)
+        msgs, cursor = client.list_new_messages("100")
+        self.assertEqual(msgs, [])                       # not acquired
+        self.assertEqual(fetched_raw, [])                # full raw of personal mail never pulled
+        self.assertEqual(cursor, "150")                  # cursor still advances (nothing to capture)
+
+    @override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="")
+    def test_empty_allowlist_fetches_nothing_failclosed(self):
+        # Fail-closed: with NO verified broker configured, the acquisition filter fetches nothing (initial + incremental)
+        # while still anchoring/advancing the cursor. A personal inbox cannot leak into the pipeline.
+        def http_get(url, headers):
+            if url.endswith("/profile"):
+                return 200, json.dumps({"historyId": "42"})
+            if "/history?startHistoryId=100" in url:
+                return 200, json.dumps({"historyId": "150", "history": []})
+            # any message fetch would be a failure
+            return 200, json.dumps({"messages": [{"id": "should-not-fetch"}]})
+
+        client = GS.GmailApiClient(self.mb, client_id="CID", client_secret="SEC", http_get=http_get)
+        self.assertEqual(client.list_new_messages(""), ([], "42"))     # initial: nothing, cursor anchored
+        self.assertEqual(client.list_new_messages("100"), ([], "150")) # incremental: nothing, cursor advanced
+
     @override_settings(BROKER_INTELLIGENCE_MAX_RAW_BYTES="1024")
     def test_oversized_message_fails_closed_not_dropped(self):
-        # Durable-preservation: an oversized message must NOT be silently dropped while the cursor advances past it
-        # (permanent silent loss). It RAISES so the batch fails and the cursor is left un-advanced (retryable); an
-        # operator can raise BROKER_INTELLIGENCE_MAX_RAW_BYTES to admit a legitimately large email.
+        # Durable-preservation: an oversized (broker) message must NOT be silently dropped while the cursor advances
+        # past it. It RAISES so the batch fails and the cursor is left un-advanced (retryable).
         big = base64.urlsafe_b64encode(b"x" * 4096).decode().rstrip("=")   # > the 1024-byte test ceiling
 
         def http_get(url, headers):
-            if url.endswith("/messages?maxResults=50"):
+            if "/messages?maxResults=50" in url:
                 return 200, json.dumps({"messages": [{"id": "big"}]})
+            if "/messages/big" in url and "format=metadata" in url:
+                return 200, _meta_from()                             # allowlisted broker sender -> proceeds to raw
             if "/messages/big" in url:
                 return 200, json.dumps({"id": "big", "raw": big})
             if url.endswith("/profile"):
@@ -292,11 +343,13 @@ class GmailApiClientTests(TestCase):
             client.list_new_messages("")                 # initial sync — raises rather than silently dropping
 
     def test_empty_raw_message_fails_closed(self):
-        # A message Gmail returns with an empty 'raw' field must RAISE (never silently drop + advance the cursor).
+        # A (broker) message Gmail returns with an empty 'raw' field must RAISE (never silently drop + advance cursor).
         def http_get(url, headers):
             if "/history?startHistoryId=100" in url:
                 return 200, json.dumps({"historyId": "150",
                                         "history": [{"messagesAdded": [{"message": {"id": "empty"}}]}]})
+            if "/messages/empty" in url and "format=metadata" in url:
+                return 200, _meta_from()
             if "/messages/empty" in url:
                 return 200, json.dumps({"id": "empty", "raw": ""})
             return 404, "{}"
@@ -319,7 +372,7 @@ class GmailApiClientTests(TestCase):
 
             def http_get(url, headers):
                 self.assertEqual(headers.get("Authorization"), "Bearer NEW")   # used the refreshed token
-                if url.endswith("/messages?maxResults=50"):
+                if "/messages?maxResults=50" in url:
                     return 200, json.dumps({"messages": []})
                 if url.endswith("/profile"):
                     return 200, json.dumps({"historyId": "5"})

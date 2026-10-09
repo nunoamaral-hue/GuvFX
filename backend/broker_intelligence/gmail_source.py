@@ -20,6 +20,7 @@ import datetime
 import email
 import email.utils
 import json
+import re
 import urllib.parse
 import urllib.request
 from email.header import decode_header, make_header
@@ -78,7 +79,48 @@ def parse_rfc822(raw_bytes: bytes) -> dict:
     if received_at.tzinfo is None:
         received_at = received_at.replace(tzinfo=datetime.timezone.utc)
     return {"to_addresses": to_addresses, "from_address": from_address, "subject": subject,
-            "body": body, "received_at": received_at}
+            "body": body, "received_at": received_at, "auth_verdict": _auth_verdict(msg)}
+
+
+def _trusted_authserv_ids() -> "frozenset":
+    """The ``Authentication-Results`` authserv-id(s) we trust — the receiving MTA that ACTUALLY verified the message.
+    Configurable (settings-then-env ``BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS``, comma/space separated); default the
+    Gmail receiver ``mx.google.com``. RFC 8601: a verifier trusts ONLY A-R headers bearing its own authserv-id and
+    strips forgeries of it on receipt, so an attacker-injected A-R header with a DIFFERENT authserv-id must be
+    ignored (never trusted)."""
+    import os
+    from django.conf import settings
+    raw = getattr(settings, "BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", None)
+    if raw is None:
+        raw = os.getenv("BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", "")
+    ids = frozenset(p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p)
+    return ids or frozenset({"mx.google.com"})
+
+
+def _auth_verdict(msg) -> Optional[str]:
+    """R3b sender-authenticity verdict from ``Authentication-Results`` — RFC 8601-safe (the From is NEVER trusted on
+    its own):
+    * consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
+      authserv-id is ignored — the receiving MTA strips forgeries of its own id);
+    * accept ONLY ``dmarc=pass`` — DMARC guarantees the authenticated identifier is ALIGNED to the visible From
+      domain. Bare ``spf=pass`` / ``dkim=pass`` authenticate the SENDER'S OWN (possibly attacker) domain, not the
+      From, so they are NOT sufficient and there is no SPF/DKIM shortcut;
+    * match result TOKENS exactly (never a substring of the joined blob).
+    Returns "pass" (dmarc=pass on a trusted header), "fail" (a trusted header without dmarc=pass), or None (no trusted
+    Authentication-Results header at all). The ingestion gate treats anything other than "pass" as untrusted."""
+    trusted = _trusted_authserv_ids()
+    considered = []
+    for h in (msg.get_all("Authentication-Results", []) or []):
+        authserv_id = ((h.split(";", 1)[0].strip().split() or [""])[0]).lower()
+        if authserv_id in trusted:
+            considered.append(h.lower())
+    if not considered:
+        return None                                   # no verdict from a trusted receiver -> fail-closed at the gate
+    blob = " ; ".join(considered)
+    m = re.search(r"\bdmarc\s*=\s*([a-z]+)", blob)    # exact DMARC result token on a trusted header
+    if m:
+        return "pass" if m.group(1) == "pass" else "fail"
+    return "fail"                                     # trusted header but no DMARC alignment result -> not trusted
 
 
 class GmailMailSource(MailSource):
@@ -102,6 +144,7 @@ class GmailMailSource(MailSource):
                 body=m.get("body", "") or "",
                 received_at=m["received_at"],
                 provider_message_id=str(m.get("provider_message_id", "") or ""),
+                auth_verdict=m.get("auth_verdict"),
             )
 
     def ack(self, message: MailMessage) -> None:
@@ -207,51 +250,77 @@ class GmailApiClient:
             raise MessageCaptureError(f"message {mid}: raw exceeds capture ceiling {self._max_raw_bytes}B")
         return {"provider_message_id": mid, "raw_bytes": raw_bytes, **parse_rfc822(raw_bytes)}
 
+    def _collect_added_ids(self, cursor: str) -> "Tuple[List[str], str]":
+        """Walk ``history.list?startHistoryId=<cursor>&historyTypes=messageAdded`` (bounded by MAX_PAGES), collecting
+        the added message ids and advancing to the response's latest historyId. Cheap — ids only, no raw fetched."""
+        ids: List[str] = []
+        seen = set()
+        new_cursor = cursor
+        page = f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}&historyTypes=messageAdded"
+        for _ in range(self.MAX_PAGES):
+            hist = self._get_json(page)
+            new_cursor = str(hist.get("historyId", new_cursor) or new_cursor)
+            for h in (hist.get("history") or []):
+                for added in (h.get("messagesAdded") or []):
+                    mid = (added.get("message") or {}).get("id")
+                    if mid and mid not in seen:
+                        seen.add(mid)
+                        ids.append(mid)
+            token = hist.get("nextPageToken")
+            if not token:
+                break
+            page = (f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}"
+                    f"&historyTypes=messageAdded&pageToken={urllib.parse.quote(token)}")
+        return ids, new_cursor
+
+    def _profile_cursor(self, fallback: str) -> str:
+        return str(self._get_json(f"{_GMAIL_API}/profile").get("historyId", fallback) or fallback)
+
+    def _sender_allowed(self, mid: str) -> bool:
+        """Metadata-only From pre-check (``format=metadata&metadataHeaders=From``) so a NON-broker message is never
+        pulled in full raw. True iff the From domain is on the broker-sender allowlist (fail-closed: empty → False)."""
+        from .broker_senders import is_allowlisted_broker_sender
+        meta = self._get_json(
+            f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=metadata&metadataHeaders=From")
+        frm = ""
+        for h in ((meta.get("payload") or {}).get("headers") or []):
+            if (h.get("name") or "").lower() == "from":
+                frm = h.get("value", "") or ""
+                break
+        return is_allowlisted_broker_sender(frm)
+
     def list_new_messages(self, cursor_state: str) -> "Tuple[List[dict], str]":
-        """INCREMENTAL when a cursor (historyId) is present — ``users.history.list?startHistoryId=<cursor>`` collects
-        exactly the messages added since the cursor and advances to the response's latest historyId, so no message
-        is ever skipped by the cursor jumping to 'now'. INITIAL sync (no cursor) lists recent messages and anchors
-        the cursor to the current profile historyId."""
+        """INCREMENTAL when a cursor (historyId) is present — ``history.list`` collects the messages added since the
+        cursor and advances to the response's latest historyId, so no message is skipped by the cursor jumping to 'now'.
+        INITIAL sync (no cursor) lists recent messages and anchors the cursor to the current profile historyId.
+
+        R1 ACQUISITION FILTER (privacy): the pilot connects a member's PERSONAL inbox, so NON-broker mail must never be
+        pulled in full raw. Only messages whose From domain is on the broker-sender allowlist are fetched in full —
+        server-side (``q=from:(...)``) on the initial list, and via a metadata-only From pre-check on the incremental
+        path (history.list has no query). FAIL-CLOSED: an empty allowlist fetches NOTHING, while the cursor is still
+        advanced/anchored so forward capture resumes once a verified broker is configured. INITIAL sync is deliberately
+        FORWARD-ONLY (no historical backfill — a privacy + scope choice; see docs/GMAIL_INGESTION_CONSENT_READY.md). The
+        retention gate in ``ingest_message`` is the hard backstop that never STORES a non-broker message even if one is
+        fetched; an un-capturable (empty/oversize) broker message still RAISES rather than being silently dropped."""
+        from .broker_senders import sender_allowlist
+        allow = sorted(sender_allowlist())
         cursor = str(cursor_state or "")
         out: List[dict] = []
         if cursor:
-            ids: List[str] = []
-            seen = set()
-            new_cursor = cursor
-            page = f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}&historyTypes=messageAdded"
-            for _ in range(self.MAX_PAGES):
-                hist = self._get_json(page)
-                new_cursor = str(hist.get("historyId", new_cursor) or new_cursor)
-                for h in (hist.get("history") or []):
-                    for added in (h.get("messagesAdded") or []):
-                        mid = (added.get("message") or {}).get("id")
-                        if mid and mid not in seen:
-                            seen.add(mid)
-                            ids.append(mid)
-                token = hist.get("nextPageToken")
-                if not token:
-                    break
-                page = (f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}"
-                        f"&historyTypes=messageAdded&pageToken={urllib.parse.quote(token)}")
+            ids, new_cursor = self._collect_added_ids(cursor)   # always walk (advance cursor) — ids only, no raw
             for mid in ids:
-                m = self._fetch_message(mid)
-                if m is not None:
-                    out.append(m)
+                if allow and self._sender_allowed(mid):         # metadata gate BEFORE pulling full raw; empty → none
+                    out.append(self._fetch_message(mid))
             return out, new_cursor
-        # INITIAL sync (no cursor yet): anchor the cursor to the account's current profile historyId, and capture the
-        # most-recent page as a convenience sample. Capture is DELIBERATELY FORWARD-ONLY from connect time — the pilot
-        # withdrawal is made AFTER the mailbox is connected, and everything from the anchored historyId onward is then
-        # captured durably + incrementally (history.list, above). Full historical backfill is intentionally out of V1
-        # scope (we want broker withdrawal mail going forward, not the member's entire inbox history — a privacy and
-        # scope choice, documented in docs/GMAIL_INGESTION_CONSENT_READY.md). An un-capturable message still RAISES
-        # (via _fetch_message) rather than being silently dropped.
-        listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}")
+        # INITIAL sync (forward-only). Empty allowlist → acquire nothing, just anchor the cursor (fail-closed).
+        if not allow:
+            return [], self._profile_cursor(cursor)
+        q = "from:(" + " OR ".join(allow) + ")"
+        listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}&q={urllib.parse.quote(q)}")
         for m0 in (listing.get("messages") or []):
-            m = self._fetch_message(m0["id"])
-            if m is not None:
-                out.append(m)
-        new_cursor = str(self._get_json(f"{_GMAIL_API}/profile").get("historyId", cursor) or cursor)
-        return out, new_cursor
+            if self._sender_allowed(m0["id"]):                  # defense-in-depth beyond the server-side q= filter
+                out.append(self._fetch_message(m0["id"]))
+        return out, self._profile_cursor(cursor)
 
 
 def fetch_profile(access_token: str, *, http_get: Optional[HttpGet] = None) -> dict:

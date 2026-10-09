@@ -36,6 +36,7 @@ ENV = dict(
     GMAIL_OAUTH_REDIRECT_URI="https://api.guvfx.com/api/broker-intelligence/mailboxes/callback/",
     BROKER_INTELLIGENCE_CREDENTIAL_KEY=_KEY, BROKER_INTELLIGENCE_CREDENTIAL_ROOT=_CRED,
     BROKER_INTELLIGENCE_EVIDENCE_ROOT=_EVID,
+    BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.com",   # R1: only broker-sender mail is acquired/retained
 )
 _n = 0
 
@@ -58,6 +59,8 @@ def _raw_email(to_addr: str) -> bytes:
     return (
         f"From: TradersWay <payments@tradersway.com>\r\nTo: {to_addr}\r\n"
         "Subject: Your withdrawal request has been received\r\n"
+        # Gmail-style authenticity header so the R3b auth gate sees a PASS verdict (genuine broker mail).
+        "Authentication-Results: mx.google.com; dkim=pass header.d=tradersway.com; spf=pass; dmarc=pass\r\n"
         "Date: Wed, 08 Oct 2026 10:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
         "Your withdrawal request has been received for trading account 55442.\nAmount: 200.00 USD\n"
         "Reference: W-ABC123\r\n"
