@@ -59,11 +59,14 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
             ingested += 1
             if ev is not None:
                 events += 1
-    except Exception as exc:  # noqa: BLE001 — a mailbox read/parse failure must not advance the cursor or crash the run
+        # Durable processing complete -> NOW advance the cursor. INSIDE the try so a commit failure (e.g. a transient
+        # DB error on the mailbox UPDATE) is ISOLATED: the cursor simply isn't advanced -> the next pass safely
+        # re-fetches (ingestion is content-hash idempotent), and the exception never propagates to abort the whole
+        # run (the per-mailbox isolation contract).
+        source.commit_cursor()
+    except Exception as exc:  # noqa: BLE001 — a read/parse/commit failure must not advance the cursor or crash the run
         logger.warning("mailbox ingest failed for mailbox %s: %s", mailbox.id, type(exc).__name__)
         return {"mailbox_id": mailbox.id, "ok": False, "error": "fetch_failed", "ingested": ingested, "events": events}
-    # Durable processing complete -> NOW advance the cursor (crash before here => safe re-fetch, idempotent).
-    source.commit_cursor()
     return {"mailbox_id": mailbox.id, "ok": True, "ingested": ingested, "events": events}
 
 
@@ -78,7 +81,14 @@ def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
         qs = qs[:limit_mailboxes]
     summary = {"mailboxes": 0, "ingested": 0, "events": 0, "failed": 0}
     for mailbox in qs:
-        res = ingest_mailbox(mailbox)
+        # Per-mailbox isolation (contract): NOTHING a single mailbox does — including a GmailApiClient/source
+        # construction error or any unexpected raise before/around ingest — may abort the pass. A failure is
+        # counted and the loop continues to the next mailbox.
+        try:
+            res = ingest_mailbox(mailbox)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mailbox %s aborted: %s", getattr(mailbox, "id", None), type(exc).__name__)
+            res = {"mailbox_id": getattr(mailbox, "id", None), "ok": False, "error": "mailbox_error"}
         summary["mailboxes"] += 1
         summary["ingested"] += res.get("ingested", 0)
         summary["events"] += res.get("events", 0)

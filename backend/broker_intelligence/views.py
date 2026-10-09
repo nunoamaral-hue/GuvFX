@@ -108,12 +108,26 @@ class MailboxCallbackView(APIView):
             return Response({"ok": False, "error": "oauth_exchange_failed"}, status=status.HTTP_502_BAD_GATEWAY)
         email = str(profile.get("emailAddress", "") or "")
         mailbox_id = email or ("gmail:" + secrets.token_hex(8))
+        # Mailbox uniqueness is (provider, provider_mailbox_id) with NO user column (so the same underlying mailbox
+        # can never be double-connected / hijacked across members). If this mailbox already belongs to ANOTHER
+        # member, fail with a clean 409 BEFORE storing a credential — otherwise the INSERT would raise an unhandled
+        # IntegrityError (500) AND leave an orphaned encrypted token file. A re-connect by the SAME owner updates
+        # their own row (below) and is fine.
+        clash = (ConnectedMailbox.objects
+                 .filter(provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=mailbox_id)
+                 .exclude(user=request.user).first())
+        if clash is not None:
+            return Response({"ok": False, "error": "mailbox_already_connected"}, status=status.HTTP_409_CONFLICT)
         credential_ref = store_token(token)   # encrypted; the DB stores only the ref
+        common = dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
+                      status=ConnectedMailbox.Status.CONNECTED)
         mb, _created = ConnectedMailbox.objects.update_or_create(
             user=request.user, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=mailbox_id,
-            defaults=dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
-                          cursor_state=str(profile.get("historyId", "") or ""),
-                          status=ConnectedMailbox.Status.CONNECTED))
+            # cursor_state is anchored to the current historyId ONLY on initial create. On a RE-connect an in-progress
+            # cursor MUST be preserved: overwriting it to 'now' would permanently skip every message added since the
+            # last sync that the worker has not yet consumed (a lost-mail path). (Django 5.0+ create_defaults.)
+            create_defaults={**common, "cursor_state": str(profile.get("historyId", "") or "")},
+            defaults=common)
         return Response({"ok": True, "status": "connected", "mailbox_id": mb.id, "email": email})
 
 

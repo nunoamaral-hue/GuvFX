@@ -75,6 +75,12 @@ class _FakeGmailClient:
         return [{"provider_message_id": "m1", "raw_bytes": raw, **fields}], self._cursor
 
 
+class _RaisingGmailClient:
+    """Simulates a transient read failure mid-pass (the cursor must NOT advance)."""
+    def list_new_messages(self, cursor_state):
+        raise RuntimeError("transient gmail api error")
+
+
 @override_settings(**ENV)
 class MailboxIngestE2E(TestCase):
     def setUp(self):
@@ -111,6 +117,17 @@ class MailboxIngestE2E(TestCase):
         self.assertTrue(res["ok"], res)
         ev = BrokerEvent.objects.get()
         self.assertIsNone(ev.trading_account_id)                       # NOT attributed to the victim (cross-user firewall)
+
+    def test_cursor_not_advanced_on_ingest_failure(self):
+        # Invariant 6 (failure path): a mid-pass read/commit failure must NOT advance the cursor — so the next pass
+        # safely re-fetches (ingestion is content-hash idempotent) and no message is lost.
+        from broker_intelligence.mailbox_ingest import ingest_mailbox
+        res = ingest_mailbox(self.mb, client=_RaisingGmailClient())
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["error"], "fetch_failed")
+        self.mb.refresh_from_db()
+        self.assertEqual(self.mb.cursor_state, "100")                  # unchanged — failure never advances the cursor
+        self.assertIsNone(self.mb.last_successful_sync)
 
     def test_external_event_correlates_to_withdrawal_and_metrics(self):
         from broker_intelligence.correlation import run_correlation
@@ -182,6 +199,45 @@ class MailboxConnectApi(TestCase):
         # garbage/unsigned state
         self.assertEqual(self.c.get("/api/broker-intelligence/mailboxes/callback/?code=C&state=garbage").status_code, 400)
 
+    def test_callback_rejects_expired_state(self):
+        # CSRF: a correctly-signed, correctly-attributed state that is too OLD is rejected (replay/stale window).
+        from django.core import signing
+        import broker_intelligence.views as V
+        state = signing.dumps({"uid": self.u.id, "n": "x"}, salt=V._STATE_SALT)
+        orig = V._STATE_MAX_AGE
+        try:
+            V._STATE_MAX_AGE = -1   # any issued token is now older than the window
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={state}")
+            self.assertEqual(r.status_code, 400, r.content)
+        finally:
+            V._STATE_MAX_AGE = orig
+
+    def test_callback_rejects_cross_user_mailbox_without_orphaning_credential(self):
+        # A second member completing OAuth for a mailbox already owned by another member must fail CLEANLY (409),
+        # and must NOT write an encrypted credential file (no orphan) — the uniqueness is (provider, mailbox id).
+        import os
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        other = User.objects.create_user(username="first", email="first@x.invalid", password="x")
+        ConnectedMailbox.objects.create(user=other, provider=ConnectedMailbox.Provider.GMAIL,
+                                        provider_mailbox_id="shared@gmail.com",
+                                        status=ConnectedMailbox.Status.CONNECTED)
+        before = len(os.listdir(_CRED))
+        orig_exc, orig_prof = O.exchange_code, S.fetch_profile
+        try:
+            O.exchange_code = lambda **kw: {"access_token": "AT", "refresh_token": "RT", "expiry": "",
+                                            "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **kw: {"emailAddress": "shared@gmail.com", "historyId": "9"}
+            state = signing.dumps({"uid": self.u.id, "n": "x"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={state}")
+            self.assertEqual(r.status_code, 409, r.content)
+        finally:
+            O.exchange_code, S.fetch_profile = orig_exc, orig_prof
+        self.assertFalse(ConnectedMailbox.objects.filter(user=self.u).exists())   # no row created for the 2nd user
+        self.assertEqual(len(os.listdir(_CRED)), before)                          # no orphaned credential written
+
     def test_revoke_is_owner_scoped_and_destroys_credential(self):
         from broker_intelligence import credential_store as CS
         ref = CS.store_token({"access_token": "REVOKE-ME"})
@@ -206,6 +262,11 @@ class MailboxConnectDark(TestCase):
     def test_endpoints_are_404_while_flag_off(self):
         u = User.objects.create_user(username="d", email="d@x.invalid", password="x")
         c = APIClient(); c.force_authenticate(u)
+        # revoke targets a REAL mailbox owned by the caller, so the 404 can ONLY be the DARK gate — not a missing
+        # row (which would also 404 and let the assertion pass even if the gate were removed).
+        mb = ConnectedMailbox.objects.create(user=u, provider=ConnectedMailbox.Provider.GMAIL,
+                                             provider_mailbox_id="d@gmail.com",
+                                             status=ConnectedMailbox.Status.CONNECTED)
         self.assertEqual(c.get("/api/broker-intelligence/mailboxes/connect/").status_code, 404)
         self.assertEqual(c.get("/api/broker-intelligence/mailboxes/callback/?code=C&state=S").status_code, 404)
-        self.assertEqual(c.post("/api/broker-intelligence/mailboxes/1/revoke/").status_code, 404)
+        self.assertEqual(c.post(f"/api/broker-intelligence/mailboxes/{mb.id}/revoke/").status_code, 404)
