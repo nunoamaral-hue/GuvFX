@@ -132,6 +132,32 @@ class AuthVerdictParseTests(SimpleTestCase):
     def test_aligned_dkim_subdomain_passes(self):
         self.assertEqual(self._verdict("mx.google.com; dkim=pass header.d=mail.tradersway.com; dmarc=fail"), "pass")
 
+    def test_aligned_dkim_via_header_i_only_passes(self):
+        # Gmail commonly reports the DKIM signing identity via the AUID header.i=@domain with NO separate header.d.
+        # A From-aligned header.i is just as authentic (RFC 8601).
+        self.assertEqual(self._verdict("mx.google.com; dkim=pass header.i=@tradersway.com header.s=google header.b=Ab; "
+                                       "spf=pass smtp.mailfrom=bounce.icpbounce.com; "
+                                       "dmarc=fail (p=NONE) header.from=tradersway.com"), "pass")
+
+    def test_dkim_pass_token_inside_spf_comment_is_fail(self):
+        # SPOOF: real dkim=fail/dmarc=fail, but 'dkim=pass header.d=tradersway.com' is planted inside the SPF resinfo's
+        # CFWS comment. Comments are stripped + only each resinfo's LEADING method=result counts -> must be "fail".
+        self.assertEqual(self._verdict("mx.google.com; dkim=fail header.d=tradersway.com; "
+                                       "spf=pass (google.com: dkim=pass header.d=tradersway.com designates 1.2.3.4) "
+                                       "smtp.mailfrom=x@evil.com; dmarc=fail header.from=tradersway.com"), "fail")
+
+    def test_semicolon_inside_comment_does_not_split_resinfo(self):
+        # SPOOF: a ';' planted inside a comment must NOT create an attacker pseudo-resinfo.
+        self.assertEqual(self._verdict("mx.google.com; dkim=fail; "
+                                       "spf=pass (note: dkim=pass header.d=tradersway.com ; trust me) "
+                                       "smtp.mailfrom=x@evil.com; dmarc=fail"), "fail")
+
+    def test_quoted_value_injection_is_fail(self):
+        # SPOOF: 'dkim=pass header.d=tradersway.com' hidden in a quoted smtp.mailfrom value of the SPF resinfo.
+        self.assertEqual(self._verdict('mx.google.com; dkim=fail; '
+                                       'spf=pass smtp.mailfrom="dkim=pass header.d=tradersway.com"@evil.com; '
+                                       'dmarc=fail'), "fail")
+
     def test_unaligned_dkim_d_evil_is_fail(self):
         # Core spoof: attacker signs with THEIR OWN domain (header.d=evil.com) but forges From: tradersway.com.
         # DKIM d is not aligned to the broker From -> NOT a pass.
