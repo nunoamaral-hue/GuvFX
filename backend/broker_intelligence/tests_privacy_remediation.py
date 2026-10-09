@@ -113,22 +113,44 @@ class IdentityCanonicalMatchTests(TestCase):
 
 # ── R3b: Authentication-Results verdict parsing ──────────────────────────────────────────────────────────
 class AuthVerdictParseTests(SimpleTestCase):
-    def _verdict(self, ar_line: str):
-        ar = (f"Authentication-Results: {ar_line}\r\n").encode() if ar_line else b""
+    def _verdict(self, *ar_lines: str):
+        ar = b"".join((f"Authentication-Results: {ln}\r\n").encode() for ln in ar_lines if ln)
         raw = b"From: x@tradersway.com\r\n" + ar + b"Subject: s\r\n\r\nbody"
         return parse_rfc822(raw)["auth_verdict"]
 
-    def test_dmarc_pass(self):
+    def test_dmarc_pass_on_trusted_header(self):
         self.assertEqual(self._verdict("mx.google.com; spf=pass; dkim=pass; dmarc=pass"), "pass")
 
-    def test_spf_and_dkim_pass_without_dmarc(self):
-        self.assertEqual(self._verdict("mx.google.com; spf=pass; dkim=pass"), "pass")
+    def test_spf_dkim_pass_without_dmarc_is_not_trusted(self):
+        # SPF/DKIM authenticate the sender's OWN domain, NOT the From — with no DMARC alignment this is NOT a pass.
+        self.assertEqual(self._verdict("mx.google.com; spf=pass; dkim=pass"), "fail")
+
+    def test_spf_dkim_pass_but_dmarc_fail_is_fail(self):
+        # The core spoof: valid SPF/DKIM for the attacker's domain + dmarc=fail for the spoofed From => NOT a pass.
+        self.assertEqual(self._verdict("mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com; "
+                                       "dkim=pass header.d=evil.com; dmarc=fail header.from=tradersway.com"), "fail")
 
     def test_present_but_failing_is_fail(self):
         self.assertEqual(self._verdict("mx.google.com; spf=fail; dkim=fail; dmarc=fail"), "fail")
 
     def test_absent_is_none(self):
         self.assertIsNone(self._verdict(""))
+
+    def test_untrusted_authserv_only_is_none(self):
+        # An A-R header from a NON-trusted authserv-id (attacker-chosen) is ignored entirely -> no trusted verdict.
+        self.assertIsNone(self._verdict("spoof.attacker.example; dmarc=pass"))
+
+    def test_injected_foreign_pass_does_not_override_trusted_fail(self):
+        # Attacker injects their own 'mx... dmarc=pass'-looking header with a FOREIGN authserv-id, while the genuine
+        # Gmail header says dmarc=fail. Only the trusted (mx.google.com) header is consulted => "fail".
+        self.assertEqual(self._verdict("spoof.example; dmarc=pass",
+                                       "mx.google.com; spf=pass; dkim=pass; dmarc=fail header.from=tradersway.com"),
+                         "fail")
+
+    @override_settings(BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS="mail.guvfx.example")
+    def test_trusted_authserv_is_configurable(self):
+        self.assertEqual(self._verdict("mail.guvfx.example; dmarc=pass"), "pass")
+        self.assertIsNone(self._verdict("mx.google.com; dmarc=pass"))   # no longer trusted
 
 
 # ── R1 + R3b: ingestion retention + authenticity gates (REAL mail only) ──────────────────────────────────

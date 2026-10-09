@@ -20,6 +20,7 @@ import datetime
 import email
 import email.utils
 import json
+import re
 import urllib.parse
 import urllib.request
 from email.header import decode_header, make_header
@@ -81,20 +82,45 @@ def parse_rfc822(raw_bytes: bytes) -> dict:
             "body": body, "received_at": received_at, "auth_verdict": _auth_verdict(msg)}
 
 
+def _trusted_authserv_ids() -> "frozenset":
+    """The ``Authentication-Results`` authserv-id(s) we trust — the receiving MTA that ACTUALLY verified the message.
+    Configurable (settings-then-env ``BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS``, comma/space separated); default the
+    Gmail receiver ``mx.google.com``. RFC 8601: a verifier trusts ONLY A-R headers bearing its own authserv-id and
+    strips forgeries of it on receipt, so an attacker-injected A-R header with a DIFFERENT authserv-id must be
+    ignored (never trusted)."""
+    import os
+    from django.conf import settings
+    raw = getattr(settings, "BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", None)
+    if raw is None:
+        raw = os.getenv("BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", "")
+    ids = frozenset(p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p)
+    return ids or frozenset({"mx.google.com"})
+
+
 def _auth_verdict(msg) -> Optional[str]:
-    """R3b: derive a sender-authenticity verdict from the provider's ``Authentication-Results`` header(s). "pass" when
-    DMARC passed (DMARC pass is domain-aligned by definition), or when BOTH SPF and DKIM passed; "fail" when a result
-    is present but not passing; None when no Authentication-Results header exists (verdict unavailable). The caller
-    (ingestion gate) treats anything other than "pass" as untrusted — the From header is never trusted on its own."""
-    results = msg.get_all("Authentication-Results", []) or []
-    if not results:
-        return None
-    blob = " ; ".join(results).lower()
-    if "dmarc=pass" in blob:
-        return "pass"
-    if "spf=pass" in blob and "dkim=pass" in blob:
-        return "pass"
-    return "fail"
+    """R3b sender-authenticity verdict from ``Authentication-Results`` — RFC 8601-safe (the From is NEVER trusted on
+    its own):
+    * consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
+      authserv-id is ignored — the receiving MTA strips forgeries of its own id);
+    * accept ONLY ``dmarc=pass`` — DMARC guarantees the authenticated identifier is ALIGNED to the visible From
+      domain. Bare ``spf=pass`` / ``dkim=pass`` authenticate the SENDER'S OWN (possibly attacker) domain, not the
+      From, so they are NOT sufficient and there is no SPF/DKIM shortcut;
+    * match result TOKENS exactly (never a substring of the joined blob).
+    Returns "pass" (dmarc=pass on a trusted header), "fail" (a trusted header without dmarc=pass), or None (no trusted
+    Authentication-Results header at all). The ingestion gate treats anything other than "pass" as untrusted."""
+    trusted = _trusted_authserv_ids()
+    considered = []
+    for h in (msg.get_all("Authentication-Results", []) or []):
+        authserv_id = ((h.split(";", 1)[0].strip().split() or [""])[0]).lower()
+        if authserv_id in trusted:
+            considered.append(h.lower())
+    if not considered:
+        return None                                   # no verdict from a trusted receiver -> fail-closed at the gate
+    blob = " ; ".join(considered)
+    m = re.search(r"\bdmarc\s*=\s*([a-z]+)", blob)    # exact DMARC result token on a trusted header
+    if m:
+        return "pass" if m.group(1) == "pass" else "fail"
+    return "fail"                                     # trusted header but no DMARC alignment result -> not trusted
 
 
 class GmailMailSource(MailSource):
