@@ -24,6 +24,7 @@ from typing import Optional
 
 from django.db import IntegrityError, transaction
 
+from .broker_senders import is_allowlisted_broker_sender
 from .evidence import EvidenceStore
 from .mail_source import MailMessage
 from .models import BrokerEvent, Provenance
@@ -44,11 +45,20 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
     a message to a different member's account. Default None keeps the global lookup for non-mailbox/legacy callers."""
     store = store or EvidenceStore()
 
+    # R1 RETENTION GATE (privacy — before ANY storage): for REAL mail (the live worker path over a member's PERSONAL
+    # inbox), NEVER acquire or retain a message that is not from an allowlisted, verified broker sender. Unrelated
+    # personal correspondence must never enter the immutable evidence store. Fail-closed: an empty/unset allowlist
+    # stores NOTHING. SYNTHETIC/SANITISED fixtures (controlled test data, never live personal mail) are exempt.
+    if provenance == Provenance.REAL and not is_allowlisted_broker_sender(message.from_address):
+        logger.info("broker_intelligence ingest: non-broker sender skipped for REAL mail (no evidence stored)")
+        return None
+
     # 1) resolve recipient -> alias/account (read-only; unknown -> (None, None)); owner-scoped when a mailbox owner
     #    is supplied, so spoofed recipient headers can never cross-attribute to another member.
     alias, account = resolve(message.to_addresses, owner_user=owner_user)
 
-    # 2) store raw bytes write-once (always — quarantine even unparseable mail; never drop raw evidence)
+    # 2) store raw bytes write-once (allowlisted broker mail, or any synthetic fixture; quarantine even unparseable
+    #    broker mail — never drop raw broker evidence)
     blob, _created = store.put(message.raw_bytes, content_type="message/rfc822",
                                source="EMAIL", received_at=message.received_at)
 
@@ -56,6 +66,14 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
     existing = BrokerEvent.objects.filter(evidence=blob).first()
     if existing is not None:
         return existing
+
+    # R3b SENDER-AUTHENTICITY GATE: for REAL broker mail the From header is NOT trusted on its own — require a passing
+    # Authentication-Results verdict (DMARC pass, or SPF+DKIM) before creating ANY event. A spoofed broker-domain
+    # email (DMARC fail / no verdict) is retained as quarantined evidence but yields NO event. Fail-closed.
+    if provenance == Provenance.REAL and getattr(message, "auth_verdict", None) != "pass":
+        logger.info("broker_intelligence ingest: unauthenticated broker sender (evidence %s retained, no event)",
+                    blob.sha256[:12])
+        return None
 
     # 4) deterministic parser selection; no match -> unparseable -> retain evidence, emit NO event
     parser = select_parser(subject=message.subject, body=message.body, from_address=message.from_address)

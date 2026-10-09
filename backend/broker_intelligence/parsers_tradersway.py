@@ -117,7 +117,12 @@ class TradersWayParser:
     version = "v1"
 
     def can_parse(self, *, subject: str, body: str, from_address: str) -> bool:
-        if _SENDER_DOMAIN not in (from_address or "").lower():
+        # R3a: EXACT registrable-domain / subdomain match on the From domain — NOT a substring. The old substring test
+        # (`_SENDER_DOMAIN in from_address`) accepted a look-alike like `eviltradersway.com`; this does not. (Sender
+        # authenticity — Authentication-Results — is enforced separately in the ingestion gate; the From is not trusted
+        # on its own.)
+        from .broker_senders import _domain_of, domain_matches
+        if not domain_matches(_domain_of(from_address), _SENDER_DOMAIN):
             return False
         t = f"{subject}\n{body}".lower()
         return any(k in t for k in ("withdrawal", "withdraw", "transfer", "payout"))

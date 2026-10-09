@@ -29,6 +29,27 @@ def _bare_address(address: str) -> str:
     return a.strip("<>").strip()
 
 
+# Gmail (and its legacy alias googlemail.com) address the SAME mailbox regardless of dots in the local-part, a '+tag'
+# suffix, or which of the two domains is used. R2: canonicalise ONLY these Google forms for equivalence matching, so a
+# broker email addressed to nrfda1111@googlemail.com matches an identity registered as n.rfda1111+tw@gmail.com (and
+# vice-versa). Non-Google domains are returned unchanged (only Gmail ignores dots/plus) — never broaden matching for
+# any other provider. Pure; the STORED registration address is preserved — this is only used to COMPARE.
+_GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+
+
+def canonical_address(address: str) -> str:
+    """The equivalence-canonical form of an address. For gmail.com/googlemail.com: unify domain→gmail.com, strip dots
+    from the local-part, drop a '+tag' suffix. Any other domain → the bare lowercased address unchanged."""
+    bare = _bare_address(address)
+    if "@" not in bare:
+        return bare
+    local, _, domain = bare.rpartition("@")
+    if domain in _GMAIL_DOMAINS:
+        local = local.split("+", 1)[0].replace(".", "")
+        domain = "gmail.com"
+    return f"{local}@{domain}"
+
+
 def resolve_alias(to_addresses: Iterable[str], *, owner_user=None) -> Optional[BrokerEmailAlias]:
     """The first address whose opaque local-part matches a ``BrokerEmailAlias.alias_local`` (globally unique),
     or None. Match is on the opaque local-part only — never the display name. Read-only.
@@ -67,16 +88,30 @@ def identities_for(to_addresses: Iterable[str], *, owner_user=None):
     One email legitimately maps to MANY rows (unique is per email+broker), so this returns a list, never a single
     pk-ordered pick. Read-only. ``owner_user`` scopes to that member's own identities (cross-user firewall — see
     ``resolve_alias``)."""
-    out, seen_addr, seen_pk = [], set(), set()
+    # Build the de-duplicated set of target addresses (both bare and gmail-canonical forms) from the headers.
+    bare_targets, canon_targets = set(), set()
     for addr in to_addresses or ():
         bare = _bare_address(addr)
-        if not bare or bare in seen_addr:
+        if not bare:
             continue
-        seen_addr.add(bare)
-        qs = BrokerEmailIdentity.objects.filter(email__iexact=bare)
-        if owner_user is not None:
-            qs = qs.filter(trading_account__user=owner_user)
-        for identity in qs:
+        bare_targets.add(bare)
+        canon_targets.add(canonical_address(bare))
+    if not bare_targets:
+        return []
+
+    out, seen_pk = [], set()
+    if owner_user is not None:
+        # Owner-scoped path (the real ingestion path always passes owner_user): scan the owner's OWN identities (few)
+        # and match by gmail-CANONICAL equality, so a header in any equivalent Google form matches an identity stored
+        # in another. Owner-scoping is the cross-user firewall; canonicalisation never broadens beyond this owner.
+        for identity in BrokerEmailIdentity.objects.filter(trading_account__user=owner_user):
+            if canonical_address(identity.email) in canon_targets and identity.pk not in seen_pk:
+                seen_pk.add(identity.pk)
+                out.append(identity)
+        return out
+    # Legacy/global path (no owner): keep the exact bare-address match (no canonicalisation, no full-table scan).
+    for bare in bare_targets:
+        for identity in BrokerEmailIdentity.objects.filter(email__iexact=bare):
             if identity.pk not in seen_pk:
                 seen_pk.add(identity.pk)
                 out.append(identity)

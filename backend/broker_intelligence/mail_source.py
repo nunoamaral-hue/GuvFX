@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,10 @@ class MailMessage:
     body: str
     received_at: datetime.datetime
     provider_message_id: str = ""   # the mailbox's own id (for ack/dedup at the source), NOT a GuvFX id
+    # R3b sender-authenticity verdict derived from the provider's Authentication-Results header: "pass" (DMARC pass,
+    # or SPF+DKIM both pass), "fail" (present but not passing), or None (no verdict available). The From header is
+    # never trusted on its own — the ingestion gate requires "pass" before an event is created from a broker sender.
+    auth_verdict: Optional[str] = None
 
 
 class MailSource(ABC):

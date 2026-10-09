@@ -37,11 +37,11 @@ def _acct(**kw):
 
 
 def _msg(to_addr, *, subject="Withdrawal request received", body="Ref ABC123 100.50 USD",
-         frm="noreply@tradersway.invalid", raw=None):
+         frm="noreply@tradersway.invalid", raw=None, auth_verdict=None):
     return MailMessage(
         raw_bytes=raw if raw is not None else ("to=%s|%s|%s" % (to_addr, subject, body)).encode(),
         to_addresses=(to_addr,), from_address=frm, subject=subject, body=body,
-        received_at=timezone.now(), provider_message_id=_uniq())
+        received_at=timezone.now(), provider_message_id=_uniq(), auth_verdict=auth_verdict)
 
 
 class _FakeParser:
@@ -201,11 +201,15 @@ class IngestPipelineTests(_TmpEvidence):
                     trading_account=a, event_type="WITHDRAWAL_COMPLETED", received_at=timezone.now(),
                     evidence=ev.evidence, evidence_hash=ev.evidence.sha256)
 
+    @override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.invalid")
     def test_explicit_real_provenance_is_honoured(self):
+        # REAL mail now requires an allowlisted broker sender (R1) AND a passing auth verdict (R3b) before an event is
+        # created. With both satisfied, the explicit REAL provenance is honoured.
         parsers.register_parser(_FakeParser())
         a = _acct()
         al = mint_alias_for_account(a)
-        ev = ingestion.ingest_message(_msg(al.address()), store=self.store, provenance=Provenance.REAL)
+        ev = ingestion.ingest_message(_msg(al.address(), auth_verdict="pass"),
+                                      store=self.store, provenance=Provenance.REAL)
         self.assertEqual(ev.provenance, Provenance.REAL)
 
     def test_fixture_source_roundtrip(self):

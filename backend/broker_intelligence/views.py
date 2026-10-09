@@ -106,8 +106,12 @@ class MailboxCallbackView(APIView):
             profile = fetch_profile(token["access_token"])
         except Exception:   # noqa: BLE001 — never leak the code/token; a failure is a generic connect error
             return Response({"ok": False, "error": "oauth_exchange_failed"}, status=status.HTTP_502_BAD_GATEWAY)
+        from .resolver import canonical_address
         email = str(profile.get("emailAddress", "") or "")
-        mailbox_id = email or ("gmail:" + secrets.token_hex(8))
+        # Dedup anchor: the gmail-CANONICAL form (gmail.com/googlemail.com + dots/+tag unified), so the SAME Google
+        # mailbox cannot be connected twice under equivalent spellings (R2 / §5). The reported primary_email keeps the
+        # address Google returned. Non-Google addresses are unchanged by canonicalisation.
+        mailbox_id = canonical_address(email) if email else ("gmail:" + secrets.token_hex(8))
         # Mailbox uniqueness is (provider, provider_mailbox_id) with NO user column (so the same underlying mailbox
         # can never be double-connected / hijacked across members). If this mailbox already belongs to ANOTHER
         # member, fail with a clean 409 BEFORE storing a credential — otherwise the INSERT would raise an unhandled
