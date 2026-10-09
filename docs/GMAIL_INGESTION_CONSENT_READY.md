@@ -11,10 +11,11 @@ The flow is built and proven end-to-end against synthetic fixtures only.
 
 ## 1. Production status (what is live, what is dark)
 
-**PR #477 merged** (`bf7f3ed`, squash) and **DARK-deployed** to production 2026-10-09 (backend image
-`8cfda006dc33`; rollback image `guvfx-prod-guvfx-backend:rollback-preGMAILWORKER` = `aac6984a2b3b`). The MT5
-trade-ingest / node2-order / shadow / validate workers were **not** recreated (left on their running
-containers) — LIVE execution/recovery untouched.
+**PR #477** (`bf7f3ed`) **and #478** (`b012fbd`, the fail-closed Gmail-capture fix) merged + **DARK-deployed** to
+production 2026-10-09. Current backend image **`c9177612f249`**; rollback image
+`guvfx-prod-guvfx-backend:rollback-preCAPTUREFIX` = `8cfda006dc33` (prior rollback `rollback-preGMAILWORKER` =
+`aac6984a2b3b` also retained). The MT5 trade-ingest / node2-order / shadow / validate workers were **not**
+recreated (left on their running containers) — LIVE execution/recovery untouched.
 
 | Component | State on production |
 |---|---|
@@ -33,7 +34,7 @@ auth-protected, not 404/500); all DARK flags unset; ingestion command refuses. A
 separate Sponsor action on each flag below.
 
 **Rollback (one step):**
-`docker tag guvfx-prod-guvfx-backend:rollback-preGMAILWORKER guvfx-prod-guvfx-backend:latest && cd /home/ubuntu/guvfx-prod && docker compose up -d --force-recreate --no-deps guvfx-backend`
+`docker tag guvfx-prod-guvfx-backend:rollback-preCAPTUREFIX guvfx-prod-guvfx-backend:latest && cd /home/ubuntu/guvfx-prod && docker compose up -d --force-recreate --no-deps guvfx-backend`
 
 ---
 
