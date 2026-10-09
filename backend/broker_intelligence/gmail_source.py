@@ -99,28 +99,49 @@ def _trusted_authserv_ids() -> "frozenset":
 
 def _auth_verdict(msg) -> Optional[str]:
     """R3b sender-authenticity verdict from ``Authentication-Results`` — RFC 8601-safe (the From is NEVER trusted on
-    its own):
-    * consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
-      authserv-id is ignored — the receiving MTA strips forgeries of its own id);
-    * accept ONLY ``dmarc=pass`` — DMARC guarantees the authenticated identifier is ALIGNED to the visible From
-      domain. Bare ``spf=pass`` / ``dkim=pass`` authenticate the SENDER'S OWN (possibly attacker) domain, not the
-      From, so they are NOT sufficient and there is no SPF/DKIM shortcut;
-    * match result TOKENS exactly (never a substring of the joined blob).
-    Returns "pass" (dmarc=pass on a trusted header), "fail" (a trusted header without dmarc=pass), or None (no trusted
-    Authentication-Results header at all). The ingestion gate treats anything other than "pass" as untrusted."""
+    its own). Consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
+    authserv-id is ignored — the receiving MTA strips forgeries of its own id). Then accept, matching result tokens
+    EXACTLY (never a substring of a joined blob), either:
+
+      (1) ``dmarc=pass`` — DMARC guarantees the authenticated identifier is aligned to the visible From; OR
+      (2) a **From-ALIGNED DKIM pass**: a ``dkim=pass`` whose signing domain (``header.d=``) AND the message's From
+          domain both fall within the SAME approved broker domain (``broker_senders`` allowlist). This is the
+          narrowly-scoped fallback for a legitimate broker (e.g. TradersWay) that validly DKIM-signs with its own
+          domain but publishes NO DMARC record (so DMARC can never report pass). An attacker spoofing the From cannot
+          produce a valid DKIM signature under the broker's domain, so this is NOT spoofable — unlike a bare
+          ``spf=pass``/``dkim=pass`` (which authenticate the sender's OWN, possibly attacker, domain and are NEVER
+          sufficient here).
+
+    Returns "pass", "fail" (a trusted header with results but no qualifying pass), or None (no trusted A-R header)."""
+    from .broker_senders import _domain_of, domain_matches, sender_allowlist
     trusted = _trusted_authserv_ids()
-    considered = []
-    for h in (msg.get_all("Authentication-Results", []) or []):
-        authserv_id = ((h.split(";", 1)[0].strip().split() or [""])[0]).lower()
-        if authserv_id in trusted:
-            considered.append(h.lower())
-    if not considered:
+    headers = [h for h in (msg.get_all("Authentication-Results", []) or [])
+               if ((h.split(";", 1)[0].strip().split() or [""])[0]).lower() in trusted]
+    if not headers:
         return None                                   # no verdict from a trusted receiver -> fail-closed at the gate
-    blob = " ; ".join(considered)
-    m = re.search(r"\bdmarc\s*=\s*([a-z]+)", blob)    # exact DMARC result token on a trusted header
-    if m:
-        return "pass" if m.group(1) == "pass" else "fail"
-    return "fail"                                     # trusted header but no DMARC alignment result -> not trusted
+    from_domain = _domain_of(email.utils.parseaddr(msg.get("From", ""))[1])
+    allow = sender_allowlist()
+    saw_result = False
+    for h in headers:
+        for section in h.lower().split(";"):          # authserv-id ; method=result params ; method=result params ...
+            dm = re.search(r"\bdmarc\s*=\s*([a-z]+)", section)
+            if dm:
+                saw_result = True
+                if dm.group(1) == "pass":
+                    return "pass"
+            dk = re.search(r"\bdkim\s*=\s*([a-z]+)", section)
+            if dk:
+                saw_result = True
+                if dk.group(1) == "pass":
+                    md = re.search(r"header\.d\s*=\s*([a-z0-9.\-]+)", section)
+                    d = md.group(1) if md else ""
+                    # From-aligned DKIM within ONE approved broker domain (exact/subdomain on BOTH sides).
+                    if d and from_domain and allow and any(
+                            domain_matches(from_domain, b) and domain_matches(d, b) for b in allow):
+                        return "pass"
+            if re.search(r"\bspf\s*=\s*[a-z]+", section):
+                saw_result = True                     # SPF alone (envelope sender, maybe unaligned) is NEVER sufficient
+    return "fail" if saw_result else None             # trusted header, results present, none qualified -> fail
 
 
 class GmailMailSource(MailSource):
