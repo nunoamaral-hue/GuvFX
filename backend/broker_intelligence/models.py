@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 
 def alias_domain() -> str:
@@ -509,10 +509,13 @@ class BrokerProfile(models.Model):
     def save(self, *args, **kwargs):
         creating = self._state.adding
         super().save(*args, **kwargs)
-        # Append-only config audit (history/evidence); best-effort so it never blocks a save.
+        # Append-only config audit (history/evidence). OWN savepoint so a DB error writing the audit row can NEVER
+        # poison an enclosing transaction (the WP1 tombstone-poison lesson: a bare write inside a caller's atomic()
+        # sets needs_rollback, and a swallowed exception cannot clear it). Best-effort — it never blocks the save.
         try:
-            BrokerProfileAudit.objects.create(broker_profile=self, action="CREATE" if creating else "UPDATE",
-                                              snapshot=self._snapshot())
+            with transaction.atomic():
+                BrokerProfileAudit.objects.create(broker_profile=self, action="CREATE" if creating else "UPDATE",
+                                                  snapshot=self._snapshot())
         except Exception:  # noqa: BLE001
             pass
 
@@ -522,8 +525,10 @@ class BrokerProfile(models.Model):
 
 class BrokerProfileAudit(models.Model):
     """Append-only history of BrokerProfile config changes (what the profile looked like at each revision). Never
-    updated or deleted — the auditable record of broker configuration over time."""
-    broker_profile = models.ForeignKey(BrokerProfile, on_delete=models.CASCADE, related_name="audit")
+    updated or deleted — the auditable record of broker configuration over time. PROTECT (matching the app's other
+    append-only evidence FKs) so a profile carrying history cannot be destroyed: retire a broker via is_active=False,
+    never delete it (the admin also disables profile deletion)."""
+    broker_profile = models.ForeignKey(BrokerProfile, on_delete=models.PROTECT, related_name="audit")
     action = models.CharField(max_length=16)
     snapshot = models.JSONField(default=dict)
     changed_by = models.CharField(max_length=128, blank=True, default="")

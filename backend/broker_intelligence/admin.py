@@ -18,6 +18,11 @@ class BrokerProfileAdmin(admin.ModelAdmin):
     search_fields = ("name", "slug", "official_domains", "approved_sender_domains", "server_names")
     readonly_fields = ("created_at", "updated_at")
 
+    def has_delete_permission(self, request, obj=None):
+        # Brokers are RETIRED via is_active=False, never deleted — deleting one would destroy its append-only audit
+        # history (and is blocked at the DB by the PROTECT FK anyway). Keeps the config record permanent.
+        return False
+
 
 @admin.register(BrokerProfileAudit)
 class BrokerProfileAuditAdmin(admin.ModelAdmin):

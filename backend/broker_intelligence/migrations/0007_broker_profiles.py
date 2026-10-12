@@ -79,7 +79,7 @@ class Migration(migrations.Migration):
                 ('snapshot', models.JSONField(default=dict)),
                 ('changed_by', models.CharField(blank=True, default='', max_length=128)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('broker_profile', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='audit', to='broker_intelligence.brokerprofile')),
+                ('broker_profile', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='audit', to='broker_intelligence.brokerprofile')),
             ],
             options={
                 'ordering': ['-id'],

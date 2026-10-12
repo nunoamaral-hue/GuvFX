@@ -46,6 +46,42 @@ class BrokerProfileSeedTests(TestCase):
         self.assertFalse(BS.is_allowlisted_broker_sender("x@is6.com.evil.com"))
         self.assertTrue(BS.is_allowlisted_broker_sender("x@mail.is6.com"))   # subdomain OK
 
+    def test_profile_with_audit_cannot_be_deleted(self):
+        # PROTECT: a profile carrying append-only history cannot be destroyed (retire via is_active instead) — the
+        # audit is never cascade-wiped.
+        from django.db.models import ProtectedError
+        bp = BrokerProfile.objects.get(slug="is6")   # created by the seed -> already has an audit row
+        with self.assertRaises(ProtectedError):
+            bp.delete()
+
+    def test_admin_disables_profile_deletion(self):
+        from broker_intelligence.admin import BrokerProfileAdmin
+        self.assertFalse(BrokerProfileAdmin(BrokerProfile, None).has_delete_permission(request=None))
+
+    def test_dmarc_only_broker_rejects_aligned_dkim_only(self):
+        from broker_intelligence.gmail_source import parse_rfc822
+        BrokerProfile.objects.filter(slug="is6").update(auth_policy=BrokerProfile.AuthPolicy.DMARC_ONLY)
+
+        def verdict(ar):
+            raw = (b"From: noreply@is6.com\r\nAuthentication-Results: " + ar.encode() + b"\r\nSubject: s\r\n\r\nx")
+            return parse_rfc822(raw)["auth_verdict"]
+        # aligned DKIM but NO DMARC pass -> rejected for a DMARC_ONLY broker (stricter)
+        self.assertEqual(verdict("mx.google.com; dkim=pass header.d=is6.com; spf=pass"), "fail")
+        # a genuine DMARC pass is still accepted
+        self.assertEqual(verdict("mx.google.com; dkim=pass header.d=is6.com; dmarc=pass"), "pass")
+        # a DMARC_OR_ALIGNED_DKIM broker (TradersWay) still accepts aligned DKIM without DMARC
+        self.assertEqual(
+            parse_rfc822(b"From: payments@tradersway.com\r\nAuthentication-Results: mx.google.com; "
+                         b"dkim=pass header.d=tradersway.com; dmarc=fail\r\nSubject: s\r\n\r\nx")["auth_verdict"],
+            "pass")
+
+    def test_save_audit_within_atomic_ok(self):
+        from django.db import transaction
+        with transaction.atomic():
+            bp = BrokerProfile.objects.create(name="X Broker", slug="xbroker", approved_sender_domains="x.example")
+            self.assertTrue(BrokerProfileAudit.objects.filter(broker_profile=bp, action="CREATE").exists())
+            self.assertTrue(BrokerProfile.objects.filter(pk=bp.pk).exists())   # enclosing txn healthy
+
     def test_config_change_is_audited_append_only(self):
         bp = BrokerProfile.objects.get(slug="is6")
         before = BrokerProfileAudit.objects.filter(broker_profile=bp).count()
