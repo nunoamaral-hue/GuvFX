@@ -677,3 +677,358 @@ class IS6IngestionPipelineTests(TestCase):
         self.assertEqual(ev.event_type, "DEPOSIT_COMPLETED")
         self.assertEqual(ev.transaction_category, TransactionCategory.DEPOSIT)
         self.assertEqual(ev.amount, Decimal("150"))
+
+
+class IS6LifecycleCorrectionTests(TestCase):
+    """PR-B.1 — corrects the lifecycle defect the genuine blob-3 certification caught: the real completion is a
+    DEFINITE money-operation subject with prepositional ownership ("the payment procedure for your bank transfer has
+    been completed"), and routine footer wording ("if you received this email by mistake") must never be read as a
+    request. Uses PLACEHOLDER account/amount — the genuine values stay in the immutable production evidence."""
+
+    def setUp(self):
+        self.p = IS6Parser()
+
+    def _parse(self, subject, html):
+        return self.p.parse(subject=subject, body=_html_to_text(html), from_address="noreply@is6.com")
+
+    # ---- the genuine blob-3 construction (definite subject + "for your" ownership) ----
+    def test_genuine_definite_subject_completion(self):
+        # Full genuine-shaped deposit (placeholder account/amount) incl. the real footer — the completion is read
+        # from "the payment procedure for your bank transfer has been completed".
+        r = self._parse(
+            "[IS6FX] Notification of completed deposit processing (bank transfer)",
+            "<p>Hi Nuno,</p><p>Thank you for your continued loyalty to IS6FX. We would like to inform you that the "
+            "payment procedure for your bank transfer has been completed. To check the reflection of your deposit, "
+            "please log in to your MT5 account.</p>"
+            "<table><tr><td>Account number</td><td>99887766</td></tr>"
+            "<tr><td>Deposit amount</td><td>200 (USD)</td></tr><tr><td>Fee</td><td>0 (USD)</td></tr></table>"
+            "<p>If you received this email by mistake, please immediately notify the sender and delete the email.</p>")
+        self.assertEqual(r.event_type, "DEPOSIT_COMPLETED")
+        self.assertEqual(r.transaction_category, TransactionCategory.DEPOSIT)
+        self.assertEqual(r.amount, Decimal("200"))
+        self.assertEqual(r.currency, "USD")
+        self.assertEqual(r.fee, Decimal("0"))
+        self.assertEqual(r.fee_currency, "USD")
+        self.assertEqual(r.destination_account, "99887766")
+        self.assertEqual(r.source_account, "")
+        self.assertEqual(r.broker, "IS6")
+        self.assertIsNone(r.occurred_at)
+
+    def test_genuine_definite_completion_sentence_alone(self):
+        r = self._parse("[IS6FX] deposit", "<p>The payment procedure for your bank transfer has been completed.</p>")
+        self.assertEqual(r.event_type, "DEPOSIT_COMPLETED")
+
+    # ---- footer boilerplate must never be a request (anchored to a real transaction request) ----
+    def test_footer_received_is_not_a_request(self):
+        # Footer alone, no transaction request -> declined, NOT *_REQUESTED.
+        r = self._parse("[IS6FX] notice",
+                        "<p>Your deposit is pending.</p>"
+                        "<p>If you received this email by mistake, please delete it.</p>")
+        self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_REQUESTED", "WITHDRAWAL_REQUESTED"))
+
+    def test_genuine_completion_with_footer_stays_completed(self):
+        r = self._parse("[IS6FX] deposit",
+                        "<p>The payment procedure for your bank transfer has been completed.</p>"
+                        "<p>If you received this email by mistake, please delete it.</p>")
+        self.assertEqual(r.event_type, "DEPOSIT_COMPLETED")
+
+    def test_genuine_transaction_request_still_requested(self):
+        for subj, html, expect in [
+            ("[IS6FX] Your deposit request has been received", "<p>We have received your deposit request.</p>",
+             "DEPOSIT_REQUESTED"),
+            ("[IS6FX] Withdrawal request received", "<p>Your withdrawal request has been received.</p>",
+             "WITHDRAWAL_REQUESTED"),
+            ("【IS6FX】入金リクエスト受付", "<p>入金リクエストを受け付けました。</p>", "DEPOSIT_REQUESTED"),
+            ("【IS6FX】出金", "<p>出金のお申し込みを受け付けました。</p>", "WITHDRAWAL_REQUESTED"),
+        ]:
+            r = self.p.parse(subject=subj, body=_html_to_text(html), from_address="noreply@is6.com")
+            self.assertEqual(r.event_type, expect, subj)
+
+    # ---- administrative sub-step completion is NOT the money event (preserved) ----
+    def test_administrative_substep_completion_not_money(self):
+        for html in [
+            "<p>The review of your withdrawal has been completed.</p>",
+            "<p>Verification of your deposit has been completed.</p>",
+            "<p>Confirmation of your withdrawal has been completed.</p>",
+            "<p>Registration of your withdrawal bank account has been completed.</p>",
+            "<p>Your card authentication for this deposit has been completed.</p>",
+            "<p>Your fee payment has been completed.</p>",
+        ]:
+            r = self._parse("[IS6FX] update", html)
+            self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED"), html)
+
+    # ---- a generic rule with no member ownership is not a completion (preserved) ----
+    def test_generic_rule_without_your_ownership_not_completed(self):
+        for html in ["<p>A deposit is completed within 24 hours.</p>",
+                     "<p>Each deposit is completed after our bank confirms.</p>",
+                     "<p>This deposit is completed only once funds clear.</p>",
+                     "<p>Deposits are completed within 24 hours.</p>"]:
+            r = self._parse("[IS6FX] info", html)
+            self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED"), html)
+
+    def test_definite_completion_requires_member_ownership(self):
+        # Subject carries the deposit keyword so direction resolves (as in the genuine blob 3). With NO "your"
+        # anywhere, the definite subject is not a member completion -> fail-closed (not *_COMPLETED).
+        self.assertNotIn(getattr(self._parse("[IS6FX] deposit processing",
+                                             "<p>The payment procedure has been completed.</p>"), "event_type", ""),
+                         ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED"))
+        # the same sentence WITH member ownership -> completed
+        self.assertEqual(self._parse("[IS6FX] deposit processing",
+                                     "<p>The payment procedure for your bank transfer has been completed.</p>").event_type,
+                         "DEPOSIT_COMPLETED")
+
+    # ---- deposit never becomes an external withdrawal (safety invariant) ----
+    def test_deposit_never_external_withdrawal(self):
+        r = self._parse("[IS6FX] Notification of completed deposit processing (bank transfer)",
+                        "<p>The payment procedure for your bank transfer has been completed.</p>"
+                        "<p>Deposit amount</p><p>200 (USD)</p>")
+        self.assertEqual(r.transaction_category, TransactionCategory.DEPOSIT)
+        self.assertNotEqual(r.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_no_prose_external_withdrawal(self):
+        # Even strongly "external"-sounding withdrawal prose never yields EXTERNAL_WITHDRAWAL (no prose->EXTERNAL path).
+        r = self._parse("[IS6FX] Withdrawal completed",
+                        "<p>Your withdrawal has been completed and the funds were sent out to your external bank "
+                        "account.</p><p>Withdrawal amount</p><p>150 (USD)</p>")
+        self.assertEqual(r.event_type, "WITHDRAWAL_COMPLETED")
+        self.assertNotEqual(r.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    # ---- malformed / ambiguous HTML -> fail-closed ----
+    def test_malformed_and_ambiguous(self):
+        self.assertIsNone(self._parse("[IS6FX]", "<p><<</p>&nbsp;<div>"))
+        self.assertIsNone(self._parse("[IS6FX] deposit and withdrawal",
+                                      "<p>Your deposit and withdrawal have been completed.</p>"))
+        self.assertIsNone(self._parse("[IS6FX] deposit", ""))
+
+
+class IS6LifecycleReviewHardeningTests(TestCase):
+    """PR-B.1 adversarial-review hardening: the definite-subject completion branch must accept the genuine
+    construction but NEVER a present-tense SLA/policy rule, a cross-kind funding reassurance, or a fee-payment
+    sub-step, even when an incidental "your" appears in the clause."""
+
+    def setUp(self):
+        self.p = IS6Parser()
+
+    def _parse(self, subject, html):
+        return self.p.parse(subject=subject, body=_html_to_text(html), from_address="noreply@is6.com")
+
+    def _not_completed(self, subject, html):
+        r = self._parse(subject, html)
+        self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED"), html)
+
+    def test_present_tense_sla_line_is_not_completion(self):
+        # "A deposit IS completed … to your account within 24 hours" in a request ack — present-tense habitual rule,
+        # money not moved. The clause-local "your account" must NOT make it a completion.
+        self._not_completed(
+            "[IS6FX] We have received your deposit request",
+            "<p>We have received your deposit request and it is now pending bank confirmation.</p>"
+            "<p>A deposit is completed and credited to your account within 24 hours.</p>"
+            "<p>Deposit amount</p><p>200 (USD)</p>")
+        self._not_completed(
+            "[IS6FX] Your withdrawal request has been received",
+            "<p>We have received your withdrawal request. A transfer of funds to your bank is completed within "
+            "3 business days.</p><p>Withdrawal amount</p><p>500 (USD)</p>")
+
+    def test_cross_kind_funding_reassurance_is_not_completion(self):
+        # A withdrawal-request email noting the funding deposit completed must not become WITHDRAWAL_COMPLETED.
+        self._not_completed(
+            "[IS6FX] Your withdrawal request has been received",
+            "<p>We have received your withdrawal request. The deposit payment for your account has been completed.</p>")
+
+    def test_fee_payment_substep_is_not_completion(self):
+        # "The payment OF your deposit fee has been completed" is a fee charge, not the deposit completing.
+        self._not_completed("[IS6FX] deposit", "<p>The payment of your deposit fee has been completed.</p>")
+
+    def test_genuine_definite_completion_accepted(self):
+        # The genuine blob-3 construction (and a close structural variant) must classify DEPOSIT_COMPLETED.
+        for html in [
+            "<p>We would like to inform you that the payment procedure for your bank transfer has been completed.</p>",
+            "<p>The payment procedure for your bank transfer has been completed.</p>",
+        ]:
+            r = self._parse("[IS6FX] Notification of completed deposit processing (bank transfer)", html)
+            self.assertEqual(r.event_type, "DEPOSIT_COMPLETED", html)
+
+    def test_request_for_a_transaction_is_requested(self):
+        r = self._parse("[IS6FX] withdrawal", "<p>We have received a request for a withdrawal.</p>")
+        self.assertEqual(r.event_type, "WITHDRAWAL_REQUESTED")
+
+
+class IS6DefiniteBranchHardeningTests(TestCase):
+    """PR-B.1 re-review: the definite-completion branch must have EN/JP parity on semantic inversion, tolerate an
+    affirmative adverb in the verb phrase, and request-detection must ignore imperative/marketing CTAs."""
+
+    def setUp(self):
+        self.p = IS6Parser()
+
+    def _parse(self, subject, html):
+        return self.p.parse(subject=subject, body=_html_to_text(html), from_address="noreply@is6.com")
+
+    def test_inversion_of_money_op_is_not_completion(self):
+        # A cancellation/reversal/refund/chargeback/failure of a money op => money did NOT move (EN/JP parity).
+        for html in [
+            "<p>The payment cancellation for your withdrawal has been completed; no funds have left your account.</p>",
+            "<p>The payment reversal for your deposit has been completed and the funds were returned to your card.</p>",
+            "<p>The payment chargeback for your deposit has been completed.</p>",
+            "<p>The payment refund for your deposit has been completed.</p>",
+            "<p>The transfer reversal for your deposit has been completed.</p>",
+            "<p>The payment failure for your deposit has been completed and will be retried.</p>",
+        ]:
+            r = self._parse("[IS6FX] notice", html)
+            self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED"), html)
+
+    def test_affirmative_adverb_completion_still_completes(self):
+        self.assertEqual(self._parse("[IS6FX] Notification of completed deposit processing (bank transfer)",
+                                     "<p>The payment procedure for your bank transfer has been successfully "
+                                     "completed.</p>").event_type, "DEPOSIT_COMPLETED")
+        self.assertEqual(self._parse("[IS6FX] Withdrawal completed",
+                                     "<p>Your withdrawal has been successfully completed.</p>").event_type,
+                         "WITHDRAWAL_COMPLETED")
+        self.assertEqual(self._parse("[IS6FX] deposit",
+                                     "<p>Your deposit has been fully completed.</p>").event_type, "DEPOSIT_COMPLETED")
+
+    def test_imperative_cta_is_not_a_request(self):
+        for subj, html in [
+            ("[IS6FX] Promotion", "<p>Deposit bonus! Request a deposit of 1000 USD or more to qualify.</p>"),
+            ("[IS6FX] October account statement",
+             "<p>Your monthly statement is ready. You can request a withdrawal at any time from your dashboard.</p>"),
+        ]:
+            r = self._parse(subj, html)
+            self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_REQUESTED", "WITHDRAWAL_REQUESTED"), html)
+
+    def test_member_request_forms_still_requested(self):
+        self.assertEqual(self._parse("[IS6FX] Your deposit request has been received",
+                                     "<p>We have received your deposit request.</p>").event_type, "DEPOSIT_REQUESTED")
+        self.assertEqual(self._parse("[IS6FX] withdrawal",
+                                     "<p>We have received a request for a withdrawal.</p>").event_type,
+                         "WITHDRAWAL_REQUESTED")
+
+
+class IS6GapNegationHardeningTests(TestCase):
+    """PR-B.1 round-3: the possessive-branch gap must not bridge a negating/diminishing adverb before the two-token
+    'has been' verb; the definite branch must tolerate an affirmative adverb before 'been'; a member past-indicative
+    request is recognised while an imperative CTA is not."""
+
+    def setUp(self):
+        self.p = IS6Parser()
+
+    def _parse(self, subject, html):
+        return self.p.parse(subject=subject, body=_html_to_text(html), from_address="noreply@is6.com")
+
+    def test_negating_diminishing_adverb_is_not_completion_or_rejection(self):
+        for html in [
+            "<p>Your deposit has never been completed.</p>",
+            "<p>Our records show your withdrawal has never been completed. Kindly contact support.</p>",
+            "<p>Your deposit has rarely been completed.</p>",
+            "<p>Your deposit has nearly been completed.</p>",
+            "<p>Your deposit has almost been completed.</p>",
+            "<p>Your withdrawal has partially been completed.</p>",
+            "<p>Your withdrawal has almost been completed and the remaining amount will follow shortly.</p>"
+            "<p>Withdrawal amount</p><p>500 (USD)</p>",
+            "<p>Your deposit has never been rejected.</p>",
+            "<p>Your withdrawal has never been declined.</p>",
+        ]:
+            r = self._parse("[IS6FX] status", html)
+            self.assertNotIn(getattr(r, "event_type", ""),
+                             ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED", "DEPOSIT_REJECTED", "WITHDRAWAL_REJECTED"),
+                             html)
+
+    def test_definite_affirmative_adverb_before_been_completes(self):
+        for html in ["<p>The payment procedure for your bank transfer has now been completed.</p>",
+                     "<p>The payment procedure for your bank transfer has already been completed.</p>"]:
+            self.assertEqual(self._parse("[IS6FX] Notification of completed deposit processing (bank transfer)",
+                                         html).event_type, "DEPOSIT_COMPLETED", html)
+
+    def test_member_past_indicative_request_vs_imperative_cta(self):
+        self.assertEqual(self._parse("[IS6FX] withdrawal",
+                                     "<p>You have requested a withdrawal of funds.</p>").event_type,
+                         "WITHDRAWAL_REQUESTED")
+        r = self._parse("[IS6FX] Promotion", "<p>Request a deposit of 1000 USD to qualify.</p>")
+        self.assertNotIn(getattr(r, "event_type", ""), ("DEPOSIT_REQUESTED", "WITHDRAWAL_REQUESTED"))
+
+
+class IS6PaymentObjectHardeningTests(TestCase):
+    """PR-B.1 round-4: the possessive gap must not bridge a payment OF/FOR a sub-step/inversion object, and must
+    exclude diminisher synonyms — both pre-existing possessive-branch holes."""
+
+    def setUp(self):
+        self.p = IS6Parser()
+
+    def _parse(self, subject, html):
+        return self.p.parse(subject=subject, body=_html_to_text(html), from_address="noreply@is6.com")
+
+    def _not_fin(self, subject, html):
+        r = self._parse(subject, html)
+        self.assertNotIn(getattr(r, "event_type", ""),
+                         ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED", "DEPOSIT_REJECTED", "WITHDRAWAL_REJECTED"), html)
+
+    def test_payment_of_substep_or_inversion_is_not_the_transaction(self):
+        self._not_fin("[IS6FX] Withdrawal fee settled",
+                      "<p>Your payment of the withdrawal fee has been completed.</p>"
+                      "<p>Your withdrawal is now being processed.</p><p>Withdrawal amount</p><p>500 (USD)</p>")
+        self._not_fin("[IS6FX] deposit", "<p>Your payment of the fee has been completed.</p>")
+        self._not_fin("[IS6FX] withdrawal", "<p>Your payment of the withdrawal fee has been rejected.</p>")
+        self._not_fin("[IS6FX] withdrawal", "<p>Your payment of the withdrawal cancellation has been completed.</p>")
+        self._not_fin("[IS6FX] deposit", "<p>Your transfer of the deposit fee has been completed.</p>")
+        self._not_fin("[IS6FX] deposit", "<p>Your payment of the identity verification has been completed.</p>")
+
+    def test_diminisher_synonyms_not_completion(self):
+        for html in ["<p>Our records show your withdrawal has virtually been completed; the final step is in "
+                     "progress.</p>",
+                     "<p>Your deposit has practically been completed.</p>",
+                     "<p>Your deposit has essentially been completed.</p>"]:
+            self._not_fin("[IS6FX] status update", html)
+
+    def test_genuine_of_amount_and_destination_still_complete(self):
+        # "of 500 USD" (amount) and "to your account" (destination) are NOT sub-step objects — must stay COMPLETED.
+        self.assertEqual(self._parse("[IS6FX] Withdrawal",
+                                     "<p>Your withdrawal of 500 USD to your account 99887766 has been completed.</p>"
+                                     ).event_type, "WITHDRAWAL_COMPLETED")
+        self.assertEqual(self._parse("[IS6FX] Withdrawal",
+                                     "<p>Your withdrawal to your bank account has been completed.</p>").event_type,
+                         "WITHDRAWAL_COMPLETED")
+        self.assertEqual(self._parse("[IS6FX] deposit",
+                                     "<p>Your deposit via this method has been completed.</p>").event_type,
+                         "DEPOSIT_COMPLETED")
+
+
+class IS6ObjectGuardGeneralisedTests(TestCase):
+    """PR-B.1 round-5: the possessive object guard must reject a sub-step/charge/inversion or OTHER-direction object
+    of the money head under ANY preposition and a wider window, while keeping instrument/destination/amount objects
+    genuine."""
+
+    def setUp(self):
+        self.p = IS6Parser()
+
+    def _parse(self, subject, html):
+        return self.p.parse(subject=subject, body=_html_to_text(html), from_address="noreply@is6.com")
+
+    def _not_fin(self, subject, html):
+        r = self._parse(subject, html)
+        self.assertNotIn(getattr(r, "event_type", ""),
+                         ("DEPOSIT_COMPLETED", "WITHDRAWAL_COMPLETED", "DEPOSIT_REJECTED", "WITHDRAWAL_REJECTED"), html)
+
+    def test_substep_object_under_any_preposition_or_window_is_not_completion(self):
+        self._not_fin("[IS6FX] Your withdrawal request has been received",
+                      "<p>We have received your withdrawal request. Your payment of the overseas withdrawal "
+                      "processing fee has been completed, and your withdrawal is now being processed.</p>"
+                      "<p>Withdrawal amount</p><p>500 (USD)</p>")
+        self._not_fin("[IS6FX] Your deposit request has been received",
+                      "<p>Your payment via bank card for the fee has been completed; your deposit will reflect "
+                      "shortly.</p>")
+        self._not_fin("[IS6FX] deposit", "<p>Your payment via the identity verification step has been completed.</p>")
+        self._not_fin("[IS6FX] deposit", "<p>Your deposit by the service fee transaction has been completed.</p>")
+
+    def test_other_direction_object_after_head_is_not_this_completion(self):
+        self._not_fin("[IS6FX] Your withdrawal request has been received",
+                      "<p>We have received your withdrawal request. Your payment for the originating deposit has "
+                      "been completed.</p>")
+
+    def test_instrument_destination_amount_objects_still_complete(self):
+        for subj, html, expect in [
+            ("[IS6FX] Withdrawal", "<p>Your withdrawal of 500 USD to your account 99887766 has been completed.</p>",
+             "WITHDRAWAL_COMPLETED"),
+            ("[IS6FX] Withdrawal", "<p>Your withdrawal to your bank account has been completed.</p>",
+             "WITHDRAWAL_COMPLETED"),
+            ("[IS6FX] deposit", "<p>Your deposit via this payment method has been completed.</p>", "DEPOSIT_COMPLETED"),
+        ]:
+            self.assertEqual(self._parse(subj, html).event_type, expect, html)
