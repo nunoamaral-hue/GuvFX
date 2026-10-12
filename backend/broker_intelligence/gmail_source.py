@@ -124,8 +124,15 @@ def _trusted_authserv_ids() -> "frozenset":
     raw = getattr(settings, "BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", None)
     if raw is None:
         raw = os.getenv("BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", "")
-    ids = frozenset(p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p)
-    return ids or frozenset({"mx.google.com"})
+    ids = {p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p}
+    # UNION active BrokerProfile trusted authserv-ids (per-broker config). Defensive for no-DB/unmigrated contexts.
+    try:
+        from .models import BrokerProfile
+        for bp in BrokerProfile.objects.filter(is_active=True).only("trusted_authserv_ids"):
+            ids.update(bp.authserv_ids())
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(ids) or frozenset({"mx.google.com"})
 
 
 def _ar_resinfos(header_value: str) -> "List[str]":

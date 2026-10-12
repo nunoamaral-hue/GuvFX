@@ -307,8 +307,10 @@ class GmailApiClientTests(TestCase):
 
     @override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="")
     def test_empty_allowlist_fetches_nothing_failclosed(self):
-        # Fail-closed: with NO verified broker configured, the acquisition filter fetches nothing (initial + incremental)
-        # while still anchoring/advancing the cursor. A personal inbox cannot leak into the pipeline.
+        # Fail-closed: with NO verified broker configured (no env AND no active broker profile), the acquisition filter
+        # fetches nothing (initial + incremental) while still anchoring/advancing the cursor.
+        from broker_intelligence.models import BrokerProfile
+        BrokerProfile.objects.update(is_active=False)
         def http_get(url, headers):
             if url.endswith("/profile"):
                 return 200, json.dumps({"historyId": "42"})

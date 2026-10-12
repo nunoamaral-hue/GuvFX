@@ -252,6 +252,9 @@ class IngestionGateTests(TestCase):
 
     @override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="")
     def test_empty_allowlist_fail_closed_stores_nothing(self):
+        # Empty allowlist = no env value AND no ACTIVE broker profile -> store nothing (fail-closed).
+        from broker_intelligence.models import BrokerProfile
+        BrokerProfile.objects.update(is_active=False)
         ev = ingestion.ingest_message(self._msg("payments@tradersway.com", "pass"),
                                       store=self.store, provenance=Provenance.REAL)
         self.assertIsNone(ev)
