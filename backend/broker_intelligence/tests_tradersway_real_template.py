@@ -156,6 +156,40 @@ class TradersWayRealTemplateTests(TestCase):
         self.assertEqual(EvidenceBlob.objects.count(), 1)   # evidence retained (quarantine)
         self.assertEqual(BrokerEvent.objects.count(), 0)
 
+    def test_stray_to_your_account_does_not_misbind(self):
+        # A "to your account 55442" phrase BEFORE the transfer sentence must NOT be mistaken for the destination
+        # (which would falsely bind the transaction to the member's real LIVE account 55442). Source/destination are
+        # anchored to the single transfer clause (54548 -> 647390), which match no GuvFX account -> UNRESOLVED.
+        html = ("<html><body><p>Dear [REDACTED], log in to your account 55442 to review.</p>"
+                "<p>54548 in amount of 24.12 USD transferring to your trading account 647390. "
+                "Your withdrawal request number is: 4113188.</p></body></html>")
+        raw = (
+            "From: TradersWay <payments@tradersway.com>\r\nTo: nrfda1111@googlemail.com\r\n"
+            "Subject: Please confirm your withdrawal request\r\n"
+            "Authentication-Results: mx.google.com; dkim=pass header.d=tradersway.com; dmarc=fail\r\n"
+            'Content-Type: multipart/related; boundary="BXYZ"\r\n\r\n'
+            "--BXYZ\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + html + "\r\n--BXYZ--\r\n"
+        ).encode("utf-8")
+        ev = self._ingest(raw)
+        self.assertEqual(ev.source_account, "54548")
+        self.assertEqual(ev.destination_account, "647390")   # NOT 55442
+        self.assertIsNone(ev.trading_account_id)              # 54548/647390 match no GuvFX account -> UNRESOLVED
+
+    def test_request_number_followed_by_url_is_not_captured_as_reference(self):
+        # The reference label with the confirmation URL on the NEXT line must not capture "https" as the reference.
+        html = ("<html><body><p>54548 in amount of 24.12 USD transferring to your trading account 647390.</p>"
+                "<p>Your withdrawal request number is:</p>"
+                '<p><a href="x">https://[REDACTED]/c?token=[REDACTED]</a></p></body></html>')
+        raw = (
+            "From: TradersWay <payments@tradersway.com>\r\nTo: nrfda1111@googlemail.com\r\n"
+            "Subject: Please confirm your withdrawal request\r\n"
+            "Authentication-Results: mx.google.com; dkim=pass header.d=tradersway.com; dmarc=fail\r\n"
+            'Content-Type: multipart/related; boundary="BXYZ"\r\n\r\n'
+            "--BXYZ\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + html + "\r\n--BXYZ--\r\n"
+        ).encode("utf-8")
+        ev = self._ingest(raw)
+        self.assertEqual(ev.broker_reference_id, "")          # no numeric reference present -> '', never "https"
+
     def test_non_broker_sender_stores_nothing(self):
         raw = _raw(frm="mum@familymail.example",
                    ar="mx.google.com; dkim=pass header.d=familymail.example; dmarc=pass")

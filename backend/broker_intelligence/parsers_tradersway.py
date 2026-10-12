@@ -51,10 +51,16 @@ _INTERNAL_EVIDENCE = re.compile(
 _AMOUNT_OF = re.compile(
     r"amount\s+of\s+(?:(?P<cur1>[A-Za-z]{3}|\$)\s*)?"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?|\d+)\s*(?P<cur2>[A-Za-z]{3})?", re.IGNORECASE)
+# Reference stays on the SAME line as the label ([^\S\n]* = horizontal whitespace only) so a confirmation URL on the
+# next line can never be captured; a captured token starting with a URL scheme is additionally rejected in parse().
 _REQUEST_NUMBER = re.compile(
-    r"(?:withdrawal\s+)?request\s+number\s+is\s*[:#]?\s*([A-Za-z0-9\-]{3,32})", re.IGNORECASE)
-_SOURCE_ACCT = re.compile(r"\b(\d{4,12})\s+in\s+amount\s+of\b", re.IGNORECASE)
-_DEST_ACCT = re.compile(r"\bto\s+your\s+(?:trading\s+)?account\s+(\d{4,12})\b", re.IGNORECASE)
+    r"(?:withdrawal\s+)?request\s+number\s+is[^\S\n]*[:#]?[^\S\n]*([A-Za-z0-9\-]{3,32})", re.IGNORECASE)
+# Source + destination are captured as ONE anchored transfer clause ("<src> in amount of <...> transferring to your
+# [trading] account <dst>") — never two independent body-wide first-matches, so an unrelated "to your account <N>"
+# elsewhere (e.g. a login/greeting line) cannot be mis-taken as the destination. The middle is bounded + newline-free.
+_TRANSFER_CLAUSE = re.compile(
+    r"\b(?P<src>\d{4,12})\s+in\s+amount\s+of\s+[^\n]{0,60}?"
+    r"transferr?ing\s+to\s+your\s+(?:trading\s+)?account\s+(?P<dst>\d{4,12})\b", re.IGNORECASE)
 
 # Amount is extracted ONLY from an explicit "Amount:"/"Total:" LABEL (never a free scan of the body), so an account
 # number or other stray integer can never be mis-grabbed. Currency is VALIDATED against _CURRENCIES.
@@ -62,7 +68,7 @@ _LABELED_AMOUNT = re.compile(
     r"(?:withdrawal\s+)?(?:amount|total)\s*[:\-]?\s*(?:(?P<cur1>[A-Za-z]{3}|\$)\s*)?"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?|\d+)\s*(?P<cur2>[A-Za-z]{3})?", re.IGNORECASE)
 _ACCOUNT = re.compile(r"(?:trading\s+)?account(?:\s*(?:number|no\.?|#|:))?\s*[:#]?\s*(\d{4,12})", re.IGNORECASE)
-_REFERENCE = re.compile(r"\b(?:reference|ref(?:erence)?\s*(?:id|no\.?|#)?)\s*[:#]?\s*([A-Za-z0-9\-]{3,32})",
+_REFERENCE = re.compile(r"\b(?:reference|ref(?:erence)?\s*(?:id|no\.?|#)?)[^\S\n]*[:#]?[^\S\n]*([A-Za-z0-9\-]{3,32})",
                         re.IGNORECASE)
 
 
@@ -151,9 +157,12 @@ class TradersWayParser:
         # TradersWay "request number is: <N>" template. Absent ⇒ '' (never fabricated).
         ref_m = _REFERENCE.search(body) or _REQUEST_NUMBER.search(body)
         reference = ref_m.group(1) if ref_m else ""
-        # Transaction source/destination trading accounts, from the anchored template grammar (never a free scan).
-        src_m = _SOURCE_ACCT.search(body)
-        dst_m = _DEST_ACCT.search(body)
+        if reference.lower().startswith("http"):          # never store a URL scheme as a reference (never fabricate)
+            reference = ""
+        # Transaction source/destination trading accounts, from the SINGLE anchored transfer clause. 0 or >1 distinct
+        # clauses ⇒ both '' (UNRESOLVED — never guess a first body-wide match, never a stray "to your account <N>").
+        pairs = {(m.group("src"), m.group("dst")) for m in _TRANSFER_CLAUSE.finditer(body)}
+        source_account, destination_account = next(iter(pairs)) if len(pairs) == 1 else ("", "")
         return ParsedBrokerEvent(
             event_type=lifecycle,
             transaction_category=category,
@@ -162,8 +171,8 @@ class TradersWayParser:
             currency=currency,
             occurred_at=None,                             # broker-stated time parsed by the worker from headers (WP3b)
             broker_reference_id=reference,
-            source_account=src_m.group(1) if src_m else "",
-            destination_account=dst_m.group(1) if dst_m else "",
+            source_account=source_account,
+            destination_account=destination_account,
             confidence=Decimal("0.800"))
 
 
