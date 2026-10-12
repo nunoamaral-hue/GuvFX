@@ -134,6 +134,12 @@ BROKER_EVENT_TYPES = (
     "WITHDRAWAL_COMPLETED",
     "WITHDRAWAL_REJECTED",
     "WITHDRAWAL_CANCELLED",
+    # Deposit lifecycle (IS6 parser, PR-B). Orthogonal to category: a DEPOSIT_* lifecycle always carries category
+    # DEPOSIT, which the withdrawal projection NEVER counts — a deposit can therefore never enter withdrawal metrics.
+    "DEPOSIT_REQUESTED",
+    "DEPOSIT_PROCESSING",
+    "DEPOSIT_COMPLETED",
+    "DEPOSIT_REJECTED",
 )
 
 
@@ -217,6 +223,9 @@ class BrokerEvent(models.Model):
     # must not be conflated with the recipient-mailbox owner's account.
     source_account = models.CharField(max_length=64, blank=True, default="")
     destination_account = models.CharField(max_length=64, blank=True, default="")
+    # Broker-stated fee (parsed; NULL when absent, never fabricated). Evidential/write-once.
+    fee = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    fee_currency = models.CharField(max_length=8, blank=True, default="")
     # Verified mailbox OWNER (the GuvFX user whose connected mailbox/alias received this mail). Records ownership +
     # broker relationship INDEPENDENTLY of ``trading_account`` — so an event can be owner-attributed even when the
     # specific transaction trading-account is UNRESOLVED (no GuvFX account matches the transaction's own accounts).
@@ -238,7 +247,8 @@ class BrokerEvent(models.Model):
     _IMMUTABLE = (
         "alias_id", "trading_account_id", "broker", "source", "event_type", "transaction_category", "occurred_at",
         "received_at", "broker_reference_id", "amount", "currency", "source_account", "destination_account",
-        "evidence_id", "evidence_hash", "parser_name", "parser_version", "confidence", "provenance",
+        "fee", "fee_currency", "evidence_id", "evidence_hash", "parser_name", "parser_version", "confidence",
+        "provenance",
     )   # ``owner`` is deliberately NOT here: it is set-once at ingest but SET_NULL-able if the user is deleted.
 
     class Meta:

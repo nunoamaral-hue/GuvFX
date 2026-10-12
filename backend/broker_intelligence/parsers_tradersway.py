@@ -177,9 +177,13 @@ class TradersWayParser:
 
 
 def register_default_parsers() -> None:
-    """Register the production parsers. Called by the WP3b ingestion worker at start-up — NOT at import, so the
-    registry stays empty (DARK) until the worker is armed."""
+    """Register the production parsers (the single canonical entry point). Called by the WP3b ingestion worker at
+    start-up — NOT at import, so the registry stays empty (DARK) until the worker is armed. Registers every supported
+    broker: TradersWay (#1) and IS6 (#2, PR-B); both share one mailbox but stay independently authenticated +
+    attributed. ``register_parser`` is idempotent by (name, version), so re-registration is a no-op."""
+    from .parsers_is6 import IS6Parser
     register_parser(TradersWayParser())
+    register_parser(IS6Parser())
 
 
 # Static assertion the class satisfies the Protocol (cheap guard; no runtime effect).
