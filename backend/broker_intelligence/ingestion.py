@@ -120,6 +120,7 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
                 broker_reference_id=parsed.broker_reference_id or "", amount=parsed.amount,
                 currency=parsed.currency or "",
                 source_account=parsed.source_account or "", destination_account=parsed.destination_account or "",
+                fee=parsed.fee, fee_currency=parsed.fee_currency or "",
                 evidence=blob, evidence_hash=blob.sha256,
                 parser_name=getattr(parser, "name", ""), parser_version=getattr(parser, "version", ""),
                 confidence=parsed.confidence,

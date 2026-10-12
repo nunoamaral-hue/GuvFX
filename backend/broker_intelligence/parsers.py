@@ -33,6 +33,10 @@ class ParsedBrokerEvent:
     # '' when absent). Distinct from the resolved GuvFX account — used downstream to resolve the transaction account.
     source_account: str = ""
     destination_account: str = ""
+    # Broker-stated fee for the transaction (never fabricated; None when absent). For an external withdrawal the net
+    # amount is amount - fee; for a deposit it is informational (often 0).
+    fee: Optional[Decimal] = None
+    fee_currency: str = ""
 
 
 @runtime_checkable
