@@ -19,6 +19,7 @@ import base64
 import datetime
 import email
 import email.utils
+import html as _htmllib
 import json
 import re
 import urllib.parse
@@ -34,6 +35,22 @@ class GmailClient(Protocol):
     ``provider_message_id``, ``raw_bytes``, ``to_addresses``, ``from_address``, ``subject``, ``body``,
     ``received_at``. ``new_cursor_state`` is the Gmail historyId to persist once the batch is ingested."""
     def list_new_messages(self, cursor_state: str) -> "Tuple[List[dict], str]": ...
+
+
+def _html_to_text(s: str) -> str:
+    """Best-effort tag-strip of an HTML body to plain text for the deterministic parser (never raises). Drops
+    script/style/head, turns block ends into newlines, removes remaining tags, unescapes entities, collapses
+    whitespace. URLs in href attributes are discarded with their tags; the parser anchors on labels, not URLs."""
+    try:
+        s = re.sub(r"(?is)<(script|style|head)[^>]*>.*?</\1>", " ", s)
+        s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+        s = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table)>", "\n", s)
+        s = re.sub(r"(?i)<[^>]+>", " ", s)
+        s = _htmllib.unescape(s)
+        s = re.sub(r"[ \t\r\f\v]+", " ", s)
+        return s.strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def parse_rfc822(raw_bytes: bytes) -> dict:
@@ -52,21 +69,35 @@ def parse_rfc822(raw_bytes: bytes) -> dict:
     to_addresses = tuple(addr for _n, addr in email.utils.getaddresses(to_raw) if addr)
     from_address = email.utils.parseaddr(_hdr("From"))[1]
     subject = _hdr("Subject")
-    # Prefer a text/plain body part; fall back to the first text part. Evidence is the raw bytes regardless.
-    body = ""
+    # Prefer a text/plain body part; if the message is HTML-only (common for broker mail — e.g. TradersWay sends
+    # multipart/related with only a text/html part), fall back to a tag-stripped rendering of the HTML so the
+    # deterministic parser can read the labels. Evidence is the raw bytes regardless.
+    body, html_body = "", ""
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain" and not part.get_filename():
+            if part.get_filename():
+                continue
+            ct = part.get_content_type()
+            if ct == "text/plain" and not body:
                 try:
                     body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "ignore")
-                    break
                 except Exception:  # noqa: BLE001
-                    continue
+                    pass
+            elif ct == "text/html" and not html_body:
+                try:
+                    html_body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "ignore")
+                except Exception:  # noqa: BLE001
+                    pass
+        if not body and html_body:
+            body = _html_to_text(html_body)
     else:
         try:
-            body = msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", "ignore")
+            payload = msg.get_payload(decode=True)
+            decoded = (payload.decode(msg.get_content_charset() or "utf-8", "ignore") if payload is not None
+                       else (msg.get_payload() if isinstance(msg.get_payload(), str) else ""))
         except Exception:  # noqa: BLE001
-            body = msg.get_payload() if isinstance(msg.get_payload(), str) else ""
+            decoded = msg.get_payload() if isinstance(msg.get_payload(), str) else ""
+        body = _html_to_text(decoded) if msg.get_content_type() == "text/html" else decoded
     date = msg.get("Date")
     received_at = None
     if date:

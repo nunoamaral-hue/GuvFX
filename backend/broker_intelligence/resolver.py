@@ -148,3 +148,50 @@ def resolve(to_addresses: Iterable[str], *, owner_user=None) -> Tuple[Optional[B
     if len(distinct_accounts) == 1:
         return None, verified[0].trading_account        # the unique verified account — safe
     return None, None                                    # 0 ⇒ none; >1 ⇒ ambiguous, fail closed
+
+
+def resolve_owner_identity(to_addresses: Iterable[str], *, owner_user=None):
+    """Resolve the recipient to (alias, identity, owner) — WITHOUT committing to a transaction trading-account.
+
+    * A GuvFX opaque **alias** binds to exactly one account, so it carries its own owner (``alias.user``); the caller
+      may take the account directly (``resolve_account``).
+    * A broker-registration **identity** (e.g. a personal gmail) identifies the GuvFX OWNER + broker RELATIONSHIP, but
+      NOT which specific trading account a given transaction concerns — a member may hold several accounts at one
+      broker. So this returns the matched VERIFIED identity + its owner and leaves the transaction-account resolution
+      to :func:`resolve_transaction_account` (from the broker-stated source/destination accounts).
+
+    Owner-scoped + fail-closed: returns (None, None, None) when nothing matches or the owner is ambiguous."""
+    alias = resolve_alias(to_addresses, owner_user=owner_user)
+    if alias is not None:
+        return alias, None, alias.user
+    verified = [i for i in identities_for(to_addresses, owner_user=owner_user)
+                if i.status == BrokerEmailIdentity.Status.VERIFIED]
+
+    def _owner_of(i):
+        return i.user if i.user_id else (i.trading_account.user if i.trading_account_id else None)
+
+    owners = {getattr(_owner_of(i), "id", None) for i in verified}
+    owners.discard(None)
+    if verified and len(owners) == 1:
+        idn = verified[0]
+        return None, idn, _owner_of(idn)
+    return None, None, None
+
+
+def resolve_transaction_account(owner_user, broker_name: str, account_numbers):
+    """Resolve the GuvFX ``TradingAccount`` a transaction concerns by matching the broker's STATED account numbers
+    (source/destination) to the OWNER's own accounts — NEVER inferred from the recipient email. Returns the account
+    only on an UNAMBIGUOUS single match (owner + account_number, broker-token-scoped when a broker is given);
+    otherwise None (attribution UNRESOLVED — never guess). Read-only; no mutation."""
+    if owner_user is None:
+        return None
+    nums = {str(n).strip() for n in (account_numbers or ()) if str(n).strip()}
+    if not nums:
+        return None
+    from trading.models import TradingAccount
+    qs = TradingAccount.objects.filter(user=owner_user, account_number__in=nums)
+    token = (broker_name or "").strip().split()
+    if token:
+        qs = qs.filter(broker_name__icontains=token[0])
+    accts = list(qs.distinct())
+    return accts[0] if len(accts) == 1 else None

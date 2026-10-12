@@ -211,6 +211,17 @@ class BrokerEvent(models.Model):
     broker_reference_id = models.CharField(max_length=128, blank=True, default="")
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)   # never fabricated
     currency = models.CharField(max_length=8, blank=True, default="")
+    # The transaction's own source/destination trading-account numbers AS STATED by the broker (parsed, never
+    # fabricated — absent ⇒ ''). These are the broker's internal account identifiers for the money movement; they are
+    # DISTINCT from ``trading_account`` (the resolved GuvFX account, set only on a verified match — see below) and
+    # must not be conflated with the recipient-mailbox owner's account.
+    source_account = models.CharField(max_length=64, blank=True, default="")
+    destination_account = models.CharField(max_length=64, blank=True, default="")
+    # Verified mailbox OWNER (the GuvFX user whose connected mailbox/alias received this mail). Records ownership +
+    # broker relationship INDEPENDENTLY of ``trading_account`` — so an event can be owner-attributed even when the
+    # specific transaction trading-account is UNRESOLVED (no GuvFX account matches the transaction's own accounts).
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="broker_events")
     # Pointer to the stored raw message; PROTECT so evidence can't be orphaned by deleting the blob.
     evidence = models.ForeignKey(EvidenceBlob, on_delete=models.PROTECT, null=True, blank=True,
                                  related_name="events")
@@ -226,9 +237,9 @@ class BrokerEvent(models.Model):
     # Evidential columns — write-once. ``correlation_status`` is deliberately absent (it may advance in WP5).
     _IMMUTABLE = (
         "alias_id", "trading_account_id", "broker", "source", "event_type", "transaction_category", "occurred_at",
-        "received_at", "broker_reference_id", "amount", "currency", "evidence_id", "evidence_hash", "parser_name",
-        "parser_version", "confidence", "provenance",
-    )
+        "received_at", "broker_reference_id", "amount", "currency", "source_account", "destination_account",
+        "evidence_id", "evidence_hash", "parser_name", "parser_version", "confidence", "provenance",
+    )   # ``owner`` is deliberately NOT here: it is set-once at ingest but SET_NULL-able if the user is deleted.
 
     class Meta:
         ordering = ["id"]   # chronological, append-only
