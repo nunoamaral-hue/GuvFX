@@ -1,13 +1,21 @@
 from django.contrib import admin
 
-from .models import BrokerServer, TradingAccount
+from .models import BrokerServer, BrokerServerCatalogue, TradingAccount
 
 
 @admin.register(BrokerServer)
 class BrokerServerAdmin(admin.ModelAdmin):
-    list_display = ("broker_display_name", "server_name", "environment", "is_active", "updated_at")
-    list_filter = ("environment", "is_active")
+    list_display = ("broker_display_name", "server_name", "environment", "environment_source", "is_active", "updated_at")
+    list_filter = ("environment", "environment_source", "is_active")
     search_fields = ("broker_display_name", "server_name", "aliases")
+
+
+@admin.register(BrokerServerCatalogue)
+class BrokerServerCatalogueAdmin(admin.ModelAdmin):
+    list_display = ("server_name", "environment", "is_verified", "broker_display_name", "updated_at")
+    list_filter = ("environment", "is_verified")
+    search_fields = ("server_name", "broker_display_name", "evidence")
+    readonly_fields = ("name_key",)
 
 
 @admin.register(TradingAccount)

@@ -289,6 +289,14 @@ class OnboardingAddBrokerAccountView(_OnboardingBase):
                 return Response({"detail": "That broker server is already registered with a different "
                                  "(demo/live) environment. Use the correct server for this account type.",
                                  "reason": res.reason}, status=http.HTTP_409_CONFLICT)
+            if res.reason == P.REQ_SERVER_UNVERIFIED:
+                return Response({"detail": "That broker server isn't in our verified server list yet. Please "
+                                 "contact support so it can be verified before the account is added.",
+                                 "reason": res.reason}, status=http.HTTP_409_CONFLICT)
+            if res.reason == P.REQ_SERVER_METADATA_INCONSISTENT:
+                return Response({"detail": "That broker server's environment needs to be corrected by support "
+                                 "before accounts can be added. Please contact support.",
+                                 "reason": res.reason}, status=http.HTTP_409_CONFLICT)
             status = _ADMISSION_HTTP.get(res.reason, http.HTTP_403_FORBIDDEN)
             if status == http.HTTP_404_NOT_FOUND:
                 return _NOT_FOUND

@@ -29,6 +29,14 @@ deploy** — operational safety gate + maintenance plan to redeploy Account 46's
 prereqs: guarded-attach armed, `MT5_ALLOW_LIVE` unset, per-tenant only, flat window — see
 `docs/LIVE_READONLY_MONITORING_SAFETY_DESIGN.md` §7).
 
+## ◆ BROKER SERVER ENVIRONMENT GOVERNANCE (2026-10-12) — corrective PR open, DARK; unblocks IS6 LIVE onboarding
+Fixes first-registration env poisoning (`IS6Technologies-Live` pinned `demo`, blocking IS6FX LIVE `51763830`).
+Catalogue-authoritative resolution + `environment_source` + mig `0020` + strict DARK flag; regression 1615 OK.
+Doc: `docs/BROKER_SERVER_ENV_GOVERNANCE.md`. **One bounded next action:** Sponsor reviews the corrective PR and the
+§C governed-correction plan; merge is DARK-safe, but the prod correction (re-point `IS6Technologies-Live`→live +
+decide the 3 inactive demo accounts + TradersWay case-collision merge) and any strict arming are **separate
+Sponsor-gated packets** and MUST NOT run without explicit approval. Does not displace P0 (Withdrawal V1).
+
 ## ★ PROGRAMME PIVOT (Sponsor, 2026-10-07) — finish MINIMUM LIVE monitoring cert, then P0 = Withdrawal Intelligence V1
 Complete ONLY the minimum LIVE work to prove: fresh LIVE account created via UI → provisions → CONNECTED/MONITORING
 → balances/equity/positions visible → automated execution impossible. **Then STOP all LIVE feature expansion** and

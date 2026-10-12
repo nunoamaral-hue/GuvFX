@@ -482,6 +482,27 @@ def hosted_live_onboarding_enabled() -> bool:
     return _flag("HOSTED_LIVE_ONBOARDING_ENABLED")
 
 
+def broker_server_catalogue_strict_enabled() -> bool:
+    """Broker-Server Environment Governance (2026-10-12) — the STRICT gate for catalogue-authoritative server
+    classification. DEFAULT OFF.
+
+    The governance correction ALWAYS makes the verified ``BrokerServerCatalogue`` authoritative where it knows a
+    server, ALWAYS refuses to hardcode-default an unknown server to DEMO, and ALWAYS preserves the demo/live
+    mismatch guard — none of that is gated. This flag governs ONLY the treatment of a GENUINELY NEW server
+    (absent from the catalogue AND with no existing ``BrokerServer`` row):
+
+      * OFF (default, byte-compatible): the new server row is created from the customer's EXPLICIT, required
+        ``account_type`` and marked ``environment_source='inferred'`` (unverified, never trusted as authoritative,
+        correctable by the catalogue) — exactly the legacy auto-create behaviour, minus the old hardcoded DEMO
+        default. Existing onboarding is unchanged.
+      * ON (strict, decision #4): such a request FAILS CLOSED with ``broker_server_unverified`` — no server is
+        created until an operator has verified it into the catalogue. This is the target posture; arming it is a
+        Sponsor decision, safe only AFTER the production catalogue is populated via the governed correction plan
+        (otherwise it would refuse legitimate onboarding to not-yet-catalogued servers). ANDed with nothing — it
+        is a pure tightening of the unknown-server branch."""
+    return _flag("BROKER_SERVER_CATALOGUE_STRICT_ENABLED")
+
+
 def hosted_session_reconciler_arm_selfconnect_enabled() -> bool:
     """P4-c ARM gate for the SESSION reconciler's actual system-initiated guacd self-connect (the security-posture
     change: it decrypts the tenant's Windows password into a short-lived guacamole-auth-json token and drives

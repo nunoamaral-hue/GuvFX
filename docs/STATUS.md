@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-10-12 - BROKER SERVER ENVIRONMENT GOVERNANCE CORRECTION — corrective PR (branch `fix/broker-server-environment-governance`, base `main` @ `3419cc7`). DARK / NOT deployed.**
+  Fixes the first-registration environment-poisoning defect: `BrokerServer.environment` was set from the first
+  registering account's `account_type` (defaulting demo), so the LIVE server `IS6Technologies-Live`, first touched by a
+  demo account, was pinned `demo` for the whole estate and blocked onboarding IS6FX LIVE `51763830`. Correction (all
+  additive): new authoritative `BrokerServerCatalogue` + `trading/server_environment.py` resolver (verified-only,
+  fail-closed on unknown, **suffixes advisory-only**); `BrokerServer.environment_source` marker; migration `0020` (schema
+  + data: normalise env casing, idempotently seed verified pilots IS6/TradersWay — proven up/down/up reversible);
+  provisioning rewrite (catalogue-authoritative; a disagreeing existing row fails closed `REQ_SERVER_METADATA_INCONSISTENT`
+  and is **never rewritten**; genuinely-new servers fail closed under the DARK `BROKER_SERVER_CATALOGUE_STRICT_ENABLED`
+  else legacy auto-create marked `inferred`). Mismatch guard preserved; no shared/verified metadata mutated by onboarding.
+  Tests: new `tests_broker_server_governance` (31) OK; full `hosted_workspace`+`trading` regression **1615 OK**. Scope B
+  read-only prod reconciliation + Scope C governed correction plan (NOT executed) in `docs/BROKER_SERVER_ENV_GOVERNANCE.md`.
+  **Prereq chain:** this PR (DARK) → governed prod correction packet (§C, Sponsor-gated) → onboard `51763830`. Strict
+  arming gated on the catalogue first covering the live estate. No prod record modified; no account onboarded.
+
 - **2026-10-09 - WITHDRAWAL V1 / WP3b Gmail ingestion worker + member OAuth connection — MERGED #477 (`bf7f3ed`) + #478 (`b012fbd`) + DARK-DEPLOYED.**
   Current backend image `c9177612f249`; rollback `rollback-preCAPTUREFIX` (`8cfda006dc33`). #478 = fail-closed Gmail
   capture (post-deploy EMAIL_CAPTURE_READY safety sweep caught a silent-drop + cursor-advance → `MessageCaptureError`,

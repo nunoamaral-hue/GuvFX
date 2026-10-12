@@ -2,6 +2,25 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 BROKER SERVER environment data-quality issues (recorded 2026-10-12, read-only reconciliation)
+
+Surfaced by the Broker Server Environment Governance reconciliation (`docs/BROKER_SERVER_ENV_GOVERNANCE.md` §3).
+**Recorded, not fixed** — each belongs to the Sponsor-gated governed correction packet (that doc §C), not to the
+corrective PR (which is additive/DARK and touches no prod row):
+
+- **`IS6Technologies-Live` recorded `demo` (poisoned).** It is a verified LIVE server; 3 demo accounts (ids 30/31/34,
+  all `is_active=False`, users 34/35/38) pinned it demo and block onboarding IS6FX LIVE `51763830`. Correction =
+  re-point to `live` (§C.1) **after** deciding the 3 accounts' disposition (§C.2 — recommended: leave as inactive
+  historical, do not flip `is_demo`).
+- **`TradersWay-Live` vs `Tradersway-Live` case collision.** Two `BrokerServer` rows, same broker identity, 3 accounts
+  split. Needs a governed merge (§C.3).
+- **`WIMS-Demo` env stored as `DEMO`** (non-canonical casing). Migration `0020` normalises it to `demo` (lossless) when
+  applied in prod (§C.0/R3).
+- **UNRESOLVED servers** (`DominionMarkets(-Live)`, `FortressFX(-Trade)`, `PepperstoneUK-Demo`, `Taurex-Demo`): env not
+  operator-verified → deliberately NOT classified (suffixes are not authoritative). They keep onboarding via the legacy
+  inferred path until an operator verifies them into the catalogue. `DominionMarkets` additionally has a live account on
+  a demo-recorded server. Do **not** arm `BROKER_SERVER_CATALOGUE_STRICT_ENABLED` until the catalogue covers the estate.
+
 ## 🟡 P3 HOSTED OBSERVER — first-run popup churn residual + observer requires psutil OR wmic (recorded 2026-09-29)
 
 Context: the never-launch fix (STATUS 2026-09-29) stops the observer from creating a bare terminal, but two residuals remain:
