@@ -124,8 +124,15 @@ def _trusted_authserv_ids() -> "frozenset":
     raw = getattr(settings, "BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", None)
     if raw is None:
         raw = os.getenv("BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS", "")
-    ids = frozenset(p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p)
-    return ids or frozenset({"mx.google.com"})
+    ids = {p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p}
+    # UNION active BrokerProfile trusted authserv-ids (per-broker config). Defensive for no-DB/unmigrated contexts.
+    try:
+        from .models import BrokerProfile
+        for bp in BrokerProfile.objects.filter(is_active=True).only("trusted_authserv_ids"):
+            ids.update(bp.authserv_ids())
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(ids) or frozenset({"mx.google.com"})
 
 
 def _ar_resinfos(header_value: str) -> "List[str]":
@@ -178,6 +185,26 @@ def _dkim_signing_domain(resinfo: str) -> str:
     return ""
 
 
+def _broker_requires_dmarc_only(from_domain: str) -> bool:
+    """True iff an ACTIVE ``BrokerProfile`` whose approved sender domains cover ``from_domain`` is set to
+    ``DMARC_ONLY`` — a STRICTER per-broker posture that disables the From-aligned-DKIM fallback for that broker (only
+    a DMARC pass is accepted). Defensive (no-DB/unmigrated/DARK safe) and defaults False; it can only STRENGTHEN the
+    global verdict, never weaken it, so it needs no per-broker exception review."""
+    if not from_domain:
+        return False
+    try:
+        from .broker_senders import domain_matches
+        from .models import BrokerProfile
+        for bp in (BrokerProfile.objects
+                   .filter(is_active=True, auth_policy=BrokerProfile.AuthPolicy.DMARC_ONLY)
+                   .only("approved_sender_domains", "auth_policy")):
+            if any(domain_matches(from_domain, d) for d in bp.approved_domains()):
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def _auth_verdict(msg) -> Optional[str]:
     """R3b sender-authenticity verdict from ``Authentication-Results`` — RFC 8601-safe (the From is NEVER trusted on
     its own). Consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
@@ -198,6 +225,9 @@ def _auth_verdict(msg) -> Optional[str]:
     trusted = _trusted_authserv_ids()
     from_domain = _domain_of(email.utils.parseaddr(msg.get("From", ""))[1])
     allow = sender_allowlist()
+    # A broker whose active profile is auth_policy=DMARC_ONLY opts OUT of the aligned-DKIM fallback (STRICTER — only a
+    # DMARC pass is accepted for its mail). This only ever strengthens; it never weakens the global verdict.
+    dmarc_only = _broker_requires_dmarc_only(from_domain)
     saw_result = False
     for h in (msg.get_all("Authentication-Results", []) or []):
         parts = _ar_resinfos(h.lower())
@@ -216,7 +246,7 @@ def _auth_verdict(msg) -> Optional[str]:
             saw_result = True
             if method == "dmarc" and result == "pass":
                 return "pass"
-            if method == "dkim" and result == "pass":
+            if method == "dkim" and result == "pass" and not dmarc_only:
                 d = _dkim_signing_domain(resinfo)
                 if d and from_domain and allow and any(
                         domain_matches(from_domain, b) and domain_matches(d, b) for b in allow):

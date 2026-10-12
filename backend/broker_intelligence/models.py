@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 
 def alias_domain() -> str:
@@ -449,3 +449,96 @@ class BrokerEmailIdentity(models.Model):
 
     def __str__(self) -> str:
         return f"BrokerEmailIdentity({self.masked_email()}@{self.broker_name or '?'}, {self.status})"
+
+
+# ======================================================================================================
+# Broker profiles (DARK) — per-broker configuration so many brokers (that may share one mailbox) each have
+# their own approved sender domains, trusted Authentication-Results authserv-ids, expected auth posture,
+# parser, MT environments + server names, and account-identification notes. This GENERALISES the single
+# ``BROKER_INTELLIGENCE_SENDER_ALLOWLIST`` env into data. Changing a profile is config only — it NEVER touches
+# a live MT5 install (servers.dat is a separate governed workflow). Profiles hold NO secrets.
+# ======================================================================================================
+
+class BrokerProfile(models.Model):
+    class AuthPolicy(models.TextChoices):
+        # The deployed, reviewed global policy (R3b): DMARC pass OR a From-aligned DKIM pass. A broker whose mail
+        # reliably passes DMARC (e.g. IS6) satisfies it via the DMARC branch; one that only DKIM-aligns (TradersWay,
+        # no DMARC record) via the aligned-DKIM branch. This is NOT a per-broker weakening — both go through the same
+        # fail-closed verdict. DMARC_ONLY is a STRICTER opt-in; a looser posture would need adversarial review.
+        DMARC_OR_ALIGNED_DKIM = "DMARC_OR_ALIGNED_DKIM", "DMARC pass, or From-aligned DKIM pass (default)"
+        DMARC_ONLY = "DMARC_ONLY", "DMARC pass only (stricter)"
+
+    name = models.CharField(max_length=128, unique=True)
+    slug = models.SlugField(max_length=64, unique=True)
+    aliases = models.CharField(max_length=255, blank=True, default="")                 # display aliases, comma-sep
+    official_domains = models.CharField(max_length=512, blank=True, default="")         # brand domains, comma-sep
+    approved_sender_domains = models.CharField(max_length=512, blank=True, default="")  # email allowlist, comma-sep
+    trusted_authserv_ids = models.CharField(max_length=255, blank=True, default="mx.google.com")
+    auth_policy = models.CharField(max_length=32, choices=AuthPolicy.choices, default=AuthPolicy.DMARC_OR_ALIGNED_DKIM)
+    parser_name = models.CharField(max_length=64, blank=True, default="")
+    parser_version = models.CharField(max_length=32, blank=True, default="")
+    mt_environments = models.CharField(max_length=64, blank=True, default="")           # e.g. "MT4,MT5"
+    server_names = models.CharField(max_length=512, blank=True, default="")
+    server_aliases = models.CharField(max_length=512, blank=True, default="")
+    account_id_rules = models.TextField(blank=True, default="")                         # descriptive matching notes
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [models.Index(fields=["is_active"])]
+
+    @staticmethod
+    def _split(s: str):
+        import re as _re
+        return [p for p in _re.split(r"[,\s]+", (s or "").strip().lower()) if p]
+
+    def approved_domains(self):
+        return self._split(self.approved_sender_domains)
+
+    def authserv_ids(self):
+        return self._split(self.trusted_authserv_ids)
+
+    def _snapshot(self) -> dict:
+        return {f: getattr(self, f) for f in (
+            "name", "slug", "aliases", "official_domains", "approved_sender_domains", "trusted_authserv_ids",
+            "auth_policy", "parser_name", "parser_version", "mt_environments", "server_names", "server_aliases",
+            "account_id_rules", "is_active")}
+
+    def save(self, *args, **kwargs):
+        creating = self._state.adding
+        super().save(*args, **kwargs)
+        # Append-only config audit (history/evidence). OWN savepoint so a DB error writing the audit row can NEVER
+        # poison an enclosing transaction (the WP1 tombstone-poison lesson: a bare write inside a caller's atomic()
+        # sets needs_rollback, and a swallowed exception cannot clear it). Best-effort — it never blocks the save.
+        try:
+            with transaction.atomic():
+                BrokerProfileAudit.objects.create(broker_profile=self, action="CREATE" if creating else "UPDATE",
+                                                  snapshot=self._snapshot())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def __str__(self) -> str:
+        return f"BrokerProfile({self.name}, active={self.is_active})"
+
+
+class BrokerProfileAudit(models.Model):
+    """Append-only history of BrokerProfile config changes (what the profile looked like at each revision). Never
+    updated or deleted — the auditable record of broker configuration over time. PROTECT (matching the app's other
+    append-only evidence FKs) so a profile carrying history cannot be destroyed: retire a broker via is_active=False,
+    never delete it (the admin also disables profile deletion)."""
+    broker_profile = models.ForeignKey(BrokerProfile, on_delete=models.PROTECT, related_name="audit")
+    action = models.CharField(max_length=16)
+    snapshot = models.JSONField(default=dict)
+    changed_by = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("BrokerProfileAudit is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"BrokerProfileAudit({self.broker_profile_id}, {self.action}, {self.created_at:%Y-%m-%d})"

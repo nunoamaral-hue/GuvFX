@@ -48,8 +48,17 @@ def sender_allowlist() -> FrozenSet[str]:
     raw = getattr(settings, "BROKER_INTELLIGENCE_SENDER_ALLOWLIST", None)
     if raw is None:
         raw = os.getenv("BROKER_INTELLIGENCE_SENDER_ALLOWLIST", "")
-    parts = re.split(r"[,\s]+", str(raw or "").strip().lower())
-    return frozenset(p for p in parts if p)
+    domains = {p for p in re.split(r"[,\s]+", str(raw or "").strip().lower()) if p}
+    # UNION the approved sender domains of every ACTIVE BrokerProfile (per-broker config generalising this env). Many
+    # brokers may share one mailbox, each contributing its own domains. Defensive: a no-DB / unmigrated / DARK context
+    # (e.g. a SimpleTestCase) falls back to the env alone. Still fail-closed: no env + no profiles => empty.
+    try:
+        from .models import BrokerProfile
+        for bp in BrokerProfile.objects.filter(is_active=True).only("approved_sender_domains"):
+            domains.update(bp.approved_domains())
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(domains)
 
 
 def is_allowlisted_broker_sender(from_address: Optional[str]) -> bool:
