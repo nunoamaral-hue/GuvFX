@@ -116,6 +116,71 @@ cd backend && .venv/bin/python manage.py makemigrations --check broker_intellige
 
 - PR-C: onboard IS6 account 51763830 with confirmed owner + a VERIFIED IS6 `BrokerEmailIdentity`.
 - Dual-broker continuous-ingestion activation (Sponsor-gated).
-- The genuine-immutable-blob-3 read-only positive control at the deploy/certify stage (§3 limitation).
 - The positive `EXTERNAL_WITHDRAWAL` classifier — still blocked on a genuine external-withdrawal sample (TradersWay
   and IS6 alike).
+
+## 7. PR-B.1 — lifecycle classification correction (the genuine blob-3 certification fix)
+
+PR-B deployed DARK; its production certification against genuine blob 3 **FAILED** on lifecycle: the deployed parser
+returned `DEPOSIT_REQUESTED` instead of `DEPOSIT_COMPLETED` (category DEPOSIT, amount 200 USD, fee 0 USD, account
+…3830, auth pass all correct). **Root cause:** the real completion sentence is *"…the payment procedure **for your**
+bank transfer has been completed"* — a DEFINITE money-operation subject with prepositional ownership. The completion
+anchor required a possessive *"your &lt;money&gt;"* subject: the subject head here is "**the** payment" (no "your") and
+the only "your" is "**for** your bank transfer" (governed by a preposition → rejected by the sub-step guard), so no
+completion matched and it fell through to `_REQUESTED`, which matched "**received**" in the footer *"If you received
+this email by mistake."*
+
+**Fix (structural, not phrase-specific):**
+- A new **definite-subject completion branch** (`_own_completed_definite`, used by `_COMPLETED` only): a money-op noun
+  as the SUBJECT HEAD under `the/a/our/this`, a `(for|of|to|via|on|into) your …` ownership PP whose object is itself a
+  money word **immediately before a PERFECT/PAST** completion verb. This accepts the genuine construction while
+  structurally rejecting present-tense habitual/SLA rules ("a deposit **is** completed within 24h"), cross-kind
+  funding reassurance, generic/policy lines, fee-payment sub-steps ("the payment **of your deposit fee** has been
+  completed"), and administrative sub-steps ("the **review** of your withdrawal …"). The possessive `_own` branch is
+  unchanged (battle-tested across the PR-B rounds); `_REJECTED`/`_PROCESSING` get no definite branch (no genuine
+  sample).
+- **Request detection re-anchored** to an actual transaction request (`<txn> request` / `request (for) <txn>` /
+  `received your <txn> request` / JP money-token + リクエスト/申請/申込/受付) — routine footer "if you received this email by
+  mistake" can no longer be a request.
+
+Both changes went through a **multi-round adversarial review**. An initial over-broad determiner generalization was
+rejected and replaced by the tight definite branch; subsequent rounds then hardened a family of EN completion-verb /
+possessive-gap precision gaps, each fixed and locked by a regression test:
+- the definite branch gained an **inversion guard** (EN/JP parity): "the payment **cancellation/reversal/refund** for
+  your withdrawal has been completed" is not a completion;
+- the completion verb tolerates an **affirmative adverb** ("has been **successfully** completed") but the possessive
+  **gap rejects negating/diminishing adverbs** (never/rarely/nearly/almost/partially/virtually/… — "has **never**/
+  **nearly** been completed" is not a completion);
+- a **generalized object guard** on the possessive branch: when the money head is an ambiguous operation ("your
+  payment/transfer …"), its prepositional object (under of/for/via/by/… within a short window) must not be a
+  sub-step / charge / inversion noun **or the other direction's transaction** — so "your payment **of the withdrawal
+  fee** / **via the identity verification** / **for the originating deposit** has been completed" are all rejected,
+  while instrument/destination/amount objects ("to your bank account", "via this method", "of 500 USD") stay genuine;
+- **request detection** ignores imperative/marketing CTAs ("Request a deposit…", "you can request a withdrawal") and
+  recognises member forms ("<txn> request", "received your <txn> request", "request for a <txn>", "you have requested
+  a <txn>", JP money+リクエスト/申請/申込/受付).
+
+Safety invariants were **structural and held with zero breaches across every round** (each review verdict confirmed
+`category_safe` / `breaches_safety_invariant=false`): **no deposit → EXTERNAL_WITHDRAWAL, no prose → EXTERNAL path,
+deposits never contaminate withdrawal metrics** — the residual precision gaps only ever mis-ordered the lifecycle
+`event_type` with the category (and therefore the metrics) staying correct. No migration (parser-logic only; mig 0008
+already applied on `main`).
+
+**Residual limitation (stated per the evidence rule):** EN free-text completion/rejection classification is not
+provably exhaustive; the object guard ends the known sub-step/charge/inversion/cross-kind object class structurally,
+but a sufficiently novel prose construction could still mis-order the lifecycle. Every such residual is **fail-safe
+for the safety invariants** (category correct) and the parser is DARK. Lifecycle precision is to be re-certified
+against genuine captured IS6 samples at the Sponsor-gated activation (mirrors the TradersWay prose-limit acceptance).
+
+**Repeatable read-only production certification** is prepared as a management command
+`backend/broker_intelligence/management/commands/certify_is6_blob.py` — it verifies the evidence hash, runs the
+DEPLOYED parser on the stored raw bytes WITHOUT ingestion, compares every expected vs actual field (account masked),
+and asserts NO event creation / NO cursor advance / NO evidence change / counts preserved (snapshotted before & after).
+It is strictly read-only and is **not** to be run against production until authorised:
+
+```
+python manage.py certify_is6_blob --blob-id 3 --expect-event DEPOSIT_COMPLETED --expect-category DEPOSIT \
+    --expect-amount 200 --expect-currency USD --expect-fee 0 --expect-fee-currency USD --expect-account <acct>
+```
+
+PR-B.1 is DARK, development-only; not merged, not deployed, ingestion OFF, account 51763830 not onboarded.

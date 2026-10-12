@@ -102,9 +102,13 @@ _JP_TXN = {
     "DEPOSIT": r"(?:入金|送金|振込|振替)",
     "WITHDRAWAL": r"(?:出金|送金|振込|振替)",
 }
-# The gap between the money word and the completed/rejected verb must not cross a negation or a conjunction that would
-# introduce a second subject.
-_GAP = r"(?:(?!\b(?:not|no longer|unable|and|which|while|but)\b)[^\n]){0,80}?"   # bounded, tempered
+# The gap between the money word and the completed/rejected verb must not cross a negation, a DIMINISHING adverb
+# (never/rarely/nearly/almost/partially … → the event did NOT fully happen), or a conjunction that would introduce a
+# second subject. Without the diminishing adverbs the lazy gap would bridge "has NEVER been completed" / "has NEARLY
+# been completed" and the two-token "has been" verb would re-anchor on its bare "been completed" alternative — a false
+# completion. (Affirmative adverbs like successfully/now/already are deliberately NOT excluded; they are genuine.)
+_GAP = (r"(?:(?!\b(?:not|never|rarely|seldom|hardly|scarcely|barely|nearly|almost|partially|partly|mostly|largely"
+        r"|virtually|practically|essentially|substantially|no longer|unable|and|which|while|but)\b)[^\n]){0,80}?")
 # Immediately after the money word require a completion/rejection verb-starter, a preposition, or a money-operation
 # noun — NOT a bare qualifier noun. This makes "your <txn>" the SUBJECT of the verb: "your withdrawal TO your bank
 # account has been completed" / "your deposit VIA this method has been completed" / "your payment PROCEDURE … has been
@@ -118,6 +122,17 @@ _EN_NEXT = (r"(?=\s+(?:is|are|was|has|have|been|to|of|for|via|from|into|by"
 # QUALIFIER noun ("your FEE payment", "your CARD authentication FOR this deposit") — mirroring the JP subject anchor.
 # ("bank"/"wire" are NOT qualifiers — "your bank transfer has been completed" is a genuine money movement.)
 _EN_QUAL = r"(?:fee|card|account|identity|verification|review|confirmation|authentication|registration|method|security)"
+# Semantic-INVERSION nouns: a "cancellation/reversal/refund/chargeback/failure" of a money op means the money did NOT
+# move. The JP anchor already excludes 取消/キャンセル/返金 etc.; the EN definite-completion branch must exclude these too
+# (EN/JP parity) so "the payment CANCELLATION for your withdrawal has been completed" is never read as a completion.
+_EN_INVERSION = (r"(?:cancel(?:led|lation|ling)?|revers(?:al|e|ed|ing)|refund(?:ed|ing)?|chargebacks?|recall(?:ed)?"
+                 r"|return(?:ed|ing)?|fail(?:ure|ed|ing)?|declin(?:e|ed|ing)?|rejection)")
+# Sub-step / charge nouns: a money op that is "payment OF/FOR/VIA/BY the <fee|verification|…>" is a FEE / KYC / admin
+# SUB-STEP, not the transaction. Distinct from INSTRUMENT/destination qualifiers (account/card/method/wallet), which
+# are legitimate "how/where" objects ("deposit via this method", "withdrawal to your bank account") — those are NOT
+# listed here, so they stay genuine completions. Used only by the possessive object guard.
+_EN_SUBSTEP = (r"(?:fees?|charges?|commissions?|verification|review|reviews?|confirmation|authentication|registration"
+               r"|identity|validation|approvals?|screening|kyc|checks?)")
 # _EN_PREP and the _EN_SUBJ lookbehind are derived from ONE token list so they can never drift apart (a hand-kept
 # second list silently dropped 6 prepositions and reopened the sub-step hole). Every token is one word, so each
 # lookbehind stays fixed-width (Python requires this).
@@ -136,10 +151,46 @@ _JP_OTHER = {"DEPOSIT": "出金", "WITHDRAWAL": "入金"}
 
 
 def _own(txn: str, other: str) -> str:
-    """The EN 'your <txn> … <verb>' subject anchor for a given (kind-specific) txn pattern; ``other`` is the opposite
-    direction's keyword, forbidden in the prefix so an ambiguous token can't carry the other direction's event."""
+    """EN POSSESSIVE subject anchor: "your <txn> … <verb>". The possessive ``your`` must be the SUBJECT, not the
+    object of a preposition (``_EN_SUBJ`` lookbehind), and the ≤6-word span from ``your`` to the money head may not
+    cross a preposition, a non-money QUALIFIER / sub-step noun (``_EN_QUAL``), or the OTHER direction's keyword — so
+    the money head is the TRUE subject head. ``other`` is the opposite direction's keyword (kind separation).
+
+    ``obj_guard``: when the money head is an ambiguous operation ("your payment/transfer …") its prepositional object
+    must not be a SUB-STEP / charge / inversion noun, nor the OTHER direction's transaction — under ANY preposition
+    the head admits (of/for/via/by/from/through/to/into/on), within a short window. So "your payment OF the withdrawal
+    fee / VIA the identity verification / FOR the originating deposit / OF the cancellation has been completed" are
+    all rejected (a fee/KYC/other-txn/cancellation, not THIS transaction). Genuine objects survive because they are
+    INSTRUMENTS/destinations (account/card/method) or amounts, which are not in the trigger set: "to your bank
+    account", "via this method", "of 500 USD" still complete."""
+    obj_guard = (r"(?!\s+(?:of|for|via|by|from|through|to|into|on)\s+"
+                 r"(?:the\s+|your\s+|a\s+|an\s+|this\s+|that\s+|its\s+|our\s+)?(?:\w+\s+){0,4}?(?:"
+                 + _EN_SUBSTEP + r"|" + _EN_INVERSION + r"|" + other + r")\b)")
     return (_EN_SUBJ + r"your\s+(?:(?!(?:" + _EN_PREP + r"|" + _EN_QUAL + r"|" + other + r")\b)\w+\s+){0,6}?"
-            + txn + r"\b" + _EN_NEXT + _GAP)
+            + txn + r"\b" + obj_guard + _EN_NEXT + _GAP)
+
+
+def _own_completed_definite(txn: str, other: str) -> str:
+    """EN DEFINITE-subject genuine COMPLETION: "the/a/our/this <money-op> [modifiers] (for|of|to|via) your [modifiers]
+    <money> has been completed" — the genuine blob-3 construction ("the payment procedure for your bank transfer has
+    been completed"). Deliberately TIGHT so it adds the genuine case WITHOUT reopening the false positives:
+      * the SUBJECT HEAD (immediately after the determiner) must be a money operation — "the **review** of your
+        withdrawal …" (sub-step subject) never matches;
+      * member ownership is a PP "(for|of|to|via|on|into) your …" whose object is itself a MONEY word immediately
+        before the verb — so "the payment **of your deposit fee** has been completed" (a fee charge) and
+        "the deposit for your **account** …" are rejected (the object is a qualifier, not a money instrument);
+      * the verb is PERFECT/PAST only (has/have/had been | was | were | been) — a present-tense habitual / SLA /
+        policy line ("a deposit **is** completed within 24h") never matches;
+      * the determiner is not preposition-governed, and the OTHER direction's keyword is excluded (kind separation).
+    Used ONLY for completion (no definite rejection/processing branch — there is no genuine sample for those)."""
+    # The modifier spans forbid an INVERSION noun too (EN/JP parity), so a cancellation/reversal/refund of a money op
+    # is never read as a completion. ``_ADV`` tolerates an affirmative adverb in the verb phrase ("has been
+    # SUCCESSFULLY completed").
+    npq = r"(?:(?!(?:" + _EN_PREP + r"|" + _EN_QUAL + r"|" + _EN_INVERSION + r"|" + other + r")\b)\w+\s+)"
+    nq = r"(?:(?!(?:" + _EN_QUAL + r"|" + _EN_INVERSION + r"|" + other + r")\b)\w+\s+)"
+    return (_EN_SUBJ + r"(?:the|a|our|this)\s+" + txn + r"\b\s+" + npq + r"{0,2}?"
+            + r"(?:for|of|to|via|on|into)\s+your\s+" + nq + r"{0,3}?"
+            + txn + r"\b\s+(?:(?:has|have|had)\s+" + _ADV + r"been|was|were|been)\s+" + _ADV + r"completed")
 # JP: the money token must be the SUBJECT of the completion/rejection verb, not merely nearby. The anchor is
 # <money op>(の)(お)(手続き|処理)? + a subject particle (が/は/を/も) + a short adverbial gap. This structurally rejects
 # the whole family of false positives: an unrelated procedure ("本人確認のお手続きが完了" = KYC — no money op), and a
@@ -157,7 +208,11 @@ def _jp_own(jp_txn: str, other: str) -> str:
             r"(?:(?!(?:登録|変更|方法|確認|認証|口座|先|本人|取消|取り消|キャンセル|中止|返金|取りやめ|未|不|非)|[がはをも])[^\n。、]){0,12}?")
 
 
-_VERB_COMPLETED = r"(?:is|are|was|has been|have been|been)\s+completed"
+# An optional AFFIRMATIVE adverb in the completion verb phrase ("has been SUCCESSFULLY completed"). A deliberately
+# small allowlist — qualifying adverbs like "nearly"/"almost"/"partially" are NOT here, so "nearly completed" (= not
+# completed) still fails closed.
+_ADV = r"(?:(?:successfully|fully|duly|properly|safely|now|already)\s+)?"
+_VERB_COMPLETED = r"(?:is|are|was|has been|have been|been)\s+" + _ADV + r"completed"
 # JP completion verb with a TRAILING-negation guard: 完了済 / 完了です etc. must not be the head of a negated phrase
 # (完了済みではありません = "is NOT completed", 完了しておりません = "has not completed").
 _JP_NEG_TAIL = r"(?!(?:み)?(?:で(?:は|も)?(?:ありません|ございません|ない)|ておりません|ていません))"
@@ -171,8 +226,9 @@ _VERB_PROCESSING = r"(?:is\s+|are\s+)?being\s+processed|(?:has|have)\s+been\s+pr
 # direction's token never advances this message. (The "completed <txn> processing" subject phrase is deliberately NOT
 # used as an independent decider — a "Re:"/reversal reply preserves it while the body says the opposite — so the
 # genuine completion is read only from the BODY via these anchors; blob 3's body matches via the ambiguous token.)
-_COMPLETED = {k: re.compile(_own(_TXN[k], _EN_OTHER[k]) + _VERB_COMPLETED
-                            + r"|" + _jp_own(_JP_TXN[k], _JP_OTHER[k]) + _JP_VERB_COMPLETED,
+_COMPLETED = {k: re.compile(r"(?:" + _own(_TXN[k], _EN_OTHER[k]) + _VERB_COMPLETED + r")"
+                            + r"|(?:" + _own_completed_definite(_TXN[k], _EN_OTHER[k]) + r")"
+                            + r"|(?:" + _jp_own(_JP_TXN[k], _JP_OTHER[k]) + _JP_VERB_COMPLETED + r")",
                             re.IGNORECASE) for k in ("DEPOSIT", "WITHDRAWAL")}
 _REJECTED = {k: re.compile(_own(_TXN[k], _EN_OTHER[k]) + _VERB_REJECTED
                            + r"|" + _jp_own(_JP_TXN[k], _JP_OTHER[k]) + _JP_VERB_REJECTED,
@@ -180,8 +236,18 @@ _REJECTED = {k: re.compile(_own(_TXN[k], _EN_OTHER[k]) + _VERB_REJECTED
 _PROCESSING = {k: re.compile(r"(?:" + _own(_TXN[k], _EN_OTHER[k]) + r"(?:" + _VERB_PROCESSING + r"))"
                              r"|" + _jp_own(_JP_TXN[k], _JP_OTHER[k]) + r"処理中", re.IGNORECASE)
                for k in ("DEPOSIT", "WITHDRAWAL")}
+# REQUESTED is anchored to the MEMBER'S actual TRANSACTION request — a bare "received"/"request" is NOT enough (so a
+# footer "If you received this email by mistake…" is not a request), and an imperative/marketing CTA ("Request a
+# deposit…", "you can request a withdrawal at any time") is NOT a member request either. EN: a "<txn> request" noun, a
+# "request for <txn>" noun phrase, or "received your … <txn> request"; JP: a money token with リクエスト/申請/お申込み/受付, or
+# リクエスト/申請 + 受け付け/受付.
 _REQUESTED = re.compile(
-    r"\b(?:requested|has been received|been received|received|request)\b|受付|受け付け|申請|リクエスト", re.IGNORECASE)
+    r"\b(?:deposit|withdrawal|payment|transfer)\s+request(?:ed)?\b"
+    r"|\brequest\s+for\s+(?:a\s+|your\s+|the\s+)?(?:deposit|withdrawal|payment|transfer)\b"
+    r"|\breceived\s+(?:your\s+|a\s+)?(?:\w+\s+){0,3}?(?:deposit|withdrawal|payment|transfer)\s+request\b"
+    r"|\byou\s+(?:have\s+)?requested\s+(?:a\s+|your\s+|the\s+)?(?:deposit|withdrawal|payment|transfer)\b"  # member past action
+    r"|(?:入金|出金|振替|振込|送金)(?:の|を)?(?:リクエスト|申請|お?申(?:し)?込み?|受付)"
+    r"|(?:リクエスト|申請|お?申(?:し)?込み?)を?(?:受け付け|受付)", re.IGNORECASE)
 
 # INTERNAL-transfer positive evidence (EN + JP). Same spirit as TradersWay: money moving between the member's OWN
 # accounts inside the broker is internal — never external.
