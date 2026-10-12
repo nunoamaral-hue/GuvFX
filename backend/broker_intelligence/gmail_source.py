@@ -97,30 +97,101 @@ def _trusted_authserv_ids() -> "frozenset":
     return ids or frozenset({"mx.google.com"})
 
 
+def _ar_resinfos(header_value: str) -> "List[str]":
+    """Split one Authentication-Results header into [authserv-id(+version), resinfo, resinfo, ...] per RFC 8601/5322:
+    CFWS comments ``(...)`` (nestable) are REMOVED and double-quoted strings are preserved verbatim, so a ``;`` or a
+    ``dkim=pass``/``header.d=`` that appears inside a comment or a quoted property value can NEVER create a pseudo
+    resinfo or be mistaken for a real method=result. Top-level ``;`` separates resinfos."""
+    out, buf = [], []
+    depth = 0          # comment nesting depth
+    inq = False        # inside a double-quoted string
+    i, s = 0, header_value
+    while i < len(s):
+        c = s[i]
+        if inq:
+            if c == "\\" and i + 1 < len(s):
+                buf.append(s[i:i + 2]); i += 2; continue
+            if c == '"':
+                inq = False
+            buf.append(c); i += 1; continue
+        if depth > 0:                                  # inside a comment -> drop everything until it closes
+            if c == "\\" and i + 1 < len(s):
+                i += 2; continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1; continue
+        if c == "(":
+            depth += 1; i += 1; continue
+        if c == '"':
+            inq = True; buf.append(c); i += 1; continue
+        if c == ";":
+            out.append("".join(buf)); buf = []; i += 1; continue
+        buf.append(c); i += 1
+    out.append("".join(buf))
+    return out
+
+
+def _dkim_signing_domain(resinfo: str) -> str:
+    """The DKIM signing domain from ONE (comment-stripped) dkim resinfo: ``header.d=<domain>`` preferred, else the
+    domain of the AUID ``header.i=[local]@<domain>`` (RFC 8601 allows a verifier to report either; Gmail commonly
+    emits header.i only). '' if neither is present."""
+    md = re.search(r"\bheader\.d\s*=\s*([a-z0-9.\-]+)", resinfo)
+    if md:
+        return md.group(1)
+    mi = re.search(r"\bheader\.i\s*=\s*([^\s;]+)", resinfo)
+    if mi:
+        v = mi.group(1).strip('"')
+        return v.rsplit("@", 1)[-1] if "@" in v else ""
+    return ""
+
+
 def _auth_verdict(msg) -> Optional[str]:
     """R3b sender-authenticity verdict from ``Authentication-Results`` — RFC 8601-safe (the From is NEVER trusted on
-    its own):
-    * consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
-      authserv-id is ignored — the receiving MTA strips forgeries of its own id);
-    * accept ONLY ``dmarc=pass`` — DMARC guarantees the authenticated identifier is ALIGNED to the visible From
-      domain. Bare ``spf=pass`` / ``dkim=pass`` authenticate the SENDER'S OWN (possibly attacker) domain, not the
-      From, so they are NOT sufficient and there is no SPF/DKIM shortcut;
-    * match result TOKENS exactly (never a substring of the joined blob).
-    Returns "pass" (dmarc=pass on a trusted header), "fail" (a trusted header without dmarc=pass), or None (no trusted
-    Authentication-Results header at all). The ingestion gate treats anything other than "pass" as untrusted."""
+    its own). Consider ONLY headers whose authserv-id is a TRUSTED receiver (an attacker-injected A-R with a foreign
+    authserv-id is ignored — the receiving MTA strips forgeries of its own id). Each header is parsed into resinfos
+    with comments removed + quoted strings preserved (``_ar_resinfos``); for each resinfo ONLY its leading
+    ``method=result`` token is the verdict (never free text / a comment / an echoed parameter value). Accept either:
+
+      (1) ``dmarc=pass`` — DMARC guarantees the authenticated identifier is aligned to the visible From; OR
+      (2) a **From-ALIGNED DKIM pass**: a ``dkim=pass`` resinfo whose own signing domain (``header.d`` or the
+          ``header.i`` AUID domain) AND the message's From domain both fall within the SAME approved broker domain
+          (``broker_senders`` allowlist). Narrow fallback for a legitimate broker (e.g. TradersWay) that validly
+          DKIM-signs with its own domain but publishes NO DMARC record. An attacker spoofing the From cannot produce a
+          valid DKIM signature under the broker's domain, so this is NOT spoofable — unlike a bare ``spf=pass`` /
+          unaligned ``dkim=pass`` (which authenticate the sender's OWN domain and are NEVER sufficient here).
+
+    Returns "pass", "fail" (a trusted header with results but no qualifying pass), or None (no trusted A-R header)."""
+    from .broker_senders import _domain_of, domain_matches, sender_allowlist
     trusted = _trusted_authserv_ids()
-    considered = []
+    from_domain = _domain_of(email.utils.parseaddr(msg.get("From", ""))[1])
+    allow = sender_allowlist()
+    saw_result = False
     for h in (msg.get_all("Authentication-Results", []) or []):
-        authserv_id = ((h.split(";", 1)[0].strip().split() or [""])[0]).lower()
-        if authserv_id in trusted:
-            considered.append(h.lower())
-    if not considered:
-        return None                                   # no verdict from a trusted receiver -> fail-closed at the gate
-    blob = " ; ".join(considered)
-    m = re.search(r"\bdmarc\s*=\s*([a-z]+)", blob)    # exact DMARC result token on a trusted header
-    if m:
-        return "pass" if m.group(1) == "pass" else "fail"
-    return "fail"                                     # trusted header but no DMARC alignment result -> not trusted
+        parts = _ar_resinfos(h.lower())
+        if not parts:
+            continue
+        authserv_id = (parts[0].strip().split() or [""])[0]
+        if authserv_id not in trusted:               # only the receiver's own verdict is trusted (forgeries ignored)
+            continue
+        for resinfo in parts[1:]:
+            mm = re.match(r"\s*([a-z][a-z0-9.\-]*)\s*=\s*([a-z]+)", resinfo)   # LEADING method=result only
+            if not mm:
+                continue
+            method, result = mm.group(1), mm.group(2)
+            if method not in ("dmarc", "dkim", "spf"):
+                continue
+            saw_result = True
+            if method == "dmarc" and result == "pass":
+                return "pass"
+            if method == "dkim" and result == "pass":
+                d = _dkim_signing_domain(resinfo)
+                if d and from_domain and allow and any(
+                        domain_matches(from_domain, b) and domain_matches(d, b) for b in allow):
+                    return "pass"
+            # spf (or any non-pass) contributes only saw_result — never a pass
+    return "fail" if saw_result else None             # trusted header, results present, none qualified -> fail
 
 
 class GmailMailSource(MailSource):
