@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from django.db import IntegrityError, transaction
 
 from hosted_workspace.entitlement import hosted_workspace_admission
-from hosted_workspace.flags import hosted_deferred_identity_bind_enabled, hosted_live_onboarding_enabled
+from hosted_workspace.flags import (broker_server_catalogue_strict_enabled,
+                                     hosted_deferred_identity_bind_enabled, hosted_live_onboarding_enabled)
 from hosted_workspace.models import HostedMt5Workspace
 from hosted_workspace.provisioning_timing import (
     STAGE_NODE_ALLOCATED,
@@ -30,6 +31,7 @@ from hosted_workspace.provisioning_timing import (
 )
 from hosted_workspace.state_machine import WorkspaceLifecycleState as S
 from hosted_workspace.telemetry import WorkspaceEvent, emit_workspace_event
+from trading.server_environment import resolve_verified_environment
 
 # Stable, secret-free reason codes (in addition to the admission codes in entitlement.py).
 REQ_LOGIN_REQUIRED = "expected_login_required"
@@ -46,6 +48,14 @@ REQ_LIVE_ONBOARDING_DISABLED = "live_onboarding_disabled"
 # D5 — the requested broker server already exists with the OPPOSITE environment (e.g. a live account on a server
 # recorded as demo). A money-bearing account's environment must never be guessed or silently overridden.
 REQ_ENV_MISMATCH = "broker_server_environment_mismatch"
+# Governance (2026-10-12) — the requested broker server is NOT in the verified catalogue and has no existing record,
+# so its environment is unknown. Fail closed (never create a new server with an environment guessed from the
+# account) — the server must be verified in the catalogue first.
+REQ_SERVER_UNVERIFIED = "broker_server_unverified"
+# Governance (2026-10-12) — an EXISTING BrokerServer row's recorded environment disagrees with the verified
+# catalogue (legacy poisoning). Fail closed pending a governed operator correction of the shared server metadata;
+# a single account registration must never silently rewrite verified/shared server metadata.
+REQ_SERVER_METADATA_INCONSISTENT = "broker_server_metadata_inconsistent"
 ALLOC_NO_CAPACITY = "no_node_capacity"
 ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
 ALLOC_CZ_NODE_FORBIDDEN = "cz_node_forbidden"         # ADR-0043 Addendum B: refuse a non-CZ tenant on a CZ node
@@ -88,6 +98,10 @@ BIND_LIVE_FORBIDDEN = "live_identity_forbidden"          # Closed Beta is DEMO-o
 BIND_WRONG_STATE = "identity_bind_not_allowed_in_state"
 BIND_ALREADY = "identity_already_bound"                  # write-once: a DIFFERENT second bind fails closed
 BIND_IDENTITY_INVALID = "expected_identity_invalid"      # too long / duplicate / unstorable → clean 400, not 500
+# Broker-server environment governance (2026-10-12) — the bind path honours the same catalogue authority as the
+# request path. Same string values as the REQ_* equivalents so a reason means the same thing on either write path.
+BIND_SERVER_UNVERIFIED = "broker_server_unverified"              # strict mode: a genuinely-new server is not verified
+BIND_SERVER_METADATA_INCONSISTENT = "broker_server_metadata_inconsistent"  # existing row disagrees w/ the catalogue
 
 # Field length ceilings (mirror TradingAccount.account_number / BrokerServer.server_name) — validated BEFORE the
 # DB write so an over-long identifier is a clean 4xx, never an uncaught Postgres DataError (HTTP 500).
@@ -260,7 +274,12 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
             # matches this user's single unbound intent workspace.
             srv_name = str(expected_server or "").strip()
             match_q = owned.filter(trading_account__account_number=login)
-            match_q = (match_q.filter(trading_account__broker_server__server_name=srv_name) if srv_name
+            # Case-insensitive on server name — aligned with the catalogue-authoritative env block below (which
+            # resolves the BrokerServer row via ``server_name__iexact``). A case-variant re-request of the SAME
+            # (login, server) therefore resolves to the existing workspace (idempotent REQ_EXISTS) instead of
+            # falling through to create a second account that would collide on the unique identity (a clean
+            # idempotent return, never an uncaught IntegrityError/500).
+            match_q = (match_q.filter(trading_account__broker_server__server_name__iexact=srv_name) if srv_name
                        else match_q.filter(trading_account__broker_server__isnull=True))
             match = match_q.first()
             if match is not None:
@@ -290,15 +309,52 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
         server = None
         srv_name = str(expected_server or "").strip()
         if srv_name:
-            # D5 — classify the broker server by the account's environment so account_environment resolves
-            # CLEANLY: a NEW server is created with the matching environment (demo→demo, live→live); an EXISTING
-            # server whose environment DISAGREES fails closed (never silently override a money-bearing server's
-            # classification). DEMO on a new/consistent server is byte-identical to before.
+            # Governance (2026-10-12) — a broker server's environment is AUTHORITATIVE from the verified catalogue,
+            # NEVER established from this account's account_type (the first-registration poisoning defect). Resolve
+            # the verified environment and fail closed when it is unknown:
+            #   * verified (catalogue): the account env MUST match it (mismatch → REQ_ENV_MISMATCH, fail closed). A
+            #     NEW server row is materialised FROM THE VERIFIED value (not from the account). An EXISTING row whose
+            #     recorded environment disagrees with the catalogue is left UNTOUCHED and fails closed
+            #     (REQ_SERVER_METADATA_INCONSISTENT) — one registration must never rewrite shared/verified metadata.
+            #   * not verified but an EXISTING row is present (legacy, inferred): preserve the prior mismatch guard
+            #     against that row (backward compatible; still fail-closed on demo/live disagreement), and never
+            #     promote/poison it from this registration.
+            #   * genuinely new (no catalogue entry AND no existing row): STRICT flag ON → fail closed
+            #     (REQ_SERVER_UNVERIFIED). STRICT flag OFF (default, byte-compatible) → create from the customer's
+            #     EXPLICIT required account_type, marked ``inferred`` (unverified, never authoritative, catalogue-
+            #     correctable) — legacy auto-create minus the old hardcoded DEMO default. NEVER guess from a suffix.
+            # Creation uses get_or_create (race-safe: ``server_name`` is unique, so a concurrent creator from
+            # another user's atomic block cannot make a duplicate row) and ALWAYS re-validates the returned row's
+            # environment — never mutating it — so a row that already exists (or was concurrently created) with a
+            # disagreeing environment fails closed rather than being silently overwritten.
             desired_env = BrokerServer.DEMO if bool(is_demo) else BrokerServer.LIVE
-            server, created_server = BrokerServer.objects.get_or_create(
-                server_name=srv_name, defaults={"environment": desired_env})
-            if not created_server and server.environment != desired_env:
-                return RequestResult(False, REQ_ENV_MISMATCH)
+            verified_env, _src = resolve_verified_environment(srv_name)
+            server = BrokerServer.objects.filter(server_name__iexact=srv_name).first()
+            if verified_env is not None:
+                if verified_env != desired_env:
+                    return RequestResult(False, REQ_ENV_MISMATCH)
+                if server is None:
+                    server, _ = BrokerServer.objects.get_or_create(
+                        server_name=srv_name,
+                        defaults={"environment": verified_env,
+                                  "environment_source": BrokerServer.CATALOGUE})
+                if server.environment != verified_env:
+                    # existing/concurrent row disagrees with the verified catalogue → left UNTOUCHED, fail closed
+                    return RequestResult(False, REQ_SERVER_METADATA_INCONSISTENT)
+            elif server is not None:
+                if server.environment != desired_env:
+                    return RequestResult(False, REQ_ENV_MISMATCH)
+                # legacy inferred server, consistent with this account → proceed, no promotion/poisoning
+            elif broker_server_catalogue_strict_enabled():
+                return RequestResult(False, REQ_SERVER_UNVERIFIED)
+            else:
+                server, _created = BrokerServer.objects.get_or_create(
+                    server_name=srv_name,
+                    defaults={"environment": desired_env,
+                              "environment_source": BrokerServer.INFERRED})
+                if not _created and server.environment != desired_env:
+                    # a concurrent request created it with a different environment → honour the mismatch guard
+                    return RequestResult(False, REQ_ENV_MISMATCH)
         # ``brokeridentity_present`` requires a broker_server OR a non-empty broker_name. The customer may
         # supply neither identifier at request time, so default broker_name to a safe placeholder (display
         # only — the certified matcher keys on broker_server.server_name, never on this string).
@@ -717,19 +773,41 @@ def bind_broker_identity(user, workspace, *, expected_login, expected_server="",
             return BindResult(False, BIND_ALREADY)
         server = None
         if server_name:
-            if acct.is_demo:
-                # DEMO (and the only pre-D3 case): unchanged — a newly-created server takes the model default.
-                server, _ = BrokerServer.objects.get_or_create(server_name=server_name)
-            else:
-                # D3 LIVE (flag-gated path only): a NEWLY-created server inherits the LIVE environment so a
-                # LIVE account never silently binds a demo-default server; then cross-check the account's
-                # is_demo against the (possibly pre-existing) server and FAIL CLOSED on any demo/live
-                # disagreement — never write a mismatched, write-once identity (the same T7 rule the serializer
-                # applies at create). This closes the adversarial finding (2026-10-05).
-                server, _ = BrokerServer.objects.get_or_create(
-                    server_name=server_name, defaults={"environment": BrokerServer.LIVE})
-                from trading.classification import classification_error
+            # Broker-server ENVIRONMENT GOVERNANCE (2026-10-12) — this sibling write path creates/binds the SAME
+            # shared BrokerServer rows as request_hosted_workspace and therefore applies the SAME catalogue-
+            # authoritative rules, keyed on the account's own is_demo as the desired environment. It must NEVER
+            # bare-create a server (which would inherit the model's demo default and poison a verified-live
+            # server when a demo account binds it) and NEVER silently rewrite shared/verified metadata.
+            from trading.classification import classification_error
+            desired_env = BrokerServer.DEMO if acct.is_demo else BrokerServer.LIVE
+            verified_env, _src = resolve_verified_environment(server_name)
+            server = BrokerServer.objects.filter(server_name__iexact=server_name).first()
+            if verified_env is not None:
+                if verified_env != desired_env:
+                    # demo/live disagreement vs the verified truth → never write a mismatched identity.
+                    return BindResult(False, BIND_LIVE_FORBIDDEN)
+                if server is None:
+                    server, _ = BrokerServer.objects.get_or_create(
+                        server_name=server_name,
+                        defaults={"environment": verified_env,
+                                  "environment_source": BrokerServer.CATALOGUE})
+                if server.environment != verified_env:
+                    return BindResult(False, BIND_SERVER_METADATA_INCONSISTENT)  # left untouched, fail closed
+            elif server is not None:
+                # legacy inferred row: preserve the pre-existing fail-closed demo/live consistency guard.
                 if classification_error(acct.is_demo, server):
+                    return BindResult(False, BIND_LIVE_FORBIDDEN)
+            elif broker_server_catalogue_strict_enabled():
+                return BindResult(False, BIND_SERVER_UNVERIFIED)
+            else:
+                # genuinely new (legacy mode): create from the account's OWN is_demo, marked inferred — never
+                # the bare model default, never from a suffix. Preserves pre-governance behaviour (a demo bind
+                # makes a demo row, a monitoring-gated live bind makes a live row) minus the demo-default trap.
+                server, _created = BrokerServer.objects.get_or_create(
+                    server_name=server_name,
+                    defaults={"environment": desired_env,
+                              "environment_source": BrokerServer.INFERRED})
+                if not _created and classification_error(acct.is_demo, server):
                     return BindResult(False, BIND_LIVE_FORBIDDEN)
         acct.account_number = login
         acct.broker_server = server

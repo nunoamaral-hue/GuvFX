@@ -18,6 +18,18 @@ class BrokerServer(models.Model):
     ]
     environment = models.CharField(max_length=10, choices=ENV_CHOICES, default=DEMO)
 
+    # How ``environment`` was established (governance, 2026-10-12). It must NOT come from the first registering
+    # account's account_type (that was the poisoning defect). CATALOGUE = mirrors a verified BrokerServerCatalogue
+    # entry (authoritative); OPERATOR = set by a governed operator correction; INFERRED = legacy rows whose
+    # environment predates this governance and is NOT verified (kept as-is for backward compatibility, never trusted
+    # as authoritative). New rows are only ever created from a verified source (CATALOGUE).
+    CATALOGUE = "catalogue"
+    OPERATOR = "operator"
+    INFERRED = "inferred"
+    ENV_SOURCE_CHOICES = [(CATALOGUE, "Verified catalogue"), (OPERATOR, "Operator-corrected"),
+                          (INFERRED, "Inferred (legacy, unverified)")]
+    environment_source = models.CharField(max_length=12, choices=ENV_SOURCE_CHOICES, default=INFERRED)
+
     aliases = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
 
@@ -40,6 +52,47 @@ class BrokerServer(models.Model):
 
     def __str__(self) -> str:
         return f"{self.broker_display_name} / {self.server_name} ({self.environment})"
+
+
+class BrokerServerCatalogue(models.Model):
+    """The AUTHORITATIVE registry of KNOWN broker servers and their VERIFIED environment (governance correction
+    2026-10-12). This — not the first registering account, and not a server-name suffix — is the source of truth for
+    a server's demo/live classification. Staff-curated; a server is listed here only when an operator has VERIFIED
+    its environment against the broker's real topology. ``trading.server_environment.resolve_verified_environment``
+    reads this (case-insensitively via ``name_key``); a server absent here is UNKNOWN and provisioning fails closed.
+
+    Distinct from ``BrokerServer`` (the materialised rows that accounts link to): the catalogue is the verified truth,
+    the BrokerServer row is the operational record that must MIRROR it. Individual account registration never writes
+    here and never mutates a BrokerServer's verified environment."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Canonical surface name (as the broker publishes it) and its case-insensitive key (unique → a verified server is
+    # listed once regardless of case, so 'TradersWay-Live'/'Tradersway-Live' cannot both be verified-authoritative).
+    server_name = models.CharField(max_length=160, unique=True)
+    name_key = models.CharField(max_length=160, unique=True, editable=False)
+    environment = models.CharField(max_length=10, choices=BrokerServer.ENV_CHOICES)
+    is_verified = models.BooleanField(default=True)
+    broker_display_name = models.CharField(max_length=120, blank=True, default="")
+    evidence = models.TextField(blank=True, default="",
+                                help_text="How this environment was verified (broker topology / operator attestation).")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["server_name"]
+
+    def save(self, *args, **kwargs):
+        from trading.server_environment import server_name_key, normalise_environment, normalise_server_name
+        self.server_name = normalise_server_name(self.server_name)
+        self.name_key = server_name_key(self.server_name)
+        env = normalise_environment(self.environment)
+        if env is None:
+            from django.core.exceptions import ValidationError
+            raise ValidationError(f"BrokerServerCatalogue.environment must be demo/live, got {self.environment!r}")
+        self.environment = env
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.server_name} ({self.environment}{'' if self.is_verified else ', UNVERIFIED'})"
 
 
 class TradingAccount(models.Model):
