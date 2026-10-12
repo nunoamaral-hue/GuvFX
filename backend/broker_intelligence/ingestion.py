@@ -29,7 +29,7 @@ from .evidence import EvidenceStore
 from .mail_source import MailMessage
 from .models import BrokerEvent, Provenance
 from .parsers import select_parser
-from .resolver import resolve
+from .resolver import resolve_account, resolve_owner_identity, resolve_transaction_account
 
 logger = logging.getLogger("guvfx.broker_intelligence.ingestion")
 
@@ -53,9 +53,10 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
         logger.info("broker_intelligence ingest: non-broker sender skipped for REAL mail (no evidence stored)")
         return None
 
-    # 1) resolve recipient -> alias/account (read-only; unknown -> (None, None)); owner-scoped when a mailbox owner
-    #    is supplied, so spoofed recipient headers can never cross-attribute to another member.
-    alias, account = resolve(message.to_addresses, owner_user=owner_user)
+    # 1) resolve recipient -> (alias, identity, owner); owner-scoped (spoofed recipient headers can't cross-attribute
+    #    to another member). This does NOT pick the transaction trading-account — that is resolved from the broker's
+    #    stated source/destination accounts AFTER parsing (an email identifies the owner+broker, not the account).
+    alias, _identity, resolved_owner = resolve_owner_identity(message.to_addresses, owner_user=owner_user)
 
     # 2) store raw bytes write-once (allowlisted broker mail, or any synthetic fixture; quarantine even unparseable
     #    broker mail — never drop raw broker evidence)
@@ -96,17 +97,30 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
                     getattr(parser, "name", "?"), blob.sha256[:12])
         return None
 
+    # Resolve the TRANSACTION trading-account (distinct from the recipient owner). A GuvFX alias binds to exactly one
+    # account (direct). Otherwise match the broker-STATED source/destination accounts to the OWNER's own accounts —
+    # NEVER the recipient email alone. No unambiguous single match ⇒ trading_account stays None (attribution
+    # UNRESOLVED): a transaction for an account GuvFX does not track never binds to an unrelated account and never
+    # enters withdrawal statistics. The owner + the raw source/destination accounts are still recorded.
+    if alias is not None:
+        trading_account = resolve_account(alias)
+    else:
+        trading_account = resolve_transaction_account(
+            resolved_owner, parsed.broker, [parsed.source_account, parsed.destination_account])
+
     # Create in its OWN savepoint so a concurrent-ingest IntegrityError (the DB uniq_brokerevent_evidence backstop)
     # is isolated from any enclosing worker transaction and recovered idempotently (one blob -> one event).
     try:
         with transaction.atomic():
             return BrokerEvent.objects.create(
-                alias=alias, trading_account=account, broker=parsed.broker,
+                alias=alias, trading_account=trading_account, owner=resolved_owner, broker=parsed.broker,
                 source=BrokerEvent._meta.get_field("source").default, event_type=parsed.event_type,
                 transaction_category=parsed.transaction_category,
                 occurred_at=parsed.occurred_at, received_at=message.received_at,
                 broker_reference_id=parsed.broker_reference_id or "", amount=parsed.amount,
-                currency=parsed.currency or "", evidence=blob, evidence_hash=blob.sha256,
+                currency=parsed.currency or "",
+                source_account=parsed.source_account or "", destination_account=parsed.destination_account or "",
+                evidence=blob, evidence_hash=blob.sha256,
                 parser_name=getattr(parser, "name", ""), parser_version=getattr(parser, "version", ""),
                 confidence=parsed.confidence,
                 correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED, provenance=provenance)

@@ -40,7 +40,21 @@ _CURRENCIES = {"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD", "H
 _INTERNAL_EVIDENCE = re.compile(
     r"\b(internal transfer|transfer between (your )?[\w ]{0,24}accounts?|between (your )?[\w ]{0,24}accounts?|"
     r"to another of your accounts?|to your other [\w ]{0,12}account|account[- ]to[- ]account|"
-    r"between accounts?|inter[- ]?account|moved internally|internally between)\b", re.IGNORECASE)
+    r"between accounts?|inter[- ]?account|moved internally|internally between|"
+    # Certified TradersWay internal-transfer template (genuine captured email, 2026-10-12): money moving TO the
+    # member's OWN trading account is internal — positive evidence, never external.
+    r"transferr?ing to your [\w ]{0,12}account)\b", re.IGNORECASE)
+
+# TradersWay internal-transfer template grammar (certified against the genuine captured email, redacted):
+#   "<source> in amount of <amt> <cur> transferring to your trading account <destination>.
+#    Your withdrawal request number is: <reference>."
+_AMOUNT_OF = re.compile(
+    r"amount\s+of\s+(?:(?P<cur1>[A-Za-z]{3}|\$)\s*)?"
+    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?|\d+)\s*(?P<cur2>[A-Za-z]{3})?", re.IGNORECASE)
+_REQUEST_NUMBER = re.compile(
+    r"(?:withdrawal\s+)?request\s+number\s+is\s*[:#]?\s*([A-Za-z0-9\-]{3,32})", re.IGNORECASE)
+_SOURCE_ACCT = re.compile(r"\b(\d{4,12})\s+in\s+amount\s+of\b", re.IGNORECASE)
+_DEST_ACCT = re.compile(r"\bto\s+your\s+(?:trading\s+)?account\s+(\d{4,12})\b", re.IGNORECASE)
 
 # Amount is extracted ONLY from an explicit "Amount:"/"Total:" LABEL (never a free scan of the body), so an account
 # number or other stray integer can never be mis-grabbed. Currency is VALIDATED against _CURRENCIES.
@@ -96,7 +110,7 @@ def _extract_amount(body: str):
     (e.g. an account number) can never be mis-grabbed. Number normalisation: US grouping '1,234.56' → strip commas;
     European decimal '12,34' → dot; plain otherwise — so neither a 100x mis-scale nor a fractional-part grab occurs.
     Currency is whitelist-validated (never fabricated). No label ⇒ (None, '') — amount unknown, never guessed."""
-    m = _LABELED_AMOUNT.search(body)
+    m = _LABELED_AMOUNT.search(body) or _AMOUNT_OF.search(body)   # labelled "Amount:" or template "amount of <n> <cur>"
     if not m:
         return None, ""
     raw = m.group("num")
@@ -133,10 +147,13 @@ class TradersWayParser:
             return None                                   # not a recognisable withdrawal-lifecycle message
         category = _classify_category(subject, body)
         amount, currency = _extract_amount(body)
-        acct_m = _ACCOUNT.search(body)
-        ref_m = _REFERENCE.search(body)
-        # broker_reference_id is the broker's REFERENCE label only — NEVER a URL/token. Anchored to "reference".
+        # broker_reference_id is the broker's REFERENCE label only — NEVER a URL/token. Anchored to "reference" or the
+        # TradersWay "request number is: <N>" template. Absent ⇒ '' (never fabricated).
+        ref_m = _REFERENCE.search(body) or _REQUEST_NUMBER.search(body)
         reference = ref_m.group(1) if ref_m else ""
+        # Transaction source/destination trading accounts, from the anchored template grammar (never a free scan).
+        src_m = _SOURCE_ACCT.search(body)
+        dst_m = _DEST_ACCT.search(body)
         return ParsedBrokerEvent(
             event_type=lifecycle,
             transaction_category=category,
@@ -145,6 +162,8 @@ class TradersWayParser:
             currency=currency,
             occurred_at=None,                             # broker-stated time parsed by the worker from headers (WP3b)
             broker_reference_id=reference,
+            source_account=src_m.group(1) if src_m else "",
+            destination_account=dst_m.group(1) if dst_m else "",
             confidence=Decimal("0.800"))
 
 

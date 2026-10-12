@@ -29,6 +29,10 @@ class ParsedBrokerEvent:
     occurred_at: Optional[datetime.datetime] = None
     broker_reference_id: str = ""
     confidence: Optional[Decimal] = None
+    # The transaction's own source/destination trading-account numbers AS STATED by the broker (never fabricated;
+    # '' when absent). Distinct from the resolved GuvFX account — used downstream to resolve the transaction account.
+    source_account: str = ""
+    destination_account: str = ""
 
 
 @runtime_checkable
