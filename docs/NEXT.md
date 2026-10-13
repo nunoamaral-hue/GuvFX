@@ -1,30 +1,29 @@
 # NEXT — Priorities (keep this list short)
 
-## ★★★ T1 SOURCE-AWARE IDENTITY — R2 CORRECTIONS DONE, DARK, MERGE HOLD (2026-10-13, PR #495)
-Canonical acquisition identity is `(provider/source, chat_id, message_id)`, with a `non_genuine` partition so
-disabled-source/untrusted records never suppress a genuine acquisition. PD reviews R1 (3 HIGH + 2 AMBER) and R2
-(HIGH-A + HIGH-B + MEDIUM) plus two renewed adversarial reviews — ALL findings closed on PR #495; **not deployed**.
-One bounded next action: **return the R2 completion report and await Programme Director re-acceptance** — per the
-packet, do NOT merge without it (auto-merge OFF).
-**Do NOT** switch the Telegram channel, reset the live watermark, restart the listener, deploy, or change trading
-flags as part of T1. The Telegram **source switch is a separate, future, Sponsor-authorised cutover packet** whose
-prerequisites are in `docs/T1_SOURCE_AWARE_IDENTITY.md` (reset the watermark via `onboard_provider --reset-watermark`;
-set `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED=1`; ONE continuous repurposed provider).
+## ★★★ T1 SOURCE-AWARE IDENTITY — MERGED, NOT DEPLOYED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED` (2026-10-13, PR #495)
+`T1_IMPLEMENTATION_COMPLETE` + `T1_CERTIFIED_IN_TESTS` + `T1_MERGED` (`main` `48db801`, CI 10/10). DARK-deployment
+readiness assessed (read-only prod inspection + isolated rehearsal): **GO conditional on a controlled maintenance
+window** — mixed-version is UNSAFE so deploy = stop listener → migrate → recreate backend+listener (watermark
+catch-up; flag stays OFF). Runbook + report: `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`,
+`docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`.
+One bounded next action: **await the PD's separate `T1_PRODUCTION_DARK_DEPLOYMENT` execution packet.**
+**Do NOT** deploy, apply prod migrations, switch the Telegram channel, reset the watermark, restart the listener, or
+change any flag as part of readiness. The Telegram **source switch remains a separate, future Sponsor-authorised
+cutover packet** (`docs/T1_SOURCE_AWARE_IDENTITY.md`: reset watermark via `onboard_provider --reset-watermark`; set
+`SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED=1`; ONE continuous repurposed provider).
 
 
-## ★★★ WITHDRAWAL V1 — REMAINING ENGINEERING COMPLETE (2026-10-13)
-All sample-independent engineering is DONE and DARK (PR1 #487 identity verification/binding — MERGED+DEPLOYED+CERTIFIED;
-PR2 #488 Withdrawals UX, PR3 #489 BrokerProfile↔catalogue + IS6 auth, PR4 #490 dual-broker readiness + §7 classifier
-architecture — MERGED, DARK). See the 2026-10-13 STATUS entry.
-**The remaining items are NOT engineering — they are Sponsor/human acts (GuvFX never initiates/confirms a transaction):**
-1. **Arm continuous dual-broker ingestion** per `docs/WITHDRAWAL_V1_DUAL_BROKER_ACTIVATION.md` (verify with the read-only
-   `withdrawal_ingest_readiness` command → CAPTURE-READY, then set `BROKER_INTELLIGENCE_INGEST_ENABLED=1` + schedule
-   `run_mailbox_ingest`). Captures authenticated dual-broker mail as immutable evidence; a positive classifier is NOT
-   required to capture (UNKNOWN-category evidence is preserved, never misclassified).
-2. **A genuine external withdrawal** (IS6 USD 10 and/or TradersWay), Sponsor-initiated, to certify the positive
-   `EXTERNAL_WITHDRAWAL` classifier — until one exists, parsers emit only DEPOSIT/INTERNAL_TRANSFER/UNKNOWN and **0
-   `Withdrawal` rows surface** (expected).
-3. **IS6/acct47 identity onboarding** (PR-C; separate authorization) — then the reusable verify/bind capability can bind it.
+## ★★★ WITHDRAWAL V1 — ENGINEERING COMPLETE; CONTINUOUS INGESTION LIVE; EVIDENCE-BLOCKED on the positive classifier (2026-10-13)
+All engineering DONE and DARK (PR1 #487 … PR4 #490, #493 — MERGED+DEPLOYED). **Superseded/completed next-actions
+corrected:** continuous read-only **dual-broker ingestion is LIVE + CERTIFIED** (`BROKER_INTELLIGENCE_INGEST_ENABLED=1`
+in backend-only `broker_intel.env`; systemd `guvfx-broker-ingest.timer`, 5-min flock; `DUAL_BROKER_CONTINUOUS_INGESTION_PASS`),
+and **IS6/acct47 broker identity is already BOUND** (id=2). Do NOT re-arm ingestion or re-run that onboarding.
+**The ONE remaining item is a Sponsor/human act — GuvFX never initiates/confirms a transaction:**
+1. **A genuine external withdrawal** (IS6 USD 10 and/or TradersWay), Sponsor-initiated, to certify the positive
+   `EXTERNAL_WITHDRAWAL` classifier. Withdrawal V1 **remains EVIDENCE-BLOCKED** for positive external-withdrawal
+   classification until one exists: parsers emit only DEPOSIT/INTERNAL_TRANSFER/UNKNOWN and **0 `Withdrawal` rows
+   surface** (expected). Do not alter `BROKER_INTELLIGENCE_INGEST_ENABLED`, the 5-min timer, or enable withdrawal
+   correlation / customer-facing withdrawal UI.
 
 ## ★★ CONSOLIDATED PACKET (Sponsor, 2026-10-08) — P0 = Withdrawal Intelligence V1, TradersWay primary pilot
 **Immediate target: `TRADERSWAY_WITHDRAWAL_PILOT_READY`** — then STOP and ask the Sponsor to perform a genuine external

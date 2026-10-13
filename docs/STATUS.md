@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-10-13 - T1 SOURCE-AWARE IDENTITY — MERGED + DARK-DEPLOYMENT READINESS ASSESSED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.**
+  Current authoritative T1 state (supersedes the "MERGE HOLD" wording in the historical entries below, which are
+  preserved as engineering evidence):
+  - `T1_IMPLEMENTATION_COMPLETE` ✓ · `T1_CERTIFIED_IN_TESTS` ✓ (full backend 5801 OK) · `T1_MERGED` ✓
+    (PR #495 squash-merged to `main` `48db801`; CI 10/10; PD merge authorization).
+  - **NOT deployed to production.** Host `/home/ubuntu/guvfx-app` is still at `a474f79` (pre-T1); prod `signal_intake`
+    migrations are at `0009` (0010/0011 pending); `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` is OFF.
+  - **DARK-deployment readiness (read-only inspection + isolated rehearsal):** GO *conditional on a controlled
+    maintenance window* — mixed-version operation is UNSAFE (`non_genuine` + approval `chat_id` are NOT NULL, no DB
+    default), so deploy = stop the acquisition listener → migrate → recreate backend+listener (new image, watermark
+    catch-up; ~1–2 min acquisition pause, no loss) → flag stays OFF. Migration rehearsed at prod scale (~0.84 s;
+    857 approvals backfilled from evidence, 6 blank, 121 `DROPPED_NOT_ARMED`→`non_genuine`). Runbook +
+    full report: `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`, `docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`.
+    ProviderCommand index-name drift confirmed **harmless** to the deploy (no committed migration references it).
+  - **Separately gated, NOT advanced:** `T1_PRODUCTION_DARK_DEPLOYMENT`, `T1_LIVE_SOURCE_VERIFICATION`,
+    `T1_TELEGRAM_SOURCE_CUTOVER`, `T1_PRODUCTION_CERTIFICATION`. Next = PD issues a separate production DARK
+    deployment packet.
+
 - **2026-10-13 - T1 R2 CORRECTIONS (PR #495, DARK, MERGE HOLD pending Programme Director re-acceptance).**
   PD accepted R1 and raised R2: two more identity-safety gaps + a migration rollback-test enhancement; all fixed on
   the same PR, plus one MEDIUM from a renewed R2 adversarial certification. Still DARK — no deploy, switch, watermark
