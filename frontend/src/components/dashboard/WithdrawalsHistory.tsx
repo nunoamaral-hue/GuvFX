@@ -76,11 +76,10 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
 
   useEffect(() => { load(); }, [load]);
 
-  // Selector lists come from the UNFILTERED payload; keep them stable so filtering never empties the dropdowns.
-  const [brokers, setBrokers] = useState<string[]>([]);
-  useEffect(() => {
-    if (data && !broker && !accountId) setBrokers(data.brokers);
-  }, [data, broker, accountId]);
+  // The backend always returns the COMPLETE broker/account selector lists (collected from the member's full
+  // withdrawal set, never narrowed by the active filters), so the dropdowns stay stable while filtering — no need
+  // for separate state kept in sync via an effect.
+  const brokers = useMemo(() => (data?.brokers ?? []), [data]);
   const accounts = useMemo(() => (data?.accounts ?? []), [data]);
 
   if (hidden || !data) return null;

@@ -50,19 +50,26 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None) -> dict:
     failure), amount+currency AS OBSERVED (never summed, never fabricated), the processing ``duration_seconds``
     (None when both anchors are not present) and whether the broker reference id resolved the correlation."""
     ids = [getattr(a, "id", a) for a in accounts]
-    qs = (Withdrawal.objects.filter(trading_account_id__in=ids)
-          .select_related("trading_account").order_by("-requested_at", "-id"))
-    if account_id not in (None, ""):
-        qs = qs.filter(trading_account_id=account_id)
+    base = (Withdrawal.objects.filter(trading_account_id__in=ids)
+            .select_related("trading_account").order_by("-requested_at", "-id"))
 
-    rows, brokers, accts = [], set(), {}
-    for w in qs:
+    # Selector lists from the member's FULL withdrawal set — NEVER narrowed by the active filters — so the broker/
+    # account dropdowns stay complete and stable while filtering.
+    brokers, accts = set(), {}
+    for w in base:
         acct = w.trading_account
         bname = getattr(acct, "broker_name", "") or ""
         brokers.add(bname)
         accts.setdefault(acct.id, {"id": acct.id, "broker": bname, "account_masked": _masked_account(acct)})
+
+    # Rows = the filtered view.
+    qs = base.filter(trading_account_id=account_id) if account_id not in (None, "") else base
+    rows = []
+    for w in qs:
+        acct = w.trading_account
+        bname = getattr(acct, "broker_name", "") or ""
         if broker and bname != broker:
-            continue                                     # broker filter (applied after collecting the selector lists)
+            continue
         rows.append({
             "id": w.id,
             "broker": bname,
