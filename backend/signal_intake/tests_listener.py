@@ -166,9 +166,11 @@ class ListenerCoreTests(TestCase):
         self.assertEqual(ev["type"], "_MediaWithId")
         self.assertLessEqual(len(str(ev.get("id", ""))), 256)    # bounded, not a blob
 
-    def test_catch_up_respects_watermark(self):
-        self.provider.watermark_last_message_id = "2"
-        self.provider.save(update_fields=["watermark_last_message_id"])
+    def test_catch_up_respects_checkpoint(self):
+        # Catch-up resumes from the durable checkpoint (the watermark is the highest
+        # OBSERVED id, which live events can advance; the checkpoint is the floor).
+        self.provider.catchup_checkpoint_message_id = "2"
+        self.provider.save(update_fields=["catchup_checkpoint_message_id"])
         client = FakeClient(messages=[self._msg(1), self._msg(2), self._msg(3)])
         res = WayondListener().catch_up(client, self.provider)
         self.assertEqual(res.retrieved, 1)                        # only id > 2

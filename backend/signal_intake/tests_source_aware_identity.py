@@ -515,27 +515,30 @@ class WatermarkCutoverGuardTests(_Base):
         self.provider.refresh_from_db()
         self.assertEqual(self.provider.watermark_last_message_id, "99")
 
-    def test_45_stranded_watermark_floor_drops_new_chat_lowids(self):
-        """Documents the hazard the guard prevents: a stale high watermark makes catch_up's
-        min_id floor skip low-id new-chat messages entirely, BEFORE acquisition runs."""
+    def test_45_stranded_checkpoint_floor_drops_new_chat_lowids(self):
+        """Documents the hazard the guard prevents: a stale high catch-up CHECKPOINT makes
+        catch_up's min_id floor skip low-id new-chat messages entirely, BEFORE acquisition."""
         self.provider.telegram_chat_id = NEW_CHAT
-        self.provider.watermark_last_message_id = "150000"
-        self.provider.save(update_fields=["telegram_chat_id", "watermark_last_message_id"])
+        self.provider.catchup_checkpoint_message_id = "150000"
+        self.provider.save(update_fields=["telegram_chat_id", "catchup_checkpoint_message_id"])
         client = FakeClient(messages=[
             FakeMsg(5, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now),
             FakeMsg(6, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now)])
         n = WayondListener().catch_up(client, self.provider)
-        self.assertEqual(n.retrieved, 0)  # floor excludes ids 5,6 → silent loss (the hazard)
+        self.assertEqual(n.retrieved, 0)  # checkpoint floor excludes ids 5,6 → the hazard
         self.assertEqual(AcquiredMessage.objects.filter(chat_id=NEW_CHAT).count(), 0)
 
-    def test_46_reset_watermark_enables_new_chat_catchup(self):
-        """After --reset-watermark the floor is 0, so catch_up acquires the new-chat
-        low-id messages (the dedup fix then keeps them distinct from the old chat)."""
+    def test_46_reset_watermark_clears_checkpoint_and_enables_new_chat_catchup(self):
+        """--reset-watermark clears BOTH the checkpoint and the watermark, so catch_up's
+        floor is 0 and it acquires the new-chat low-id messages."""
         self.provider.watermark_last_message_id = "150000"
-        self.provider.save(update_fields=["watermark_last_message_id"])
+        self.provider.catchup_checkpoint_message_id = "150000"
+        self.provider.save(update_fields=["watermark_last_message_id", "catchup_checkpoint_message_id"])
         call_command("onboard_provider", "--slug", "wayond",
                      "--chat-id", NEW_CHAT, "--reset-watermark")
         self.provider.refresh_from_db()
+        self.assertEqual(self.provider.catchup_checkpoint_message_id, "")  # checkpoint cleared
+        self.assertEqual(self.provider.watermark_last_message_id, "")      # watermark cleared
         client = FakeClient(messages=[
             FakeMsg(5, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now),
             FakeMsg(6, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now)])

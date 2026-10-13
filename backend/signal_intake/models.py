@@ -195,7 +195,17 @@ class SignalProvider(models.Model):
     # ~5-10 min acquisition window (Nuno); per-provider override, default 600s.
     acquisition_window_seconds = models.PositiveIntegerField(default=600)
     last_signal_at = models.DateTimeField(null=True, blank=True)
+    # "Highest message id OBSERVED" — advanced by acquire_message for every genuine message,
+    # INCLUDING live NewMessage events. Because telethon.sync iter_messages dispatches live
+    # events during a synchronous catch-up, this scalar can be contaminated by a high-id live
+    # event and is therefore NOT a safe catch-up resume point (T1 R1 HIGH-1).
     watermark_last_message_id = models.CharField(max_length=64, blank=True)
+    # "Highest CONTIGUOUS catch-up boundary" — the durable resume checkpoint. Advanced ONLY by
+    # the catch-up pass, monotonically, and only past DURABLY-ACQUIRED messages. A live event
+    # never moves it, so a crash mid-catch-up resumes from here WITHOUT skipping history and
+    # WITHOUT being regressed by a lower-id historical message (T1 R1 HIGH-1). Migration 0012
+    # backfills it from the current watermark, so first-deploy behaviour is unchanged (DARK).
+    catchup_checkpoint_message_id = models.CharField(max_length=64, blank=True, default="")
     subscription_note = models.CharField(max_length=255, blank=True)  # renewal date; NEVER creds
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,

@@ -107,7 +107,8 @@ class SignalProviderAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "parser_profile")
     search_fields = ("slug", "name", "telegram_chat_id")
-    readonly_fields = ("last_signal_at", "watermark_last_message_id", "created_at", "updated_at")
+    readonly_fields = ("last_signal_at", "watermark_last_message_id",
+                       "catchup_checkpoint_message_id", "created_at", "updated_at")
     actions = ("action_arm", "action_pause")
 
     def get_readonly_fields(self, request, obj=None):
@@ -117,7 +118,8 @@ class SignalProviderAdmin(admin.ModelAdmin):
         ``onboard_provider --chat-id <NEW> --reset-watermark`` path (which resets the
         catch-up floor). Editable on add and while no watermark exists (no stranding risk)."""
         ro = list(super().get_readonly_fields(request, obj))
-        if obj is not None and obj.watermark_last_message_id and "telegram_chat_id" not in ro:
+        stranded = obj is not None and (obj.catchup_checkpoint_message_id or obj.watermark_last_message_id)
+        if stranded and "telegram_chat_id" not in ro:
             ro.append("telegram_chat_id")
         return tuple(ro)
 

@@ -26,47 +26,59 @@ logger = logging.getLogger(__name__)
 _INACTIVE = (SignalProvider.Status.INACTIVE, SignalProvider.Status.RETIRED)
 
 # CATCH-UP COMPLETENESS (T1): bounded, resumable pagination. A pass fetches pages of
-# ``_CATCHUP_PAGE_SIZE`` NEWER-than-watermark messages in chronological order until the
-# backlog is exhausted OR the safety ceiling ``_CATCHUP_MAX_PAGES`` is reached. Hitting the
-# ceiling yields an explicit INCOMPLETE status — it is NEVER reported as a complete catch-up.
-def _positive_env_int(name, default):
-    """A POSITIVE int from env, else the default. A 0/negative/invalid value falls back to
-    the default — a zero page size would otherwise fetch an empty page and be mis-reported
-    as a COMPLETE no-op (fail-open); this fails closed to a safe default."""
+# ``_CATCHUP_PAGE_SIZE`` messages NEWER than the durable CHECKPOINT (not the contaminable
+# watermark), in chronological order, until the backlog is exhausted OR a safety bound is hit
+# (page ceiling, wall-clock budget, or flood-wait budget). Any bound hit yields an explicit
+# INCOMPLETE status — it is NEVER reported as a complete catch-up.
+def _bounded_env_int(name, default, *, minimum=1, maximum):
+    """A bounded int from env, else the default. A value below ``minimum`` (incl. 0/negative/
+    invalid — a zero page size would otherwise fetch an empty page and be mis-reported as a
+    COMPLETE no-op) falls back to the default; a value above ``maximum`` is clamped down
+    (an excessive page size / page count must not exhaust memory or run unbounded)."""
     try:
         v = int(os.getenv(name, "") or default)
     except (TypeError, ValueError):
         return default
-    return v if v > 0 else default
+    if v < minimum:
+        return default
+    return min(v, maximum)
 
 
-_CATCHUP_PAGE_SIZE = _positive_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200)
-_CATCHUP_MAX_PAGES = _positive_env_int("WAYOND_CATCHUP_MAX_PAGES", 500)
+_CATCHUP_PAGE_SIZE = _bounded_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200, maximum=1000)
+_CATCHUP_MAX_PAGES = _bounded_env_int("WAYOND_CATCHUP_MAX_PAGES", 500, maximum=10000)
+_CATCHUP_TIME_BUDGET_S = _bounded_env_int("WAYOND_CATCHUP_TIME_BUDGET_SECONDS", 300, maximum=86400)
+_CATCHUP_FLOODWAIT_MAX_WAITS = _bounded_env_int("WAYOND_CATCHUP_FLOODWAIT_MAX_WAITS", 3, maximum=100)
+_CATCHUP_FLOODWAIT_MAX_SINGLE_S = _bounded_env_int(
+    "WAYOND_CATCHUP_FLOODWAIT_MAX_SINGLE_SECONDS", 300, maximum=3600)
 
 
 class CatchupStatus:
-    COMPLETE = "COMPLETE"                 # backlog fully drained within the ceiling
-    INCOMPLETE_CEILING = "INCOMPLETE_CEILING"  # safety ceiling hit, more may remain
-    INCOMPLETE_ERROR = "INCOMPLETE_ERROR"      # a page/processing error stopped the pass
+    COMPLETE = "COMPLETE"                       # backlog fully drained within all bounds
+    INCOMPLETE_CEILING = "INCOMPLETE_CEILING"   # page ceiling hit, more remains
+    INCOMPLETE_ERROR = "INCOMPLETE_ERROR"       # fetch/process error, flood-wait or time budget
 
 
 class CatchupResult:
     """Secret-free per-provider catch-up summary. ``status`` distinguishes a genuinely
-    complete pass from an incomplete one; the counters separate *retrieved* from
-    *durably acquired* from *stale* — a COMPLETE catch-up may legitimately contain STALE
-    messages, so completeness never implies every message became a tradeable signal."""
-    __slots__ = ("provider", "chat_id", "status", "from_watermark", "last_processed_id",
-                 "pages", "retrieved", "newly_acquired", "duplicates", "stale",
-                 "tradeable_approvals", "error")
+    complete pass from an incomplete one; the counters separate *retrieved* (fetched) from
+    *ignored* (no matching provider — not durably acquired) from *newly_acquired* (durable
+    rows) from *duplicates*/*stale*/*tradeable_approvals*. COMPLETE means the retrieval was
+    EXHAUSTED — never that every retrieved message became a durable tradeable signal.
+    ``checkpoint`` is the persisted durable resume boundary at the end of the pass."""
+    __slots__ = ("provider", "chat_id", "status", "from_checkpoint", "checkpoint",
+                 "last_processed_id", "pages", "retrieved", "ignored", "newly_acquired",
+                 "duplicates", "stale", "tradeable_approvals", "error")
 
-    def __init__(self, provider, from_watermark):
+    def __init__(self, provider, from_checkpoint):
         self.provider = provider.slug
         self.chat_id = provider.telegram_chat_id
         self.status = CatchupStatus.COMPLETE
-        self.from_watermark = from_watermark
-        self.last_processed_id = from_watermark
+        self.from_checkpoint = from_checkpoint
+        self.checkpoint = from_checkpoint
+        self.last_processed_id = from_checkpoint
         self.pages = 0
         self.retrieved = 0
+        self.ignored = 0
         self.newly_acquired = 0
         self.duplicates = 0
         self.stale = 0
@@ -98,7 +110,14 @@ class WayondListener:
 
     # --- provider lookup ---------------------------------------------------
     def provider_for_chat(self, chat_id):
-        return SignalProvider.objects.filter(telegram_chat_id=str(chat_id)).first()
+        # Explicit, stable resolution. SignalProvider.Meta already orders by slug, so .first()
+        # was slug-deterministic; we make that ordering explicit here (not reliant on Meta) so a
+        # shared chat id always resolves to the SAME provider. catch_up_all additionally
+        # de-dupes + warns so a shared chat is not caught up twice (T1 R1 adversarial, LOW).
+        # NOTE: this is NOT status-aware (a per-chat uniqueness / status-aware owner rule is a
+        # tracked follow-up — KNOWN_ISSUES); in production every provider has a distinct chat.
+        return SignalProvider.objects.filter(
+            telegram_chat_id=str(chat_id)).order_by("slug").first()
 
     def subscribed_chat_ids(self):
         """Chat ids the listener should subscribe to — every non-inactive provider
@@ -131,15 +150,16 @@ class WayondListener:
         return self.acquire_raw(message)
 
     # --- watermark catch-up (bounded, resumable, observable) ---------------
-    def _fetch_page(self, client, entity, min_id, limit):
+    def _fetch_page(self, client, entity, min_id, limit, deadline=None):
         """Fetch one page as a fully-materialised list, FloodWait-guarded around BOTH
         construction AND consumption of the iterator (Telethon's ``iter_messages`` is lazy
         — a FloodWaitError can surface while consuming, not only when constructing). A
         flood-wait retries the whole page fetch; no message has been processed yet, so the
-        retry is clean (idempotent)."""
+        retry is clean (idempotent). ``deadline`` (monotonic) bounds the flood-wait sleeps so
+        a single page can never block the catch-up past the wall-clock budget."""
         def _materialise():
             return list(client.iter_messages(entity, min_id=min_id, limit=limit, reverse=True))
-        return self._floodwait(_materialise)
+        return self._floodwait(_materialise, deadline=deadline)
 
     @staticmethod
     def _raw_id(raw):
@@ -149,76 +169,96 @@ class WayondListener:
             rid = raw.get("id", raw.get("message_id"))
         return _as_int(rid) if isinstance(_as_int(rid), int) else None
 
-    def catch_up(self, client, provider, *, page_size=None, max_pages=None):
-        """Drain the provider's backlog (messages NEWER than its watermark) in
-        chronological order, PAGE BY PAGE, until exhausted or the safety ceiling is hit.
+    def catch_up(self, client, provider, *, page_size=None, max_pages=None, time_budget_s=None):
+        """Drain the provider's backlog PAGE BY PAGE until exhausted or a safety bound is hit.
 
-        Completeness is established from the retrieval contract — not from the watermark
-        scalar. A LOCAL ``floor`` (the highest id this pass has durably processed) drives
-        pagination; it is NEVER re-read from ``provider.watermark_last_message_id`` mid-pass,
-        so a concurrent live NewMessage event that advances the shared watermark can never
-        make catch-up skip an unprocessed historical message (T1). Each page fetch is
-        FloodWait-guarded (flood-wait can occur while consuming the iterator, not only when
-        constructing it). Processing is idempotent (``acquire_message`` dedups); the 600 s
-        staleness policy is unchanged (an aged message is STALE, never a fresh approval).
-        Returns a ``CatchupResult`` whose ``status`` is COMPLETE only when the backlog was
-        fully drained — a ceiling/error pass is reported INCOMPLETE, never as success."""
-        # Clamp to positive bounds: a misconfigured 0/negative must NOT make page_size fall
-        # to an empty fetch that yields a false COMPLETE no-op (it would process zero of the
-        # backlog yet report success). 0/invalid → the configured default.
+        Resume floor = the durable ``catchup_checkpoint_message_id`` (NOT the contaminable
+        watermark): because telethon.sync iter_messages dispatches live events during a
+        synchronous catch-up, a live high-id message can advance the shared watermark, so
+        only the checkpoint — advanced ONLY by this pass, monotonically, and ONLY past
+        DURABLY-ACQUIRED messages — is a safe resume point (T1 R1 HIGH-1). The checkpoint is
+        persisted after each page, so a crash resumes without skipping or regressing.
+
+        A LOCAL pagination ``floor`` (highest id SEEN this pass) drives paging and is never
+        re-read from the shared watermark. Each page fetch is FloodWait-guarded around both
+        construction AND consumption, with a bounded wait budget. Bounds (page size/count,
+        wall-clock, flood-wait) are finite; exceeding any yields an explicit INCOMPLETE
+        status — never a false COMPLETE. Idempotent (acquire_message dedups); the staleness
+        policy is unchanged (aged → STALE, never a fresh approval)."""
         page_size = page_size if (isinstance(page_size, int) and page_size > 0) else _CATCHUP_PAGE_SIZE
         max_pages = max_pages if (isinstance(max_pages, int) and max_pages > 0) else _CATCHUP_MAX_PAGES
+        time_budget_s = time_budget_s if (isinstance(time_budget_s, int) and time_budget_s > 0) else _CATCHUP_TIME_BUDGET_S
         try:
-            floor = int(provider.watermark_last_message_id or 0)
+            checkpoint = int(provider.catchup_checkpoint_message_id or 0)
         except (TypeError, ValueError):
-            floor = 0
+            checkpoint = 0
+        floor = checkpoint
         entity = _as_int(provider.telegram_chat_id)
-        run_start = timezone.now()
-        res = CatchupResult(provider, floor)
-        seen = set()  # message ids processed THIS pass — intra-pass re-delivery = duplicate
+        deadline = time.monotonic() + time_budget_s
+        res = CatchupResult(provider, checkpoint)
+        seen = set()  # message ids seen THIS pass — intra-pass re-delivery = duplicate
         while True:
+            if time.monotonic() > deadline:
+                res.status, res.error = CatchupStatus.INCOMPLETE_ERROR, "time_budget_exceeded"
+                break
             try:
-                page = self._fetch_page(client, entity, floor, page_size)
-            except Exception as exc:  # noqa: BLE001 — a page fetch failed; do NOT claim complete
+                # deadline bounds flood-wait sleeps to the wall-clock budget (no overshoot).
+                page = self._fetch_page(client, entity, floor, page_size, deadline=deadline)
+            except Exception as exc:  # noqa: BLE001 — fetch/flood-wait budget failed; NOT complete
                 res.status, res.error = CatchupStatus.INCOMPLETE_ERROR, f"fetch:{type(exc).__name__}"
                 break
             if not page:
-                break  # backlog exhausted → COMPLETE (fetch-first: this confirming fetch proves it)
+                break  # backlog exhausted → COMPLETE (the empty confirming fetch proves it)
             if res.pages >= max_pages:
-                # Already processed max_pages and a FURTHER non-empty page exists → genuinely
-                # more remains. Report INCOMPLETE without processing beyond the ceiling. (A
-                # backlog of EXACTLY page_size*max_pages instead hits the empty confirming
-                # fetch above and is correctly COMPLETE.)
                 res.status = CatchupStatus.INCOMPLETE_CEILING
                 break
             res.pages += 1
             try:
-                floor = self._process_page(page, floor, run_start, seen, res)
+                floor, checkpoint = self._process_page(page, floor, checkpoint, seen, res)
             except Exception as exc:  # noqa: BLE001 — processing failed mid-page; fail closed
                 res.status, res.error = CatchupStatus.INCOMPLETE_ERROR, f"process:{type(exc).__name__}"
                 break
+            # Persist the durable checkpoint after each page (monotonic). A crash before this
+            # resumes from the previous page boundary → idempotent re-process, never a skip.
+            if checkpoint > res.checkpoint:
+                res.checkpoint = res.last_processed_id = checkpoint
+                provider.catchup_checkpoint_message_id = str(checkpoint)
+                provider.save(update_fields=["catchup_checkpoint_message_id"])
             if len(page) < page_size:
                 break  # last (partial) page → exhausted
-        logger.info("wayond listener catch-up: provider=%s status=%s from=%s last=%s pages=%s "
-                    "retrieved=%s acquired=%s dup=%s stale=%s approvals=%s%s",
-                    res.provider, res.status, res.from_watermark, res.last_processed_id, res.pages,
-                    res.retrieved, res.newly_acquired, res.duplicates, res.stale,
+        logger.info("wayond listener catch-up: provider=%s status=%s from=%s checkpoint=%s pages=%s "
+                    "retrieved=%s acquired=%s ignored=%s dup=%s stale=%s approvals=%s%s",
+                    res.provider, res.status, res.from_checkpoint, res.checkpoint, res.pages,
+                    res.retrieved, res.newly_acquired, res.ignored, res.duplicates, res.stale,
                     res.tradeable_approvals, (f" error={res.error}" if res.error else ""))
         return res
 
-    def _process_page(self, page, floor, run_start, seen, res):
-        """Process one page in chronological order; advance and return the LOCAL floor by
-        the highest id durably processed, updating ``res.last_processed_id`` per message so a
-        mid-page error still reports the true durable checkpoint. A re-delivery (same id
-        earlier this pass, or a row pre-existing before this pass) is counted as a duplicate,
-        never double-counted into stale/approvals."""
+    def _process_page(self, page, floor, checkpoint, seen, res):
+        """Process one page chronologically. Returns (pagination_floor, durable_checkpoint).
+
+        The pagination ``floor`` advances past EVERY retrieved id (so paging always
+        progresses). The durable ``checkpoint`` advances ONLY past a GENUINE durable
+        acquisition (``acq is not None`` AND ``not acq.non_genuine``) and monotonically — so
+        it never passes a retrieved-but-not-persisted AUTHORIZED message, a NON-GENUINE record
+        (a paused/onboarding DROP or a chat refusal), or a lower-id historical message. A
+        message whose source resolves to no provider is counted ``ignored`` (not an
+        acquisition) and never turned into an approval. Re-delivery (same id this pass, or a
+        row pre-existing this acquire call) is counted as a duplicate, not double-tallied."""
         for raw in page:
-            acq = self.acquire_raw(raw)   # acquire_message commits per message (durable)
+            t_before = timezone.now()     # distinguishes a row WE create now from one a
+                                          # concurrent live handler already created (see dup)
+            acq = self.acquire_raw(raw)   # acquire_message commits per durable message
             res.retrieved += 1
             rid = self._raw_id(raw)
-            dup = (rid is not None and rid in seen) or (
-                acq is not None and acq.acquired_at is not None and acq.acquired_at < run_start)
-            if acq is not None:
+            if acq is None:
+                res.ignored += 1          # retrieved but not durably acquired (no provider)
+            else:
+                # Duplicate if seen already THIS pass, OR the row PRE-EXISTED this acquire call
+                # — a prior pass OR a concurrent live NewMessage/MessageEdited that acquired the
+                # same id during this telethon.sync catch-up (acquire_message returns that
+                # existing row on dedup). acquired_at < t_before ⇒ not created by this call.
+                dup = (rid is not None and rid in seen) or (
+                    acq.acquired_at is not None and acq.acquired_at < t_before)
                 if dup:
                     res.duplicates += 1
                 else:
@@ -227,19 +267,35 @@ class WayondListener:
                         res.stale += 1
                     if acq.outcome == AcquiredMessage.Outcome.INTAKEN and acq.approval_id:
                         res.tradeable_approvals += 1
+                # Durable checkpoint advances ONLY past a GENUINE acquisition, mirroring the
+                # watermark (acquisition advances neither for a non_genuine row). A paused /
+                # onboarding provider records DROPPED_NOT_ARMED (non_genuine) rows; advancing
+                # the checkpoint past them would, after the provider is re-armed (which does
+                # NOT reset the checkpoint), skip those ids forever and silently lose an
+                # in-window signal — the subsystem's worst outcome (T1 R1 adversarial HIGH).
+                if not acq.non_genuine and rid is not None and rid > checkpoint:
+                    checkpoint = rid
             if rid is not None:
                 seen.add(rid)
                 if rid > floor:
-                    floor = rid
-                    res.last_processed_id = floor   # durable checkpoint, kept current per message
-        return floor
+                    floor = rid               # pagination floor advances past everything retrieved
+        return floor, checkpoint
 
     def catch_up_all(self, client):
         """Catch up EVERY subscribed provider independently. One provider's incomplete/
         failed pass is isolated and recorded — it never aborts the others. Returns the list
         of per-provider CatchupResult."""
         results = []
+        done_chats = set()
         for cid in self.subscribed_chat_ids():
+            if cid in done_chats:
+                # Two active providers share a chat id → ambiguous attribution. provider_for_chat
+                # resolves deterministically (lowest id); warn so the operator fixes it, and do
+                # NOT catch the chat up twice (which would starve the other provider).
+                logger.warning("wayond listener catch-up: multiple active providers share "
+                               "chat_id=%s — caught up once (lowest-id); resolve the duplicate", cid)
+                continue
+            done_chats.add(cid)
             provider = self.provider_for_chat(cid)
             if provider is None:
                 continue
@@ -247,27 +303,42 @@ class WayondListener:
                 results.append(self.catch_up(client, provider))
             except Exception:  # noqa: BLE001 — isolate a provider-level failure, keep going
                 logger.exception("wayond listener catch-up: provider chat=%s crashed", cid)
-                res = CatchupResult(provider, provider.watermark_last_message_id or "")
+                res = CatchupResult(provider, provider.catchup_checkpoint_message_id or "")
                 res.status, res.error = CatchupStatus.INCOMPLETE_ERROR, "provider_crash"
                 results.append(res)
         return results
 
-    # --- flood-wait / rate-limit ------------------------------------------
-    def _floodwait(self, fn, *args, **kwargs):
-        """Call ``fn`` and honour Telethon FloodWaitError by sleeping the requested
-        seconds (detected by class name to avoid importing Telethon)."""
+    # --- flood-wait / rate-limit (BOUNDED) --------------------------------
+    def _floodwait(self, fn, *args, max_waits=None, max_single_s=None, deadline=None, **kwargs):
+        """Call ``fn`` and honour Telethon FloodWaitError, but BOUNDED: at most ``max_waits``
+        flood-waits, each capped at ``max_single_s`` seconds. Exceeding the retry budget
+        re-raises the FloodWaitError so the caller records an explicit INCOMPLETE (never an
+        indefinite suspension / unbounded retry that would defeat rate limiting). When a
+        ``deadline`` (monotonic) is given, a sleep that would run PAST it is NOT taken — the
+        FloodWaitError is re-raised immediately so catch_up returns INCOMPLETE_ERROR promptly
+        instead of overshooting its wall-clock budget (and starving live dispatch, which only
+        begins after catch_up_all returns)."""
+        max_waits = max_waits if (isinstance(max_waits, int) and max_waits > 0) else _CATCHUP_FLOODWAIT_MAX_WAITS
+        max_single_s = max_single_s if (isinstance(max_single_s, int) and max_single_s > 0) else _CATCHUP_FLOODWAIT_MAX_SINGLE_S
+        waits = 0
         while True:
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001
                 if type(exc).__name__ != "FloodWaitError":
                     raise
+                waits += 1
+                if waits > max_waits:
+                    raise  # bounded — do not retry indefinitely; caller → INCOMPLETE_ERROR
                 try:
                     secs = int(getattr(exc, "seconds", 0) or 0)
                 except (TypeError, ValueError):
                     secs = 60  # malformed seconds → a safe default, never crash
-                secs = max(secs, 0)
-                logger.warning("wayond listener flood-wait: sleeping %ss", secs)
+                secs = min(max(secs, 0), max_single_s)
+                if deadline is not None and (time.monotonic() + secs) > deadline:
+                    raise  # sleeping would overshoot the wall-clock budget → fail closed now
+                logger.warning("wayond listener flood-wait: sleeping %ss (wait %s/%s)",
+                               secs, waits, max_waits)
                 time.sleep(secs)
 
     # --- health ------------------------------------------------------------

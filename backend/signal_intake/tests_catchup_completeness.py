@@ -7,6 +7,7 @@ resurrection), two-provider isolation, and no duplicate downstream side-effects.
 """
 import datetime as dt
 
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
@@ -143,7 +144,7 @@ class FailureResumeTests(_Base):
         r1 = self._cu(_FailOnCallClient(msgs, fail_on_call=2), page_size=200)
         self.assertFalse(r1.complete)
         self.prov.refresh_from_db()
-        self.assertEqual(self.prov.watermark_last_message_id, "200")  # contiguous checkpoint
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "200")  # durable resume point
         r2 = self._cu(FakeClient(messages=msgs), page_size=200)       # clean restart
         self.assertTrue(r2.complete)
         self.assertEqual(AcquiredMessage.objects.count(), 500)        # all, no gap
@@ -254,6 +255,11 @@ class ProviderStateTests(_Base):
         self.assertEqual(r.retrieved, 250)
         self.assertEqual(
             AcquiredMessage.objects.filter(outcome=AcquiredMessage.Outcome.DROPPED_NOT_ARMED).count(), 250)
+        # Adversarial HIGH: these are NON-GENUINE drops → the durable checkpoint must NOT
+        # advance past them (else a later re-arm would skip them forever). Resume floor intact.
+        self.assertEqual(r.checkpoint, 0)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "")
 
     def test_19_unknown_chat_messages_are_ignored_by_source_allowlist(self):
         # Source authentication = the provider_for_chat allowlist: a message from a chat with
@@ -299,15 +305,17 @@ class NoDuplicateSideEffectTests(_Base):
 
 # ---- I. R1 adversarial-review fixes (26-30) --------------------------------
 class ReviewFixTests(_Base):
-    def test_26_positive_env_int_rejects_zero_and_invalid(self):
-        from signal_intake.listener.adapter import _positive_env_int
+    def test_26_bounded_env_int_rejects_zero_and_clamps_max(self):
+        from signal_intake.listener.adapter import _bounded_env_int
         import os as _os
         from unittest import mock
         for bad in ("0", "-5", "x", ""):
             with mock.patch.dict(_os.environ, {"WAYOND_CATCHUP_PAGE_SIZE": bad}):
-                self.assertEqual(_positive_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200), 200)
+                self.assertEqual(_bounded_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200, maximum=1000), 200)
         with mock.patch.dict(_os.environ, {"WAYOND_CATCHUP_PAGE_SIZE": "50"}):
-            self.assertEqual(_positive_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200), 50)
+            self.assertEqual(_bounded_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200, maximum=1000), 50)
+        with mock.patch.dict(_os.environ, {"WAYOND_CATCHUP_PAGE_SIZE": "999999"}):  # excessive → clamp
+            self.assertEqual(_bounded_env_int("WAYOND_CATCHUP_PAGE_SIZE", 200, maximum=1000), 1000)
 
     def test_27_zero_page_size_does_not_produce_false_complete_noop(self):
         # a 0/invalid page_size must clamp to the default and FULLY drain, never report a
@@ -323,11 +331,13 @@ class ReviewFixTests(_Base):
         self.assertTrue(r.complete)
         self.assertEqual(r.status, CatchupStatus.COMPLETE)
         self.assertEqual(r.retrieved, 300)
-        # one more than capacity genuinely trips the ceiling
+        # one more than capacity genuinely trips the ceiling (reset the durable checkpoint
+        # the first pass persisted, so the 2nd pass starts from 0 again)
         AcquiredMessage.objects.all().delete()
         self.prov.refresh_from_db()
         self.prov.watermark_last_message_id = ""
-        self.prov.save(update_fields=["watermark_last_message_id"])
+        self.prov.catchup_checkpoint_message_id = ""
+        self.prov.save(update_fields=["watermark_last_message_id", "catchup_checkpoint_message_id"])
         r2 = self._cu(FakeClient(messages=_msgs(1, 301)), page_size=100, max_pages=3)
         self.assertEqual(r2.status, CatchupStatus.INCOMPLETE_CEILING)
 
@@ -339,8 +349,14 @@ class ReviewFixTests(_Base):
                 return super().acquire_raw(raw)
         r = _Boom().catch_up(FakeClient(messages=_msgs(1, 400)), self.prov, page_size=200)
         self.assertEqual(r.status, CatchupStatus.INCOMPLETE_ERROR)
-        self.assertEqual(r.last_processed_id, 250)   # 201..250 durably processed before 251 raised
-        self.assertEqual(r.retrieved, 250)           # page1 200 + 201..250
+        # Durable checkpoint = last FULLY-PERSISTED page boundary (200): page 2 raised before
+        # its per-page checkpoint commit, so 201..250 (committed rows) are re-covered on resume
+        # (idempotent) — the checkpoint never claims an un-persisted interval.
+        self.assertEqual(r.last_processed_id, 200)
+        self.assertEqual(r.checkpoint, 200)
+        self.assertEqual(r.retrieved, 250)           # page1 200 + 201..250 attempted before the raise
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "200")  # persisted resume point
 
     def test_30_intra_pass_redelivery_counted_as_duplicate(self):
         msgs = _msgs(1, 3) + [FakeMsg(2, 1001, text=PING, date=timezone.now(), edit_date=1)]
@@ -348,3 +364,338 @@ class ReviewFixTests(_Base):
         self.assertEqual(r.duplicates, 1)            # the re-delivered id=2 → duplicate, not new
         self.assertEqual(r.newly_acquired, 3)        # ids 1,2,3 acquired once each
         self.assertEqual(AcquiredMessage.objects.filter(message_id="2").count(), 1)
+
+
+# ---- J. R1 §3 — durable checkpoint vs watermark, persisted-state crash/concurrency ----
+# These examine the PERSISTED DB state across two passes (not just the in-memory result):
+# the durable ``catchup_checkpoint_message_id`` is the resume floor, it is monotonic, and it
+# is immune to a live event contaminating the shared ``watermark_last_message_id`` (the
+# telethon.sync hazard that motivated T1 R1 HIGH-1).
+class _OneLowIdThenEmptyClient(FakeClient):
+    """Serves a single (possibly below-floor) id ONCE, ignoring min_id, then empties.
+    Simulates a lower-id historical message physically reaching ``_process_page`` so the
+    in-code monotonic guard (``rid > checkpoint``) is actually exercised, not pre-filtered."""
+    def __init__(self, low_id):
+        super().__init__(messages=[FakeMsg(low_id, 1001, text=PING, date=timezone.now())])
+        self._served = False
+
+    def iter_messages(self, entity, min_id=0, limit=200, reverse=False):
+        if self._served:
+            return []
+        self._served = True
+        return list(self._messages)   # ignore min_id → force the low id through
+
+
+class PersistedCheckpointTests(_Base):
+    def test_31_contaminated_watermark_interrupt_restart_resumes_from_checkpoint(self):
+        """Scenario A: a catch-up is interrupted after one page (persisting a clean durable
+        checkpoint), THEN a live NewMessage(id=9999) contaminates the shared watermark. The
+        restart MUST resume from the durable checkpoint (200), never the contaminated
+        watermark (9999) — otherwise every historical message below 9999 is silently
+        skipped. The resume floor is the checkpoint; the watermark is never read for it."""
+        msgs = _msgs(1, 500)
+        # pass 1: page 1 (1..200) drains + persists checkpoint; page-2 fetch fails → INCOMPLETE.
+        r1 = self._cu(_FailOnCallClient(msgs, fail_on_call=2), page_size=200)
+        self.assertFalse(r1.complete)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "200")  # clean boundary
+        # a concurrent live event (telethon.sync dispatch) contaminates the shared watermark
+        # with a far-future id — the exact hazard the durable checkpoint exists to survive.
+        SignalProvider.objects.filter(id=self.prov.id).update(watermark_last_message_id="9999")
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.watermark_last_message_id, "9999")     # contaminated
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "200")  # checkpoint intact
+        # pass 2 (clean restart): resumes from checkpoint 200 — NOT 9999 — so 201..500 drain.
+        # Had the resume read the 9999 watermark, it would fetch 0 and lose 201..500 forever.
+        r2 = self._cu(FakeClient(messages=msgs), page_size=200)
+        self.assertTrue(r2.complete)
+        self.assertEqual(AcquiredMessage.objects.count(), 500)   # no historical skip
+        self.assertEqual(r2.duplicates, 0)                       # resumed PAST 200, not before
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "500")
+
+    def test_32_checkpoint_is_monotonic_never_regresses(self):
+        """Scenario B: a lower-id historical message reaching ``_process_page`` must NOT
+        regress the durable checkpoint (a watermark/checkpoint regression would re-open an
+        already-drained interval and risk re-delivery / lost-position ambiguity)."""
+        self.prov.catchup_checkpoint_message_id = "300"
+        self.prov.save(update_fields=["catchup_checkpoint_message_id"])
+        r = self._cu(_OneLowIdThenEmptyClient(150), page_size=200)
+        self.assertTrue(r.complete)
+        self.assertEqual(r.checkpoint, 300)                      # 150 < 300 → no regression
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "300")
+
+    def test_33_crash_midpage_resume_is_idempotent_no_gap_no_dup_rows(self):
+        """Scenario C: a crash BETWEEN the per-message commits and the page-boundary
+        checkpoint write. The durable checkpoint stays at the previous clean boundary, so the
+        restart re-covers the committed-but-uncheckpointed rows idempotently (dedup) and
+        drains the rest — no gap, no duplicate durable rows."""
+        msgs = _msgs(1, 400)
+
+        class _BoomAt251(WayondListener):
+            def acquire_raw(self, raw):
+                if self._raw_id(raw) == 251:
+                    raise RuntimeError("crash mid page 2 at 251")
+                return super().acquire_raw(raw)
+
+        r1 = _BoomAt251().catch_up(FakeClient(messages=msgs), self.prov, page_size=200)
+        self.assertEqual(r1.status, CatchupStatus.INCOMPLETE_ERROR)
+        self.prov.refresh_from_db()
+        # page 2 raised before its checkpoint commit → durable checkpoint = page-1 boundary.
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "200")
+        self.assertEqual(AcquiredMessage.objects.count(), 250)  # 1..200 + committed 201..250
+        # clean restart: re-covers 201..250 (idempotent) + drains 251..400.
+        r2 = self._cu(FakeClient(messages=msgs), page_size=200)
+        self.assertTrue(r2.complete)
+        self.assertEqual(AcquiredMessage.objects.count(), 400)  # no gap
+        self.assertEqual(r2.duplicates, 50)                     # 201..250 re-covered, deduped
+        self.assertEqual(r2.newly_acquired, 150)                # 251..400 fresh
+        self.assertEqual(AcquiredMessage.objects.filter(message_id="250").count(), 1)  # not doubled
+        self.assertEqual(AcquiredMessage.objects.filter(message_id="251").count(), 1)
+
+
+# ---- K. R1 §4 — bounded flood-wait & resource exhaustion (HIGH-2) ----------
+class _AlwaysFloodClient(FakeClient):
+    """Every fetch raises FloodWaitError (during construction)."""
+    def __init__(self, messages, seconds=0):
+        super().__init__(messages=messages)
+        self._seconds = seconds
+        self.flood_calls = 0
+
+    def iter_messages(self, entity, min_id=0, limit=200, reverse=False):
+        self.flood_calls += 1
+        raise FloodWaitError(self._seconds)
+
+
+class _AlwaysFloodDuringConsumeClient(FakeClient):
+    """Every fetch raises FloodWaitError DURING consumption (lazy iterator), never while
+    constructing — the harder case the construction-only guard would miss."""
+    def iter_messages(self, entity, min_id=0, limit=200, reverse=False):
+        def gen():
+            raise FloodWaitError(0)
+            yield  # pragma: no cover — unreachable; makes this a generator
+        return gen()
+
+
+class BoundedResourceTests(_Base):
+    def test_34_repeated_floodwait_is_bounded_and_incomplete(self):
+        c = _AlwaysFloodClient(_msgs(1, 50), seconds=0)
+        r = self._cu(c, page_size=200)
+        self.assertEqual(r.status, CatchupStatus.INCOMPLETE_ERROR)
+        self.assertIn("FloodWaitError", r.error)
+        # bounded: 1 initial attempt + max_waits(3) retries = 4 calls, then re-raise (no spin).
+        self.assertEqual(c.flood_calls, 4)
+        self.assertEqual(r.retrieved, 0)             # nothing drained; NOT a false COMPLETE
+
+    def test_35_floodwait_single_sleep_is_capped(self):
+        import signal_intake.listener.adapter as A
+        from unittest import mock
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise FloodWaitError(100000)   # absurd server-demanded wait
+            return "ok"
+
+        slept = []
+        with mock.patch.object(A.time, "sleep", side_effect=lambda s: slept.append(s)):
+            out = WayondListener()._floodwait(fn, max_waits=3, max_single_s=5)
+        self.assertEqual(out, "ok")
+        self.assertEqual(slept, [5])               # 100000 capped to 5 — never slept 100000
+
+    def test_36_catch_up_param_clamps_nonpositive_page_size(self):
+        for bad in (0, -10):
+            AcquiredMessage.objects.all().delete()
+            self.prov.catchup_checkpoint_message_id = ""
+            self.prov.save(update_fields=["catchup_checkpoint_message_id"])
+            r = self._cu(FakeClient(messages=_msgs(1, 5)), page_size=bad)
+            self.assertTrue(r.complete)            # clamps to default, never a 0-page noop
+            self.assertEqual(r.retrieved, 5)
+
+    def test_37_catch_up_param_clamps_nonpositive_max_pages(self):
+        # zero/negative max_pages must fall back to the default — NOT trip an instant ceiling.
+        r = self._cu(FakeClient(messages=_msgs(1, 5)), page_size=200, max_pages=0)
+        self.assertTrue(r.complete)
+        self.assertEqual(r.retrieved, 5)
+        r2 = self._cu(FakeClient(messages=_msgs(6, 10)), page_size=200, max_pages=-3)
+        self.assertTrue(r2.complete)
+
+    def test_38_excessive_env_values_clamped_to_maximum(self):
+        from signal_intake.listener.adapter import _bounded_env_int
+        import os as _os
+        from unittest import mock
+        with mock.patch.dict(_os.environ, {"WAYOND_CATCHUP_MAX_PAGES": "100000000"}):
+            self.assertEqual(_bounded_env_int("WAYOND_CATCHUP_MAX_PAGES", 500, maximum=10000), 10000)
+        with mock.patch.dict(_os.environ, {"WAYOND_CATCHUP_FLOODWAIT_MAX_SINGLE_SECONDS": "999999"}):
+            self.assertEqual(
+                _bounded_env_int("WAYOND_CATCHUP_FLOODWAIT_MAX_SINGLE_SECONDS", 300, maximum=3600), 3600)
+        with mock.patch.dict(_os.environ, {"WAYOND_CATCHUP_FLOODWAIT_MAX_WAITS": "100000"}):
+            self.assertEqual(_bounded_env_int("WAYOND_CATCHUP_FLOODWAIT_MAX_WAITS", 3, maximum=100), 100)
+
+    def test_39_floodwait_during_consumption_beyond_budget_is_incomplete(self):
+        r = self._cu(_AlwaysFloodDuringConsumeClient(messages=_msgs(1, 50)), page_size=200)
+        self.assertEqual(r.status, CatchupStatus.INCOMPLETE_ERROR)
+        self.assertIn("FloodWaitError", r.error)
+        self.assertEqual(r.retrieved, 0)
+
+    def test_40_time_budget_exceeded_is_incomplete_error(self):
+        import signal_intake.listener.adapter as A
+        from unittest import mock
+        vals = iter([1000.0, 2000.0, 3000.0, 4000.0])   # deadline=1300; first loop check=2000>1300
+        with mock.patch.object(A.time, "monotonic", side_effect=lambda: next(vals)):
+            r = self._cu(FakeClient(messages=_msgs(1, 50)), page_size=200)
+        self.assertEqual(r.status, CatchupStatus.INCOMPLETE_ERROR)
+        self.assertEqual(r.error, "time_budget_exceeded")
+        self.assertEqual(r.retrieved, 0)               # tripped before any page processed
+
+    def test_41_restart_after_bounded_floodwait_failure_resumes_and_completes(self):
+        msgs = _msgs(1, 300)
+        r1 = self._cu(_AlwaysFloodClient(msgs, seconds=0), page_size=200)   # all fetches flood
+        self.assertFalse(r1.complete)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "")       # nothing drained
+        r2 = self._cu(FakeClient(messages=msgs), page_size=200)             # clean restart
+        self.assertTrue(r2.complete)
+        self.assertEqual(AcquiredMessage.objects.count(), 300)
+
+
+# ---- L. R1 §5 — completeness reporting semantics (MEDIUM) ------------------
+# COMPLETE means the RETRIEVAL was exhausted within bounds — never that every retrieved
+# message became a durable row, nor a tradeable approval. The counters keep those distinct,
+# and the durable checkpoint only ever advances past DURABLY-ACCOUNTED messages.
+class CompletenessReportingTests(_Base):
+    def test_42_reporting_distinguishes_retrieved_ignored_acquired(self):
+        # ids 4,5 are from a foreign chat with no provider → retrieved but NOT durably acquired.
+        msgs = _msgs(1, 3, chat=1001) + _msgs(4, 5, chat=9999)
+        r = self._cu(FakeClient(messages=msgs), page_size=200)
+        self.assertTrue(r.complete)
+        self.assertEqual(r.retrieved, 5)        # everything fetched is counted retrieved…
+        self.assertEqual(r.ignored, 2)          # …but 4,5 had no provider → ignored
+        self.assertEqual(r.newly_acquired, 3)   # only 1,2,3 are durable rows
+        self.assertEqual(AcquiredMessage.objects.count(), 3)
+
+    def test_43_checkpoint_not_advanced_past_unaccounted_higher_id(self):
+        """The durable checkpoint must stop at the highest DURABLY-ACCOUNTED id, never jump
+        past a retrieved-but-unaccounted higher id. (Foreign-chat ids here stand in for the
+        production case — a transient acquire failure on an authorized message — which raises
+        → INCOMPLETE with the same non-advance; either way the checkpoint never over-claims.)"""
+        msgs = _msgs(1, 3, chat=1001) + _msgs(4, 5, chat=9999)
+        r = self._cu(FakeClient(messages=msgs), page_size=200)
+        self.assertEqual(r.checkpoint, 3)                         # not 5
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "3")
+
+    def test_44_complete_does_not_imply_all_tradeable(self):
+        now = timezone.now()
+        old = now - dt.timedelta(seconds=1200)
+        msgs = [
+            FakeMsg(1, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5)),  # fresh → tradeable
+            FakeMsg(2, 1001, text=PING, date=now - dt.timedelta(seconds=5)),    # non-signal → quarantined
+            FakeMsg(3, 1001, text=SIGNAL, date=old),                            # aged signal → STALE
+        ]
+        r = self._cu(FakeClient(messages=msgs))
+        self.assertTrue(r.complete)
+        self.assertEqual(r.retrieved, 3)             # retrieved…
+        self.assertEqual(r.newly_acquired, 3)        # …all durable rows…
+        self.assertEqual(r.stale, 1)                 # …one aged out…
+        self.assertEqual(r.tradeable_approvals, 1)   # …only one is tradeable
+        self.assertEqual(PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 1)
+
+
+# ---- M. R1 adversarial-review fixes (45-48) --------------------------------
+class AdversarialR1FixTests(_Base):
+    def test_45_paused_catchup_does_not_strand_checkpoint_rearm_acquires(self):
+        """Findings 1/4/5 (triple-confirmed): a non-armed provider's catch-up must NOT advance
+        the durable checkpoint past DROPPED_NOT_ARMED (non_genuine) rows. Otherwise re-arming
+        (onboard_provider --arm does NOT reset the checkpoint) would skip those ids forever and
+        silently lose an in-window signal — the subsystem's worst outcome."""
+        self.prov.status = SignalProvider.Status.PAUSED
+        self.prov.save(update_fields=["status"])
+        fresh = FakeMsg(100, 1001, text=SIGNAL, date=timezone.now() - dt.timedelta(seconds=5))
+        r1 = self._cu(FakeClient(messages=[fresh]))
+        self.assertTrue(r1.complete)
+        self.assertEqual(r1.checkpoint, 0)                 # NOT advanced past the non-genuine drop
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "")   # resume floor intact
+        self.assertEqual(AcquiredMessage.objects.filter(
+            message_id="100", non_genuine=True,
+            outcome=AcquiredMessage.Outcome.DROPPED_NOT_ARMED).count(), 1)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)      # not tradeable while paused
+        # operator re-arms through the real path (changes status only, never the checkpoint)
+        call_command("onboard_provider", "--slug", "wayond", "--arm")
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "")   # still intact after arm
+        # the still-in-window signal (id=100) is now GENUINELY acquired — not skipped
+        r2 = self._cu(FakeClient(messages=[fresh]))
+        self.assertTrue(r2.complete)
+        self.assertEqual(r2.tradeable_approvals, 1)        # the signal was NOT lost
+        self.assertEqual(PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 1)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "100")  # now advanced (genuine)
+
+    def test_46_live_acquired_during_pass_counted_duplicate_not_new(self):
+        """Finding 2: a message the concurrent live handler acquires DURING this catch-up pass
+        (acquired_at >= pass start, absent from the local 'seen' set) must be counted a
+        DUPLICATE when catch-up re-fetches it — not newly_acquired/tradeable. The per-message
+        acquire cutoff fixes the old pass-start heuristic that miscounted it."""
+        now = timezone.now()
+        live_sig = FakeMsg(5, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5))
+
+        class _LiveRace(WayondListener):
+            def __init__(self):
+                super().__init__(); self._fired = False
+
+            def acquire_raw(self, raw):
+                if not self._fired and self._raw_id(raw) == 1:
+                    self._fired = True
+                    WayondListener().acquire_raw(live_sig)   # live NewMessage wins id=5 mid-pass
+                return super().acquire_raw(raw)
+
+        msgs = _msgs(1, 4) + [live_sig]   # catch-up backlog includes id 5
+        r = _LiveRace().catch_up(FakeClient(messages=msgs), self.prov)
+        self.assertTrue(r.complete)
+        self.assertEqual(r.duplicates, 1)                 # id 5 already acquired by the live handler
+        self.assertEqual(r.newly_acquired, 4)             # ids 1..4 only (NOT 5)
+        self.assertEqual(r.tradeable_approvals, 0)        # catch-up did not NEWLY acquire the signal
+        self.assertEqual(AcquiredMessage.objects.filter(message_id="5").count(), 1)  # no duplicate row
+        self.assertEqual(PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 1)         # the live one
+
+    def test_47_floodwait_respects_wallclock_deadline(self):
+        """Finding 3: a flood-wait sleep that would run PAST the wall-clock budget must abort
+        (re-raise → INCOMPLETE_ERROR) rather than overshoot the budget and starve live dispatch."""
+        import signal_intake.listener.adapter as A
+        from unittest import mock
+        clock = {"t": 1000.0}
+        c = _AlwaysFloodClient(_msgs(1, 50), seconds=300)   # each flood demands 300s
+        with mock.patch.object(A.time, "monotonic", side_effect=lambda: clock["t"]), \
+             mock.patch.object(A.time, "sleep",
+                               side_effect=lambda s: clock.__setitem__("t", clock["t"] + s)):
+            r = self._cu(c, page_size=200, time_budget_s=30)   # 30s budget << one 300s flood sleep
+        self.assertEqual(r.status, CatchupStatus.INCOMPLETE_ERROR)
+        self.assertIn("FloodWaitError", r.error)
+        # the first 300s sleep would overshoot the 30s budget → abort BEFORE sleeping (not 3×300s)
+        self.assertEqual(c.flood_calls, 1)
+
+    def test_48_shared_chat_id_resolves_deterministically_and_warns(self):
+        """Finding 6 (LOW): two active providers sharing a chat id resolve deterministically
+        (stable, lowest slug), the chat is caught up ONCE (not per-provider), and the collision
+        is warned. The second provider's slug sorts BEFORE 'wayond' but its id is HIGHER, so the
+        assertion discriminates slug-ordering (not an id/creation-order accident)."""
+        shared = SignalProvider.objects.create(
+            slug="aaa_shared", telegram_chat_id="1001", parser_profile=self.profile,
+            status=SignalProvider.Status.ARMED, acquisition_window_seconds=600)
+        self.assertGreater(shared.id, self.prov.id)            # higher id, lower slug
+        lis = WayondListener()
+        r1 = lis.provider_for_chat("1001")
+        r2 = lis.provider_for_chat("1001")
+        self.assertEqual(r1.id, r2.id)                         # stable across calls
+        self.assertEqual(r1.slug, "aaa_shared")                # lowest slug wins (not lowest id)
+        with self.assertLogs("signal_intake.listener.adapter", level="WARNING") as cm:
+            results = lis.catch_up_all(FakeClient(messages=_msgs(1, 3, chat=1001)))
+        self.assertEqual(len(results), 1)                      # chat caught up ONCE, not per-provider
+        self.assertTrue(any("share" in m for m in cm.output))  # collision warned

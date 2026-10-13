@@ -55,25 +55,27 @@ class Command(BaseCommand):
             if o["chat_id"] is not None:
                 new_chat = str(o["chat_id"])
                 if new_chat != provider.telegram_chat_id:
-                    # CHANNEL SWITCH (T1 fail-closed): the per-provider watermark is a
-                    # chat-blind scalar used as the catch-up fetch floor (iter_messages
-                    # min_id). A new chat numbers its message ids independently, so
-                    # inheriting the old chat's high-water mark would make catch-up
-                    # SILENTLY SKIP every new-chat message with a lower id — a
-                    # cross-channel loss the dedup fix alone cannot prevent (it never runs
-                    # for messages filtered out before acquisition). Refuse the switch
-                    # unless the operator explicitly resets the watermark.
-                    if provider.watermark_last_message_id and not o["reset_watermark"]:
+                    # CHANNEL SWITCH (T1 fail-closed): the catch-up resume floor is the durable
+                    # ``catchup_checkpoint_message_id`` (and the watermark is the highest
+                    # observed id). A new chat numbers its message ids independently, so
+                    # inheriting the old chat's checkpoint/watermark would make catch-up
+                    # SILENTLY SKIP every new-chat message with a lower id. Refuse the switch
+                    # unless the operator explicitly resets the catch-up position, which clears
+                    # BOTH the checkpoint and the watermark so the new chat is drained from 0.
+                    stranded = provider.catchup_checkpoint_message_id or provider.watermark_last_message_id
+                    if stranded and not o["reset_watermark"]:
                         raise CommandError(
                             f"refusing to change chat id for '{provider.slug}': a catch-up "
-                            f"watermark ({provider.watermark_last_message_id!r}) is set. A new "
-                            f"chat's message ids are independent, so the old watermark would "
-                            f"silently skip new-chat messages. Re-run with --reset-watermark "
-                            f"to switch (resets the catch-up floor to re-catch-up from the start)."
+                            f"position (checkpoint={provider.catchup_checkpoint_message_id!r}, "
+                            f"watermark={provider.watermark_last_message_id!r}) is set. A new "
+                            f"chat's message ids are independent, so it would silently skip "
+                            f"new-chat messages. Re-run with --reset-watermark to switch "
+                            f"(clears the checkpoint + watermark to re-catch-up from the start)."
                         )
                     if o["reset_watermark"]:
                         provider.watermark_last_message_id = ""
-                        fields.append("watermark_last_message_id")
+                        provider.catchup_checkpoint_message_id = ""
+                        fields.extend(["watermark_last_message_id", "catchup_checkpoint_message_id"])
                 provider.telegram_chat_id = new_chat; fields.append("telegram_chat_id")
             if o["name"]:
                 provider.name = o["name"]; fields.append("name")
