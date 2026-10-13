@@ -25,7 +25,7 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 
 ## B. Backup & recovery (BLOCKED — see readiness report)
 - **No PITR** (`archive_mode=off`, `wal_level=replica`) and **no automated backup** on prod. The only capability is an on-demand logical `pg_dump` (pg_dump 15.15 in `guvfx-postgres`; DB ≈ 2.77 GB).
-- **Recovery point (requires separate authorization to create):** immediately after §C.4 (listener stopped → signal_intake tables quiescent) and **before** §C.5 (migrate), take a consistent logical dump: full DB `pg_dump` (restorable standalone) **or** a `signal_intake`-scoped dump (tiny) — the full-DB dump is the only form whose restore is self-consistent across apps. Store on-host, mode 0600, owner `ubuntu`, encrypted at rest, retained ≥ until the deployment is confirmed stable; **never copied off-host**; contains signal text → sensitive.
+- **Recovery-point sequencing (CORRECTED — do NOT take the full dump inside the window):** a full-DB `pg_dump` of ≈ 2.77 GB takes minutes and MUST NOT run between the listener stop and the recreate — that would blow the acquisition interruption past the 600 s freshness window and age in-flight signals to STALE. Instead, take the full-DB recovery dump **BEFORE** the maintenance window (before §C.4, listener still running — a logical dump is a consistent MVCC snapshot). Its recovery point is then slightly earlier than the migrate; the few messages acquired between the dump and the migrate are *after* the recovery point and are re-acquired by catch-up on restart (subject to the §catch-up limits). A tiny `signal_intake`-scoped consistency dump MAY additionally be taken in-window (sub-second) for a precise schema-state snapshot, but a scoped restore risks cross-app FK inconsistency, so the full-DB dump remains the authoritative recovery artifact. All dumps on-host, mode 0600, owner `ubuntu`, encrypted at rest, retained ≥ until stable; **never off-host**; contains signal text → sensitive. **This procedure does not by itself guarantee a bounded interruption** — the interruption bound comes from excluding the dump from the window (and from §catch-up completeness, still BLOCKED).
 - **Restore procedure (rehearsed in isolation — dump/restore round-trip preserves the partitioned-unique schema and coexisting rows):** `createdb` scratch → `psql -f dump` → verify counts → promote only under a full maintenance stop. A **full-DB restore reverts ALL subsystems** to the recovery point (trades, withdrawal evidence, etc. written since are **lost**) → it is a **last resort**, not the primary rollback.
 - **Max recovery-point loss:** primary rollback (schema reverse, §G) = 0 rows lost; last-resort full restore = everything since the pre-migration dump (heavy blast radius). **Max restoration downtime:** full logical restore of ~2.77 GB ≈ minutes, all services down.
 - **Messages acquired after the recovery point:** lost on a full restore; re-acquisition then depends on catch-up (subject to the §catch-up limits). **Never treat an image rollback as a database backup.**
@@ -34,25 +34,24 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 1. FF host repo to `48db801`.
 2. Pin rollback image ids (§A.5).
 3. Build new images from `48db801`: backend `docker build -t guvfx-prod-guvfx-backend:latest /home/ubuntu/guvfx-app/backend`; rebuild/retag the listener image `guvfx-wayond-listener:latest` from the same code (it runs the Django app).
-4. **STOP the acquisition writer:** `docker stop guvfx-wayond-listener`. **Record the window start.** Telegram retains messages (caught up in §C.7 — subject to the completeness limits in §catch-up).
-5. **(if authorized) take the §B recovery-point dump** (tables now quiescent).
+4. **(if authorized) take the §B full-DB recovery dump — BEFORE stopping anything** (outside the window; see §B).
+5. **STOP the acquisition writer:** `docker stop guvfx-wayond-listener`. **Record the window start.** Telegram retains messages (caught up in §C.8 — subject to the completeness limits in §catch-up).
 6. **Apply migrations** (new image, one-off): `cd /home/ubuntu/guvfx-prod && docker compose run --rm --no-deps guvfx-backend python manage.py migrate signal_intake`. Rehearsed prod-scale ≈ 0.84 s; allow generously for lock acquisition under load (§F abort bound).
 7. **Recreate backend:** `docker compose up -d --force-recreate --no-deps guvfx-backend`. **NEVER `--remove-orphans`.**
 8. **Recreate the listener (new image) using the exact launch contract (§D):** `docker rm -f guvfx-wayond-listener` then the canonical `docker run` (§D). It catches up from each provider's watermark — **verify completeness (§E) before declaring success.**
 9. (Version consistency, NOT safety-critical; they only READ signal_intake) optionally recreate the other backend-image workers. **Do not restart LIVE order workers / MT5 / Windows unnecessarily.**
 
-## D. Listener recreation contract (exact; secrets live only in the env-file)
+## D. Listener recreation contract (reflects the CURRENTLY-RUNNING container)
+**Capture the live config first (authoritative):** `docker inspect guvfx-wayond-listener` BEFORE stopping it and reconstruct the run command from THAT, not from `.bash_history`. Verified running config (2026-10-13): `--restart unless-stopped`, `--network guvfx-prod_default`, user `appuser`, **NO docker healthcheck** (health is the app-written `/tmp/wayond_health` file, not a container `--health-cmd`), no volume mounts, cmd `run_wayond_listener --live --health-file /tmp/wayond_health`. The authenticated session + creds (`TELEGRAM_API_ID/API_HASH/STRING_SESSION`, DB_*, `GUVFX_AGENT_TOKEN`, …) are provided as env (the running container's `--env-file`, hinted by `.bash_history` as `/home/ubuntu/guvfx-prod/wayond-listener.env` — **confirm against the live container's resolved env before relaunch**).
 ```
 docker run -d --name guvfx-wayond-listener --restart unless-stopped \
   --network guvfx-prod_default \
-  --env-file /home/ubuntu/guvfx-prod/wayond-listener.env \
-  --health-cmd "python manage.py check_wayond_listener --health-file /tmp/wayond_health --max-age 90" \
-  --health-interval 30s --health-timeout 15s --health-retries 3 --health-start-period 120s \
+  --env-file <the env-file the LIVE container uses>  \
   guvfx-wayond-listener:latest \
   python manage.py run_wayond_listener --live --health-file /tmp/wayond_health
 ```
-- Runtime user `appuser`; no volume mounts. The env-file `wayond-listener.env` carries DB_*, `TELEGRAM_API_ID/API_HASH/STRING_SESSION`, `GUVFX_AGENT_TOKEN`, etc. **Preserving it preserves the authenticated Telegram session** → no new login, no second Telethon client, no source switch. Confirm the env-file is unchanged before relaunch; do not place its values in Git/docs.
-- **Rollback launch contract:** identical command with `guvfx-wayond-listener:rollback-preT1` (the pinned pre-T1 id).
+- **Preserving the env-file preserves the authenticated Telegram session** → no new login, no second Telethon client, no source switch. Do not place its values in Git/docs. (Note: the `.bash_history` variant included a `--health-cmd check_wayond_listener …`; the running container does NOT have it — if a docker healthcheck is desired, add it deliberately, but match the live container by default.)
+- **Rollback launch contract:** identical command with `guvfx-wayond-listener:rollback-preT1` (the pinned pre-T1 image id).
 
 ## E. Verification (expected post-DARK state) + catch-up completeness
 - `showmigrations signal_intake` → `0011`. Providers ARMED, chats unchanged; **watermarks ≥ pre-deploy** (never reset/regressed). `PendingSignalApproval` `chat_id<>''` ≈ 857 (6 `wayond` stay `''`); `AcquiredMessage` `non_genuine=True` = 121. Flag OFF → `SignalExecutionPlan.chat_id` still `''`; no new `ExecutionJob` from the deploy; engine DARK.
