@@ -45,15 +45,15 @@
     "frontend/src/components/accounts/BrokerIdentityVerification.tsx(+test), src/types/broker-identity.ts, src/app/(app)/profile/page.tsx, parity/components.json"
   ],
   "checksums": {
-    "backend/broker_intelligence/identity_verification.py": "8a5ceac9666b19a7e91b2da6d53cae5dcba3c2571134963f318974ce269715f3",
-    "backend/broker_intelligence/models.py": "874317bca0a9f9f87aa498322ff245397c246f838447c27d0bf1ce753f8c8477",
-    "backend/broker_intelligence/views.py": "53e753a7c45eeb4413e27894f9a981eda3f39f355dd8c6f27ab6059a79b069fa",
-    "backend/broker_intelligence/migrations/0009_brokeremailidentityaudit.py": "9b969b334bd59a54b1b5a8368232884a433b3f035c9d33aebea14698f3fdc73a",
-    "backend/broker_intelligence/tests_identity_verification.py": "1ed9d554caf293fdd6814c5451ee4dc2b8f826668547fdacef50f8e7b62e7558",
-    "frontend/src/components/accounts/BrokerIdentityVerification.tsx": "58044e40905b91e1d95af17666723e70f39ea2b4abc61d7c2df2424c0e3128d8",
-    "backend/broker_intelligence/urls.py": "3b51f746f97d73a9b4b5b6c26b97bf6b0c45432b39b09ce309c796146b1b6da4",
-    "backend/broker_intelligence/flags.py": "41b9481e91ec92e8bff7cc1d9f8557c7998bf81b3102e1433d4dffb5b2c023f4",
-    "backend/broker_intelligence/admin.py": "805b439c87fc891a71dad2f005c84c7679045bcc045fd53762a68ef00205aaad"
+    "backend/broker_intelligence/identity_verification.py": "sha256:8a5ceac9666b19a7e91b2da6d53cae5dcba3c2571134963f318974ce269715f3",
+    "backend/broker_intelligence/models.py": "sha256:874317bca0a9f9f87aa498322ff245397c246f838447c27d0bf1ce753f8c8477",
+    "backend/broker_intelligence/views.py": "sha256:53e753a7c45eeb4413e27894f9a981eda3f39f355dd8c6f27ab6059a79b069fa",
+    "backend/broker_intelligence/migrations/0009_brokeremailidentityaudit.py": "sha256:9b969b334bd59a54b1b5a8368232884a433b3f035c9d33aebea14698f3fdc73a",
+    "backend/broker_intelligence/tests_identity_verification.py": "sha256:1ed9d554caf293fdd6814c5451ee4dc2b8f826668547fdacef50f8e7b62e7558",
+    "frontend/src/components/accounts/BrokerIdentityVerification.tsx": "sha256:58044e40905b91e1d95af17666723e70f39ea2b4abc61d7c2df2424c0e3128d8",
+    "backend/broker_intelligence/urls.py": "sha256:3b51f746f97d73a9b4b5b6c26b97bf6b0c45432b39b09ce309c796146b1b6da4",
+    "backend/broker_intelligence/flags.py": "sha256:41b9481e91ec92e8bff7cc1d9f8557c7998bf81b3102e1433d4dffb5b2c023f4",
+    "backend/broker_intelligence/admin.py": "sha256:805b439c87fc891a71dad2f005c84c7679045bcc045fd53762a68ef00205aaad"
   },
   "reviewer": "Adversarial workflow wf_20a25b7e-498 (4 lenses) + single-agent re-verify; author Claude Opus 4.8"
 }
