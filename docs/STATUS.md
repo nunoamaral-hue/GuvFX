@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — HARDENED + R1 CORRECTIONS (PR #497, DARK, auto-merge OFF).**
+  Resolves the readiness **HIGH-1 code** blocker: `WayondListener.catch_up` is now bounded, resumable and
+  observable. No deploy, no migration applied to prod, no Telegram change, no watermark reset; flag OFF.
+  - **Pagination beyond 200 (no abandonment)** + an explicit per-provider status `COMPLETE` / `INCOMPLETE_CEILING`
+    / `INCOMPLETE_ERROR` (never a false COMPLETE); bounded page size/count, wall-clock budget, and deadline-aware
+    flood-wait.
+  - **Durable resume CHECKPOINT** `catchup_checkpoint_message_id` (migration **0012**, backfilled from the watermark
+    → first-deploy behaviour unchanged, DARK), distinct from the contaminable watermark (telethon.sync dispatches
+    live events during the synchronous pass, which can advance the watermark). The checkpoint advances ONLY past
+    GENUINE acquisitions, monotonically. `onboard_provider --reset-watermark` + the admin chat-lock key off the
+    checkpoint; reset clears both.
+  - **Renewed adversarial review (8 dimensions → adversarial verify): 4 confirmed defects fixed + re-verified** —
+    (A, triple-confirmed) checkpoint must not advance past non-genuine `DROPPED_NOT_ARMED` rows (else a paused→armed
+    provider loses an in-window signal); (B) a live-handler acquisition during the pass was mis-counted new; (C)
+    flood-wait sleeps were not deadline-aware; (D) shared-chat providers could double-run. Both rejected findings
+    were unreachable in production.
+  - Tests: 48-case catch-up matrix (persisted-state crash/concurrency, bounded resources, completeness reporting,
+    adversarial regressions 45–48) + migration 0012 backfill test. Full backend suite **5850 OK (skipped=1)**.
+    Branch merged `main` (#496). Runbook + readiness updated (migration path now `0009→0010→0011→0012`; HIGH-1 code
+    blocker resolved; §catch-up operational contract added).
+  - **Overall DARK-deployment readiness still NO-GO:** HIGH-2 (production DB recovery — no PITR/auto-backup) remains
+    BLOCKED (separate Sponsor dependency). PR #497 DARK, auto-merge OFF, no merge without PD acceptance.
+
 - **2026-10-13 - T1 SOURCE-AWARE IDENTITY — MERGED + DARK-DEPLOYMENT READINESS ASSESSED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.**
   Current authoritative T1 state (supersedes the "MERGE HOLD" wording in the historical entries below, which are
   preserved as engineering evidence):
