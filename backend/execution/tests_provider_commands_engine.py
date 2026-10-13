@@ -62,12 +62,14 @@ class EngineBase(TestCase):
                 close_time=(None if is_open else timezone.now()), comment=f"WAY{plan.id}L{i}")
         return plan
 
-    def _cmd(self, provider, command_type, reply_to, *, args=None):
+    def _cmd(self, provider, command_type, reply_to, *, args=None, chat_id="c1"):
+        # chat_id defaults to the _plan default ("c1") so correlation is chat-scoped and
+        # same-chat (T1 R2 HIGH-B: a blank-chat command fails closed, never cross-channel).
         self._mid += 1
         return ProviderCommand.objects.create(
-            provider=provider, message_id=f"cmd{self._mid}", reply_to_message_id=reply_to,
-            command_type=command_type, args=args or {}, raw_text="x",
-            status=ProviderCommand.Status.PENDING)
+            provider=provider, chat_id=chat_id, message_id=f"cmd{self._mid}",
+            reply_to_message_id=reply_to, command_type=command_type, args=args or {},
+            raw_text="x", status=ProviderCommand.Status.PENDING)
 
 
 class GatingTests(EngineBase):
@@ -103,12 +105,22 @@ class CorrelationTests(EngineBase):
         self.assertEqual(jobs.first().payload["sl"], 4005.0)
 
     def test_ambiguous_reply_fails_closed(self):
-        # two active plans share the reply message_id (different chat) → ambiguous, apply nothing
-        self._plan(chat_id="a")
-        p2 = self._plan(chat_id="b")
-        # force both to the same message_id the command replies to
-        SignalExecutionPlan.objects.filter(source="ti_signals").update(message_id="shared")
-        cmd = self._cmd(self.ti, "CLOSE_ALL", "shared")
+        # Genuine ambiguity is now SAME-chat/multi-target: correlation is chat-scoped, so
+        # cross-CHAT candidates can no longer be ambiguous (R2 HIGH-B). Two active plans in
+        # the SAME chat 'a' share the reply message_id (two accounts) → ambiguous, no action.
+        acct2 = TradingAccount.objects.create(
+            user=self.user, name="D2", account_number="PE2", is_demo=True, broker_name="DemoBroker")
+        p1 = self._plan(chat_id="a")
+        appr2 = PendingSignalApproval.objects.create(
+            source="ti_signals", chat_id="a", message_id="shared2", symbol="XAUUSD",
+            direction="BUY", stop_loss="4000", take_profits=["4010"],
+            status=PendingSignalApproval.Status.APPROVED)
+        SignalExecutionPlan.objects.create(
+            approval=appr2, account=acct2, source="ti_signals", chat_id="a", message_id="shared",
+            symbol="XAUUSD", direction="BUY", stop_loss="4000", is_demo=True,
+            signal_timestamp=timezone.now(), status=SignalExecutionPlan.Status.PROMOTED)
+        SignalExecutionPlan.objects.filter(id=p1.id).update(message_id="shared")
+        cmd = self._cmd(self.ti, "CLOSE_ALL", "shared", chat_id="a")
         with _enabled():
             res = engine.apply_provider_commands()
         self.assertEqual(res["ambiguous"], 1)
@@ -243,3 +255,82 @@ class ExecutorTests(EngineBase):
         cmd.refresh_from_db()
         self.assertEqual(cmd.status, ProviderCommand.Status.SKIPPED)
         self.assertFalse(ExecutionJob.objects.filter(job_type="CLOSE_TRADE").exists())
+
+
+class R2CommandChatIsolationTests(EngineBase):
+    """T1 R2 HIGH-B: command→plan correlation is ALWAYS chat-scoped; a blank/unresolved
+    command chat fails closed and can never target another channel's plan."""
+
+    def test_blank_chat_command_one_other_chat_candidate_fails_closed(self):
+        p = self._plan(chat_id="A")
+        cmd = self._cmd(self.ti, "CLOSE_ALL", p.message_id, chat_id="")  # blank chat
+        plan, reason = engine.resolve_target_plan(cmd)
+        self.assertIsNone(plan)
+        self.assertEqual(reason, "unresolved_chat_identity")
+
+    def test_blank_chat_command_two_chat_candidates_fails_closed(self):
+        self._plan(chat_id="A")
+        self._plan(chat_id="B")
+        SignalExecutionPlan.objects.filter(source="ti_signals").update(message_id="shared")
+        cmd = self._cmd(self.ti, "CLOSE_ALL", "shared", chat_id="")
+        plan, reason = engine.resolve_target_plan(cmd)
+        self.assertIsNone(plan)
+        self.assertEqual(reason, "unresolved_chat_identity")
+
+    def test_command_and_plan_same_chat_matches(self):
+        p = self._plan(chat_id="A")
+        cmd = self._cmd(self.ti, "CLOSE_ALL", p.message_id, chat_id="A")
+        plan, reason = engine.resolve_target_plan(cmd)
+        self.assertEqual(plan.id, p.id)
+        self.assertEqual(reason, "reply")
+
+    def test_command_and_plan_different_chat_no_match(self):
+        p = self._plan(chat_id="A")
+        cmd = self._cmd(self.ti, "CLOSE_ALL", p.message_id, chat_id="B")
+        plan, reason = engine.resolve_target_plan(cmd)
+        self.assertIsNone(plan)
+        self.assertEqual(reason, "no_reply_match")
+
+    def test_identical_reply_ids_across_two_chats_are_isolated(self):
+        self._plan(chat_id="A")
+        self._plan(chat_id="B")
+        SignalExecutionPlan.objects.filter(source="ti_signals").update(message_id="shared")
+        cmd_a = self._cmd(self.ti, "CLOSE_ALL", "shared", chat_id="A")
+        plan, reason = engine.resolve_target_plan(cmd_a)
+        self.assertEqual(reason, "reply")
+        self.assertEqual(plan.chat_id, "A")  # chat A's plan only — never chat B's
+
+    def test_rejected_correlation_enqueues_no_job(self):
+        self._plan(chat_id="A")
+        self._plan(chat_id="B")
+        SignalExecutionPlan.objects.filter(source="ti_signals").update(message_id="shared")
+        cmd = self._cmd(self.ti, "CLOSE_ALL", "shared", chat_id="")  # blank → fail closed
+        with _enabled():
+            res = engine.apply_provider_commands()
+        self.assertEqual(res["rejected"], 1)
+        cmd.refresh_from_db()
+        self.assertEqual(cmd.status, ProviderCommand.Status.REJECTED)
+        self.assertFalse(ExecutionJob.objects.filter(
+            job_type__in=("CLOSE_TRADE", "MODIFY_POSITION")).exists())
+
+    def test_downstream_flag_enabled_end_to_end_chat_exact(self):
+        """With the downstream identity flag ON, plan_demo_execution carries approval.chat_id
+        into the plan, so a same-chat command correlates and a cross-chat one does not."""
+        import os
+        from execution import signal_planning
+        SignalSourceConfig.objects.filter(source="ti_signals").update(
+            auto_demo_execution_enabled=True, total_lot_target=Decimal("0.03"))
+        appr = PendingSignalApproval.objects.create(
+            source="ti_signals", chat_id="A", message_id="e2e", symbol="EURUSD",
+            direction="BUY", entry="1.0850", stop_loss="1.0800", take_profit="1.0900",
+            take_profits=["1.0900", "1.0950", "1.1000"],
+            status=PendingSignalApproval.Status.APPROVED)
+        with mock.patch.dict(os.environ, {"SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED": "1"}):
+            plan = signal_planning.plan_demo_execution(appr, account=self.acct)
+        self.assertEqual(plan.chat_id, "A")
+        self.assertEqual(plan.status, SignalExecutionPlan.Status.PLANNED)
+        match, r1 = engine.resolve_target_plan(self._cmd(self.ti, "CLOSE_ALL", "e2e", chat_id="A"))
+        self.assertEqual((match.id, r1), (plan.id, "reply"))
+        cross, r2 = engine.resolve_target_plan(self._cmd(self.ti, "CLOSE_ALL", "e2e", chat_id="B"))
+        self.assertIsNone(cross)
+        self.assertEqual(r2, "no_reply_match")

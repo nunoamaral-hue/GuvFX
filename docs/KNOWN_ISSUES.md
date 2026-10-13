@@ -2,6 +2,24 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 T1 source-aware identity — residuals (recorded 2026-10-13, PR #495, DARK; R1-updated)
+
+- **Channel-switch cutover is BLOCKING on a watermark reset.** The dedup fix alone does not make a switch safe: the
+  per-provider `watermark_last_message_id` is a chat-blind catch-up floor (`iter_messages(min_id=…)`), so a new
+  chat's lower-numbered messages are skipped *before* acquisition unless the watermark is reset. BOTH operator
+  mutation paths are now guarded: `onboard_provider` **fails closed** on a chat switch without `--reset-watermark`,
+  and `SignalProviderAdmin` **locks `telegram_chat_id`** once a watermark exists (R1). A raw shell/ORM edit is still
+  below any guard — the cutover runbook uses the command. Full contract in `docs/T1_SOURCE_AWARE_IDENTITY.md`.
+- **Downstream `execution` plan chat is gated DARK (R1 HIGH-3).** `execution/signal_planning.py` carries
+  `approval.chat_id` into the plan only when `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` is on; default OFF keeps
+  `SignalExecutionPlan.chat_id` `''` (byte-identical to pre-T1) so the DARK provider-command engine's
+  `resolve_target_plan` behaves exactly as on `main`. The cutover packet sets the flag on (and switches the channel)
+  together — see the cutover contract.
+- **Pre-existing ProviderCommand index-name drift.** `makemigrations signal_intake` wants a spurious `RenameIndex`
+  (`signal_inta_status_pc_idx` → auto-hash) because migration 0009 hand-named the index while the model Meta leaves it
+  unnamed. From PR #128, unrelated to T1; `make check` does not run `makemigrations --check` so it is not surfaced.
+  Fix = name the model index to match 0009 (no schema change). Tracked as a separate task.
+
 ## 🟠 BROKER SERVER environment data-quality issues (recorded 2026-10-12, read-only reconciliation)
 
 Surfaced by the Broker Server Environment Governance reconciliation (`docs/BROKER_SERVER_ENV_GOVERNANCE.md` §3).

@@ -19,6 +19,7 @@ Boundary direction: ``execution`` reads ``signal_intake`` (one-way).
 """
 from __future__ import annotations
 
+import os
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Optional
 
@@ -48,6 +49,14 @@ from core.observability import log_stage, new_correlation_id
 _STEP = Decimal(LOT_STEP)
 _MAX_PER_LEG = Decimal(str(SIGNAL_MAX_LOT_SIZE))
 _MAX_TOTAL = Decimal(MAX_TOTAL_LOT_PER_SIGNAL)
+
+
+def _chat_aware_downstream_enabled() -> bool:
+    """T1 R1 (HIGH-3): carry the chat-scoped identity into the execution plan. DARK —
+    default OFF, so the plan's chat is read exactly as before (blank) and active behaviour
+    is byte-identical. Enabled only by a SEPARATE cutover authorization."""
+    return os.getenv("SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 class PlanRejected(Exception):
@@ -204,7 +213,21 @@ def plan_demo_execution(
     Policy/config failures raise ``PlanRejected`` (no plan created).
     """
     now = now or timezone.now()
-    chat_id = str((approval.raw_payload or {}).get("chat_id", ""))
+    # SOURCE-AWARE IDENTITY — downstream completeness (T1 R1, HIGH-3), DARK/default-OFF.
+    # SignalExecutionPlan's identity is (source, chat_id, message_id, account); until the
+    # chat is carried end-to-end, two genuinely distinct approvals from DIFFERENT chats
+    # with the same source+message_id would both plan with a blank chat and collide. When
+    # SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED is on, the plan takes the authoritative
+    # chat from the approval's chat-scoped identity field so distinct channels stay
+    # distinct downstream (and a chat-qualified command cannot correlate across channels).
+    # OFF (default) is byte-identical to the pre-T1 behaviour: chat read from raw_payload,
+    # which intake never populates, so plan.chat_id stays '' and no active behaviour, plan
+    # identity, or order changes merely because this correction is deployed. Activation is
+    # a SEPARATE authorization (cutover); no execution authority is expanded either way.
+    if _chat_aware_downstream_enabled():
+        chat_id = str(getattr(approval, "chat_id", "") or "")
+    else:
+        chat_id = str((approval.raw_payload or {}).get("chat_id", ""))
     source = approval.source
     message_id = approval.message_id
 

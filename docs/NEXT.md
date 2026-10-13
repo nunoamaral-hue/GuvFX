@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★★ T1 SOURCE-AWARE IDENTITY — R2 CORRECTIONS DONE, DARK, MERGE HOLD (2026-10-13, PR #495)
+Canonical acquisition identity is `(provider/source, chat_id, message_id)`, with a `non_genuine` partition so
+disabled-source/untrusted records never suppress a genuine acquisition. PD reviews R1 (3 HIGH + 2 AMBER) and R2
+(HIGH-A + HIGH-B + MEDIUM) plus two renewed adversarial reviews — ALL findings closed on PR #495; **not deployed**.
+One bounded next action: **return the R2 completion report and await Programme Director re-acceptance** — per the
+packet, do NOT merge without it (auto-merge OFF).
+**Do NOT** switch the Telegram channel, reset the live watermark, restart the listener, deploy, or change trading
+flags as part of T1. The Telegram **source switch is a separate, future, Sponsor-authorised cutover packet** whose
+prerequisites are in `docs/T1_SOURCE_AWARE_IDENTITY.md` (reset the watermark via `onboard_provider --reset-watermark`;
+set `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED=1`; ONE continuous repurposed provider).
+
+
 ## ★★★ WITHDRAWAL V1 — REMAINING ENGINEERING COMPLETE (2026-10-13)
 All sample-independent engineering is DONE and DARK (PR1 #487 identity verification/binding — MERGED+DEPLOYED+CERTIFIED;
 PR2 #488 Withdrawals UX, PR3 #489 BrokerProfile↔catalogue + IS6 auth, PR4 #490 dual-broker readiness + §7 classifier

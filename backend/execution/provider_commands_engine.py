@@ -53,14 +53,22 @@ def resolve_target_plan(command):
     """Return ``(plan_or_None, reason)``. Reply linkage only (deterministic, source-scoped).
     Matches the plan's FULL unique identity (source + chat_id + message_id) so a reply can never bind
     to a same-message-id plan in a different chat. Exactly-one active plan → act; zero →
-    ``no_reply_match``; >1 → ``ambiguous_reply`` (fail-closed)."""
+    ``no_reply_match``; >1 → ``ambiguous_reply`` (fail-closed).
+
+    SOURCE-AWARE IDENTITY (T1 R2 HIGH-B): correlation is ALWAYS chat-scoped. A command whose chat
+    identity is blank/unresolved cannot prove which channel it belongs to, so it FAILS CLOSED
+    (``unresolved_chat_identity``) — reply_to_message_id alone must never authorize a trade-management
+    action against a plan in another channel. (With the downstream identity flag OFF, plans carry a
+    blank chat and so a real-chat command matches none — already fail-closed; this only removes the
+    pre-existing blank-command cross-channel path. No new execution authority is granted.)"""
     slug = command.provider.slug
     if not command.reply_to_message_id:
         return None, "no_reply_metadata"
+    if not command.chat_id:
+        return None, "unresolved_chat_identity"  # fail closed: cannot prove the channel
     qs = SignalExecutionPlan.objects.filter(
-        source=slug, message_id=command.reply_to_message_id, status__in=_ACTIVE)
-    if command.chat_id:
-        qs = qs.filter(chat_id=command.chat_id)
+        source=slug, chat_id=command.chat_id,
+        message_id=command.reply_to_message_id, status__in=_ACTIVE)
     n = qs.count()
     if n == 1:
         return qs.first(), "reply"
