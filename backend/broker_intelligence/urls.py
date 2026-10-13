@@ -2,10 +2,11 @@
 from django.urls import path
 
 from .views import (IdentityListView, IdentityVerifyView, MailboxCallbackView, MailboxConnectView,
-                    MailboxRevokeView, WithdrawalMetricsView)
+                    MailboxRevokeView, WithdrawalHistoryView, WithdrawalMetricsView)
 
 urlpatterns = [
     path("withdrawals/metrics/", WithdrawalMetricsView.as_view(), name="broker-intelligence-withdrawal-metrics"),
+    path("withdrawals/history/", WithdrawalHistoryView.as_view(), name="broker-intelligence-withdrawal-history"),
     path("identities/", IdentityListView.as_view(), name="broker-intelligence-identities"),
     path("identities/verify/", IdentityVerifyView.as_view(), name="broker-intelligence-identity-verify"),
     path("mailboxes/connect/", MailboxConnectView.as_view(), name="broker-intelligence-mailbox-connect"),

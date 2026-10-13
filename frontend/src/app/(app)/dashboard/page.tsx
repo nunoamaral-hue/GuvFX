@@ -19,6 +19,7 @@ import Link from "next/link";
 import { useLang } from "@/components/AppShell";
 import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
 import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
+import { WithdrawalsHistory } from "@/components/dashboard/WithdrawalsHistory";
 import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
 import type { PortfolioSummary } from "@/types/portfolio";
 import { localeFor, type Lang } from "@/lib/i18n";
@@ -841,6 +842,12 @@ export default function DashboardPage() {
       <div style={{ flex: "0 1 350px", minWidth: 300 }}>
         <WithdrawalsPanel lang={lang} />
       </div>
+      </div>
+
+      {/* Withdrawal history (PR2) — read-only per-withdrawal list + broker/account selectors; self-hides while DARK
+          (history endpoint 404 until BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
+      <div style={{ marginBottom: "0.9rem" }}>
+        <WithdrawalsHistory lang={lang} />
       </div>
 
       {/* Intelligence Row — Radar (all markets, hero) · Key Events (selected) · Research Evidence (selected) */}

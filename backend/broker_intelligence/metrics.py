@@ -26,6 +26,71 @@ _PENDING = (Withdrawal.Status.REQUESTED, Withdrawal.Status.PROCESSING, Withdrawa
 # Terminal non-completion — distinct from pending.
 _FAILED = (Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED)
 
+# Member-facing lifecycle STATE (coarse, truthful): in-flight is NEVER folded into failed; UNRESOLVED is its own
+# visible state (never hidden, never counted as failed or completed).
+_STATE = {s: "pending" for s in _PENDING}
+_STATE[Withdrawal.Status.COMPLETED] = "completed"
+_STATE.update({s: "failed" for s in _FAILED})
+_STATE[Withdrawal.Status.UNRESOLVED] = "unresolved"
+
+
+def _masked_account(acct) -> str:
+    """Owner-private last-4 rendering of an account number (never the full number)."""
+    num = str(getattr(acct, "account_number", "") or "")
+    return ("••••" + num[-4:]) if len(num) >= 4 else (num or "—")
+
+
+def withdrawal_history(accounts, *, broker: str = "", account_id=None) -> dict:
+    """Per-withdrawal history for ``accounts`` (owner-scoped; the caller passes ONLY the member's own accounts),
+    optionally filtered by broker name and/or a single trading-account id. Read-only; never fabricates.
+
+    Returns the withdrawal rows (newest first) PLUS the distinct brokers and accounts present in the member's
+    withdrawal history, so the UI can offer broker/account selectors without a second query. Each row carries an
+    evidence-backed lifecycle ``state`` (pending / completed / failed / unresolved — PENDING is in-flight, NOT a
+    failure), amount+currency AS OBSERVED (never summed, never fabricated), the processing ``duration_seconds``
+    (None when both anchors are not present) and whether the broker reference id resolved the correlation."""
+    ids = [getattr(a, "id", a) for a in accounts]
+    base = (Withdrawal.objects.filter(trading_account_id__in=ids)
+            .select_related("trading_account").order_by("-requested_at", "-id"))
+
+    # Selector lists from the member's FULL withdrawal set — NEVER narrowed by the active filters — so the broker/
+    # account dropdowns stay complete and stable while filtering.
+    brokers, accts = set(), {}
+    for w in base:
+        acct = w.trading_account
+        bname = getattr(acct, "broker_name", "") or ""
+        brokers.add(bname)
+        accts.setdefault(acct.id, {"id": acct.id, "broker": bname, "account_masked": _masked_account(acct)})
+
+    # Rows = the filtered view.
+    qs = base.filter(trading_account_id=account_id) if account_id not in (None, "") else base
+    rows = []
+    for w in qs:
+        acct = w.trading_account
+        bname = getattr(acct, "broker_name", "") or ""
+        if broker and bname != broker:
+            continue
+        rows.append({
+            "id": w.id,
+            "broker": bname,
+            "trading_account_id": acct.id,
+            "account_masked": _masked_account(acct),
+            "state": _STATE.get(w.status, "unresolved"),
+            "status": w.status,
+            "amount": str(w.amount) if w.amount is not None else None,   # never fabricated / never summed here
+            "currency": w.currency or "",
+            "requested_at": w.requested_at.isoformat() if w.requested_at else None,
+            "completed_at": w.completed_at.isoformat() if w.completed_at else None,
+            "duration_seconds": w.duration_seconds(),    # None unless BOTH anchors observed (never a fabricated 0)
+            "broker_reference_id": w.broker_reference_id or "",
+            "reference_correlated": w.correlation_method == Withdrawal.CorrelationMethod.REFERENCE_ID,
+        })
+    return {
+        "withdrawals": rows,
+        "brokers": sorted(b for b in brokers if b),
+        "accounts": sorted(accts.values(), key=lambda a: (a["broker"], a["id"])),
+    }
+
 
 def withdrawal_metrics(accounts) -> dict:
     """Withdrawal statistics for ``accounts`` (an iterable of TradingAccount or ids). Read-only; never fabricates."""
