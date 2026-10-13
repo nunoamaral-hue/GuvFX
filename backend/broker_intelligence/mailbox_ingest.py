@@ -66,8 +66,15 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
         source.commit_cursor()
     except Exception as exc:  # noqa: BLE001 — a read/parse/commit failure must not advance the cursor or crash the run
         logger.warning("mailbox ingest failed for mailbox %s: %s", mailbox.id, type(exc).__name__)
-        return {"mailbox_id": mailbox.id, "ok": False, "error": "fetch_failed", "ingested": ingested, "events": events}
-    return {"mailbox_id": mailbox.id, "ok": True, "ingested": ingested, "events": events}
+        return {"mailbox_id": mailbox.id, "ok": False, "error": "fetch_failed", "ingested": ingested,
+                "events": events, "no_event": ingested - events}
+    # ``no_event`` = messages acquired that produced NO BrokerEvent (authenticated-but-quarantined, unparseable,
+    # parser-declined, or a parser that RAISED — each already logged secret-free in ``ingest_message``). Surfaced in
+    # the summary so a rising no-event volume (e.g. a broker template whose parser is crashing) is visible to an
+    # operator at the run level, not only in the logs. (A parser crash is additionally WARNING-logged, distinct from
+    # routine INFO; routine non-withdrawal broker mail would still produce an event with a non-withdrawal category.)
+    return {"mailbox_id": mailbox.id, "ok": True, "ingested": ingested, "events": events,
+            "no_event": ingested - events}
 
 
 def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
@@ -79,7 +86,7 @@ def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
           .order_by("id"))
     if limit_mailboxes is not None:
         qs = qs[:limit_mailboxes]
-    summary = {"mailboxes": 0, "ingested": 0, "events": 0, "failed": 0}
+    summary = {"mailboxes": 0, "ingested": 0, "events": 0, "no_event": 0, "failed": 0}
     for mailbox in qs:
         # Per-mailbox isolation (contract): NOTHING a single mailbox does — including a GmailApiClient/source
         # construction error or any unexpected raise before/around ingest — may abort the pass. A failure is
@@ -92,6 +99,7 @@ def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
         summary["mailboxes"] += 1
         summary["ingested"] += res.get("ingested", 0)
         summary["events"] += res.get("events", 0)
+        summary["no_event"] += res.get("no_event", 0)   # acquired-but-no-event (quarantine / parse failure) volume
         if not res.get("ok"):
             summary["failed"] += 1
     return summary
