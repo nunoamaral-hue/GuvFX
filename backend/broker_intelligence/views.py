@@ -16,7 +16,8 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .flags import broker_mailbox_connect_enabled, broker_withdrawal_ux_enabled
+from .flags import (broker_identity_verification_enabled, broker_mailbox_connect_enabled,
+                    broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
@@ -52,6 +53,84 @@ class WithdrawalMetricsView(APIView):
         # record. Still strictly owner-scoped (user=request.user) with no staff bypass — never another member's data.
         accounts = TradingAccount.objects.filter(user=request.user)
         return Response(withdrawal_metrics(accounts))
+
+
+def _identity_json(i) -> dict:
+    """Owner-private identity summary — masked address, bound account + mailbox, status. No raw email, no secret."""
+    return {
+        "id": i.id,
+        "broker": i.broker_name,
+        "email_masked": i.masked_email(),
+        "status": i.status,
+        "verified": i.status == i.Status.VERIFIED,
+        "trading_account_id": i.trading_account_id,
+        "connected_mailbox_id": i.connected_mailbox_id,
+        "connected_mailbox_masked": i.connected_mailbox.masked_email() if i.connected_mailbox_id else None,
+    }
+
+
+class IdentityListView(APIView):
+    """GET /api/broker-intelligence/identities/ — the member's OWN broker-email identities (+ their connected
+    mailboxes), for the verify/bind UX. Owner-scoped (user=request.user, no staff bypass); masked; DARK-gated."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_identity_verification_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .models import BrokerEmailIdentity, ConnectedMailbox
+        identities = [_identity_json(i) for i in
+                      BrokerEmailIdentity.objects.filter(user=request.user).order_by("broker_name", "id")]
+        mailboxes = [{"id": m.id, "email_masked": m.masked_email(), "status": m.status}
+                     for m in ConnectedMailbox.objects.filter(user=request.user).order_by("id")]
+        return Response({"identities": identities, "mailboxes": mailboxes})
+
+
+class IdentityVerifyView(APIView):
+    """POST /api/broker-intelligence/identities/verify/ — explicitly verify + bind one identity to one of the
+    member's OWN trading accounts, on composed proof (mailbox control + account ownership + same owner, fail-closed).
+    Body: {email, broker, trading_account_id}. Owner-scoped + audited; DARK-gated; NEVER auto-verifies, never a
+    financial action. A refusal returns the stable reason code (safe — the member is acting on their own account)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not broker_identity_verification_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .identity_verification import VerificationRefused, audit_refusal, verify_identity
+        data = request.data if isinstance(request.data, dict) else {}
+        email = str(data.get("email", "") or "").strip()
+        broker = str(data.get("broker", "") or "").strip()
+        acct_id = data.get("trading_account_id")
+        if not email or not broker or acct_id in (None, ""):
+            # Audited even for malformed input (contract: EVERY refusal is recorded; a refused attempt is evidence).
+            audit_refusal(user=request.user, email=email, broker_name=broker, code="invalid_input",
+                          proofs={"attempted_trading_account_id": acct_id})
+            return Response({"ok": False, "error": "invalid_input",
+                             "message": "A broker, address and trading account are all required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        from trading.models import TradingAccount
+        # Owner-scoped lookup IS the cross-user firewall at the boundary: an account that is not the member's own
+        # resolves to None here (indistinguishable from 'does not exist'), so it can never be bound across users.
+        account = TradingAccount.objects.filter(id=acct_id, user=request.user).first()
+        if account is None:
+            # This is the single most security-relevant event — a member attempting to bind an account they do not
+            # own (a refused CROSS-USER bind). It short-circuits before the audited verify_identity service, so we
+            # record a DURABLE append-only REJECT here. The audit is internal (returned to no one), so recording the
+            # attempt never leaks whether another member's account exists — the generic 422 is unchanged.
+            audit_refusal(user=request.user, email=email, broker_name=broker, code="account_not_owned",
+                          proofs={"attempted_trading_account_id": acct_id, "account_owned": False})
+            return Response({"ok": False, "error": "account_not_owned",
+                             "message": "That trading account is not one of yours."},
+                            status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        try:
+            identity = verify_identity(user=request.user, email=email, broker_name=broker, trading_account=account)
+        except VerificationRefused as exc:
+            http = {"cross_user_conflict": status.HTTP_409_CONFLICT,
+                    "account_conflict": status.HTTP_409_CONFLICT,
+                    "invalid_input": status.HTTP_400_BAD_REQUEST}.get(exc.code,
+                                                                       status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return Response({"ok": False, "error": exc.code, "message": exc.message}, status=http)
+        return Response({"ok": True, "status": identity.status, "identity_id": identity.id,
+                         "identity": _identity_json(identity)})
 
 
 class MailboxConnectView(APIView):

@@ -59,6 +59,17 @@ def broker_withdrawal_ux_enabled() -> bool:
     return _flag("BROKER_WITHDRAWAL_UX_ENABLED")
 
 
+def broker_identity_verification_enabled() -> bool:
+    """Gate for the member identity-verification/binding API (list identities + verify owner↔broker↔account). DEFAULT
+    OFF → the endpoints 404 until the Sponsor arms the capability. Verification is an explicit, audited action that
+    binds a BrokerEmailIdentity to its owner, trading-account and receiving mailbox ONLY on composed proof (connected
+    mailbox control + GuvFX trading-account ownership + same-owner, fail-closed on ambiguity); it NEVER auto-verifies
+    and grants NO execution/strategy/credential authority and never a financial action. The decision + write service
+    (``broker_intelligence.identity_verification``) is pure/testable regardless of this flag; the flag only governs
+    whether the HTTP surface is reachable."""
+    return _flag("BROKER_IDENTITY_VERIFICATION_ENABLED")
+
+
 def broker_withdrawal_correlation_enabled() -> bool:
     """Gate for the WP5 withdrawal CORRELATION run loop (the management command / scheduled pass that projects
     EXTERNAL_WITHDRAWAL events into Withdrawal records). DEFAULT OFF. The correlation engine

@@ -461,6 +461,62 @@ class BrokerEmailIdentity(models.Model):
         return f"BrokerEmailIdentity({self.masked_email()}@{self.broker_name or '?'}, {self.status})"
 
 
+class BrokerEmailIdentityAudit(models.Model):
+    """WP7 — append-only history of identity VERIFICATION / BINDING actions. Every explicit verify, confirm, reject or
+    unbind of a ``BrokerEmailIdentity`` writes one row recording WHO acted, for WHICH claimed owner/broker/account,
+    the PROOFS relied on, the OUTCOME, and the before/after status — so every ownership attribution is attributable
+    and reviewable. A REJECT (proof failed / ambiguous / cross-user) is audited too, even though it creates/changes
+    no identity row, because a refused cross-user attempt is exactly what review must see. Never updated or deleted
+    (the auditable record of how an identity came to be VERIFIED); the identity FK is PROTECT so a bound identity
+    carrying history is not destroyed. Holds NO credential and NO raw email body — only ids, statuses, a masked
+    address, and a structured proof summary."""
+
+    class Action(models.TextChoices):
+        VERIFY = "VERIFY", "Verified + bound (owner/broker/account/mailbox)"
+        CONFIRM = "CONFIRM", "Re-verify of an already-VERIFIED identity (no change)"
+        REJECT = "REJECT", "Verification refused (proof failed / ambiguous / cross-user)"
+        UNBIND = "UNBIND", "Binding reversed (returned to PENDING/UNRESOLVED)"
+
+    # Nullable: a REJECT may have no identity row (the attempt is refused before any VERIFIED binding exists).
+    identity = models.ForeignKey(BrokerEmailIdentity, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name="audit")
+    action = models.CharField(max_length=16, choices=Action.choices)
+    # The GuvFX user the action was attributed to (the CLAIMED owner). SET_NULL-able (user deletion never erases audit).
+    subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="+")
+    actor = models.CharField(max_length=128, blank=True, default="")      # who performed it (user label / 'system')
+    broker_name = models.CharField(max_length=64, blank=True, default="")
+    email = models.CharField(max_length=255, blank=True, default="")      # subject address (masked at display)
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.SET_NULL, null=True, blank=True,
+                                        related_name="+")
+    connected_mailbox = models.ForeignKey(ConnectedMailbox, on_delete=models.SET_NULL, null=True, blank=True,
+                                          related_name="+")
+    outcome = models.CharField(max_length=24, blank=True, default="")     # OK, or a reason code on reject
+    reason = models.CharField(max_length=255, blank=True, default="")     # human-readable, sanitised
+    status_before = models.CharField(max_length=12, blank=True, default="")
+    status_after = models.CharField(max_length=12, blank=True, default="")
+    proofs = models.JSONField(default=dict)                               # structured proof summary; no secrets/body
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [models.Index(fields=["identity", "id"]), models.Index(fields=["subject_user"])]
+
+    def masked_email(self) -> str:
+        e = self.email or ""
+        if "@" not in e:
+            return "***"
+        local, _, dom = e.partition("@")
+        head = local[:2] if len(local) > 2 else "*"
+        return f"{head}…@{dom}"
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("BrokerEmailIdentityAudit is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"BrokerEmailIdentityAudit({self.action}, idn={self.identity_id}, {self.outcome})"
+
+
 # ======================================================================================================
 # Broker profiles (DARK) — per-broker configuration so many brokers (that may share one mailbox) each have
 # their own approved sender domains, trusted Authentication-Results authserv-ids, expected auth posture,
