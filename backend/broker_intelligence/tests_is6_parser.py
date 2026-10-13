@@ -158,11 +158,12 @@ class IS6ParserUnitTests(TestCase):
 
     def test_daily_confirmation_statement_is_not_a_money_event(self):
         # Genuine LIVE-OBSERVED IS6 non-transactional template: "Daily Confirmation" (a daily account/position
-        # statement). Captured 2026-10-13 as evidence blobs 4 & 5 via the scheduled worker — authenticated is6.com
-        # mail that the parser correctly DECLINED (retained as quarantined evidence, no event). This regression locks
-        # that behaviour in so an unexpected template change can't start emitting events for routine daily statements.
-        # Bodies are MINIMIZED, PII-redacted synthetic renderings of the genuine non-transactional structure (no
-        # genuine amounts/accounts/recipients committed).
+        # statement). Captured 2026-10-13 as evidence blobs 4 & 5 during the SUPERVISED ingestion pass (the subsequent
+        # scheduled timer cycles ingested zero) — authenticated is6.com mail that the parser correctly DECLINED
+        # (retained as quarantined evidence, no event). This regression PINS these observed/minimized cases; it does
+        # NOT guarantee every future template variant is rejected. Bodies are MINIMIZED, PII-redacted SYNTHETIC
+        # renderings of the genuine non-transactional structure (genuine subject only; no genuine amounts / accounts /
+        # recipients committed).
         for subj, html in [
             ("Daily Confirmation",
              "<p>Your daily account summary. Open positions and balance as of today. No action is required.</p>"),

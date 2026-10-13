@@ -51,9 +51,17 @@ The logical categories (EXTERNAL_WITHDRAWAL / INTERNAL_TRANSFER / DEPOSIT / requ
 non-transactional / unresolved) map onto the APPROVED model: `TransactionCategory` (EXTERNAL_WITHDRAWAL /
 INTERNAL_TRANSFER / DEPOSIT / UNKNOWN) × the open `event_type` lifecycle vocabulary (WITHDRAWAL_REQUESTED /
 _CONFIRMATION_REQUIRED / _PROCESSING / _COMPLETED / _REJECTED / DEPOSIT_*). Non-transactional = parser declines (no
-event; quarantined evidence). Ambiguous = UNKNOWN / UNRESOLVED. **No new persisted enum values were introduced.** The
-withdrawal projection counts ONLY `EXTERNAL_WITHDRAWAL`; a request/pending/rejected/deposit/internal-transfer never
-becomes a counted withdrawal.
+event; quarantined evidence). Ambiguous = UNKNOWN / UNRESOLVED. **No new persisted enum values were introduced.**
+
+A `Withdrawal` record is PROJECTED (by `correlation.py`) ONLY from `EXTERNAL_WITHDRAWAL`-category events — a deposit,
+internal transfer or non-transactional message never creates a `Withdrawal` row at all. An eligible external
+withdrawal, however, DOES create a `Withdrawal` record and that record carries a LIFECYCLE status (REQUESTED /
+PROCESSING / PENDING / COMPLETED / REJECTED / CANCELLED / UNRESOLVED) — e.g. an external-withdrawal *request* creates
+a `Withdrawal` in REQUESTED status. `metrics.py` then keeps these distinct: pending (in-flight) is counted separately
+from failed (rejected/cancelled), and **only COMPLETED withdrawals contribute to the completed-amount totals** (a
+request/pending is never presented as a settled/completed amount; a rejected one is never counted as completed).
+Because no positive external-withdrawal classifier is currently certified or enabled for either broker, **zero
+`Withdrawal` records exist today** — the lifecycle above describes the designed behaviour, not any current data.
 
 ## Evidence dependency (the blocked gate)
 The positive `EXTERNAL_WITHDRAWAL` classifier for **both** brokers is **BLOCKED on genuine external-withdrawal
