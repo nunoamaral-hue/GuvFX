@@ -14,6 +14,30 @@
 
 ## Execution workstream log
 
+- **2026-10-13 - T1 R1 CORRECTIONS (PR #495, DARK, MERGE HOLD pending Programme Director re-acceptance).**
+  PD engineering review of PR #495 (CI 10/10) returned 3 HIGH + 2 AMBER; all corrected on the same PR, plus 2
+  MEDIUM from a renewed 8-dimension adversarial review (both closed). Still DARK — no deploy, no channel switch, no
+  watermark reset, no listener restart, no trading-flag/authority change.
+  - **HIGH-1 fail-open trust boundary** → `_chat_identity_refusal` refuses an ARMED provider with no configured chat
+    (`provider_chat_unconfigured`); non-armed states DROP via the arm gate. Config-drift covered. The edit/amendment
+    path is also arm-gated now (renewed-review finding — a paused provider's edit can no longer surface an approval).
+  - **HIGH-2 quarantine-id poisoning across cutover** → `AcquiredMessage.chat_identity_refused` (migration 0011)
+    partitions the unique key `(provider, chat_id, message_id, chat_identity_refused)`, so a refusal row and a later
+    genuine row coexist; a pre-cutover refusal can never suppress a genuine post-cutover message. Immutable evidence,
+    never promoted, refusals idempotent.
+  - **HIGH-3 downstream plan collisions** → `execution/signal_planning` carries `approval.chat_id` behind
+    `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` (default OFF = byte-identical; ON = distinct channels distinct, no
+    new orders/authority).
+  - **AMBER-1 historical migration** → 0010 backfill is now EVIDENCE-BASED (linked `AcquiredMessage.chat_id`, never
+    mutable provider metadata; unresolved left `''`; ledgers never mutated); certified by a populated
+    `MigrationExecutor` test over 0009→0010→0011 incl. rollback.
+  - **AMBER-2 cutover contradiction** → resolved: ONE continuous, repurposed provider (ownership/watermark/rollback
+    documented in `docs/T1_SOURCE_AWARE_IDENTITY.md`).
+  - **Renewed-review MEDIUM** → admin `telegram_chat_id` edit bypassed the watermark guard → locked in
+    `SignalProviderAdmin` once a watermark exists (forces the guarded `onboard_provider --reset-watermark` path).
+  - Tests: +19 (matrix, downstream flag off/on, historical migration, admin guard). **Full backend suite 5789 OK
+    (skipped=1).** Commit `0db228d`. CI re-runs on push; auto-merge OFF; awaiting PD re-acceptance before merge.
+
 - **2026-10-13 - T1 SOURCE-AWARE TELEGRAM MESSAGE IDENTITY & DEDUP (PR #495, DARK, not deployed).**
   Fixed the structural defect where the acquisition ledger keyed on `(provider, message_id)` and the approval on
   `(source, message_id)` — but Telegram `message_id` is **chat-scoped**, so after a future channel switch a new-chat

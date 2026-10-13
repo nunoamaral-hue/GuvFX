@@ -1,13 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
-## ★★★ T1 SOURCE-AWARE IDENTITY — ENGINEERING COMPLETE, DARK (2026-10-13, PR #495)
-Canonical acquisition identity is now `(provider/source, chat_id, message_id)`. Merged nothing to prod; **not
-deployed**. One bounded next action: **merge PR #495 once CI is green** (routine; DARK — migration 0010 is additive +
-backfill-safe, no behaviour change for the current single channel).
-**Do NOT** switch the Telegram channel, reset the live watermark, restart the listener, or deploy as part of T1.
-The Telegram **source switch is a separate, future, Sponsor-authorised packet** whose BLOCKING prerequisites are in
-`docs/T1_SOURCE_AWARE_IDENTITY.md` (reset the catch-up watermark via `onboard_provider --reset-watermark`; repoint
-`execution/signal_planning.py` at `approval.chat_id` under its own gate).
+## ★★★ T1 SOURCE-AWARE IDENTITY — R1 CORRECTIONS DONE, DARK, MERGE HOLD (2026-10-13, PR #495)
+Canonical acquisition identity is `(provider/source, chat_id, message_id)`. PD R1 review (3 HIGH + 2 AMBER) + a
+renewed 8-dimension adversarial review (2 MEDIUM) ALL closed on PR #495 (commit `0db228d`); full backend 5789 OK;
+**not deployed**. One bounded next action: **return the R1 completion report and await Programme Director
+re-acceptance** — per the packet, do NOT merge without it (auto-merge OFF).
+**Do NOT** switch the Telegram channel, reset the live watermark, restart the listener, deploy, or change trading
+flags as part of T1. The Telegram **source switch is a separate, future, Sponsor-authorised cutover packet** whose
+prerequisites are in `docs/T1_SOURCE_AWARE_IDENTITY.md` (reset the watermark via `onboard_provider --reset-watermark`;
+set `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED=1`; ONE continuous repurposed provider).
 
 
 ## ★★★ WITHDRAWAL V1 — REMAINING ENGINEERING COMPLETE (2026-10-13)
