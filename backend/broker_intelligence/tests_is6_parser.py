@@ -678,6 +678,60 @@ class IS6IngestionPipelineTests(TestCase):
         self.assertEqual(ev.transaction_category, TransactionCategory.DEPOSIT)
         self.assertEqual(ev.amount, Decimal("150"))
 
+    # --- §5 adversarial authentication regression (PR3): aligned DKIM / DMARC / forged headers / wrong domains /
+    #     cross-user / ambiguous accounts. Exercises the REAL verdict path (gmail_source._auth_verdict, RFC 8601
+    #     authserv-id trust) + the exact-domain allowlist + owner-scoped attribution. ---
+    def test_aligned_dkim_pass_without_dmarc_is_accepted(self):
+        # DMARC_OR_ALIGNED_DKIM: a From-aligned DKIM pass authenticates even with NO dmarc result present.
+        raw = self._raw(ar="mx.google.com; dkim=pass header.d=is6.com; spf=pass smtp.mailfrom=is6.com")
+        ev = self._ingest(raw)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.event_type, "DEPOSIT_COMPLETED")
+
+    def test_dmarc_pass_without_dkim_is_accepted(self):
+        raw = self._raw(ar="mx.google.com; spf=pass smtp.mailfrom=is6.com; dmarc=pass (p=REJECT) header.from=is6.com")
+        self.assertIsNotNone(self._ingest(raw))
+
+    def test_forged_foreign_authserv_id_is_ignored_no_event(self):
+        # An attacker-injected A-R bearing a FOREIGN authserv-id (not the trusted receiver mx.google.com) is ignored
+        # (RFC 8601 — the receiver strips forgeries of its own id); no trusted pass ⇒ no event, evidence quarantined.
+        raw = self._raw(ar="evil.attacker.example; dkim=pass header.d=is6.com; dmarc=pass (p=REJECT) header.from=is6.com")
+        ev = self._ingest(raw)
+        self.assertIsNone(ev)
+        self.assertEqual(EvidenceBlob.objects.count(), 1)
+
+    def test_unaligned_dkim_without_dmarc_is_not_accepted(self):
+        # DKIM passes but signs a DIFFERENT domain than From, and no DMARC ⇒ not From-aligned ⇒ no pass ⇒ no event.
+        raw = self._raw(ar="mx.google.com; dkim=pass header.d=mailer.example; spf=pass smtp.mailfrom=bounce.example")
+        self.assertIsNone(self._ingest(raw))
+
+    def test_incorrect_broker_from_domain_is_dropped_before_storage(self):
+        # A look-alike/phish From domain is NOT on the exact-domain allowlist ⇒ the retention gate drops REAL mail
+        # BEFORE any storage (no evidence, no event), regardless of a well-formed A-R. Never a substring match.
+        raw = self._raw(frm="IS6FX <noreply@is6-phish.com>")
+        ev = self._ingest(raw)
+        self.assertIsNone(ev)
+        self.assertEqual(EvidenceBlob.objects.count(), 0)
+
+    def test_cross_user_recipient_is_not_attributed(self):
+        # The SAME authenticated IS6 mail ingested under a DIFFERENT owner: the recipient identity is bound to self.u,
+        # so an owner-scoped ingest for `other` yields NO owner attribution and NO account (no cross-user leak).
+        other = User.objects.create_user(username="other%s" % _uniq(), email="other@x.invalid", password="x")
+        ev = ingestion.ingest_message(self._mailmessage(self._raw()), store=self.store,
+                                      provenance=Provenance.REAL, owner_user=other)
+        self.assertIsNotNone(ev)                            # authenticated + parseable ⇒ event created (evidence)
+        self.assertIsNone(ev.owner_id)                      # but NOT attributed to a mismatched owner
+        self.assertIsNone(ev.trading_account_id)
+
+    def test_ambiguous_credited_account_is_unresolved(self):
+        # Owner holds TWO is6-broker accounts sharing the credited number ⇒ ambiguous ⇒ fail closed (no binding),
+        # though the owner is still known via the verified identity.
+        _acct(self.u, PLACEHOLDER_ACCT, broker="IS6FX")
+        _acct(self.u, PLACEHOLDER_ACCT, broker="IS6 Technologies")
+        ev = self._ingest()
+        self.assertEqual(ev.owner_id, self.u.id)
+        self.assertIsNone(ev.trading_account_id)
+
 
 class IS6LifecycleCorrectionTests(TestCase):
     """PR-B.1 — corrects the lifecycle defect the genuine blob-3 certification caught: the real completion is a
