@@ -13,10 +13,15 @@ from .models import BrokerEmailIdentity, BrokerEmailIdentityAudit, BrokerProfile
 @admin.register(BrokerProfile)
 class BrokerProfileAdmin(admin.ModelAdmin):
     list_display = ("name", "slug", "approved_sender_domains", "trusted_authserv_ids", "auth_policy",
-                    "parser_name", "parser_version", "is_active", "updated_at")
-    list_filter = ("is_active", "auth_policy")
+                    "supported_categories", "provenance", "parser_name", "parser_version", "is_active", "updated_at")
+    list_filter = ("is_active", "auth_policy", "provenance")
     search_fields = ("name", "slug", "official_domains", "approved_sender_domains", "server_names")
     readonly_fields = ("created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        # Record WHO changed the config in the append-only audit (BrokerProfile.save reads this transient).
+        obj._changed_by = getattr(request.user, "email", "") or getattr(request.user, "username", "") or "staff"
+        super().save_model(request, obj, form, change)
 
     def has_delete_permission(self, request, obj=None):
         # Brokers are RETIRED via is_active=False, never deleted — deleting one would destroy its append-only audit

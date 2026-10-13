@@ -526,6 +526,13 @@ class BrokerEmailIdentityAudit(models.Model):
 # ======================================================================================================
 
 class BrokerProfile(models.Model):
+    class ConfigProvenance(models.TextChoices):
+        """How this broker CONFIG (not a transaction) was established. Distinct from the event/withdrawal
+        ``Provenance``. Default SEED; an operator attestation or a catalogue mirror is stronger."""
+        SEED = "SEED", "Initial pilot seed"
+        OPERATOR_VERIFIED = "OPERATOR_VERIFIED", "Verified by an operator against the broker"
+        CATALOGUE_MIRRORED = "CATALOGUE_MIRRORED", "Mirrors a verified BrokerServerCatalogue entry"
+
     class AuthPolicy(models.TextChoices):
         # The deployed, reviewed global policy (R3b): DMARC pass OR a From-aligned DKIM pass. A broker whose mail
         # reliably passes DMARC (e.g. IS6) satisfies it via the DMARC branch; one that only DKIM-aligns (TradersWay,
@@ -547,6 +554,13 @@ class BrokerProfile(models.Model):
     server_names = models.CharField(max_length=512, blank=True, default="")
     server_aliases = models.CharField(max_length=512, blank=True, default="")
     account_id_rules = models.TextField(blank=True, default="")                         # descriptive matching notes
+    # The TransactionCategory values this broker's deterministic parser can emit (comma-sep UPPER enum values). This
+    # is the broker's declared CAPABILITY — a structural guard that a broker can never surface a category its parser
+    # cannot actually produce (e.g. TradersWay: INTERNAL_TRANSFER,UNKNOWN — never EXTERNAL_WITHDRAWAL). It documents
+    # capability; it does NOT itself cause classification.
+    supported_categories = models.CharField(max_length=255, blank=True, default="")
+    # How this profile's CONFIG was established (provenance of the config, not of a transaction). Defaults SEED.
+    provenance = models.CharField(max_length=20, choices=ConfigProvenance.choices, default=ConfigProvenance.SEED)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -566,11 +580,22 @@ class BrokerProfile(models.Model):
     def authserv_ids(self):
         return self._split(self.trusted_authserv_ids)
 
+    def supported_category_list(self):
+        """UPPER-cased TransactionCategory tokens the broker's parser may emit (case preserved to match the enum,
+        unlike the lowercasing ``_split`` used for domains)."""
+        import re as _re
+        return [p.upper() for p in _re.split(r"[,\s]+", (self.supported_categories or "").strip()) if p]
+
+    def server_name_list(self):
+        """Declared broker server names (case preserved — MT5 server strings are case-sensitive)."""
+        import re as _re
+        return [p for p in _re.split(r"\s*,\s*", (self.server_names or "").strip()) if p]
+
     def _snapshot(self) -> dict:
         return {f: getattr(self, f) for f in (
             "name", "slug", "aliases", "official_domains", "approved_sender_domains", "trusted_authserv_ids",
             "auth_policy", "parser_name", "parser_version", "mt_environments", "server_names", "server_aliases",
-            "account_id_rules", "is_active")}
+            "account_id_rules", "supported_categories", "provenance", "is_active")}
 
     def save(self, *args, **kwargs):
         creating = self._state.adding
@@ -580,8 +605,11 @@ class BrokerProfile(models.Model):
         # sets needs_rollback, and a swallowed exception cannot clear it). Best-effort — it never blocks the save.
         try:
             with transaction.atomic():
+                # ``_changed_by`` is a transient actor label set by the caller (e.g. the admin's save_model) so the
+                # append-only config history records WHO changed it; blank for programmatic/seed saves.
                 BrokerProfileAudit.objects.create(broker_profile=self, action="CREATE" if creating else "UPDATE",
-                                                  snapshot=self._snapshot())
+                                                  snapshot=self._snapshot(),
+                                                  changed_by=str(getattr(self, "_changed_by", "") or "")[:128])
         except Exception:  # noqa: BLE001
             pass
 
