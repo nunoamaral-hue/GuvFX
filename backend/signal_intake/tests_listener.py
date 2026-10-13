@@ -170,8 +170,9 @@ class ListenerCoreTests(TestCase):
         self.provider.watermark_last_message_id = "2"
         self.provider.save(update_fields=["watermark_last_message_id"])
         client = FakeClient(messages=[self._msg(1), self._msg(2), self._msg(3)])
-        n = WayondListener().catch_up(client, self.provider)
-        self.assertEqual(n, 1)                                    # only id > 2
+        res = WayondListener().catch_up(client, self.provider)
+        self.assertEqual(res.retrieved, 1)                        # only id > 2
+        self.assertTrue(res.complete)
         self.assertTrue(AcquiredMessage.objects.filter(message_id="3").exists())
         self.assertFalse(AcquiredMessage.objects.filter(message_id="1").exists())
 

@@ -525,7 +525,7 @@ class WatermarkCutoverGuardTests(_Base):
             FakeMsg(5, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now),
             FakeMsg(6, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now)])
         n = WayondListener().catch_up(client, self.provider)
-        self.assertEqual(n, 0)  # floor excludes ids 5,6 → silent loss (the hazard)
+        self.assertEqual(n.retrieved, 0)  # floor excludes ids 5,6 → silent loss (the hazard)
         self.assertEqual(AcquiredMessage.objects.filter(chat_id=NEW_CHAT).count(), 0)
 
     def test_46_reset_watermark_enables_new_chat_catchup(self):
@@ -540,7 +540,7 @@ class WatermarkCutoverGuardTests(_Base):
             FakeMsg(5, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now),
             FakeMsg(6, int(NEW_CHAT), text=SIGNAL_MSG, date=self.now)])
         n = WayondListener().catch_up(client, self.provider)
-        self.assertEqual(n, 2)
+        self.assertEqual(n.retrieved, 2)
         self.assertEqual(AcquiredMessage.objects.filter(chat_id=NEW_CHAT).count(), 2)
 
 
