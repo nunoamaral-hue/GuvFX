@@ -35,22 +35,29 @@ def _audit(actor, event, approval, **detail):
 
 
 @transaction.atomic
-def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None, edited=False) -> PendingSignalApproval:
+def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None, chat_id="",
+                  edited=False) -> PendingSignalApproval:
     """Create or return the PendingSignalApproval for a parsed Telegram message.
 
-    Idempotent on (source, message_id): a duplicate message returns the existing
-    record and creates nothing new. UNKNOWN/unparseable messages are quarantined,
-    never turned into a tradeable approval. Creates NO ExecutionJob.
+    Idempotent on (source, chat_id, message_id): a duplicate message returns the
+    existing record and creates nothing new. ``chat_id`` is part of the key because
+    Telegram message_id is chat-scoped — a same-id message from a DIFFERENT chat is a
+    distinct approval, never deduped against a historical other-chat approval (T1).
+    UNKNOWN/unparseable messages are quarantined, never turned into a tradeable
+    approval. Creates NO ExecutionJob.
 
     SIGNAL-ACQUISITION: when ``provider`` is given (dispatcher path), the approval
     links to it and its ``slug`` becomes the source (backwards-compatible — the
-    legacy file-intake path passes no provider and keeps ``source=SOURCE``).
+    legacy file-intake path passes no provider/chat and keeps ``source=SOURCE`` with
+    ``chat_id=""``).
     """
     if provider is not None:
         source = provider.slug
+    chat_id = str(chat_id or "")
     mid = parsed.message_id or f"{parsed.market}-{parsed.direction}-{parsed.entry}"
 
-    existing = PendingSignalApproval.objects.filter(source=source, message_id=mid).first()
+    existing = PendingSignalApproval.objects.filter(
+        source=source, chat_id=chat_id, message_id=mid).first()
     if existing is not None:
         return existing  # dedup / replay-safe
 
@@ -60,7 +67,7 @@ def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None, edited=Fa
         correlation_id = new_correlation_id()
         log_stage("signal_received", correlation_id, source=str(source), message_id=mid)
         approval = PendingSignalApproval.objects.create(
-            source=source, message_id=mid, provider=provider,
+            source=source, chat_id=chat_id, message_id=mid, provider=provider,
             symbol=parsed.market, direction=parsed.direction,
             entry=parsed.entry, stop_loss=parsed.stop_loss,
             take_profit=(parsed.take_profits[0] if parsed.take_profits else ""),
@@ -78,7 +85,7 @@ def intake_parsed(parsed, *, actor=None, source=SOURCE, provider=None, edited=Fa
 
     # Not a tradeable signal -> quarantine (do not guess into an approval).
     approval = PendingSignalApproval.objects.create(
-        source=source, message_id=mid,
+        source=source, chat_id=chat_id, message_id=mid,
         raw_payload={"raw_text": parsed.raw_text, "kind": parsed.kind,
                      "reason": getattr(parsed, "reason", "") or "not a tradeable signal"},
         status=PendingSignalApproval.Status.QUARANTINED,
@@ -98,6 +105,11 @@ def ingest_messages(messages, *, actor=None) -> dict:
 
     Returns a summary; UPDATE messages (TP-hit/move-SL) are not new signals and
     are skipped. Creates NO ExecutionJob.
+
+    LEGACY FILE-INTAKE PATH: no provider / no chat — every row here carries
+    ``source=SOURCE`` and ``chat_id=""``, a partition distinct from the live
+    dispatcher path (``source=provider.slug``), so the chat-less dedup below never
+    collides with chat-scoped live approvals (T1).
     """
     seen = set(
         PendingSignalApproval.objects.filter(source=SOURCE)

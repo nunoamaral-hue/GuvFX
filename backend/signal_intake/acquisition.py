@@ -46,8 +46,8 @@ def _maybe_record_command(provider, message, mid, chat_id, text) -> None:
         if cmd.command_type not in _ACTIONABLE_COMMANDS:
             return  # NON_ACTIONABLE / UNKNOWN status updates are not commands — nothing to act on
         ProviderCommand.objects.get_or_create(
-            provider=provider, message_id=mid,
-            defaults={"chat_id": chat_id, "reply_to_message_id": str(message.get("reply_to_message_id") or ""),
+            provider=provider, chat_id=chat_id, message_id=mid,
+            defaults={"reply_to_message_id": str(message.get("reply_to_message_id") or ""),
                       "command_type": cmd.command_type, "args": cmd.args,
                       "raw_text": (text or "")[:2000], "status": ProviderCommand.Status.PENDING},
         )
@@ -118,6 +118,30 @@ def _signal_expired(parsed, now) -> bool:
     return exp is not None and now >= exp
 
 
+def _chat_identity_refusal(provider, chat_id):
+    """SOURCE-AWARE IDENTITY GUARD (T1, fail-closed): return a refusal reason when a
+    message's chat identity cannot be trusted against the provider's configured chat,
+    else None. Defence-in-depth — the listener already routes by chat, so this never
+    triggers for the live/test paths (every caller supplies a chat equal, after str(),
+    to the provider's telegram_chat_id). It NEVER fabricates a chat.
+
+      * ``chat_identity_mismatch`` — provider chat and message chat both set but unequal
+        (a mis-routed / forged message that is not from this provider's chat).
+      * ``chat_identity_missing`` — an ARMED provider (whose chat is the trust boundary)
+        received a message with no chat identity → provenance unconfirmable.
+    """
+    prov_chat = str(getattr(provider, "telegram_chat_id", "") or "")
+    if not prov_chat:
+        return None  # no trust boundary configured yet — nothing to check against
+    if not chat_id:
+        # Only an ARMED provider's blank chat is a refusal; a non-armed provider is
+        # dropped by the normal arm gate (DROPPED_NOT_ARMED) regardless.
+        return "chat_identity_missing" if provider.is_armed() else None
+    if chat_id != prov_chat:
+        return "chat_identity_mismatch"
+    return None
+
+
 def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     kind_map = {"TP_HIT": SignalUpdate.Kind.TP_HIT, "MOVE_SL": SignalUpdate.Kind.MOVE_SL}
     reply_to = str(message.get("reply_to_message_id") or "")
@@ -125,8 +149,11 @@ def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     # resolves (soft link — never fabricated; None when the original isn't present).
     origin_id = None
     if reply_to:
+        # Reply linkage is CHAT-SCOPED (T1): a reply resolves only to the originating
+        # message in the SAME chat, so a same-id message in another chat can never be
+        # picked as the origin. Soft link — None (never fabricated) when absent.
         origin_id = (AcquiredMessage.objects
-                     .filter(provider=provider, message_id=reply_to)
+                     .filter(provider=provider, chat_id=chat_id, message_id=reply_to)
                      .values_list("id", flat=True).first())
     SignalUpdate.objects.create(
         provider=provider, chat_id=chat_id, message_id=mid,
@@ -147,6 +174,10 @@ def _record_amendment(provider, original, message, mid, tg_date, now):
     amended SignalUpdate (record-only). Idempotent per (original, edit content).
     """
     edited_text = message.get("text") or ""
+    # SOURCE-AWARE IDENTITY (T1): an edit is the SAME message in the SAME chat as the
+    # original, so the authoritative chat is the original's stored (already chat-guarded)
+    # chat_id — never re-derived or fabricated here.
+    chat_id = original.chat_id
     edit_hash = hashlib.sha256(edited_text.encode("utf-8")).hexdigest()
     if MessageAmendment.objects.filter(original=original, edit_hash=edit_hash).exists():
         return None  # same edit re-delivered → already recorded
@@ -199,10 +230,9 @@ def _record_amendment(provider, original, message, mid, tg_date, now):
             elif new_approval:
                 # An edit turned a non-signal into a tradeable signal → surface it to the
                 # human-approval gate FLAGGED (never auto-traded; intake_parsed is dedup-safe).
-                services.intake_parsed(parsed, provider=provider, edited=True)
+                services.intake_parsed(parsed, provider=provider, chat_id=chat_id, edited=True)
             if is_update:
-                _record_update(provider, message, parsed, mid,
-                               str(message.get("chat_id") or ""), edited=True)
+                _record_update(provider, message, parsed, mid, chat_id, edited=True)
             return amendment
     except IntegrityError:  # concurrent identical edit won the race
         return MessageAmendment.objects.filter(original=original, edit_hash=edit_hash).first()
@@ -250,7 +280,7 @@ def _classify(provider, message, mid, chat_id, tg_date, now):
                 return O.STALE, "signal_expired", None
             # Human-gated intake either way; an edited entry is FLAGGED so the reviewer
             # verifies entry/SL/TP (never auto-applied — approval still required).
-            approval = services.intake_parsed(parsed, provider=provider, edited=edited)
+            approval = services.intake_parsed(parsed, provider=provider, chat_id=chat_id, edited=edited)
             return O.INTAKEN, ("edited_review" if edited else ""), approval
         if parsed.kind == Kind.UPDATE:
             _record_update(provider, message, parsed, mid, chat_id, edited=edited)
@@ -276,21 +306,39 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
     chat_id = str(message.get("chat_id") or "")
     tg_date = _to_aware(message.get("date"))
 
-    # Dedup: one ledger row per (provider, message_id). A re-sent message (catch-up
-    # replay) returns the existing row and is NOT reprocessed.
-    existing = AcquiredMessage.objects.filter(provider=provider, message_id=mid).first()
+    # SOURCE-AWARE IDENTITY GUARD (T1, fail-closed): decide trust BEFORE any classify —
+    # an untrusted chat is QUARANTINED, never intaken, never advances the watermark.
+    chat_refusal = _chat_identity_refusal(provider, chat_id)
+
+    # Dedup: one ledger row per (provider, chat_id, message_id). chat_id is part of the
+    # key because Telegram message_id is chat-scoped — a same-id message from a DIFFERENT
+    # chat is a DISTINCT row, never deduped against a historical other-chat message (T1).
+    # A re-sent message (catch-up replay) returns the existing row and is NOT reprocessed.
+    existing = AcquiredMessage.objects.filter(
+        provider=provider, chat_id=chat_id, message_id=mid).first()
     if existing is not None:
         # WAYOND-EDIT-DIFF: an EDIT (edit_date) or a CHANGED body for an already-acquired
         # message records an immutable linked amendment (the original is NEVER
         # overwritten). A true unchanged duplicate just dedups. Never re-processes the
         # original, never auto-applies edited values, never places an order.
-        stored_text = ((existing.raw_payload or {}).get("text") or "")
-        incoming_text = message.get("text") or ""
-        if message.get("edit_date") or incoming_text.strip() != stored_text.strip():
-            _record_amendment(provider, existing, message, mid, tg_date, now)
+        # FAIL-CLOSED (T1): an untrusted chat identity NEVER runs the amendment side-
+        # effects (which can surface an approval) — it only dedups to its already-recorded
+        # (quarantined) row, exactly as the fresh path refuses it. The amendment branch is
+        # therefore gated on a trusted chat, keeping the guard's guarantee consistent on
+        # both the fresh and the edit paths.
+        if chat_refusal is None:
+            stored_text = ((existing.raw_payload or {}).get("text") or "")
+            incoming_text = message.get("text") or ""
+            if message.get("edit_date") or incoming_text.strip() != stored_text.strip():
+                _record_amendment(provider, existing, message, mid, tg_date, now)
         return existing
 
-    outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)
+    if chat_refusal is not None:
+        # Untrusted chat identity → fail closed. Recorded as a QUARANTINED ledger row
+        # (append-only audit), never intaken, never an order.
+        outcome, reason, approval = AcquiredMessage.Outcome.QUARANTINED, chat_refusal, None
+    else:
+        outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)
 
     try:
         with transaction.atomic():
@@ -309,17 +357,20 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
                 approval=approval,
             )
     except IntegrityError:
-        # A concurrent caller won the (provider, message_id) race — return their
+        # A concurrent caller won the (provider, chat_id, message_id) race — return their
         # row (idempotent; downstream intake_parsed is itself dedup-safe so no
         # duplicate approval results). Never raises for a duplicate.
-        return AcquiredMessage.objects.get(provider=provider, message_id=mid)
+        return AcquiredMessage.objects.get(
+            provider=provider, chat_id=chat_id, message_id=mid)
 
     # Bookkeeping: advance watermark + provider health, except for a non-armed drop
     # (a paused/retired provider isn't a live signal source). The watermark advances
     # for STALE too — a stale message HAS been seen + recorded, so catch-up must not
     # re-fetch it (re-fetching would only re-dismiss it STALE; it is never a missed
-    # signal). Only a non-armed drop leaves the watermark untouched.
-    if outcome != AcquiredMessage.Outcome.DROPPED_NOT_ARMED:
+    # signal). Only a non-armed drop, or a fail-closed chat-identity refusal (an
+    # untrusted claim must never move this provider's trusted watermark — T1), leaves
+    # the watermark untouched.
+    if outcome != AcquiredMessage.Outcome.DROPPED_NOT_ARMED and chat_refusal is None:
         provider.watermark_last_message_id = mid
         provider.last_signal_at = now
         provider.save(update_fields=["watermark_last_message_id", "last_signal_at", "updated_at"])

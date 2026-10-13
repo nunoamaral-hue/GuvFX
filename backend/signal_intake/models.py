@@ -36,7 +36,12 @@ class PendingSignalApproval(models.Model):
     source = models.CharField(
         max_length=32, choices=Source.choices, default=Source.WAYOND_TELEGRAM
     )
-    # External Telegram message identifier — the dedup key (with source).
+    # SOURCE-AWARE IDENTITY (T1): the originating Telegram chat. Telegram message_id
+    # is chat-scoped, so the chat is part of the dedup key — otherwise a future
+    # channel switch lets a new-chat message collide with a historical old-chat
+    # message of the same id. Blank for the legacy file-intake path (no chat).
+    chat_id = models.CharField(max_length=64, blank=True, default="")
+    # External Telegram message identifier — the dedup key (with source + chat_id).
     message_id = models.CharField(max_length=128)
 
     # Descriptive signal metadata (strings, as parsed; NOT an executable order).
@@ -83,9 +88,11 @@ class PendingSignalApproval(models.Model):
             ("review_signals", "Can approve or reject pending signals"),
         ]
         constraints = [
-            # Deduplication: one record per (source, message_id).
+            # Deduplication: one record per (source, chat_id, message_id). chat_id is
+            # part of the key because Telegram message_id is chat-scoped (T1).
             models.UniqueConstraint(
-                fields=["source", "message_id"], name="uniq_source_message",
+                fields=["source", "chat_id", "message_id"],
+                name="uniq_source_chat_message",
             ),
         ]
         indexes = [models.Index(fields=["status"])]
@@ -209,9 +216,10 @@ class SignalProvider(models.Model):
 
 class AcquiredMessage(models.Model):
     """Append-only acquisition ledger + dedup key. One row per (provider,
-    message_id): every acquired message is recorded with its outcome so catch-up
-    is replay-safe and stale/quarantined messages are audited (never silently
-    dropped)."""
+    chat_id, message_id): every acquired message is recorded with its outcome so
+    catch-up is replay-safe and stale/quarantined messages are audited (never
+    silently dropped). chat_id is part of the key because Telegram message_id is
+    chat-scoped — a same-id message in a different chat is a distinct row (T1)."""
 
     class Outcome(models.TextChoices):
         INTAKEN = "INTAKEN", "Tradeable signal → PendingSignalApproval"
@@ -239,7 +247,8 @@ class AcquiredMessage(models.Model):
         ordering = ("-acquired_at", "id")
         constraints = [
             models.UniqueConstraint(
-                fields=["provider", "message_id"], name="uniq_provider_message",
+                fields=["provider", "chat_id", "message_id"],
+                name="uniq_provider_chat_message",
             ),
         ]
         indexes = [models.Index(fields=["outcome"])]
@@ -285,9 +294,10 @@ class ProviderCommand(models.Model):
     """WS-E: a recorded provider FOLLOW-UP trade-management command (move-SL / close / cancel),
     classified from a reply/update message. RECORDING is always-on and side-effect-free; ACTING on
     it is gated (PROVIDER_COMMANDS_ENABLED + the source's ``command_engine_enabled``) and performed
-    by a separate backend sweep. Idempotent by ``(provider, message_id)``. The row + its ``result``
-    JSON ARE the durable audit (raw text, parsed command, matched plan, legs, jobs, broker result,
-    final status, rejection) required by E8."""
+    by a separate backend sweep. Idempotent by ``(provider, chat_id, message_id)`` — chat_id is part of
+    the key because Telegram message_id is chat-scoped (T1). The row + its ``result`` JSON ARE the
+    durable audit (raw text, parsed command, matched plan, legs, jobs, broker result, final status,
+    rejection) required by E8."""
 
     class Type(models.TextChoices):
         MOVE_SL_BE = "MOVE_SL_BE", "Move SL to breakeven"
@@ -323,7 +333,8 @@ class ProviderCommand(models.Model):
     class Meta:
         ordering = ("-created_at", "id")
         constraints = [
-            models.UniqueConstraint(fields=["provider", "message_id"], name="uniq_provider_command"),
+            models.UniqueConstraint(
+                fields=["provider", "chat_id", "message_id"], name="uniq_provider_chat_command"),
         ]
         indexes = [models.Index(fields=["status", "processed"])]
 
