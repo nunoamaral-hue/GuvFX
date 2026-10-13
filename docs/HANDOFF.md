@@ -1,5 +1,67 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-13 — T1 source-aware Telegram message identity & dedup (PR #495, DARK)
+
+```
+PM HANDOFF
+
+Handoff ID: T1-SOURCE-AWARE-IDENTITY-2026-10-13
+Packet ID: T1_SOURCE_AWARE_IDENTITY_AND_DEDUP
+Status: PASS (engineering + in-tests certification; NOT deployed, NOT switched)
+
+Initial branch/HEAD/status: main @ 387cf2c (clean; untracked ACCOUNT46 docs + node_modules left alone)
+Convergence base: main @ 387cf2c
+Convergence branch: feat/source-aware-message-identity
+Preservation cherry-pick commit: None (no code removed; all changes additive/behaviour-preserving)
+Governance commit: 525e9b2 (feat(signal_intake): source-aware Telegram message identity + dedup (T1, DARK))
+Files added: backend/signal_intake/migrations/0010_source_aware_chat_identity.py;
+  backend/signal_intake/tests_source_aware_identity.py; docs/T1_SOURCE_AWARE_IDENTITY.md
+Files modified: backend/signal_intake/models.py; backend/signal_intake/acquisition.py;
+  backend/signal_intake/services.py; backend/signal_intake/management/commands/onboard_provider.py;
+  docs/STATUS.md; docs/NEXT.md; docs/KNOWN_ISSUES.md; docs/HANDOFF.md
+Exact ignored local .claude files: None
+Original draft hash verification: N/A (no Notion packet draft supplied this session)
+Scoped rules verification: architecture.md (separation of concerns; no LLM authority; no new infra),
+  data.md (immutable evidence — backfill completes a structural key only, never content), security.md
+  (no secrets touched), evidence.md, handoff.md read and applied.
+Secret-scan result: no secrets added (diff is identity logic + migration + tests + docs).
+Unit-test result: signal_intake 206 OK; execution+reliability 1388 OK; FULL backend 5770 OK (skipped=1);
+  new matrix signal_intake.tests_source_aware_identity 46 OK.
+Make governance-check result: not run locally (CI governance job runs on PR #495; no evidence manifest in scope).
+Make check result: backend half green (full suite 5770 OK). Frontend untouched (backend-only change).
+Evidence/privacy validation: no PII/credentials; chat ids are non-secret routing identifiers.
+Commit identity/message validation: conventional commit + Co-Authored-By trailer present.
+Final branch/HEAD/status: feat/source-aware-message-identity @ 525e9b2 (+ docs commit); pushed.
+Flow A ref unchanged: Yes (main untouched)
+Branch pushed: Yes (PR #495 open, bound; CI 3 passing / 2 pending / 0 failing at hand-off)
+
+Commands executed: makemigrations (0010) + manual backfill extension; manage.py test (signal_intake,
+  execution, reliability, full); git add/commit/push; gh pr create; ccd_pr get_status.
+Verified facts: canonical identity now (provider/source, chat_id, message_id) across acquisition, approval,
+  commands, updates, edits; migration additive + deterministic backfill, superset key cannot collide; guard
+  inert on live/test paths; execution read-path byte-for-byte unchanged (chat NOT in raw_payload); full
+  suite green; 4-reviewer adversarial review passed with fixes applied.
+Assumptions made: pre-switch provenance invariant (provider.telegram_chat_id == the chat every historical
+  row was acquired from) holds because no channel switch has occurred — stated in the migration docstring.
+Deviations from packet: none to the identity scope. Added a fail-closed guard to onboard_provider (the chat
+  trust-boundary writer) — see Amber below.
+Amber decisions proposed:
+  (1) onboard_provider fail-closed watermark guard + opt-in --reset-watermark (touches the switch command /
+      cutover mechanism) to close a HIGH adversarial finding; the reset is operator-invoked, NOT run here.
+  (2) Migration backfill does in-place save() on the append-only ledgers to COMPLETE a structural identity
+      key (content untouched, only '' rows) — a data.md interpretation, documented in the migration docstring.
+Red decisions requiring Nuno: the Telegram source switch itself (future packet) — reset watermark + repoint
+  execution/signal_planning at approval.chat_id. NOT performed.
+Risks discovered: channel-switch catch-up watermark floor (HIGH, now guarded + documented); pre-existing
+  ProviderCommand index-name drift (separate task); latent execution plan.chat_id='' (resolved at cutover).
+Out-of-scope access performed: No (no prod, no Notion, no host, no deploy).
+Rollback/recovery: revert commit 525e9b2 (+docs); migration 0010 reverse drops the field/constraints
+  (guaranteed only pre-switch, documented). Nothing deployed.
+Recommended next packet: merge PR #495 after CI green; the Telegram source switch remains a separate
+  Sponsor-authorised cutover packet (prerequisites in docs/T1_SOURCE_AWARE_IDENTITY.md).
+```
+
+
 ## 2026-10-07 — Programme pivot: Withdrawal Intelligence V1 (P0) WP1 + T1 Telegram migration STOPPED
 
 - **Scope / decision.** Sponsor packet: finish ONLY the minimum first-LIVE monitoring cert, then STOP LIVE

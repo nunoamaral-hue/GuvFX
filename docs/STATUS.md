@@ -14,6 +14,29 @@
 
 ## Execution workstream log
 
+- **2026-10-13 - T1 SOURCE-AWARE TELEGRAM MESSAGE IDENTITY & DEDUP (PR #495, DARK, not deployed).**
+  Fixed the structural defect where the acquisition ledger keyed on `(provider, message_id)` and the approval on
+  `(source, message_id)` — but Telegram `message_id` is **chat-scoped**, so after a future channel switch a new-chat
+  message would collide with a historical old-chat message of the same id and be silently lost (dedup) / fail to
+  create an approval. Canonical identity is now **`(provider/source, chat_id, message_id)`**.
+  - **models**: uniqueness → `(provider, chat_id, message_id)` on `AcquiredMessage` + `ProviderCommand`;
+    `(source, chat_id, message_id)` on `PendingSignalApproval` (new `chat_id` field). `chat_id` already existed as a
+    stored non-key column on the first three.
+  - **migration 0010**: additive field + deterministic, non-destructive backfill (chat from the linked provider;
+    `''` where no provider — never fabricated) + the new constraints. The new key is a strict superset of the old,
+    so no `AddConstraint` can fail on existing data and no channel switch is needed for validity.
+  - **acquisition/services**: chat-scoped dedup/race/reply-link/command-key/amendment/intake dedup; a fail-closed
+    chat-identity guard (`chat_identity_mismatch`/`_missing`) inert on live/test paths (never advances the watermark;
+    gated on the edit path too).
+  - **onboard_provider**: fail-closed guard refusing a chat switch that would strand the chat-blind catch-up
+    watermark floor, unless `--reset-watermark` is given (operator cutover control — NOT invoked).
+  - **DARK**: execution read-path byte-for-byte unchanged (`chat_id` NOT written into `raw_payload`; no execution code
+    reads the new field). Tests: new 46-case matrix; `signal_intake` 206, `execution`+`reliability` 1388, **full
+    backend 5770 OK (skipped=1)**. Mandatory 4-reviewer adversarial review: core sound; 1 HIGH (watermark floor) + 1
+    LOW (amendment guard) fixed in-PR; 2 LOW migration-governance caveats documented (Amber). Cutover prerequisites
+    (watermark reset + repoint `signal_planning` at `approval.chat_id`) in `docs/T1_SOURCE_AWARE_IDENTITY.md` — a
+    separate future packet.
+
 - **2026-10-13 - WITHDRAWAL INTELLIGENCE V1 — REMAINING ENGINEERING (4 governed DARK PRs). All sample-independent engineering COMPLETE.**
   Corrected the dependency register against production (read-only): the Gmail mailbox is CONNECTED (OAuth NOT
   outstanding); a MANUAL `BrokerEmailIdentity` binding (TradersWay/acct46/user29 VERIFIED) already exists — what was

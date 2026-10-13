@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★★ T1 SOURCE-AWARE IDENTITY — ENGINEERING COMPLETE, DARK (2026-10-13, PR #495)
+Canonical acquisition identity is now `(provider/source, chat_id, message_id)`. Merged nothing to prod; **not
+deployed**. One bounded next action: **merge PR #495 once CI is green** (routine; DARK — migration 0010 is additive +
+backfill-safe, no behaviour change for the current single channel).
+**Do NOT** switch the Telegram channel, reset the live watermark, restart the listener, or deploy as part of T1.
+The Telegram **source switch is a separate, future, Sponsor-authorised packet** whose BLOCKING prerequisites are in
+`docs/T1_SOURCE_AWARE_IDENTITY.md` (reset the catch-up watermark via `onboard_provider --reset-watermark`; repoint
+`execution/signal_planning.py` at `approval.chat_id` under its own gate).
+
+
 ## ★★★ WITHDRAWAL V1 — REMAINING ENGINEERING COMPLETE (2026-10-13)
 All sample-independent engineering is DONE and DARK (PR1 #487 identity verification/binding — MERGED+DEPLOYED+CERTIFIED;
 PR2 #488 Withdrawals UX, PR3 #489 BrokerProfile↔catalogue + IS6 auth, PR4 #490 dual-broker readiness + §7 classifier
