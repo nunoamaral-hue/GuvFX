@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★★ WITHDRAWAL V1 — REMAINING ENGINEERING COMPLETE (2026-10-13)
+All sample-independent engineering is DONE and DARK (PR1 #487 identity verification/binding — MERGED+DEPLOYED+CERTIFIED;
+PR2 #488 Withdrawals UX, PR3 #489 BrokerProfile↔catalogue + IS6 auth, PR4 #490 dual-broker readiness + §7 classifier
+architecture — MERGED, DARK). See the 2026-10-13 STATUS entry.
+**The remaining items are NOT engineering — they are Sponsor/human acts (GuvFX never initiates/confirms a transaction):**
+1. **Arm continuous dual-broker ingestion** per `docs/WITHDRAWAL_V1_DUAL_BROKER_ACTIVATION.md` (verify with the read-only
+   `withdrawal_ingest_readiness` command → CAPTURE-READY, then set `BROKER_INTELLIGENCE_INGEST_ENABLED=1` + schedule
+   `run_mailbox_ingest`). Captures authenticated dual-broker mail as immutable evidence; a positive classifier is NOT
+   required to capture (UNKNOWN-category evidence is preserved, never misclassified).
+2. **A genuine external withdrawal** (IS6 USD 10 and/or TradersWay), Sponsor-initiated, to certify the positive
+   `EXTERNAL_WITHDRAWAL` classifier — until one exists, parsers emit only DEPOSIT/INTERNAL_TRANSFER/UNKNOWN and **0
+   `Withdrawal` rows surface** (expected).
+3. **IS6/acct47 identity onboarding** (PR-C; separate authorization) — then the reusable verify/bind capability can bind it.
+
 ## ★★ CONSOLIDATED PACKET (Sponsor, 2026-10-08) — P0 = Withdrawal Intelligence V1, TradersWay primary pilot
 **Immediate target: `TRADERSWAY_WITHDRAWAL_PILOT_READY`** — then STOP and ask the Sponsor to perform a genuine external
 withdrawal (GuvFX NEVER initiates/confirms a financial transaction). Done so far: WP1✓ WP2✓ WP3a✓ (all MERGED +

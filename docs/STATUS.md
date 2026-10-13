@@ -14,6 +14,41 @@
 
 ## Execution workstream log
 
+- **2026-10-13 - WITHDRAWAL INTELLIGENCE V1 — REMAINING ENGINEERING (4 governed DARK PRs). All sample-independent engineering COMPLETE.**
+  Corrected the dependency register against production (read-only): the Gmail mailbox is CONNECTED (OAuth NOT
+  outstanding); a MANUAL `BrokerEmailIdentity` binding (TradersWay/acct46/user29 VERIFIED) already exists — what was
+  missing was the *reusable* verify/bind capability; no IS6/acct47 identity exists yet; 0 `Withdrawal` rows (parsers
+  emit no `EXTERNAL_WITHDRAWAL` yet).
+  - **PR1 #487 (`bbec45b`) — identity verification/binding (mig 0009). MERGED + DARK-DEPLOYED + CERTIFIED.** Composed-proof
+    verify/bind (connected-mailbox control + GuvFX-account ownership + broker match + same owner + no conflict), never
+    auto-verify, TOCTOU-safe under a row lock (certified binding never re-pointed), idempotent CONFIRM, every refusal
+    (incl. the API owner-scope short-circuit) writes a durable append-only `BrokerEmailIdentityAudit`. Owner-scoped DARK
+    API (`identities/`, `identities/verify/`, flag `BROKER_IDENTITY_VERIFICATION_ENABLED` OFF→404). Adversarial 4-lens
+    review: 1 medium (unaudited API refusal) FIXED + re-verified. Prod cert: audit table exists, flag OFF, certified
+    TradersWay/46 row intact, containers healthy.
+  - **PR2 #488 — Withdrawals UX (no migration). MERGED (DARK).** `withdrawal_history` + `WithdrawalHistoryView`
+    (owner-scoped, broker/account selectors, foreign-acct→nothing) + frontend `WithdrawalsHistory` (history list,
+    truthful states pending≠failed, UNRESOLVED visible, masked accounts, accurate empty states) + panel unresolved
+    count. Flag `BROKER_WITHDRAWAL_UX_ENABLED` OFF→404/self-hide.
+  - **PR3 #489 (`224b3e2`) — BrokerProfile↔BrokerServerCatalogue integration + IS6 auth regression (mig 0010). MERGED (DARK).**
+    `supported_categories` (declared parser capability; NEITHER pilot declares EXTERNAL_WITHDRAWAL) + `provenance` +
+    read-only `reconcile_profile` (catalogue stays authoritative; no competing authority; no servers.dat/MT5) + audited
+    `changed_by`. §5 IS6 adversarial auth regression on the REAL verdict path (aligned-DKIM/DMARC, forged authserv-id
+    ignored, unaligned reject, phish-domain dropped, cross-user not attributed, ambiguous→UNRESOLVED). Adversarial
+    review clean (all 5 points PASS).
+  - **PR4 #490 — dual-broker ingestion readiness + §7 classifier architecture (no migration). MERGED (DARK).** Read-only
+    `withdrawal_ingest_readiness` command + `docs/WITHDRAWAL_V1_DUAL_BROKER_ACTIVATION.md` (exact activation plan, STOP
+    gate); confirmed one-mailbox/one-cursor/one-worker + BOTH parsers register (dual-broker routing already works) +
+    fail-closed retention/authenticity + immutable evidence. §7 `external_withdrawal_classifier` ARCHITECTURE (disabled,
+    invariants: internal≠external, deposit≠withdrawal, ambiguous→UNKNOWN, uncertified→UNKNOWN; `CERTIFIED_BROKERS` empty;
+    NOT wired into any live parser; synthetic fixtures only).
+  Tests: full backend suite OK (5683 clean re-run; earlier 3F/15E were flaky concurrency, not these changes); frontend
+  suites green. Standing safety intact: LIVE exec/recovery/self-connect OFF, continuous ingestion NOT enabled, no MT5/
+  servers.dat change, accounts 25/33/35/36/46/47 preserved, GuvFX never initiates/confirms a transaction.
+  **Remaining (NOT engineering):** a Sponsor-initiated GENUINE external withdrawal (IS6/TradersWay) to certify the
+  positive classifier (0 withdrawals surface until then); IS6/acct47 identity onboarding (PR-C, separate authz); arming
+  continuous ingestion (Sponsor act per the activation runbook). Evidence: `evidence/manifests/GFX-EVD-WV1-PR1-IDENTITY-VERIFICATION.json`.
+
 - **2026-10-12 - BROKER SERVER ENVIRONMENT GOVERNANCE CORRECTION — corrective PR (branch `fix/broker-server-environment-governance`, base `main` @ `3419cc7`). DARK / NOT deployed.**
   Fixes the first-registration environment-poisoning defect: `BrokerServer.environment` was set from the first
   registering account's `account_type` (defaulting demo), so the LIVE server `IS6Technologies-Live`, first touched by a
