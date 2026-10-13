@@ -233,6 +233,13 @@ class AcquiredMessage(models.Model):
     )
     chat_id = models.CharField(max_length=64, blank=True)
     message_id = models.CharField(max_length=64)
+    # SOURCE-AWARE IDENTITY (T1, HIGH-2): True when this row records a fail-closed
+    # chat-identity REFUSAL (a message from a then-untrusted chat), not a genuine
+    # acquisition. It partitions the uniqueness key so a refusal can never suppress a
+    # later GENUINE message that legitimately owns the same (provider, chat_id,
+    # message_id) after an authorized cutover makes that chat trusted — the two rows
+    # coexist (append-only; the refusal is immutable audit, never promoted).
+    chat_identity_refused = models.BooleanField(default=False)
     outcome = models.CharField(max_length=24, choices=Outcome.choices)
     reason = models.CharField(max_length=255, blank=True)
     telegram_date = models.DateTimeField(null=True, blank=True)
@@ -246,9 +253,11 @@ class AcquiredMessage(models.Model):
     class Meta:
         ordering = ("-acquired_at", "id")
         constraints = [
+            # chat_identity_refused partitions the key (HIGH-2): a refusal row and a
+            # genuine row may share (provider, chat_id, message_id) and coexist.
             models.UniqueConstraint(
-                fields=["provider", "chat_id", "message_id"],
-                name="uniq_provider_chat_message",
+                fields=["provider", "chat_id", "message_id", "chat_identity_refused"],
+                name="uniq_provider_chat_message_trust",
             ),
         ]
         indexes = [models.Index(fields=["outcome"])]

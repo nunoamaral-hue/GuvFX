@@ -5,54 +5,36 @@ from django.db import migrations, models
 
 
 def backfill_chat_id(apps, schema_editor):
-    """Deterministic, non-destructive source-aware-identity backfill (T1).
+    """Deterministic, EVIDENCE-BASED source-aware-identity backfill (T1, AMBER-1).
 
     The canonical acquisition identity becomes (provider/source, chat_id, message_id).
-    This fills chat_id on existing rows ONLY where it is unambiguous:
+    Only the brand-new PendingSignalApproval.chat_id (all '') is populated, and ONLY from
+    PERSISTED, IMMUTABLE acquisition evidence — the chat_id of the linked AcquiredMessage
+    rows recorded at acquisition time. It is NEVER inferred from mutable provider metadata
+    (provider.telegram_chat_id is not proof of a historical chat — it can be edited and,
+    at a future cutover, deliberately changes). A chat is used only when the linked
+    evidence is UNAMBIGUOUS (exactly one distinct non-blank chat); a row with no linked
+    evidence (legacy file-intake) or ambiguous/blank evidence is left '' — unresolved
+    provenance is never inferred or fabricated.
 
-      * PendingSignalApproval.chat_id is brand-new (all ''): fill from the linked
-        provider's configured telegram_chat_id — the provider FK pins the exact
-        provider, so the chat is unambiguous. Rows with no provider (legacy
-        file-intake) stay '' — a chat is NEVER fabricated.
-      * AcquiredMessage / ProviderCommand / SignalUpdate already store chat_id at
-        write time; gap-fill ONLY rows left '' whose provider has a non-blank chat.
-        Rows that already carry a chat_id are untouched (raw evidence is immutable).
+    The three ledger models (AcquiredMessage / SignalUpdate / ProviderCommand) already
+    persist their own chat_id at write time, so they are NOT touched here — no in-place
+    UPDATE of append-only evidence (data.md).
 
-    Uniqueness can never regress: the OLD key already guaranteed uniqueness, so the
-    new (…, chat_id, message_id) key is a strict superset — this backfill cannot
+    Uniqueness can never regress: the OLD approval key already guaranteed uniqueness, so
+    the new (source, chat_id, message_id) key is a strict superset — this backfill cannot
     create a duplicate, and needs no channel switch to be valid.
-
-    Two governance notes (adversarial-review caveats, both benign):
-      * PROVENANCE is correct ONLY under the pre-switch invariant this packet operates
-        in: provider.telegram_chat_id is the chat every one of that provider's rows was
-        acquired from, because no channel switch has happened. (The switch is fenced off
-        — see onboard_provider's fail-closed watermark guard and the cutover contract in
-        docs/T1_SOURCE_AWARE_IDENTITY.md.) We therefore stamp the provider's current chat
-        with confidence; a chat is never invented where the provider pins none.
-      * data.md (raw evidence is immutable) is honoured: this COMPLETES a structural
-        identity key that the schema change itself introduces into the uniqueness
-        constraint — it never touches a row's content (text/outcome/reason/raw_payload)
-        and only writes where chat_id is '' (never overwrites an existing chat). It is
-        key completion, not a content correction.
     """
     PendingSignalApproval = apps.get_model("signal_intake", "PendingSignalApproval")
-    AcquiredMessage = apps.get_model("signal_intake", "AcquiredMessage")
-    ProviderCommand = apps.get_model("signal_intake", "ProviderCommand")
-    SignalUpdate = apps.get_model("signal_intake", "SignalUpdate")
 
-    for appr in (PendingSignalApproval.objects
-                 .exclude(provider__isnull=True).select_related("provider")):
-        chat = (getattr(appr.provider, "telegram_chat_id", "") or "").strip()
-        if chat and not appr.chat_id:
-            appr.chat_id = chat
+    for appr in PendingSignalApproval.objects.filter(chat_id=""):
+        # Persisted evidence: the chat_id the message was actually acquired under.
+        chats = set(
+            appr.acquired_messages.exclude(chat_id="").values_list("chat_id", flat=True))
+        if len(chats) == 1:
+            appr.chat_id = chats.pop()
             appr.save(update_fields=["chat_id"])
-
-    for Model in (AcquiredMessage, ProviderCommand, SignalUpdate):
-        for row in Model.objects.filter(chat_id="").select_related("provider"):
-            chat = (getattr(row.provider, "telegram_chat_id", "") or "").strip()
-            if chat:
-                row.chat_id = chat
-                row.save(update_fields=["chat_id"])
+        # else: no / ambiguous persisted evidence → leave '' (provenance unresolved).
 
 
 def noop_reverse(apps, schema_editor):

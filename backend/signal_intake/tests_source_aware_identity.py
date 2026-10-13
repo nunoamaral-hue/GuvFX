@@ -147,13 +147,38 @@ class FailClosedGuardTests(_Base):
         a = self._acq(self._msg("23", chat=""))
         self.assertEqual(a.outcome, O.DROPPED_NOT_ARMED)
 
-    def test_10_provider_without_configured_chat_skips_guard(self):
-        """A provider whose trust boundary is not yet configured (blank chat) is not
-        chat-guarded — the message is classified normally."""
+    def test_10_armed_provider_without_configured_chat_fails_closed(self):
+        """HIGH-1: an ARMED provider with NO established chat trust boundary must REFUSE,
+        not accept. Blank-chat + armed → QUARANTINED, never intaken."""
         self.provider.telegram_chat_id = ""
         self.provider.save(update_fields=["telegram_chat_id"])
         a = self._acq(self._msg("24", chat="9999"))
-        self.assertEqual(a.outcome, O.INTAKEN)
+        self.assertEqual(a.outcome, O.QUARANTINED)
+        self.assertEqual(a.reason, "provider_chat_unconfigured")
+        self.assertIsNone(a.approval)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        self.provider.refresh_from_db()
+        self.assertEqual(self.provider.watermark_last_message_id, "")  # no advance
+
+    def test_10b_non_armed_blank_chat_is_dropped_not_quarantined(self):
+        """Preserve legacy/onboarding behaviour: a NON-armed provider with no chat is a
+        normal arm-gate DROP (DROPPED_NOT_ARMED), not a chat-identity refusal."""
+        self.provider.status = SignalProvider.Status.ONBOARDING
+        self.provider.telegram_chat_id = ""
+        self.provider.save(update_fields=["status", "telegram_chat_id"])
+        a = self._acq(self._msg("24b", chat="9999"))
+        self.assertEqual(a.outcome, O.DROPPED_NOT_ARMED)
+
+    def test_10c_config_drift_chat_cleared_after_arming_fails_closed(self):
+        """Configuration drift: a provider armed WITH a chat whose chat is later cleared
+        (admin edit / drift) must fail closed on the next message."""
+        a_ok = self._acq(self._msg("24c0", chat=OLD_CHAT))   # armed + chat → normal
+        self.assertEqual(a_ok.outcome, O.INTAKEN)
+        self.provider.telegram_chat_id = ""                  # drift: chat cleared, still ARMED
+        self.provider.save(update_fields=["telegram_chat_id"])
+        a = self._acq(self._msg("24c1", chat=OLD_CHAT))
+        self.assertEqual(a.outcome, O.QUARANTINED)
+        self.assertEqual(a.reason, "provider_chat_unconfigured")
 
     def test_11_mismatch_refusal_is_idempotent(self):
         self._acq(self._msg("25", chat=NEW_CHAT))
@@ -388,22 +413,50 @@ class BackfillTests(_Base):
             "signal_intake.migrations.0010_source_aware_chat_identity")
         mod.backfill_chat_id(django_apps, None)
 
-    def test_38_approval_chat_backfilled_from_provider(self):
+    def test_38_approval_chat_backfilled_from_persisted_evidence(self):
+        """AMBER-1: the approval chat is taken from PERSISTED acquisition evidence (the
+        linked AcquiredMessage.chat_id), NOT from mutable provider metadata."""
         appr = PendingSignalApproval.objects.create(
             source="wayond", chat_id="", message_id="bf1", provider=self.provider)
+        AcquiredMessage.objects.create(
+            provider=self.provider, chat_id=OLD_CHAT, message_id="bf1",
+            outcome=O.INTAKEN, approval=appr)  # the immutable evidence
         self._backfill()
         appr.refresh_from_db()
         self.assertEqual(appr.chat_id, OLD_CHAT)
 
+    def test_38b_approval_with_provider_but_no_evidence_stays_blank(self):
+        """Mutable provider metadata is NOT proof of a historical chat: an approval with a
+        provider but NO linked acquisition evidence is left '' (never inferred)."""
+        appr = PendingSignalApproval.objects.create(
+            source="wayond", chat_id="", message_id="bf1b", provider=self.provider)
+        self._backfill()
+        appr.refresh_from_db()
+        self.assertEqual(appr.chat_id, "")
+
     def test_39_approval_without_provider_stays_blank(self):
-        """No provider ⇒ no deterministic chat ⇒ chat_id is never fabricated."""
+        """No provider / legacy file-intake ⇒ no evidence ⇒ chat_id is never fabricated."""
         appr = PendingSignalApproval.objects.create(
             source=services.SOURCE, chat_id="", message_id="bf2")  # provider=None
         self._backfill()
         appr.refresh_from_db()
         self.assertEqual(appr.chat_id, "")
 
-    def test_40_acquired_gap_filled_only_when_blank(self):
+    def test_39b_ambiguous_evidence_stays_blank(self):
+        """Ambiguous persisted evidence (two distinct chats) ⇒ unresolved ⇒ left ''."""
+        appr = PendingSignalApproval.objects.create(
+            source="wayond", chat_id="", message_id="bf2b", provider=self.provider)
+        AcquiredMessage.objects.create(provider=self.provider, chat_id=OLD_CHAT,
+                                       message_id="bf2b", outcome=O.INTAKEN, approval=appr)
+        AcquiredMessage.objects.create(provider=self.provider, chat_id=NEW_CHAT,
+                                       message_id="bf2b", outcome=O.INTAKEN, approval=appr)
+        self._backfill()
+        appr.refresh_from_db()
+        self.assertEqual(appr.chat_id, "")
+
+    def test_40_backfill_never_mutates_the_append_only_ledgers(self):
+        """The backfill is approval-only; it NEVER updates AcquiredMessage/SignalUpdate/
+        ProviderCommand (their chat_id is their own write-time evidence)."""
         gap = AcquiredMessage.objects.create(
             provider=self.provider, chat_id="", message_id="bf3", outcome=O.INTAKEN)
         kept = AcquiredMessage.objects.create(
@@ -411,8 +464,8 @@ class BackfillTests(_Base):
         self._backfill()
         gap.refresh_from_db()
         kept.refresh_from_db()
-        self.assertEqual(gap.chat_id, OLD_CHAT)    # '' → provider chat
-        self.assertEqual(kept.chat_id, NEW_CHAT)   # already set → untouched
+        self.assertEqual(gap.chat_id, "")         # untouched (no inference)
+        self.assertEqual(kept.chat_id, NEW_CHAT)   # untouched
 
 
 # =============================================================================
@@ -489,3 +542,101 @@ class WatermarkCutoverGuardTests(_Base):
         n = WayondListener().catch_up(client, self.provider)
         self.assertEqual(n, 2)
         self.assertEqual(AcquiredMessage.objects.filter(chat_id=NEW_CHAT).count(), 2)
+
+
+# =============================================================================
+# M. QUARANTINE-ID POISONING ACROSS AN AUTHORIZED CUTOVER (GATE E HIGH #2)
+# =============================================================================
+class QuarantinePoisonTests(_Base):
+    def test_47_quarantined_untrusted_id_never_suppresses_genuine_after_cutover(self):
+        """The exact PD scenario. A NEW_CHAT id=5 rejected while OLD_CHAT is configured
+        must NOT suppress a genuine NEW_CHAT id=5 after an authorized switch to NEW_CHAT.
+        The refusal (immutable) and the genuine row coexist; the refusal is never promoted."""
+        # A genuine OLD_CHAT message advances the (trusted) watermark.
+        self._acq(self._msg("3", chat=OLD_CHAT))
+        # 1-3. NEW_CHAT id=5 arrives while OLD_CHAT is configured → fail-closed QUARANTINE.
+        poison = self._acq(self._msg("5", chat=NEW_CHAT))
+        self.assertEqual(poison.outcome, O.QUARANTINED)
+        self.assertEqual(poison.reason, "chat_identity_mismatch")
+        self.assertTrue(poison.chat_identity_refused)
+        self.assertIsNone(poison.approval)
+        # 4. Authorized cutover to NEW_CHAT (watermark is set → guard requires the reset).
+        call_command("onboard_provider", "--slug", "wayond",
+                     "--chat-id", NEW_CHAT, "--reset-watermark")
+        self.provider.refresh_from_db()
+        # 5-6. A genuine, fresh NEW_CHAT id=5 → MUST be processed, not suppressed.
+        genuine = self._acq(self._msg("5", chat=NEW_CHAT))
+        self.assertNotEqual(genuine.id, poison.id)
+        self.assertFalse(genuine.chat_identity_refused)
+        self.assertEqual(genuine.outcome, O.INTAKEN)
+        self.assertIsNotNone(genuine.approval)
+        # Both coexist: immutable refusal evidence preserved, genuine row created.
+        rows = AcquiredMessage.objects.filter(
+            provider=self.provider, chat_id=NEW_CHAT, message_id="5")
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(rows.filter(chat_identity_refused=True).count(), 1)
+        self.assertEqual(rows.filter(chat_identity_refused=False).count(), 1)
+
+    def test_48_refusal_row_is_idempotent(self):
+        """Re-delivery of the same untrusted message dedups to the one refusal row."""
+        self._acq(self._msg("9", chat=NEW_CHAT))
+        self._acq(self._msg("9", chat=NEW_CHAT))
+        self.assertEqual(
+            AcquiredMessage.objects.filter(message_id="9", chat_identity_refused=True).count(), 1)
+
+    def test_49b_non_armed_provider_edit_never_creates_approval(self):
+        """R1 renewed-review finding: the arm gate must hold on the EDIT path too. An
+        armed provider acquires a non-signal; the provider is PAUSED; an edit turns it
+        into a signal → must NOT create an approval (consistent with the fresh path's
+        DROPPED_NOT_ARMED)."""
+        orig = self._acq(self._msg("80", text="gm everyone, good luck today"))  # armed → QUARANTINED
+        self.assertIsNone(orig.approval)
+        self.provider.status = SignalProvider.Status.PAUSED
+        self.provider.save(update_fields=["status"])
+        self._acq(self._msg("80", text=SIGNAL_MSG, edit_date=1))  # edit while PAUSED
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        from signal_intake.models import MessageAmendment
+        self.assertEqual(MessageAmendment.objects.count(), 0)  # no amendment side-effects
+        self.assertEqual(AcquiredMessage.objects.filter(message_id="80").count(), 1)
+
+    def test_49_genuine_then_refusal_also_coexist(self):
+        """Symmetric: a genuine row then a later untrusted same-id claim coexist; the
+        untrusted claim never overwrites or dedups against the genuine acquisition."""
+        genuine = self._acq(self._msg("12", chat=OLD_CHAT))
+        self.assertEqual(genuine.outcome, O.INTAKEN)
+        self.assertFalse(genuine.chat_identity_refused)
+        # A forged OLD-chat id=12 from a different (untrusted) chat claim: switch provider
+        # to a THIRD chat so the OLD_CHAT message is now a mismatch.
+        self.provider.telegram_chat_id = "3003"
+        self.provider.save(update_fields=["telegram_chat_id"])
+        refusal = self._acq(self._msg("12", chat=OLD_CHAT))  # now mismatched → refused
+        self.assertTrue(refusal.chat_identity_refused)
+        self.assertNotEqual(refusal.id, genuine.id)
+        self.assertEqual(
+            AcquiredMessage.objects.filter(message_id="12", chat_id=OLD_CHAT).count(), 2)
+
+
+# =============================================================================
+# N. ADMIN chat-id edit is guarded (R1 renewed-review finding)
+# =============================================================================
+class AdminWatermarkGuardTests(_Base):
+    def _admin(self):
+        from django.contrib.admin.sites import AdminSite
+        from signal_intake.admin import SignalProviderAdmin
+        return SignalProviderAdmin(SignalProvider, AdminSite())
+
+    def test_50_chat_id_locked_in_admin_once_watermark_exists(self):
+        self.provider.watermark_last_message_id = "8000"
+        self.provider.save(update_fields=["watermark_last_message_id"])
+        ro = self._admin().get_readonly_fields(None, obj=self.provider)
+        self.assertIn("telegram_chat_id", ro)  # cannot strand the watermark via admin
+
+    def test_51_chat_id_editable_in_admin_when_no_watermark(self):
+        self.provider.watermark_last_message_id = ""
+        self.provider.save(update_fields=["watermark_last_message_id"])
+        ro = self._admin().get_readonly_fields(None, obj=self.provider)
+        self.assertNotIn("telegram_chat_id", ro)  # no stranding risk → editable
+
+    def test_52_chat_id_editable_in_admin_on_add(self):
+        ro = self._admin().get_readonly_fields(None, obj=None)  # add form
+        self.assertNotIn("telegram_chat_id", ro)

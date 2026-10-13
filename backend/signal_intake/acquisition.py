@@ -121,22 +121,30 @@ def _signal_expired(parsed, now) -> bool:
 def _chat_identity_refusal(provider, chat_id):
     """SOURCE-AWARE IDENTITY GUARD (T1, fail-closed): return a refusal reason when a
     message's chat identity cannot be trusted against the provider's configured chat,
-    else None. Defence-in-depth — the listener already routes by chat, so this never
-    triggers for the live/test paths (every caller supplies a chat equal, after str(),
-    to the provider's telegram_chat_id). It NEVER fabricates a chat.
+    else None. The chat is the ARMED provider's trust boundary (allowlist). It NEVER
+    fabricates a chat.
 
+      * ``provider_chat_unconfigured`` — an ARMED provider with NO established chat trust
+        boundary (configuration drift: a chat cleared after arming, or an admin edit).
+        An armed live source without an allowlist must REFUSE, never accept (HIGH-1).
+      * ``chat_identity_missing`` — an ARMED provider with a configured chat received a
+        message carrying no chat identity → provenance unconfirmable.
       * ``chat_identity_mismatch`` — provider chat and message chat both set but unequal
         (a mis-routed / forged message that is not from this provider's chat).
-      * ``chat_identity_missing`` — an ARMED provider (whose chat is the trust boundary)
-        received a message with no chat identity → provenance unconfirmable.
+
+    Non-armed providers (ONBOARDING / PAUSED / INACTIVE / RETIRED) fall through to the
+    normal arm gate (``DROPPED_NOT_ARMED``) — a legacy/onboarding row with no chat yet is
+    not a live source and is not quarantined here. On the live/test paths the guard is
+    inert: the listener routes by chat, so every delivered message's chat equals (after
+    ``str()``) the armed provider's configured ``telegram_chat_id``.
     """
+    if not provider.is_armed():
+        return None  # not a live source — the arm gate drops it (DROPPED_NOT_ARMED)
     prov_chat = str(getattr(provider, "telegram_chat_id", "") or "")
     if not prov_chat:
-        return None  # no trust boundary configured yet — nothing to check against
+        return "provider_chat_unconfigured"  # armed with no trust boundary → fail closed
     if not chat_id:
-        # Only an ARMED provider's blank chat is a refusal; a non-armed provider is
-        # dropped by the normal arm gate (DROPPED_NOT_ARMED) regardless.
-        return "chat_identity_missing" if provider.is_armed() else None
+        return "chat_identity_missing"
     if chat_id != prov_chat:
         return "chat_identity_mismatch"
     return None
@@ -150,10 +158,11 @@ def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     origin_id = None
     if reply_to:
         # Reply linkage is CHAT-SCOPED (T1): a reply resolves only to the originating
-        # message in the SAME chat, so a same-id message in another chat can never be
-        # picked as the origin. Soft link — None (never fabricated) when absent.
+        # GENUINE message in the SAME chat (never a refusal row, never a same-id message
+        # in another chat). Soft link — None (never fabricated) when absent.
         origin_id = (AcquiredMessage.objects
-                     .filter(provider=provider, chat_id=chat_id, message_id=reply_to)
+                     .filter(provider=provider, chat_id=chat_id, message_id=reply_to,
+                             chat_identity_refused=False)
                      .values_list("id", flat=True).first())
     SignalUpdate.objects.create(
         provider=provider, chat_id=chat_id, message_id=mid,
@@ -309,33 +318,40 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
     # SOURCE-AWARE IDENTITY GUARD (T1, fail-closed): decide trust BEFORE any classify —
     # an untrusted chat is QUARANTINED, never intaken, never advances the watermark.
     chat_refusal = _chat_identity_refusal(provider, chat_id)
+    refused = chat_refusal is not None
 
-    # Dedup: one ledger row per (provider, chat_id, message_id). chat_id is part of the
-    # key because Telegram message_id is chat-scoped — a same-id message from a DIFFERENT
-    # chat is a DISTINCT row, never deduped against a historical other-chat message (T1).
+    # Dedup: one GENUINE ledger row per (provider, chat_id, message_id). chat_id is part
+    # of the key because Telegram message_id is chat-scoped — a same-id message from a
+    # DIFFERENT chat is a DISTINCT row, never deduped against a historical other-chat
+    # message (T1). ``chat_identity_refused`` also partitions the key so a REFUSAL row
+    # (from a then-untrusted chat) can NEVER suppress a later GENUINE message that
+    # legitimately owns the same (provider, chat_id, message_id) after an authorized
+    # cutover makes that chat trusted — the refusal and the genuine row coexist (HIGH-2).
     # A re-sent message (catch-up replay) returns the existing row and is NOT reprocessed.
     existing = AcquiredMessage.objects.filter(
-        provider=provider, chat_id=chat_id, message_id=mid).first()
+        provider=provider, chat_id=chat_id, message_id=mid,
+        chat_identity_refused=refused).first()
     if existing is not None:
         # WAYOND-EDIT-DIFF: an EDIT (edit_date) or a CHANGED body for an already-acquired
         # message records an immutable linked amendment (the original is NEVER
         # overwritten). A true unchanged duplicate just dedups. Never re-processes the
         # original, never auto-applies edited values, never places an order.
-        # FAIL-CLOSED (T1): an untrusted chat identity NEVER runs the amendment side-
-        # effects (which can surface an approval) — it only dedups to its already-recorded
-        # (quarantined) row, exactly as the fresh path refuses it. The amendment branch is
-        # therefore gated on a trusted chat, keeping the guard's guarantee consistent on
-        # both the fresh and the edit paths.
-        if chat_refusal is None:
+        # FAIL-CLOSED (T1 R1): the amendment side-effects (which can surface a new approval
+        # or re-flag one) run ONLY when the provider is a live source (ARMED) AND the chat
+        # is trusted. A NON-ARMED provider's edit is NOT processed — exactly like the fresh
+        # path (DROPPED_NOT_ARMED), so a paused/retired/onboarding provider can never have
+        # a disabled-source edit surfaced into the approval queue. An untrusted chat (armed)
+        # is likewise never amended. Either case just dedups to the existing row.
+        if provider.is_armed() and chat_refusal is None:
             stored_text = ((existing.raw_payload or {}).get("text") or "")
             incoming_text = message.get("text") or ""
             if message.get("edit_date") or incoming_text.strip() != stored_text.strip():
                 _record_amendment(provider, existing, message, mid, tg_date, now)
         return existing
 
-    if chat_refusal is not None:
+    if refused:
         # Untrusted chat identity → fail closed. Recorded as a QUARANTINED ledger row
-        # (append-only audit), never intaken, never an order.
+        # (append-only audit, in the refused partition), never intaken, never an order.
         outcome, reason, approval = AcquiredMessage.Outcome.QUARANTINED, chat_refusal, None
     else:
         outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)
@@ -344,6 +360,7 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
         with transaction.atomic():
             acq = AcquiredMessage.objects.create(
                 provider=provider, chat_id=chat_id, message_id=mid,
+                chat_identity_refused=refused,
                 outcome=outcome, reason=reason, telegram_date=tg_date,
                 raw_payload={
                     "text": message.get("text") or "",
@@ -357,11 +374,12 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
                 approval=approval,
             )
     except IntegrityError:
-        # A concurrent caller won the (provider, chat_id, message_id) race — return their
-        # row (idempotent; downstream intake_parsed is itself dedup-safe so no
-        # duplicate approval results). Never raises for a duplicate.
+        # A concurrent caller won the (provider, chat_id, message_id, refused) race —
+        # return their row (idempotent; downstream intake_parsed is itself dedup-safe so
+        # no duplicate approval results). Never raises for a duplicate.
         return AcquiredMessage.objects.get(
-            provider=provider, chat_id=chat_id, message_id=mid)
+            provider=provider, chat_id=chat_id, message_id=mid,
+            chat_identity_refused=refused)
 
     # Bookkeeping: advance watermark + provider health, except for a non-armed drop
     # (a paused/retired provider isn't a live signal source). The watermark advances

@@ -110,6 +110,17 @@ class SignalProviderAdmin(admin.ModelAdmin):
     readonly_fields = ("last_signal_at", "watermark_last_message_id", "created_at", "updated_at")
     actions = ("action_arm", "action_pause")
 
+    def get_readonly_fields(self, request, obj=None):
+        """T1 R1: a channel switch (changing telegram_chat_id) strands the chat-blind
+        catch-up watermark → silent cross-channel loss. Once a watermark exists, lock the
+        chat id in the admin so switches must go through the guarded, audited
+        ``onboard_provider --chat-id <NEW> --reset-watermark`` path (which resets the
+        catch-up floor). Editable on add and while no watermark exists (no stranding risk)."""
+        ro = list(super().get_readonly_fields(request, obj))
+        if obj is not None and obj.watermark_last_message_id and "telegram_chat_id" not in ro:
+            ro.append("telegram_chat_id")
+        return tuple(ro)
+
     @admin.action(description="Arm selected providers (begin acquisition)")
     def action_arm(self, request, queryset):
         armed = 0

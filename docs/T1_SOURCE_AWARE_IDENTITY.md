@@ -41,20 +41,34 @@ The fix makes the canonical acquisition identity **`(provider, chat_id, message_
 **Writers of the 5 identity models (complete):** `services.py` (2× `PendingSignalApproval.create`), `acquisition.py`
 (`AcquiredMessage`, `SignalUpdate`, `ProviderCommand`, `MessageAmendment`). No other app writes them.
 
-### Fail-closed guard (§6-G)
+### Fail-closed guard (§6-G, R1-hardened)
 
-`acquire_message` gains a chat-identity guard (defense-in-depth; the listener already routes by chat):
-- **Mismatch** — provider `telegram_chat_id` and the message `chat_id` both non-blank and `str()`-unequal →
-  `QUARANTINED`, reason `chat_identity_mismatch`, no intake, no order, no watermark advance from a trusted claim.
-- **Missing** — an ARMED provider with a configured `telegram_chat_id` but a blank message `chat_id` →
-  `QUARANTINED`, reason `chat_identity_missing` (provenance unconfirmable; never fabricated).
-- **Edit/amendment path is gated too** — the dedup/amendment branch runs only for a trusted chat, so an
-  untrusted-chat edit can never run the amendment side-effects (which could surface an approval). This keeps the
-  guard's guarantee consistent on both the fresh and the edit paths (closes a GATE-E defence-in-depth finding).
+`acquire_message` applies a chat-identity guard. It fires ONLY for an **ARMED** provider (a live source); a
+non-armed provider — ONBOARDING / PAUSED / INACTIVE / RETIRED — falls through to the normal arm gate
+(`DROPPED_NOT_ARMED`), preserving legacy/onboarding behaviour. For an armed provider:
+- **Unconfigured (R1 HIGH-1)** — armed with **no** established chat trust boundary (blank `telegram_chat_id`,
+  e.g. config drift: a chat cleared after arming, or an admin edit) → `QUARANTINED`, reason
+  `provider_chat_unconfigured`. An armed source without an allowlist must refuse, never accept.
+- **Missing** — armed with a configured chat but a blank message `chat_id` → `QUARANTINED`, `chat_identity_missing`.
+- **Mismatch** — armed, provider chat and message chat both set but `str()`-unequal → `QUARANTINED`,
+  `chat_identity_mismatch`.
 
-Both are proven behaviour-preserving for the live/test paths: every current caller supplies a `chat_id` equal
-(after `str()`) to the provider's `telegram_chat_id`; mis-routed chats never reach `acquire_message` (the listener
-drops them at `provider_for_chat`). No fabrication: a blank chat is never back-filled from the provider at runtime.
+A refusal never intakes, never creates an approval/command, never places an order, and never advances the
+watermark. The **edit/amendment path is gated on a trusted chat too**, so an untrusted-chat edit can never run
+the amendment side-effects. All three are proven inert on the live path (the listener routes by chat, so a
+delivered message's chat equals the armed provider's configured chat). No fabrication: a blank chat is never
+back-filled at runtime.
+
+### Refusal rows are not part of genuine identity (R1 HIGH-2)
+
+A fail-closed refusal is recorded as an immutable `QUARANTINED` `AcquiredMessage` with
+`chat_identity_refused=True`. That flag **partitions** the uniqueness key
+`(provider, chat_id, message_id, chat_identity_refused)`, so a refusal row (recorded while a chat was *untrusted*)
+and a later **genuine** row for the same `(provider, chat_id, message_id)` **coexist**. Consequently, after an
+authorized cutover makes that chat trusted, a genuine message is a distinct `chat_identity_refused=False` row and
+is **never suppressed** by the earlier refusal — the refusal is preserved as audit, never deleted, never promoted.
+Refusals remain idempotent (a re-delivered untrusted message dedups to the one refusal row). Only `AcquiredMessage`
+holds refusal rows (approvals/commands are never created on the refused path), so the flag is `AcquiredMessage`-only.
 
 ### Channel-switch watermark guard (`onboard_provider`, GATE-E HIGH finding)
 
@@ -68,61 +82,96 @@ resets the catch-up floor so the new chat is caught up from the start. This pack
 operator's explicit cutover control. (The Django admin can still edit `telegram_chat_id` directly; the cutover
 runbook must use the command, not the admin.)
 
-## Backfill determinism & migration safety (GATE B)
+## Backfill determinism & migration safety (GATE B; AMBER-1 corrected)
 
-- **Uniqueness can never regress.** The OLD key already guaranteed uniqueness; adding `chat_id` makes the key a
-  strict superset, so every existing row stays unique — **no migration can fail on the new constraint**, and no
-  channel switch is needed for the migration to be valid.
-- **`PendingSignalApproval.chat_id` backfill** — deterministic from the linked `provider.telegram_chat_id` where
-  `provider_id` is set and non-blank; otherwise `''` (legacy file-intake / pre-provider rows). The provider FK pins
-  the exact provider, so the chat is unambiguous. Never fabricated.
-- **`AcquiredMessage` / `ProviderCommand` / `SignalUpdate` gap-fill** — only rows whose `chat_id` is CURRENTLY `''`
-  and whose provider has a single non-blank `telegram_chat_id` are filled (deterministic). Rows already carrying a
-  `chat_id` are untouched (raw evidence is immutable).
-- **Reversible** — reverse drops the new constraints, restores the old `(…, message_id)` constraints, and removes
-  the `chat_id` field. Reverse is guaranteed only **before** any channel switch introduces a genuine cross-chat
-  `message_id` collision (the exact condition the forward migration exists to tolerate); documented, not silent.
+Two migrations, both additive and behaviour-preserving (nothing deployed): `0010` (identity constraints +
+`PendingSignalApproval.chat_id` + backfill) and `0011` (`AcquiredMessage.chat_identity_refused` + the partitioned
+key).
 
-## Out of scope — downstream (documented, NOT changed)
+- **Uniqueness can never regress.** Each OLD key already guaranteed uniqueness; the new keys are strict supersets
+  (`0010` adds `chat_id`, `0011` adds the refusal flag — False for every existing row, since no refusal rows exist
+  in the undeployed state), so **no `AddConstraint` can fail on existing data** and no channel switch is needed.
+- **Evidence-based approval backfill (AMBER-1).** `PendingSignalApproval.chat_id` is populated **only** from
+  PERSISTED, IMMUTABLE acquisition evidence — the `chat_id` of the linked `AcquiredMessage` rows — and only when
+  that evidence is unambiguous (exactly one distinct non-blank chat). It is **never** inferred from mutable
+  `provider.telegram_chat_id` (not proof of a historical chat — it changes at cutover). No evidence / ambiguous /
+  legacy file-intake → left `''`: **unresolved provenance is never inferred or fabricated.**
+- **No ledger mutation.** `AcquiredMessage` / `ProviderCommand` / `SignalUpdate` already persist their own
+  write-time `chat_id`; the backfill does **not** touch them — no in-place UPDATE of append-only evidence (data.md).
+- **Certified against a populated historical migration** (`tests_migration_source_aware.py`, `MigrationExecutor`
+  over 0009→0010→0011 with real legacy rows): evidence-backfill, no-evidence-stays-`''`, constraint enforcement,
+  and forward/rollback/reapply.
+- **Reversible** — reverse drops the new constraints/fields and restores the old constraints. Guaranteed only
+  **before** a channel switch introduces a genuine cross-chat `message_id` collision (the condition the forward
+  migration exists to tolerate); documented, not silent.
 
-- `execution/signal_planning.py` reads `approval.raw_payload.get("chat_id", "")`, which `intake_parsed` **never
-  writes** → `SignalExecutionPlan.chat_id` is empty today. This packet does **not** write `chat_id` into
-  `raw_payload` and does not touch `execution`, so plan identity and the provider-command engine's correlation are
-  byte-for-byte unchanged. The new `PendingSignalApproval.chat_id` field is `signal_intake`-internal.
-- `execution/auto_router.py` receives acquisition objects via the `signal_acquired` signal and never re-looks-up by
-  `(provider, message_id)`/chat → unaffected.
-- `execution/provider_commands_engine.resolve_target_plan` already filters by `command.chat_id` (already populated);
-  adding `chat_id` to `ProviderCommand`'s uniqueness only hardens its key → unaffected.
-- `execution_health` / `operations_summary` / `soak_report` filter by source/provider/status/time → unaffected.
-- `services.ingest_messages` (legacy file/batch classify) has no provider/chat → operates in the `chat_id=''`
-  partition; left unchanged.
+## Downstream identity completeness (R1 HIGH-3) — gated DARK/default-OFF
 
-## Cutover contract (prerequisites — NOT performed here)
+The source-aware identity now reaches the execution plan, gated so deploying it changes nothing:
+- `execution/signal_planning.py` takes the plan's chat from the approval's chat-scoped identity **only when**
+  `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` is on. **Default OFF** = the pre-T1 read
+  (`approval.raw_payload.get("chat_id","")`, always blank), so `SignalExecutionPlan.chat_id` stays `''`, plan
+  identity is byte-identical, and **no active trading behaviour, plan dedup, or order becomes possible merely
+  because the correction is deployed**. ON (a separate cutover authorization) carries `approval.chat_id`, so two
+  genuinely distinct approvals from different chats with the same source+message_id produce two distinct plans
+  (unique `(source, chat_id, message_id, account)`), and a chat-qualified command cannot correlate across channels.
+  Proven both OFF and ON in `execution/tests_t1_downstream_identity.py`.
+- `execution/provider_commands_engine.resolve_target_plan` already filters a plan by `command.chat_id` (pre-existing
+  on `main`); with the gate ON (plans carrying real chat) that correlation becomes chat-exact and cross-channel
+  isolated. No change to the engine itself; it remains DARK (`PROVIDER_COMMANDS_ENABLED` off).
 
-A future, separately-authorised packet performs the Telegram source switch. Before switching, it MUST:
-1. **(BLOCKING) Reset the catch-up watermark for the new chat.** This is the #1 prerequisite — without it,
-   catch-up's `min_id` floor silently drops the new chat's lower-numbered messages (see the guard above). Use
-   `onboard_provider --chat-id <NEW> --reset-watermark` (the guard refuses the switch otherwise). Alternatively
-   adopt a per-`(provider, chat_id)` watermark — a larger change deferred to that packet.
-2. Deploy this migration (so every historical row carries its chat-scoped identity) and the chat-aware runtime.
-3. Repoint `execution/signal_planning.py` at `approval.chat_id` (so new plans carry the real chat) under its own
-   execution-side gate — out of scope here. NB: until then, `SignalExecutionPlan.chat_id` stays `''` and the
-   (DARK) provider-command engine's `resolve_target_plan` cannot correlate a command to a plan — a pre-existing
-   latent state on `main`, unchanged by this packet, that this repoint resolves.
-4. Keep the old provider row (do not repurpose it) so historical `(provider, chat_id, message_id)` rows stay valid.
+**Unchanged (verified):** `execution/auto_router.py` (receives objects via `signal_acquired`, no chat re-lookup);
+`execution_health` / `operations_summary` / `soak_report` (filter by source/provider/status/time);
+`services.ingest_messages` (legacy file/batch classify — no provider/chat, operates in the `chat_id=''` partition).
+`raw_payload` still carries no `chat_id` (the field is the sole source of truth).
 
-## GATE E — adversarial review outcome
+## Cutover contract (prerequisites — NOT performed here; AMBER-2 resolved)
 
-Four independent adversarial reviewers (identity-loss/suppression · fail-closed/DARK · migration/historical-safety
-· edits/commands/downstream). Result: the identity/dedup/migration core is sound and the DARK claim holds
-byte-for-byte. Findings addressed:
-- **HIGH (identity-loss):** channel-switch watermark catch-up floor → closed with the `onboard_provider`
-  fail-closed guard + `--reset-watermark`, elevated as the BLOCKING cutover prerequisite, and covered by tests
-  45/46 (floor hazard + reset fix) and 42–44 (guard).
-- **LOW (edits/downstream):** guard not enforced on the amendment path → closed by gating the amendment branch on
-  a trusted chat (test 41).
-- **LOW×2 (migration governance):** provenance pre-switch assumption + append-only data.md tension → documented in
-  the migration docstring (structural key completion, not content correction); recorded as Amber.
+**Provider ownership model (the resolved contradiction).** There is **one continuous provider row** per logical
+source. At cutover the **same** provider is **repurposed** — its `telegram_chat_id` is changed to the new chat and
+its watermark reset — it is **not** replaced by a new provider row. The earlier contradictory instruction ("keep
+the old provider row, do not repurpose it") conflated *preserving historical evidence* with *keeping a separate
+provider*; it is withdrawn. Rationale: the provider's `slug` IS the downstream `source` (plan/source-config/command
+scoping), so a continuous provider keeps the source identity stable, while `chat_id` — now part of row identity —
+keeps old-chat and new-chat rows distinct under that one provider. Historical OLD_CHAT evidence is preserved in
+place (same provider, its own `chat_id`), never deleted or repurposed.
+
+- **Provider identity continuity:** one provider (stable `slug`/`source`) spans the switch.
+- **Historical message ownership:** OLD_CHAT rows keep `(provider, OLD_CHAT, message_id)` — valid and immutable.
+- **Watermark ownership:** the watermark belongs to the provider and tracks its *currently configured* chat; it is
+  reset at the switch (it does not carry across chats).
+- **Old-channel evidence preservation:** untouched; distinct from new-chat rows by `chat_id` (and, for refusals, by
+  `chat_identity_refused`).
+
+A future, separately-authorised packet performs the switch. Before switching, it MUST:
+1. **(BLOCKING) Reset the catch-up watermark for the new chat** — without it, catch-up's `min_id` floor silently
+   drops the new chat's lower-numbered messages. Use `onboard_provider --chat-id <NEW> --reset-watermark` (the guard
+   refuses the switch otherwise). A per-`(provider, chat_id)` watermark is a possible larger alternative, deferred.
+2. Deploy migrations `0010`+`0011` (so every historical row carries its chat-scoped identity) and the runtime.
+3. Set `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED=1` so plans carry the real chat end-to-end (built here, DARK).
+4. **Rollback:** switch the chat back (again via `--reset-watermark`) and clear the downstream flag; historical rows
+   of both chats remain valid (distinct by `chat_id`); no evidence is deleted.
+
+## Review history
+
+### R0 — initial adversarial review (4 reviewers)
+Identity/dedup/migration core sound; DARK claim holds byte-for-byte. Closed in R0: a channel-switch watermark
+catch-up floor (`onboard_provider` fail-closed guard + `--reset-watermark`) and an amendment-path guard gap.
 Dismissed as non-findings: int/str coercion false-mismatch, two-layer chat_id disagreement, replay double-row,
-migration uniqueness regression, concurrent `intake_parsed` race (pre-existing, unchanged), get_or_create
-`MultipleObjectsReturned`.
+migration uniqueness regression, concurrent `intake_parsed` race (pre-existing), get_or_create MultipleObjectsReturned.
+
+### R1 — Programme Director review of PR #495 (CI 10/10) → corrections applied
+- **HIGH-1 fail-open trust boundary** — an armed provider with no configured chat accepted messages. **Fixed:**
+  `_chat_identity_refusal` now refuses an armed+unconfigured provider (`provider_chat_unconfigured`); non-armed
+  states still DROP. Tests 10 / 10b / 10c (incl. config drift).
+- **HIGH-2 quarantined-id poisoning across cutover** — a refusal row suppressed a genuine post-cutover message.
+  **Fixed:** `AcquiredMessage.chat_identity_refused` partitions the uniqueness key so refusal and genuine rows
+  coexist; the refusal never suppresses or is promoted. Before/after regression tests 47 / 48 / 49.
+- **HIGH-3 downstream plan collisions** — the chat stopped at the approval. **Fixed:** `signal_planning` carries
+  `approval.chat_id` into the plan behind `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` (default OFF = byte-identical;
+  ON = distinct channels distinct). Tests in `execution/tests_t1_downstream_identity.py`.
+- **AMBER-1 historical migration** — **Fixed:** evidence-based backfill (persisted `AcquiredMessage.chat_id`, never
+  mutable provider metadata; unresolved left `''`) + populated `MigrationExecutor` test over 0009→0010→0011.
+- **AMBER-2 cutover contradiction** — **Resolved:** one continuous, repurposed provider (see the cutover contract).
+
+A renewed adversarial review was run against the corrected subsystem; see the R1 completion report for its result.
