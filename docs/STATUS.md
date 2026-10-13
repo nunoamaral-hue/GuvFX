@@ -21,13 +21,17 @@
     (PR #495 squash-merged to `main` `48db801`; CI 10/10; PD merge authorization).
   - **NOT deployed to production.** Host `/home/ubuntu/guvfx-app` is still at `a474f79` (pre-T1); prod `signal_intake`
     migrations are at `0009` (0010/0011 pending); `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` is OFF.
-  - **DARK-deployment readiness (read-only inspection + isolated rehearsal):** GO *conditional on a controlled
-    maintenance window* — mixed-version operation is UNSAFE (`non_genuine` + approval `chat_id` are NOT NULL, no DB
-    default), so deploy = stop the acquisition listener → migrate → recreate backend+listener (new image, watermark
-    catch-up; ~1–2 min acquisition pause, no loss) → flag stays OFF. Migration rehearsed at prod scale (~0.84 s;
-    857 approvals backfilled from evidence, 6 blank, 121 `DROPPED_NOT_ARMED`→`non_genuine`). Runbook +
-    full report: `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`, `docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`.
-    ProviderCommand index-name drift confirmed **harmless** to the deploy (no committed migration references it).
+  - **DARK-deployment readiness (read-only inspection + isolated rehearsal; R1 corrections):** **NO-GO / BLOCKED.**
+    Mixed-version is UNSAFE (`non_genuine` + approval `chat_id` are NOT NULL, no DB default), so deploy needs a
+    controlled maintenance window (stop listener → migrate → recreate backend+listener, flag stays OFF); migration
+    rehearsed at prod scale (~0.84 s; 857 backfilled / 6 blank / 121 `DROPPED_NOT_ARMED`→`non_genuine`). **Two HIGH
+    blockers (PD R1):** (1) `T1_TELEGRAM_CATCHUP_COMPLETENESS` — `catch_up` abandons a backlog > 200 and drops
+    >600 s-aged signals to STALE (bounded runtime code correction required); (2) `T1_DATABASE_RECOVERY` — no
+    PITR/auto-backup (only a last-resort full dump; prerequisite dump unauthorized). Reversal is bounded
+    (`REVERSIBLE_WITH_EXISTING_DATA` now, 0/0 conflicts; fails once coexistence forms). Listener recreation contract
+    + writer isolation (listener is the sole writer) certified. Runbook + full matrix:
+    `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`, `docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`. Index-name
+    drift confirmed **harmless** to the deploy.
   - **Separately gated, NOT advanced:** `T1_PRODUCTION_DARK_DEPLOYMENT`, `T1_LIVE_SOURCE_VERIFICATION`,
     `T1_TELEGRAM_SOURCE_CUTOVER`, `T1_PRODUCTION_CERTIFICATION`. Next = PD issues a separate production DARK
     deployment packet.

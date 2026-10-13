@@ -1,40 +1,84 @@
-# T1_PRODUCTION_DARK_DEPLOYMENT_READINESS_REPORT
+# T1_PRODUCTION_DARK_DEPLOYMENT_READINESS_R1_REPORT
 
-Packet `T1_PRODUCTION_DARK_DEPLOYMENT_READINESS`. Readiness engineering only — **no deployment, no production
-migration, no Telegram change, no flag activation performed.** All production inspection below was **read-only**;
-the migration rehearsal ran against an **isolated local test database** with **synthetic** prod-shape data (no
-production credentials or Telegram content copied).
+Packet `T1_PRODUCTION_DARK_DEPLOYMENT_READINESS_R1`. Readiness engineering only — **no deployment, no production
+migration, no Telegram change, no flag activation, no production backup/restore performed.** Production inspection
+was **read-only**; rehearsals ran against **isolated local/scratch databases** with **synthetic** data (no prod
+credentials or Telegram content copied). Supersedes the initial readiness report; four HIGH gaps now resolved as
+**evidence or BLOCKED**, with no unsupported PASS.
 
-## Verified facts (GATE A/B — read-only prod inspection, 2026-10-13)
-1. **Current production backend image/commit:** image `guvfx-prod-guvfx-backend:latest` (`8e289a18ba29`, built ~10 h ago); host repo `/home/ubuntu/guvfx-app` at **`a474f79`** (= the reported baseline, pre-T1). The T1 merge `48db801` is **NOT** on the host, not built, not deployed. Rollback-tagged images present (`rollback-pre*`).
-2. **Verified `main` commit:** `48db801` (squash of reviewed `e29e194`).
-3. **Schema/migration baseline:** `signal_intake` applied through **`0009_providercommand`**; `0010`/`0011` **pending**.
-4. **Telegram provider state:** two providers, both **ARMED** — `ti_signals` (chat `-1004480146594`, wm 889, window 600 s) and `wayond` (chat `-1003842321905`, wm 151, window 600 s). A single AD-HOC `guvfx-wayond-listener` container (`run_wayond_listener --live`) serves both.
-5. **Source & watermark:** unchanged; recorded above. No reset performed or required by this packet.
-6. **Relevant table counts:** `AcquiredMessage` 997 (INTAKEN 857, DROPPED_NOT_ARMED 121, STALE 18, UPDATE 1; **0 blank chat_id**); `PendingSignalApproval` 863 (no `chat_id` column yet); `ProviderCommand` **0**; `SignalUpdate` 5; `SignalAuditEvent` 1794. Largest table 640 kB. Existing unique keys confirmed present: `uniq_provider_message`, `uniq_source_message`, `uniq_provider_command` (all three are the `0010` RemoveConstraint targets).
-7. **Historical identity compatibility:** of 863 approvals, **857** have exactly one non-blank linked-`AcquiredMessage` chat → deterministically backfilled; **6** (all `wayond`) have no linked evidence → stay `''` (unresolved, never fabricated); **0** ambiguous. The 121 `DROPPED_NOT_ARMED` rows → `non_genuine=True`. Uniqueness cannot regress (new keys are strict supersets of the existing ones).
-8. **Migration rehearsal (isolated test DB, synthetic prod-shape 997/863/121):** 0009→0010→0011 applied cleanly; result matched prod exactly — **857 approvals backfilled, 6 blank, 121 non_genuine**.
-9. **Lock/concurrency assessment:** timings 0009→0010 ≈ **707 ms**, 0010→0011 ≈ **136 ms** (≈ 0.84 s total) at prod scale. `AddField` with a constant default is metadata-only on PG15 (no table rewrite); `AddConstraint` builds a unique index under a brief `ACCESS EXCLUSIVE` lock on ≤997-row tables (sub-second). No extended write-blocking at these sizes. **But** the writer must not run old code during the window (see 10/11).
-10. **OLD code + NEW schema:** **UNSAFE.** `AcquiredMessage.non_genuine` and `PendingSignalApproval.chat_id` are **NOT NULL with no DB default** (verified by `information_schema` introspection). An old writer's INSERT omits them → NOT NULL violation. The AD-HOC listener (currently a 2-week-old image) would fail every acquisition after the migration.
-11. **NEW code + OLD schema:** **UNSAFE.** New code references `non_genuine` / approval `chat_id` which do not exist pre-migration → undefined-column errors.
-12. **Active trading isolation (GATE D):** source unchanged; all 997 acquired rows already carry a chat (replay dedups within `(provider, chat_id, message_id, non_genuine)`); the 121 DROPPED become `non_genuine=True` but their ids are ≤ watermark so catch-up never re-fetches them (no reintroduction); the edit path now re-applies the staleness window (no STALE resurrection); `ProviderCommand`=0 and engine DARK; no `SignalExecutionPlan` change while the flag is OFF; `MT5_ALLOW_LIVE` unset; Withdrawal V1 ingestion untouched. No live-broker action taken.
-13. **Feature-flag state:** `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` **unset (OFF)** in the backend env; `PROVIDER_COMMANDS_ENABLED` OFF; `MT5_ALLOW_LIVE` unset; `BROKER_INTELLIGENCE_INGEST_ENABLED=1` (unchanged).
-14. **Proposed deployment sequence:** see the runbook §C — build → **stop listener** → migrate → recreate backend → recreate listener (new image, catch-up) → (optional) recreate other backend-image workers. A **brief coordinated window** (~1–2 min) is required because mixed-version operation is unsafe; the gap is covered losslessly by watermark catch-up within the 600 s staleness window.
-15. **Proposed rollback sequence:** runbook §G — reverse to `0009` and redeploy the `rollback-preT1` image to backend+listener (code and schema move together).
-16. **Required maintenance window:** yes — a short acquisition pause (listener stopped across migrate+recreate, ~1–2 min). No API hard-downtime beyond a backend restart blip. Within the staleness window → no signal loss.
-17. **Known issues / unresolved risks:** (a) the ProviderCommand index-name drift — **harmless to this deployment** (no committed `0012` migration references it; `migrate` never touches it; it is only a dev-time `makemigrations` nuisance — §11 below); (b) no automated prod DB backup (standing gap) — rollback relies on the reversible migration + `rollback-preT1` image; (c) migration reverse is safe only pre-cutover (§H of the runbook).
-18. **Documentation PR:** this report + the runbook + STATUS/NEXT corrections are delivered as a focused docs-only PR (no code, no deployment).
-19. **GO / NO-GO recommendation:** **GO for a controlled DARK deployment, conditional on the maintenance-window procedure in the runbook** (stop-writer → migrate → recreate backend+listener). It is explicitly **NOT** a zero-downtime rolling deploy. All always-on code changes are safe once code and schema are moved together; the new downstream pathway stays DARK (flag OFF). No GO for any Telegram cutover or flag activation.
-20. **Exact next Sponsor authorization required:** a separate `T1_PRODUCTION_DARK_DEPLOYMENT` execution packet authorizing (and scheduling) the maintenance-window procedure — permitting the listener stop/recreate and the production migration, while keeping the flag OFF and the source unchanged.
+## Verified baseline (read-only, 2026-10-13)
+- Prod backend image `8e289a18ba29`; host repo **`a474f79`** (pre-T1). T1 `48db801` NOT on host/built/deployed.
+- `signal_intake` applied through **`0009`**; 0010/0011 pending. Existing unique keys present (`uniq_provider_message`, `uniq_source_message`, `uniq_provider_command`).
+- Providers ARMED: `ti_signals` `-1004480146594` (wm 889), `wayond` `-1003842321905` (wm 151).
+- Counts: AcquiredMessage 997 (DROPPED_NOT_ARMED 121, **0 blank chat**), approvals 863 (857 single-evidence→backfill, **6 wayond no-evidence→stay `''`**, 0 ambiguous), ProviderCommand 0, SignalUpdate 5. Tables ≤ 640 kB; DB 2.77 GB.
+- Flags: `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` OFF, `PROVIDER_COMMANDS_ENABLED` OFF, `MT5_ALLOW_LIVE` unset, `BROKER_INTELLIGENCE_INGEST_ENABLED=1`.
+- Isolated prod-scale migration rehearsal: 0009→0010 ≈ 707 ms, 0010→0011 ≈ 136 ms; result 857/6/121 (matches prod).
 
-## §11 — ProviderCommand index-name drift: deployment impact
-Evidence: prod has index `signal_inta_status_pc_idx` (hand-named in migration 0009); the model Meta leaves that index unnamed, so `makemigrations` wants a `RenameIndex` to `signal_inta_status_867cbc_idx`. **No such migration file is committed** (0010/0011 do not touch it). `manage.py migrate` applies only committed files, so it never attempts the rename; Django's migration-state consistency check does not fail on an *un-generated* migration. **Conclusion: harmless to the approved deployment sequence** — not a schema-validation or migrate blocker. Smallest corrective requirement (separate, non-deployment): name the model index to match `signal_inta_status_pc_idx` (zero schema change). Tracked separately; not added to T1.
+## HIGH-1 — Telegram catch-up completeness → **BLOCKED** (bounded code correction required)
+`WayondListener.catch_up` issues ONE `iter_messages(min_id=watermark, limit=200, reverse=True)` per provider at
+startup. Proven by isolated synthetic tests:
+- **Backlog 250, limit 200** → exactly **200 oldest acquired**, ids 201–250 **abandoned**, watermark jumps to 200 (the live `NewMessage` handler only receives messages arriving after connect → the gap is never fetched). **Signal loss for any backlog > 200.**
+- **Message aged 1200 s (> 600 s window)** → outcome **STALE**, no approval (a STALE record is NOT a recovered tradeable signal).
+- Distinction established: retrieval ≠ durable acquisition ≠ classification ≠ tradeable approval ≠ downstream eligibility. A stale/abandoned message is retrieved-or-skipped but **not** a tradeable recovery.
+- **Observable completeness evidence** = per-provider watermark advanced to the channel's newest id with no gap; `catch_up` `processed` count consistent with the backlog.
+- **Bounded corrective subsystem (RUNTIME — returned for PD authorization, NOT implemented here):** make `catch_up` paginate (loop, advancing `min_id`) until the backlog is exhausted instead of capping at 200, and emit a per-provider "caught_up_to=<id>" completeness signal; plus an operational hard bound that the maintenance window stays ≪ the staleness window. Until then, catch-up completeness cannot be certified.
 
-## Certification markers
-- `T1_ENGINEERING_MERGED` — **PASS** (`48db801`; CI 10/10; 5801 backend tests OK).
-- `T1_SCHEMA_DEPLOYMENT_READY` — **PASS** (migrations preserve all records; backfill deterministic & prod-matched; sub-second locks; rehearsed on an isolated DB).
-- `T1_RUNTIME_DEPLOYMENT_READY` — **PASS, conditional** (safe only via the stop-writer maintenance window; mixed-version operation is UNSAFE and must be avoided — not a rolling deploy).
-- `T1_DEPLOYMENT_ROLLBACK_READY` — **PASS, bounded** (reverse + `rollback-preT1` image; reverse guaranteed pre-cutover only; no auto DB backup is a standing gap).
-- `T1_PRODUCTION_DARK_DEPLOYMENT_READINESS` — **PASS** (GO conditional on the runbook procedure; evidence complete).
-- `T1_PRODUCTION_DEPLOYMENT` — **NOT AUTHORIZED.**
-- `T1_TELEGRAM_SOURCE_CUTOVER` — **NOT AUTHORIZED.**
+## HIGH-2 — Production database recovery → **BLOCKED**
+- **No PITR** (`archive_mode=off`) and **no automated backup** (no cron/timer; only historical on-demand `pg_dump` artifacts on host). `pg_dump` 15.15 available; DB 2.77 GB.
+- **Recovery design:** a **Sponsor-authorized, pre-migration consistent logical dump** (taken after the listener stop, before migrate) is the recovery point; on-host, mode 0600, encrypted, retained until stable, never off-host (contains signal text). Image rollback is **not** a database backup.
+- **Restore rehearsed (isolated scratch DBs, synthetic):** `pg_dump`→`psql` round-trip preserved row counts and the partitioned-unique schema, and the restored unique index still rejected a duplicate — the mechanism works.
+- **Limitation:** a full-DB restore reverts **all** subsystems (trades, withdrawal evidence) to the recovery point → heavy blast radius, minutes of full downtime; a `signal_intake`-scoped restore risks cross-app FK inconsistency. There is **no demonstrable low-blast-radius recovery for this production**, and backup creation is not authorized here. → **BLOCKED** pending (a) a Sponsor-authorized pre-migration dump as an explicit deployment prerequisite and an accepted recovery-point-loss/blast-radius decision, or (b) standing up PITR/automated backup first.
+- **Image provenance:** rollback images must be pinned by **image id** (`guvfx-prod-guvfx-backend:rollback-preT1` ← `8e289a18ba29`; `guvfx-wayond-listener:rollback-preT1` ← the current listener id), independent of the mutable `:latest`.
+
+## HIGH-3 — Migration-reversal boundaries → **CERTIFIED (bounded)**
+Three distinct, non-equivalent states, now explicit:
+- `REVERSIBLE_IN_CLEAN_STATE` (no rows).
+- `REVERSIBLE_WITH_EXISTING_DATA` — holds only while no `(provider, chat_id, message_id)` has both a `non_genuine=True` and `=False` row, and no `(provider, message_id)` spans two chats. **Current prod: 0 / 0 (read-only verified) → reversible now.** But this coexistence **can form pre-cutover** (PAUSED drop → re-armed genuine, same id) — **proven**: the 0011→0010 reverse then fails (`could not create unique index "uniq_provider_chat_message"`), evidence rows intact (transactional rollback).
+- `RESTORABLE_FROM_RECOVERY_POINT` — the only recourse when reverse is unsafe.
+A **READ-ONLY detection query** (runbook §H) must gate every reversal. Constraints are never dropped with data loss to force a reversal; immutable evidence is never rewritten.
+
+## HIGH-4 — Complete database-writer isolation → **PASS**
+Authoritative write-path inventory of `AcquiredMessage` / `PendingSignalApproval` / `ProviderCommand`:
+- **Sole INSERT sites:** `services.intake_parsed` (approvals) and `acquisition.{acquire_message,_maybe_record_command}` (acquired/command/update) — reached in production **only** by the listener (`run_wayond_listener`).
+- **Not writers:** no signal_intake API/URL exists (backend cannot insert via API); Django admin `has_add_permission=False` for all three; `ingest_wayond_signals_for_approval` is an **operator-invoked** management command (no daemon/cron); no signal-intake cron/timer on prod (the only timer is the unrelated Withdrawal V1 `guvfx-broker-ingest.timer`); execution workers (shadow/node2-order/tp-watcher/trade-ingest/auto-router) only READ signal_intake (schema-read-compatible) — they write ExecutionJob/Trade, not the changed tables. Approve/reject are UPDATEs that don't touch the new columns (old-code-safe).
+- **Maintenance boundary:** stopping `guvfx-wayond-listener` isolates the sole continuous writer; recreate the backend on the new image; operationally, do not run the ingest command or add-via-admin during the window. No need to restart LIVE order workers / MT5 / Windows, and no need to stop Withdrawal V1 ingestion.
+
+## §6 Listener recreation contract → **PASS** (see runbook §D)
+Exact `docker run` captured (image `guvfx-wayond-listener:latest`, user `appuser`, network `guvfx-prod_default`,
+`--env-file /home/ubuntu/guvfx-prod/wayond-listener.env`, `--restart unless-stopped`, `--health-cmd
+check_wayond_listener …`, cmd `run_wayond_listener --live --health-file /tmp/wayond_health`, no mounts). The env-file
+preserves the authenticated `TELEGRAM_STRING_SESSION` + API creds → **no new login, no second Telethon client**. A
+rollback launch contract (same command, pinned pre-T1 image id) is documented. No secret values in Git/docs.
+
+## §7 Maintenance-window failure bounds → recorded (not a guarantee)
+Rehearsal 0.84 s is a measurement, not a production guarantee. Operational bounds (runbook §F): acquisition
+interruption ≪ 600 s (hard — the staleness window); migration lock-wait cap (e.g. 30 s, else abort before migrate);
+catch-up backlog < 200/provider (else incomplete — HIGH-1); abort before migrate if the budget is already exceeded;
+transactional migrations give clean rollback on partial progress.
+
+## Certification matrix (§9 — PASS / BLOCKED / NOT_APPLICABLE; no unsupported PASS)
+| Marker | Status |
+|---|---|
+| `T1_ENGINEERING_MERGED` | **PASS** (`48db801`; CI 10/10; 5801 backend tests OK) |
+| `T1_PRODUCTION_SCHEMA_BASELINE_VERIFIED` | **PASS** (migrations 0009; constraints/indexes/counts read-only verified) |
+| `T1_ALL_DATABASE_WRITERS_IDENTIFIED` | **PASS** (listener sole continuous writer; no API/cron/admin-add) |
+| `T1_MIXED_VERSION_ISOLATION_PROVEN` | **PASS** (NOT NULL/no-default proven; isolation boundary = stop sole writer) |
+| `T1_TELEGRAM_CATCHUP_COMPLETENESS_PROVEN` | **BLOCKED** (200-cap abandonment + 600 s staleness; code correction required) |
+| `T1_MIGRATION_REVERSAL_BOUNDARIES_CERTIFIED` | **PASS** (three states; detection query; 0/0 now; coexistence-fail proven) |
+| `T1_DATABASE_RECOVERY_READY` | **BLOCKED** (no PITR/auto-backup; only last-resort full dump; prerequisite dump unauthorized) |
+| `T1_LISTENER_RECREATION_CONTRACT_READY` | **PASS** (exact contract incl. session preservation + rollback contract) |
+| `T1_TRADING_ISOLATION_PROVEN` | **PASS** (source unchanged, flag OFF, engine DARK, MT5_ALLOW_LIVE unset, Withdrawal V1 untouched) |
+| `T1_PRODUCTION_DARK_DEPLOYMENT_READINESS` | **BLOCKED** (gated by the two BLOCKED sub-certs above) |
+| `T1_PRODUCTION_DEPLOYMENT` | **NOT AUTHORIZED** |
+| `T1_TELEGRAM_SOURCE_CUTOVER` | **NOT AUTHORIZED** |
+
+## GO / NO-GO
+**NO-GO (BLOCKED)** for production DARK deployment as currently scoped. The always-on schema/code changes are
+migration-safe and mixed-version-isolatable via the maintenance window, BUT two safety properties are not yet
+established: **catch-up completeness** (HIGH-1) and **database recovery** (HIGH-2). A blocked readiness finding
+remains BLOCKED — it is not a conditional pass.
+
+## Exact remaining Sponsor-controlled actions / bounded corrections
+1. **Authorize + implement the HIGH-1 catch-up correction** (runtime): paginate `catch_up` beyond 200 + per-provider completeness evidence + window-bound < staleness. (Bounded corrective subsystem; separate engineering authorization.)
+2. **Resolve HIGH-2 recovery:** authorize a pre-migration consistent dump as a deployment prerequisite with an accepted blast-radius/recovery-point-loss decision, or stand up PITR/automated backup first.
+3. **Then** issue a separate `T1_PRODUCTION_DARK_DEPLOYMENT` execution packet (maintenance-window procedure; flag stays OFF; source unchanged).
