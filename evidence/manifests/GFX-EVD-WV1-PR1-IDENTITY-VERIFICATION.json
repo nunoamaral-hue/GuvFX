@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-WV1-PR1-IDENTITY-VERIFICATION",
+  "packet_id": "WITHDRAWAL-V1-REMAINING-ENGINEERING / PR1 (WP7 identity verification + binding)",
+  "created_at_utc": "2026-10-13T07:58:07Z",
+  "branch": "feat/broker-identity-verification",
+  "base_commit": "bc66f4c",
+  "head_commit": "d4dabb9",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run  (broker_intelligence subset)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence",
+    "cd backend && .venv/bin/python manage.py test   (full backend suite)",
+    "cd frontend && npx vitest run src/components/accounts/BrokerIdentityVerification.test.tsx",
+    "cd frontend && node scripts/verify-frontend-parity.mjs",
+    "Adversarial review workflow (4 lenses, refute-by-default verify) + single-agent re-verify of the fix"
+  ],
+  "expected_results": [
+    "No broker_intelligence migration drift",
+    "broker_intelligence suite green",
+    "Full backend suite green (pre-existing flaky concurrency tests excluded)",
+    "Frontend identity component test green",
+    "Parity clean for the new component (BrokerIdentityVerification.tsx registered)",
+    "No confirmed adversarial finding left unresolved"
+  ],
+  "actual_results": [
+    "PASS \u2014 no broker_intelligence drift (pre-existing strategies index-rename drift is unrelated/out-of-scope)",
+    "PASS \u2014 broker_intelligence: Ran 307 tests, OK",
+    "PASS \u2014 full backend suite clean re-run: Ran 5683 tests, OK (skipped=1). An earlier run showed 3 failures/15 errors that did NOT recur on the clean serial re-run (flaky concurrency/race tests in trading+hosted_workspace); NONE reference PR1 code",
+    "PASS \u2014 frontend component: 4 tests passed",
+    "PASS \u2014 parity flags ONLY two gitignored ' 2' junk files (absent in CI); the new component is correctly registered",
+    "PASS \u2014 1 confirmed medium finding (API refusal not audited) FIXED (audit_refusal) + regression-tested; cross-user/auto-verify/canonical lenses found nothing confirmed",
+    "PASS \u2014 follow-up d4dabb9: audit sink made total (clamp oversized input); identity suite Ran 25, OK"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "DARK: BROKER_IDENTITY_VERIFICATION_ENABLED default OFF; the HTTP surface 404s and no verification runs in production until the Sponsor arms it.",
+    "Verification proves GuvFX-account ownership (the account record is the member's) + receiving-mailbox control (OAuth). It does NOT independently verify account ownership AT THE BROKER (no broker API); that remains the member's GuvFX-record assertion, corroborated when genuine broker mail for the account arrives (recorded as evidence_corroborated in proofs, never required).",
+    "Full-DB concurrency (TOCTOU under a real race) is covered by logic + the row-lock re-check + a user-null VERIFIED test, not by a live concurrent-process test.",
+    "Frontend full `npm run build` not run locally (gitignored ' 2' junk files break the local filesystem parity walk); CI builds the committed tree (junk absent) and is authoritative. Pre-existing unrelated localStorage failures in (public)/login + (public)/support vitest files are environmental, not introduced here.",
+    "No production data mutated; register verification was read-only."
+  ],
+  "artefact_locations": [
+    "PR https://github.com/nunoamaral-hue/GuvFX/pull/487",
+    "backend/broker_intelligence/identity_verification.py, models.py (BrokerEmailIdentityAudit), migrations/0009_brokeremailidentityaudit.py, views.py, urls.py, admin.py, flags.py, tests_identity_verification.py",
+    "frontend/src/components/accounts/BrokerIdentityVerification.tsx(+test), src/types/broker-identity.ts, src/app/(app)/profile/page.tsx, parity/components.json"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/identity_verification.py": "sha256:8a5ceac9666b19a7e91b2da6d53cae5dcba3c2571134963f318974ce269715f3",
+    "backend/broker_intelligence/models.py": "sha256:874317bca0a9f9f87aa498322ff245397c246f838447c27d0bf1ce753f8c8477",
+    "backend/broker_intelligence/views.py": "sha256:53e753a7c45eeb4413e27894f9a981eda3f39f355dd8c6f27ab6059a79b069fa",
+    "backend/broker_intelligence/migrations/0009_brokeremailidentityaudit.py": "sha256:9b969b334bd59a54b1b5a8368232884a433b3f035c9d33aebea14698f3fdc73a",
+    "backend/broker_intelligence/tests_identity_verification.py": "sha256:1ed9d554caf293fdd6814c5451ee4dc2b8f826668547fdacef50f8e7b62e7558",
+    "frontend/src/components/accounts/BrokerIdentityVerification.tsx": "sha256:58044e40905b91e1d95af17666723e70f39ea2b4abc61d7c2df2424c0e3128d8",
+    "backend/broker_intelligence/urls.py": "sha256:3b51f746f97d73a9b4b5b6c26b97bf6b0c45432b39b09ce309c796146b1b6da4",
+    "backend/broker_intelligence/flags.py": "sha256:41b9481e91ec92e8bff7cc1d9f8557c7998bf81b3102e1433d4dffb5b2c023f4",
+    "backend/broker_intelligence/admin.py": "sha256:805b439c87fc891a71dad2f005c84c7679045bcc045fd53762a68ef00205aaad"
+  },
+  "reviewer": "Adversarial workflow wf_20a25b7e-498 (4 lenses) + single-agent re-verify; author Claude Opus 4.8"
+}
