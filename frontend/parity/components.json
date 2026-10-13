@@ -37,6 +37,7 @@
   "src/components/broker/ValidationTimelinePanel.tsx",
   "src/components/dashboard/OpenTradesPanel.tsx",
   "src/components/dashboard/PortfolioScopeSelector.tsx",
+  "src/components/dashboard/WithdrawalsHistory.tsx",
   "src/components/dashboard/WithdrawalsPanel.tsx",
   "src/components/hosted/HostedMt5RemoteApp.tsx",
   "src/components/i18n/LocalizedBetaSurface.tsx",

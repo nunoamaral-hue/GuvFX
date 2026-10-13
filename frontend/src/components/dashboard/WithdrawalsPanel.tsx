@@ -23,6 +23,7 @@ const STR = {
   failed: { en: "Failed", ja: "失敗" },
   withdrawn: { en: "Total withdrawn", ja: "出金総額" },
   typical: { en: "Typical processing time", ja: "通常の処理時間" },
+  unresolved: { en: "Unresolved", ja: "未解決" },
   na: { en: "N/A", ja: "該当なし" },
 };
 
@@ -118,6 +119,13 @@ export const WithdrawalsPanel: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => 
               {dur ? humanDuration(dur.median_seconds, L) : STR.na[L]}
             </div>
           </div>
+
+          {data.unresolved_count > 0 && (
+            <div style={{ marginTop: 8 }} data-testid="withdrawals-unresolved">
+              <div style={statLabel}>{STR.unresolved[L]}</div>
+              <div style={{ color: "#9fb0c7", fontSize: "0.9rem" }}>{data.unresolved_count}</div>
+            </div>
+          )}
         </>
       )}
     </div>

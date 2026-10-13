@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 
 from .flags import (broker_identity_verification_enabled, broker_mailbox_connect_enabled,
                     broker_withdrawal_ux_enabled)
-from .metrics import withdrawal_metrics
+from .metrics import withdrawal_history, withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
 _STATE_MAX_AGE = 600   # seconds the signed CSRF state is valid for the connect->callback round trip
@@ -53,6 +53,25 @@ class WithdrawalMetricsView(APIView):
         # record. Still strictly owner-scoped (user=request.user) with no staff bypass — never another member's data.
         accounts = TradingAccount.objects.filter(user=request.user)
         return Response(withdrawal_metrics(accounts))
+
+
+class WithdrawalHistoryView(APIView):
+    """GET /api/broker-intelligence/withdrawals/history/?broker=&account_id= — the member's own per-withdrawal
+    history (rows + the broker/account selector lists), owner-scoped and DARK-gated. Observation-only: no action,
+    no financial authority. Shows every lifecycle state truthfully (PENDING in-flight ≠ failed; UNRESOLVED visible)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_withdrawal_ux_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from trading.models import TradingAccount
+        # Owner-scoped (user=request.user), INCLUDING disconnected accounts — a past withdrawal is durable history.
+        accounts = TradingAccount.objects.filter(user=request.user)
+        broker = str(request.query_params.get("broker", "") or "").strip()
+        acct_id = request.query_params.get("account_id") or None
+        # A member can only ever filter to ONE OF THEIR OWN accounts: the id is intersected with their own account
+        # set below in withdrawal_history (ids come from `accounts`), so a foreign account_id yields nothing.
+        return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id))
 
 
 def _identity_json(i) -> dict:
