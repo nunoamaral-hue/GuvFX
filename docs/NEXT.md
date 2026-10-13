@@ -1,10 +1,11 @@
 # NEXT — Priorities (keep this list short)
 
-## ★★★ T1 SOURCE-AWARE IDENTITY — R1 CORRECTIONS DONE, DARK, MERGE HOLD (2026-10-13, PR #495)
-Canonical acquisition identity is `(provider/source, chat_id, message_id)`. PD R1 review (3 HIGH + 2 AMBER) + a
-renewed 8-dimension adversarial review (2 MEDIUM) ALL closed on PR #495 (commit `0db228d`); full backend 5789 OK;
-**not deployed**. One bounded next action: **return the R1 completion report and await Programme Director
-re-acceptance** — per the packet, do NOT merge without it (auto-merge OFF).
+## ★★★ T1 SOURCE-AWARE IDENTITY — R2 CORRECTIONS DONE, DARK, MERGE HOLD (2026-10-13, PR #495)
+Canonical acquisition identity is `(provider/source, chat_id, message_id)`, with a `non_genuine` partition so
+disabled-source/untrusted records never suppress a genuine acquisition. PD reviews R1 (3 HIGH + 2 AMBER) and R2
+(HIGH-A + HIGH-B + MEDIUM) plus two renewed adversarial reviews — ALL findings closed on PR #495; **not deployed**.
+One bounded next action: **return the R2 completion report and await Programme Director re-acceptance** — per the
+packet, do NOT merge without it (auto-merge OFF).
 **Do NOT** switch the Telegram channel, reset the live watermark, restart the listener, deploy, or change trading
 flags as part of T1. The Telegram **source switch is a separate, future, Sponsor-authorised cutover packet** whose
 prerequisites are in `docs/T1_SOURCE_AWARE_IDENTITY.md` (reset the watermark via `onboard_provider --reset-watermark`;

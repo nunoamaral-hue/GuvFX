@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-10-13 - T1 R2 CORRECTIONS (PR #495, DARK, MERGE HOLD pending Programme Director re-acceptance).**
+  PD accepted R1 and raised R2: two more identity-safety gaps + a migration rollback-test enhancement; all fixed on
+  the same PR, plus one MEDIUM from a renewed R2 adversarial certification. Still DARK — no deploy, switch, watermark
+  reset, listener restart, or trading-authority change.
+  - **HIGH-A non-armed acquisition poisoning** → generalised the partition flag `chat_identity_refused` →
+    **`non_genuine`** (True for a chat-refusal OR a `DROPPED_NOT_ARMED`). A disabled-source drop now lives in its own
+    partition, so a re-armed genuine same-id message is an independent genuine acquisition; migration `0011`
+    backfills historical `DROPPED_NOT_ARMED` rows. Tests 53 (PAUSED→DROP→REARM→FRESH→REPLAY) / 54.
+  - **HIGH-B blank-chat command cross-channel** → `provider_commands_engine.resolve_target_plan` is now always
+    chat-scoped and **fails closed** on a blank/unresolved `command.chat_id` (`unresolved_chat_identity` → REJECTED,
+    no job). `R2CommandChatIsolationTests` (7 cases incl. downstream-flag end-to-end). Engine remains DARK.
+  - **MEDIUM historical rollback coverage** → `MigrationExecutor` test now uses populated relationships (association
+    + content preserved across forward→rollback→reapply) + a documented cross-channel rollback-limit test.
+  - **R2 cert MEDIUM (lifecycle sweep)** → the edit/amendment path bypassed the acquisition staleness window (a STALE
+    signal could be resurrected into a fresh approval via an edit). Fixed: the amendment re-applies
+    `acquisition_window_seconds` alongside parser-expiry (tests 55 / 56). Hypotheses A–D held (no findings).
+  - Commit `c0c9e9c`. Full backend suite **5801 OK (skipped=1)**. CI re-runs on push; auto-merge OFF; awaiting PD re-acceptance.
+
 - **2026-10-13 - T1 R1 CORRECTIONS (PR #495, DARK, MERGE HOLD pending Programme Director re-acceptance).**
   PD engineering review of PR #495 (CI 10/10) returned 3 HIGH + 2 AMBER; all corrected on the same PR, plus 2
   MEDIUM from a renewed 8-dimension adversarial review (both closed). Still DARK — no deploy, no channel switch, no
