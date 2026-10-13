@@ -286,8 +286,12 @@ def audit_refusal(*, user, email: str = "", broker_name: str = "", code: str, re
 
 def _audit(action, *, identity, subject_user, actor, email, broker_name, trading_account, mailbox,
            outcome, reason, before, after, proofs):
+    # TOTAL sink: clamp every CharField to its column max_length so an oversized/pathological INPUT (the member
+    # supplies the email/broker) can never raise a DB DataError that turns a clean refusal into a 500 AND drops the
+    # audit row. The audit must record even a malformed attempt (security.md: auth rejections are logged, or
+    # 'no auth errors' is not provable). proofs (JSONField) is unbounded and left as-is.
     BrokerEmailIdentityAudit.objects.create(
-        identity=identity, action=action, subject_user=subject_user, actor=actor or "",
-        broker_name=broker_name or "", email=email or "", trading_account=trading_account,
-        connected_mailbox=mailbox, outcome=outcome or "", reason=reason or "",
-        status_before=before or "", status_after=after or "", proofs=proofs or {})
+        identity=identity, action=action, subject_user=subject_user, actor=(actor or "")[:128],
+        broker_name=(broker_name or "")[:64], email=(email or "")[:255], trading_account=trading_account,
+        connected_mailbox=mailbox, outcome=(outcome or "")[:24], reason=(reason or "")[:255],
+        status_before=(before or "")[:12], status_after=(after or "")[:12], proofs=proofs or {})

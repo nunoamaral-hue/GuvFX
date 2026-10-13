@@ -99,6 +99,19 @@ class EvaluateDecisionTests(TestCase):
             iv.verify_identity(user=u, email="", broker_name="TradersWay", trading_account=a)
         self.assertEqual(ctx.exception.code, "invalid_input")
 
+    def test_oversized_input_refuses_without_db_error(self):
+        # A pathological oversized email/broker must refuse cleanly (no connected mailbox matches) and still write a
+        # clamped audit row — never raise a DB DataError (audit sink is total). Regression for the re-verify finding.
+        u = _user()
+        a = _acct(u, "TradersWay")
+        long_email = ("x" * 400) + "@gmail.com"
+        long_broker = "TradersWay" + ("Z" * 200)
+        with self.assertRaises(iv.VerificationRefused):
+            iv.verify_identity(user=u, email=long_email, broker_name=long_broker, trading_account=a)
+        au = BrokerEmailIdentityAudit.objects.filter(action="REJECT").latest("id")
+        self.assertLessEqual(len(au.email), 255)
+        self.assertLessEqual(len(au.broker_name), 64)
+
 
 class CanonicalEquivalenceTests(TestCase):
     def test_dotted_plus_googlemail_matches_gmail_mailbox(self):
