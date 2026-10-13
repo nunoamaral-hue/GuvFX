@@ -59,16 +59,28 @@ the amendment side-effects. All three are proven inert on the live path (the lis
 delivered message's chat equals the armed provider's configured chat). No fabrication: a blank chat is never
 back-filled at runtime.
 
-### Refusal rows are not part of genuine identity (R1 HIGH-2)
+### Non-genuine records are not part of genuine identity (R1 HIGH-2 + R2 HIGH-A)
 
-A fail-closed refusal is recorded as an immutable `QUARANTINED` `AcquiredMessage` with
-`chat_identity_refused=True`. That flag **partitions** the uniqueness key
-`(provider, chat_id, message_id, chat_identity_refused)`, so a refusal row (recorded while a chat was *untrusted*)
-and a later **genuine** row for the same `(provider, chat_id, message_id)` **coexist**. Consequently, after an
-authorized cutover makes that chat trusted, a genuine message is a distinct `chat_identity_refused=False` row and
-is **never suppressed** by the earlier refusal — the refusal is preserved as audit, never deleted, never promoted.
-Refusals remain idempotent (a re-delivered untrusted message dedups to the one refusal row). Only `AcquiredMessage`
-holds refusal rows (approvals/commands are never created on the refused path), so the flag is `AcquiredMessage`-only.
+A row that did NOT genuinely acquire the identity — because the source was not live+trusted — is recorded with
+`non_genuine=True`. Two cases produce it: a fail-closed **chat-identity refusal** (a message from a then-untrusted
+chat, HIGH-2) and a **`DROPPED_NOT_ARMED`** record (the provider was disabled/paused/onboarding/retired, R2 HIGH-A).
+A genuine acquisition by an armed, trusted source (INTAKEN / UPDATE / STALE / content-QUARANTINED) is
+`non_genuine=False`.
+
+`non_genuine` **partitions** the uniqueness key `(provider, chat_id, message_id, non_genuine)`, so a non-genuine
+record and a later **genuine** row for the same `(provider, chat_id, message_id)` **coexist**. Consequently, once
+the provider is re-armed (or an authorized cutover makes the chat trusted), the genuine message is a distinct
+`non_genuine=False` row and is **never suppressed** by the earlier non-genuine record — which is preserved as audit,
+never deleted, never promoted into a signal, and never advances the watermark. Records stay idempotent (a
+re-delivered disabled-source / untrusted message dedups within its own partition). Only `AcquiredMessage` holds
+non-genuine records (approvals/commands are never created on those paths), so the flag is `AcquiredMessage`-only.
+
+### Edit/amendment re-applies the staleness window (R2)
+
+The edit/amendment path now re-applies the provider's acquisition staleness window (`acquisition_window_seconds`,
+Nuno's 5–10 min rule) in addition to the parser-expiry check, so an edit can never resurrect a signal the fresh
+path already dismissed as STALE into a fresh approval. The amendment (immutable audit) is still recorded; only the
+new-approval side-effect is gated.
 
 ### Channel-switch watermark guard (`onboard_provider`, GATE-E HIGH finding)
 
@@ -85,12 +97,17 @@ runbook must use the command, not the admin.)
 ## Backfill determinism & migration safety (GATE B; AMBER-1 corrected)
 
 Two migrations, both additive and behaviour-preserving (nothing deployed): `0010` (identity constraints +
-`PendingSignalApproval.chat_id` + backfill) and `0011` (`AcquiredMessage.chat_identity_refused` + the partitioned
-key).
+`PendingSignalApproval.chat_id` + evidence-based backfill) and `0011` (`AcquiredMessage.non_genuine` + its backfill
++ the partitioned key).
 
 - **Uniqueness can never regress.** Each OLD key already guaranteed uniqueness; the new keys are strict supersets
-  (`0010` adds `chat_id`, `0011` adds the refusal flag — False for every existing row, since no refusal rows exist
-  in the undeployed state), so **no `AddConstraint` can fail on existing data** and no channel switch is needed.
+  (`0010` adds `chat_id`; `0011` adds `non_genuine`), so **no `AddConstraint` can fail on existing data** and no
+  channel switch is needed.
+- **`0011` non_genuine backfill (R2 HIGH-A).** Existing `AcquiredMessage` rows with `outcome=DROPPED_NOT_ARMED`
+  (recorded while the provider was disabled) are set `non_genuine=True` — deterministic (keyed on the row's own
+  IMMUTABLE outcome), completing the brand-new field, never a content change — so a historical disabled-source drop
+  can never suppress a genuine acquisition once the provider is re-armed. Chat-refusal outcomes cannot exist in
+  pre-PR data, so there is nothing else to classify.
 - **Evidence-based approval backfill (AMBER-1).** `PendingSignalApproval.chat_id` is populated **only** from
   PERSISTED, IMMUTABLE acquisition evidence — the `chat_id` of the linked `AcquiredMessage` rows — and only when
   that evidence is unambiguous (exactly one distinct non-blank chat). It is **never** inferred from mutable
@@ -116,9 +133,13 @@ The source-aware identity now reaches the execution plan, gated so deploying it 
   genuinely distinct approvals from different chats with the same source+message_id produce two distinct plans
   (unique `(source, chat_id, message_id, account)`), and a chat-qualified command cannot correlate across channels.
   Proven both OFF and ON in `execution/tests_t1_downstream_identity.py`.
-- `execution/provider_commands_engine.resolve_target_plan` already filters a plan by `command.chat_id` (pre-existing
-  on `main`); with the gate ON (plans carrying real chat) that correlation becomes chat-exact and cross-channel
-  isolated. No change to the engine itself; it remains DARK (`PROVIDER_COMMANDS_ENABLED` off).
+- `execution/provider_commands_engine.resolve_target_plan` (R2 HIGH-B) now correlates **always chat-scoped** and
+  **fails closed** on a blank/unresolved `command.chat_id` (`unresolved_chat_identity` → REJECTED, enqueues nothing)
+  — `reply_to_message_id` alone can never bind a command to a plan in another channel. With the gate ON (plans
+  carrying real chat) correlation is chat-exact and cross-channel isolated; with it OFF (plan chat `''`) a real-chat
+  command matches none (already fail-closed). This only removes the pre-existing blank-command cross-channel path;
+  no new execution authority is granted and the engine stays DARK (`PROVIDER_COMMANDS_ENABLED` off). Proven in
+  `execution/tests_provider_commands_engine.py::R2CommandChatIsolationTests`.
 
 **Unchanged (verified):** `execution/auto_router.py` (receives objects via `signal_acquired`, no chat re-lookup);
 `execution_health` / `operations_summary` / `soak_report` (filter by source/provider/status/time);
@@ -141,7 +162,7 @@ place (same provider, its own `chat_id`), never deleted or repurposed.
 - **Watermark ownership:** the watermark belongs to the provider and tracks its *currently configured* chat; it is
   reset at the switch (it does not carry across chats).
 - **Old-channel evidence preservation:** untouched; distinct from new-chat rows by `chat_id` (and, for refusals, by
-  `chat_identity_refused`).
+  `non_genuine`).
 
 A future, separately-authorised packet performs the switch. Before switching, it MUST:
 1. **(BLOCKING) Reset the catch-up watermark for the new chat** — without it, catch-up's `min_id` floor silently
@@ -175,3 +196,20 @@ migration uniqueness regression, concurrent `intake_parsed` race (pre-existing),
 - **AMBER-2 cutover contradiction** — **Resolved:** one continuous, repurposed provider (see the cutover contract).
 
 A renewed adversarial review was run against the corrected subsystem; see the R1 completion report for its result.
+
+### R2 — Programme Director review of PR #495 (R1 accepted; CI 10/10) → corrections applied
+- **HIGH-A non-armed drop poisons re-armed genuine** — a `DROPPED_NOT_ARMED` row (stored `non_genuine=False`)
+  suppressed a later genuine message after re-arm. **Fixed:** generalised the partition flag `chat_identity_refused`
+  → **`non_genuine`** (chat-refusal OR arm-drop); `0011` backfills historical `DROPPED_NOT_ARMED` rows. Regression
+  tests 53 (PAUSED→DROP→REARM→FRESH→REPLAY) / 54.
+- **HIGH-B blank-chat command targets other channels** — `resolve_target_plan` chat-filtered only when
+  `command.chat_id` was truthy. **Fixed:** correlation is always chat-scoped and fails closed on a blank/unresolved
+  chat (`unresolved_chat_identity` → REJECTED, no job). `R2CommandChatIsolationTests` (7 cases).
+- **MEDIUM historical rollback coverage** — **Fixed:** the `MigrationExecutor` test now uses populated relationships
+  (association + content preserved across forward→rollback→reapply) and documents the post-cross-chat-collision
+  rollback limit.
+- **R2 adversarial-certification finding (MEDIUM, lifecycle sweep)** — the edit/amendment path bypassed the
+  acquisition staleness window (a STALE signal could be resurrected into a fresh approval via an edit). **Fixed:**
+  the amendment now re-applies `acquisition_window_seconds` in addition to parser-expiry (tests 55 / 56). Hypotheses
+  A–D (disabled-source suppression, cross-channel command, duplicate downstream intentions, DARK behaviour) held
+  with no confirmed findings.

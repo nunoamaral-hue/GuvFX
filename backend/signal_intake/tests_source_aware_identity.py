@@ -558,7 +558,7 @@ class QuarantinePoisonTests(_Base):
         poison = self._acq(self._msg("5", chat=NEW_CHAT))
         self.assertEqual(poison.outcome, O.QUARANTINED)
         self.assertEqual(poison.reason, "chat_identity_mismatch")
-        self.assertTrue(poison.chat_identity_refused)
+        self.assertTrue(poison.non_genuine)
         self.assertIsNone(poison.approval)
         # 4. Authorized cutover to NEW_CHAT (watermark is set → guard requires the reset).
         call_command("onboard_provider", "--slug", "wayond",
@@ -567,53 +567,108 @@ class QuarantinePoisonTests(_Base):
         # 5-6. A genuine, fresh NEW_CHAT id=5 → MUST be processed, not suppressed.
         genuine = self._acq(self._msg("5", chat=NEW_CHAT))
         self.assertNotEqual(genuine.id, poison.id)
-        self.assertFalse(genuine.chat_identity_refused)
+        self.assertFalse(genuine.non_genuine)
         self.assertEqual(genuine.outcome, O.INTAKEN)
         self.assertIsNotNone(genuine.approval)
         # Both coexist: immutable refusal evidence preserved, genuine row created.
         rows = AcquiredMessage.objects.filter(
             provider=self.provider, chat_id=NEW_CHAT, message_id="5")
         self.assertEqual(rows.count(), 2)
-        self.assertEqual(rows.filter(chat_identity_refused=True).count(), 1)
-        self.assertEqual(rows.filter(chat_identity_refused=False).count(), 1)
+        self.assertEqual(rows.filter(non_genuine=True).count(), 1)
+        self.assertEqual(rows.filter(non_genuine=False).count(), 1)
 
     def test_48_refusal_row_is_idempotent(self):
         """Re-delivery of the same untrusted message dedups to the one refusal row."""
         self._acq(self._msg("9", chat=NEW_CHAT))
         self._acq(self._msg("9", chat=NEW_CHAT))
         self.assertEqual(
-            AcquiredMessage.objects.filter(message_id="9", chat_identity_refused=True).count(), 1)
+            AcquiredMessage.objects.filter(message_id="9", non_genuine=True).count(), 1)
 
     def test_49b_non_armed_provider_edit_never_creates_approval(self):
-        """R1 renewed-review finding: the arm gate must hold on the EDIT path too. An
-        armed provider acquires a non-signal; the provider is PAUSED; an edit turns it
-        into a signal → must NOT create an approval (consistent with the fresh path's
-        DROPPED_NOT_ARMED)."""
+        """R1/R2: the arm gate holds on the EDIT path. An armed provider acquires a
+        non-signal (genuine QUARANTINED); the provider is PAUSED; an edit turns it into a
+        signal → must NOT create an approval or an amendment. The paused delivery lands in
+        the NON-GENUINE partition (a DROPPED record), never touching the genuine row."""
         orig = self._acq(self._msg("80", text="gm everyone, good luck today"))  # armed → QUARANTINED
         self.assertIsNone(orig.approval)
+        self.assertFalse(orig.non_genuine)  # genuine (armed + trusted) content-quarantine
         self.provider.status = SignalProvider.Status.PAUSED
         self.provider.save(update_fields=["status"])
         self._acq(self._msg("80", text=SIGNAL_MSG, edit_date=1))  # edit while PAUSED
-        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)   # no approval surfaced
         from signal_intake.models import MessageAmendment
-        self.assertEqual(MessageAmendment.objects.count(), 0)  # no amendment side-effects
-        self.assertEqual(AcquiredMessage.objects.filter(message_id="80").count(), 1)
+        self.assertEqual(MessageAmendment.objects.count(), 0)        # no amendment side-effects
+        rows = AcquiredMessage.objects.filter(message_id="80")
+        self.assertEqual(rows.filter(non_genuine=False).count(), 1)  # the genuine row, untouched
+        self.assertEqual(rows.filter(non_genuine=True, outcome=O.DROPPED_NOT_ARMED).count(), 1)
 
     def test_49_genuine_then_refusal_also_coexist(self):
         """Symmetric: a genuine row then a later untrusted same-id claim coexist; the
         untrusted claim never overwrites or dedups against the genuine acquisition."""
         genuine = self._acq(self._msg("12", chat=OLD_CHAT))
         self.assertEqual(genuine.outcome, O.INTAKEN)
-        self.assertFalse(genuine.chat_identity_refused)
+        self.assertFalse(genuine.non_genuine)
         # A forged OLD-chat id=12 from a different (untrusted) chat claim: switch provider
         # to a THIRD chat so the OLD_CHAT message is now a mismatch.
         self.provider.telegram_chat_id = "3003"
         self.provider.save(update_fields=["telegram_chat_id"])
         refusal = self._acq(self._msg("12", chat=OLD_CHAT))  # now mismatched → refused
-        self.assertTrue(refusal.chat_identity_refused)
+        self.assertTrue(refusal.non_genuine)
         self.assertNotEqual(refusal.id, genuine.id)
         self.assertEqual(
             AcquiredMessage.objects.filter(message_id="12", chat_id=OLD_CHAT).count(), 2)
+
+
+# =============================================================================
+# O. NON-ARMED ACQUISITION POISONING ACROSS A RE-ARM (R2 HIGH-A)
+# =============================================================================
+class NonArmedPoisonTests(_Base):
+    def test_53_paused_drop_does_not_poison_rearmed_genuine(self):
+        """PD R2 HIGH-A sequence: PAUSED → DROP → REARM → FRESH GENUINE → REPLAY. A drop
+        recorded while disabled must never occupy/suppress the genuine identity."""
+        from execution.models import ExecutionJob
+        self.provider.status = SignalProvider.Status.PAUSED
+        self.provider.save(update_fields=["status"])
+        # PAUSED → id=100 → DROPPED_NOT_ARMED (non-genuine), no watermark advance.
+        drop = self._acq(self._msg("100", chat=OLD_CHAT))
+        self.assertEqual(drop.outcome, O.DROPPED_NOT_ARMED)
+        self.assertTrue(drop.non_genuine)
+        self.provider.refresh_from_db()
+        self.assertEqual(self.provider.watermark_last_message_id, "")  # no premature advance
+        # REARM.
+        self.provider.status = SignalProvider.Status.ARMED
+        self.provider.save(update_fields=["status"])
+        # FRESH GENUINE id=100 → must be a NEW genuine acquisition + exactly one approval.
+        before_jobs = ExecutionJob.objects.count()
+        genuine = self._acq(self._msg("100", chat=OLD_CHAT))
+        self.assertNotEqual(genuine.id, drop.id)
+        self.assertFalse(genuine.non_genuine)
+        self.assertEqual(genuine.outcome, O.INTAKEN)
+        self.assertIsNotNone(genuine.approval)
+        self.assertEqual(
+            PendingSignalApproval.objects.filter(source="wayond", message_id="100").count(), 1)
+        # Drop preserved; exactly one genuine + one non-genuine row.
+        rows = AcquiredMessage.objects.filter(
+            provider=self.provider, chat_id=OLD_CHAT, message_id="100")
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(rows.filter(non_genuine=True).count(), 1)
+        self.assertEqual(rows.filter(non_genuine=False).count(), 1)
+        self.provider.refresh_from_db()
+        self.assertEqual(self.provider.watermark_last_message_id, "100")  # genuine advanced it
+        # REPLAY of the genuine → idempotent; no new approval, no execution job.
+        replay = self._acq(self._msg("100", chat=OLD_CHAT))
+        self.assertEqual(replay.id, genuine.id)
+        self.assertEqual(
+            PendingSignalApproval.objects.filter(source="wayond", message_id="100").count(), 1)
+        self.assertEqual(ExecutionJob.objects.count(), before_jobs)  # no order intention
+
+    def test_54_paused_drop_replay_is_idempotent(self):
+        self.provider.status = SignalProvider.Status.PAUSED
+        self.provider.save(update_fields=["status"])
+        self._acq(self._msg("101", chat=OLD_CHAT))
+        self._acq(self._msg("101", chat=OLD_CHAT))  # replay while paused
+        self.assertEqual(
+            AcquiredMessage.objects.filter(message_id="101", non_genuine=True).count(), 1)
 
 
 # =============================================================================
@@ -640,3 +695,30 @@ class AdminWatermarkGuardTests(_Base):
     def test_52_chat_id_editable_in_admin_on_add(self):
         ro = self._admin().get_readonly_fields(None, obj=None)  # add form
         self.assertNotIn("telegram_chat_id", ro)
+
+
+# =============================================================================
+# P. EDIT/AMENDMENT re-applies the acquisition staleness window (R2 cert finding)
+# =============================================================================
+class AmendmentStalenessTests(_Base):
+    def test_55_stale_signal_edit_is_not_resurrected_as_approval(self):
+        """A signal the fresh path dismissed as STALE must NOT be resurrected into a fresh
+        PENDING approval via an edit — the amendment re-applies the acquisition window."""
+        from signal_intake.models import MessageAmendment
+        stale = self._acq(self._msg("70", age_s=1200))      # 20 min > 600s window → STALE
+        self.assertEqual(stale.outcome, O.STALE)
+        self.assertIsNone(stale.approval)
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+        self._acq(self._msg("70", age_s=1200, edit_date=1))  # edit of the stale message
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)                   # not resurrected
+        self.assertTrue(MessageAmendment.objects.filter(message_id="70").exists())   # evidence kept
+
+    def test_56_fresh_non_signal_edited_into_signal_still_approves(self):
+        """Parity: a FRESH edit that turns a non-signal into a signal still surfaces an
+        approval — the window gate only blocks STALE ones."""
+        self._acq(self._msg("71", text="gm everyone, good luck today", age_s=5))  # fresh non-signal
+        self._acq(self._msg("71", text=SIGNAL_MSG, age_s=5, edit_date=1))          # fresh edit → signal
+        self.assertEqual(
+            PendingSignalApproval.objects.filter(
+                source="wayond", message_id="71",
+                status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 1)

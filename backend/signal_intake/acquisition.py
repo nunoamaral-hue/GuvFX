@@ -118,6 +118,18 @@ def _signal_expired(parsed, now) -> bool:
     return exp is not None and now >= exp
 
 
+def _within_acquisition_window(provider, tg_date, now) -> bool:
+    """True iff a message's age is within the provider's acquisition (staleness) window —
+    the SAME fail-closed freshness gate the fresh path applies in ``_classify`` (Nuno's
+    5-10 min rule). An indeterminate date is treated as STALE (False). Used so the
+    edit/amendment path cannot resurrect a signal the fresh path already dismissed as
+    STALE (R2)."""
+    if tg_date is None:
+        return False
+    window = provider.acquisition_window_seconds or 600
+    return (now - tg_date).total_seconds() <= window
+
+
 def _chat_identity_refusal(provider, chat_id):
     """SOURCE-AWARE IDENTITY GUARD (T1, fail-closed): return a refusal reason when a
     message's chat identity cannot be trusted against the provider's configured chat,
@@ -158,11 +170,11 @@ def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
     origin_id = None
     if reply_to:
         # Reply linkage is CHAT-SCOPED (T1): a reply resolves only to the originating
-        # GENUINE message in the SAME chat (never a refusal row, never a same-id message
-        # in another chat). Soft link — None (never fabricated) when absent.
+        # GENUINE message in the SAME chat (never a non-genuine refusal/drop row, never a
+        # same-id message in another chat). Soft link — None (never fabricated) when absent.
         origin_id = (AcquiredMessage.objects
                      .filter(provider=provider, chat_id=chat_id, message_id=reply_to,
-                             chat_identity_refused=False)
+                             non_genuine=False)
                      .values_list("id", flat=True).first())
     SignalUpdate.objects.create(
         provider=provider, chat_id=chat_id, message_id=mid,
@@ -211,9 +223,12 @@ def _record_amendment(provider, original, message, mid, tg_date, now):
             if str(old or "") != str(new or ""):
                 changed_fields[field] = [old, new]
     # An edit that produces a signal where none existed → new approval, UNLESS it is already
-    # past its own expiry (same fail-closed rule as the fresh path — no approval for an expired
-    # signal). The amendment itself is still recorded as the immutable audit trail.
-    new_approval = is_signal and approval is None and not _signal_expired(parsed, now)
+    # past its own parser expiry OR outside the provider's acquisition (staleness) window —
+    # the SAME two fail-closed freshness rules the fresh path applies (R2: the window check
+    # was previously missing here, letting an edit resurrect a STALE signal). The amendment
+    # itself is still recorded as the immutable audit trail either way.
+    new_approval = (is_signal and approval is None and not _signal_expired(parsed, now)
+                    and _within_acquisition_window(provider, tg_date, now))
 
     logger.warning("wayond edit-after-acquisition amendment: provider=%s message_id=%s "
                    "changed=%s new_approval=%s", getattr(provider, "slug", "?"), mid,
@@ -318,19 +333,24 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
     # SOURCE-AWARE IDENTITY GUARD (T1, fail-closed): decide trust BEFORE any classify —
     # an untrusted chat is QUARANTINED, never intaken, never advances the watermark.
     chat_refusal = _chat_identity_refusal(provider, chat_id)
-    refused = chat_refusal is not None
+    # NON-GENUINE (T1 HIGH-2 + R2 HIGH-A): a row that did NOT genuinely acquire this
+    # identity — the source was not live+trusted: the provider was not ARMED (→ an
+    # eventual DROPPED_NOT_ARMED) OR the chat was refused. Computed BEFORE the dedup so a
+    # non-genuine record is written in — and deduped against — its OWN partition, never
+    # the genuine one. is_armed() is a cheap, pre-classify check.
+    non_genuine = (not provider.is_armed()) or (chat_refusal is not None)
 
     # Dedup: one GENUINE ledger row per (provider, chat_id, message_id). chat_id is part
     # of the key because Telegram message_id is chat-scoped — a same-id message from a
     # DIFFERENT chat is a DISTINCT row, never deduped against a historical other-chat
-    # message (T1). ``chat_identity_refused`` also partitions the key so a REFUSAL row
-    # (from a then-untrusted chat) can NEVER suppress a later GENUINE message that
-    # legitimately owns the same (provider, chat_id, message_id) after an authorized
-    # cutover makes that chat trusted — the refusal and the genuine row coexist (HIGH-2).
+    # message (T1). ``non_genuine`` also partitions the key so a NON-GENUINE record (a
+    # chat refusal OR a disabled-source DROP) can NEVER suppress a later GENUINE message
+    # that legitimately owns the same (provider, chat_id, message_id) once the provider is
+    # re-armed / the chat is trusted — the two rows coexist (HIGH-2 + R2 HIGH-A).
     # A re-sent message (catch-up replay) returns the existing row and is NOT reprocessed.
     existing = AcquiredMessage.objects.filter(
         provider=provider, chat_id=chat_id, message_id=mid,
-        chat_identity_refused=refused).first()
+        non_genuine=non_genuine).first()
     if existing is not None:
         # WAYOND-EDIT-DIFF: an EDIT (edit_date) or a CHANGED body for an already-acquired
         # message records an immutable linked amendment (the original is NEVER
@@ -349,18 +369,20 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
                 _record_amendment(provider, existing, message, mid, tg_date, now)
         return existing
 
-    if refused:
+    if chat_refusal is not None:
         # Untrusted chat identity → fail closed. Recorded as a QUARANTINED ledger row
-        # (append-only audit, in the refused partition), never intaken, never an order.
+        # (append-only audit, in the non-genuine partition), never intaken, never an order.
         outcome, reason, approval = AcquiredMessage.Outcome.QUARANTINED, chat_refusal, None
     else:
+        # Trusted chat (or no trust boundary): classify. A non-armed provider yields
+        # DROPPED_NOT_ARMED here, which is correctly recorded in the non-genuine partition.
         outcome, reason, approval = _classify(provider, message, mid, chat_id, tg_date, now)
 
     try:
         with transaction.atomic():
             acq = AcquiredMessage.objects.create(
                 provider=provider, chat_id=chat_id, message_id=mid,
-                chat_identity_refused=refused,
+                non_genuine=non_genuine,
                 outcome=outcome, reason=reason, telegram_date=tg_date,
                 raw_payload={
                     "text": message.get("text") or "",
@@ -374,21 +396,19 @@ def acquire_message(provider: SignalProvider, message: dict, *, now=None) -> Acq
                 approval=approval,
             )
     except IntegrityError:
-        # A concurrent caller won the (provider, chat_id, message_id, refused) race —
+        # A concurrent caller won the (provider, chat_id, message_id, non_genuine) race —
         # return their row (idempotent; downstream intake_parsed is itself dedup-safe so
         # no duplicate approval results). Never raises for a duplicate.
         return AcquiredMessage.objects.get(
             provider=provider, chat_id=chat_id, message_id=mid,
-            chat_identity_refused=refused)
+            non_genuine=non_genuine)
 
-    # Bookkeeping: advance watermark + provider health, except for a non-armed drop
-    # (a paused/retired provider isn't a live signal source). The watermark advances
-    # for STALE too — a stale message HAS been seen + recorded, so catch-up must not
-    # re-fetch it (re-fetching would only re-dismiss it STALE; it is never a missed
-    # signal). Only a non-armed drop, or a fail-closed chat-identity refusal (an
-    # untrusted claim must never move this provider's trusted watermark — T1), leaves
-    # the watermark untouched.
-    if outcome != AcquiredMessage.Outcome.DROPPED_NOT_ARMED and chat_refusal is None:
+    # Bookkeeping: advance the watermark + provider health ONLY for a GENUINE acquisition
+    # (armed + trusted). The watermark advances for STALE too — a stale message HAS been
+    # seen + recorded by a live source, so catch-up must not re-fetch it. A non-genuine
+    # record (a disabled-source DROP or a fail-closed chat refusal) must NEVER move this
+    # provider's trusted watermark (T1 HIGH-2 + R2 HIGH-A).
+    if not non_genuine:
         provider.watermark_last_message_id = mid
         provider.last_signal_at = now
         provider.save(update_fields=["watermark_last_message_id", "last_signal_at", "updated_at"])
