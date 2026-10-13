@@ -21,7 +21,7 @@ from rest_framework.test import APIClient
 
 from broker_intelligence import gmail_oauth as OAUTH
 from broker_intelligence import gmail_source as GS
-from broker_intelligence.models import (BrokerEvent, ConnectedMailbox, Provenance, TransactionCategory, Withdrawal)
+from broker_intelligence.models import (BrokerEvent, ConnectedMailbox, EvidenceBlob, Provenance, TransactionCategory, Withdrawal)
 from broker_intelligence.services import mint_alias_for_account
 from trading.models import TradingAccount
 
@@ -84,6 +84,25 @@ class _RaisingGmailClient:
         raise RuntimeError("transient gmail api error")
 
 
+def _raw_unparseable(to_addr: str) -> bytes:
+    # Allowlisted + authenticated broker mail that NEITHER parser claims (no withdrawal/deposit/transfer content) —>
+    # retained as quarantined evidence, no event. Exercises the `no_event` (acquired-but-no-event) summary counter.
+    return (
+        f"From: TradersWay <news@tradersway.com>\r\nTo: {to_addr}\r\n"
+        "Subject: Monthly market newsletter\r\n"
+        "Authentication-Results: mx.google.com; dkim=pass header.d=tradersway.com; spf=pass; dmarc=pass\r\n"
+        "Date: Wed, 08 Oct 2026 10:00:00 +0000\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+        "Markets were mixed this week. An informational newsletter with no transaction.\r\n"
+    ).encode("utf-8")
+
+
+class _FakeGmailClientUnparseable:
+    """Returns one authenticated, allowlisted broker message that produces NO event (unparseable)."""
+    def list_new_messages(self, cursor_state):
+        raw = _raw_unparseable("owner@gmail.com")
+        return [{"provider_message_id": "mN", "raw_bytes": raw, **GS.parse_rfc822(raw)}], "200"
+
+
 @override_settings(**ENV)
 class MailboxIngestE2E(TestCase):
     def setUp(self):
@@ -131,6 +150,21 @@ class MailboxIngestE2E(TestCase):
         self.mb.refresh_from_db()
         self.assertEqual(self.mb.cursor_state, "100")                  # unchanged — failure never advances the cursor
         self.assertIsNone(self.mb.last_successful_sync)
+
+    def test_no_event_messages_surfaced_in_summary(self):
+        # Observability: an authenticated, allowlisted broker email that produces NO event (here: unparseable) is
+        # retained as quarantined evidence AND surfaced in the summary via `no_event` (not only in the logs), so a
+        # rising no-event volume (e.g. a broker template whose parser is crashing) is visible at the run level.
+        from broker_intelligence.mailbox_ingest import ingest_mailbox
+        res = ingest_mailbox(self.mb, client=_FakeGmailClientUnparseable())
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["ingested"], 1)
+        self.assertEqual(res["events"], 0)                             # nothing parsed into an event
+        self.assertEqual(res["no_event"], 1)                           # acquired-but-no-event volume surfaced
+        self.assertEqual(BrokerEvent.objects.count(), 0)
+        self.assertEqual(EvidenceBlob.objects.count(), 1)              # evidence retained (quarantined)
+        self.mb.refresh_from_db()
+        self.assertEqual(self.mb.cursor_state, "200")                  # cursor advances (nothing captured, nothing lost)
 
     def test_external_event_correlates_to_withdrawal_and_metrics(self):
         from broker_intelligence.correlation import run_correlation

@@ -318,6 +318,21 @@ def _max_raw_bytes() -> int:
         return GmailApiClient.MAX_RAW_BYTES
 
 
+def _max_history_pages() -> int:
+    """History/list page ceiling per pass, CONFIGURABLE (settings-then-env ``BROKER_INTELLIGENCE_MAX_HISTORY_PAGES``)
+    so an operator can admit a large one-off catch-up without a code change. Defaults to
+    ``GmailApiClient.MAX_PAGES``."""
+    import os
+    from django.conf import settings
+    v = getattr(settings, "BROKER_INTELLIGENCE_MAX_HISTORY_PAGES", None)
+    if v is None:
+        v = os.getenv("BROKER_INTELLIGENCE_MAX_HISTORY_PAGES", "")
+    try:
+        return int(v) if str(v).strip() and int(v) > 0 else GmailApiClient.MAX_PAGES
+    except (TypeError, ValueError):
+        return GmailApiClient.MAX_PAGES
+
+
 class GmailApiClient:
     """Resolves the encrypted token for ``mailbox.credential_ref`` (refreshing read-only when expired), then lists +
     fetches raw messages via the Gmail REST API. ``http_get`` is injected (default: urllib) so tests drive it with
@@ -383,13 +398,23 @@ class GmailApiClient:
         return {"provider_message_id": mid, "raw_bytes": raw_bytes, **parse_rfc822(raw_bytes)}
 
     def _collect_added_ids(self, cursor: str) -> "Tuple[List[str], str]":
-        """Walk ``history.list?startHistoryId=<cursor>&historyTypes=messageAdded`` (bounded by MAX_PAGES), collecting
-        the added message ids and advancing to the response's latest historyId. Cheap — ids only, no raw fetched."""
+        """Walk ``history.list?startHistoryId=<cursor>&historyTypes=messageAdded`` (bounded by the configurable page
+        ceiling), collecting the added message ids and advancing to the response's latest historyId. Cheap — ids only,
+        no raw fetched.
+
+        FAIL-CLOSED on an over-large backlog (durable-preservation contract, consistent with ``_fetch_message``): the
+        response ``historyId`` reflects the mailbox's CURRENT state, so advancing to it while pages remain unfetched
+        would move the cursor PAST un-fetched messages (silent loss). If the page ceiling is reached while a
+        ``nextPageToken`` still remains, this RAISES ``MessageCaptureError`` WITHOUT returning an advanced cursor — the
+        pass fails visibly (failed count + log), the cursor is not advanced, and nothing is lost; an operator can raise
+        ``BROKER_INTELLIGENCE_MAX_HISTORY_PAGES`` for a bounded one-off catch-up."""
         ids: List[str] = []
         seen = set()
         new_cursor = cursor
+        max_pages = _max_history_pages()
         page = f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}&historyTypes=messageAdded"
-        for _ in range(self.MAX_PAGES):
+        drained = False
+        for _ in range(max_pages):
             hist = self._get_json(page)
             new_cursor = str(hist.get("historyId", new_cursor) or new_cursor)
             for h in (hist.get("history") or []):
@@ -400,9 +425,15 @@ class GmailApiClient:
                         ids.append(mid)
             token = hist.get("nextPageToken")
             if not token:
+                drained = True
                 break
             page = (f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}"
                     f"&historyTypes=messageAdded&pageToken={urllib.parse.quote(token)}")
+        if not drained:
+            raise MessageCaptureError(
+                f"history exceeds {max_pages} pages in one pass (more messages remain beyond the page ceiling); "
+                "NOT advancing the cursor so no mail is lost. Raise BROKER_INTELLIGENCE_MAX_HISTORY_PAGES for a "
+                "bounded supervised catch-up.")
         return ids, new_cursor
 
     def _profile_cursor(self, fallback: str) -> str:

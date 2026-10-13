@@ -305,6 +305,21 @@ class GmailApiClientTests(TestCase):
         self.assertEqual(fetched_raw, [])                # full raw of personal mail never pulled
         self.assertEqual(cursor, "150")                  # cursor still advances (nothing to capture)
 
+    @override_settings(BROKER_INTELLIGENCE_MAX_HISTORY_PAGES="2")
+    def test_over_large_backlog_fails_closed_without_advancing_cursor(self):
+        # Durable-preservation: if the history has MORE pages than the ceiling (nextPageToken still present after the
+        # cap), advancing to the response historyId would skip un-fetched messages. The walk must RAISE instead, so
+        # the cursor is NOT advanced and no mail is silently lost (an operator raises the ceiling for a catch-up).
+        def http_get(url, headers):
+            if "/history" in url:
+                return 200, json.dumps({"historyId": "999",
+                                        "history": [{"messagesAdded": [{"message": {"id": "m1"}}]}],
+                                        "nextPageToken": "more"})   # ALWAYS more pages -> never drains
+            return 404, "{}"
+        client = GS.GmailApiClient(self.mb, client_id="CID", client_secret="SEC", http_get=http_get)
+        with self.assertRaises(GS.MessageCaptureError):
+            client.list_new_messages("100")
+
     @override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="")
     def test_empty_allowlist_fetches_nothing_failclosed(self):
         # Fail-closed: with NO verified broker configured (no env AND no active broker profile), the acquisition filter
