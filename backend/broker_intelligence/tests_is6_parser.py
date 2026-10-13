@@ -156,6 +156,24 @@ class IS6ParserUnitTests(TestCase):
             self.assertIsNone(self.p.parse(subject=subj, body=_html_to_text(html), from_address="noreply@is6.com"),
                               subj)
 
+    def test_daily_confirmation_statement_is_not_a_money_event(self):
+        # Genuine LIVE-OBSERVED IS6 non-transactional template: "Daily Confirmation" (a daily account/position
+        # statement). Captured 2026-10-13 as evidence blobs 4 & 5 via the scheduled worker — authenticated is6.com
+        # mail that the parser correctly DECLINED (retained as quarantined evidence, no event). This regression locks
+        # that behaviour in so an unexpected template change can't start emitting events for routine daily statements.
+        # Bodies are MINIMIZED, PII-redacted synthetic renderings of the genuine non-transactional structure (no
+        # genuine amounts/accounts/recipients committed).
+        for subj, html in [
+            ("Daily Confirmation",
+             "<p>Your daily account summary. Open positions and balance as of today. No action is required.</p>"),
+            ("[IS6FX] Daily Confirmation",
+             "<p>Daily statement: an informational summary of account activity for the period.</p>"),
+            ("【IS6FX】デイリーコンファメーション",
+             "<p>本日の口座サマリーのご案内です。お取引状況をご確認ください。</p>"),
+        ]:
+            self.assertIsNone(self.p.parse(subject=subj, body=_html_to_text(html), from_address="noreply@is6.com"),
+                              subj)
+
     def test_completed_substep_is_not_the_money_event(self):
         # A completed SUB-STEP (review/confirmation/verification/fee/card-auth) of a deposit/withdrawal is NOT the
         # money movement completing (invariant C). EN analogue of the JP subject anchor.
