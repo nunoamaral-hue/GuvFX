@@ -4,11 +4,19 @@ Packet `T1_PRODUCTION_DARK_DEPLOYMENT_READINESS` (R1 corrections). Prepared for 
 operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; prod NOT deployed (host at `a474f79`,
 `signal_intake` migrations at `0009`).
 
-> **Two blocking findings gate this runbook (see the readiness report).** (1) Catch-up is **NOT guaranteed
-> lossless** — `catch_up` fetches only the 200 oldest messages (single call) and the 600 s staleness window drops
-> aged signals; a bounded code correction is required for a completeness guarantee. (2) Database recovery is **not
-> ready** — no PITR, no automated backup. Do not treat this runbook as GO until both are resolved by the Programme
-> Director / Sponsor.
+> **UPDATE 2026-10-14 (`T1_TELEGRAM_CATCHUP_COMPLETENESS_R1`): HIGH-1 catch-up correction now IMPLEMENTED +
+> CERTIFIED (DARK, PR #497).** `catch_up` paginates beyond 200 (no abandonment), resumes from a durable per-provider
+> CHECKPOINT (`catchup_checkpoint_message_id`, distinct from the contaminable watermark), bounds pages / wall-clock /
+> flood-wait, and reports an explicit per-provider `COMPLETE` / `INCOMPLETE_CEILING` / `INCOMPLETE_ERROR` status. A
+> NEW migration **0012** (additive `catchup_checkpoint_message_id`, watermark-backfilled, DARK) is part of this
+> deploy → the migration path is now **0009 → 0010 → 0011 → 0012**. The old "fetches only 200 / 200-cap" statements
+> below are superseded; completeness is now verified by the per-provider `COMPLETE` status (§E).
+>
+> **Remaining blocking finding: (2) Database recovery is NOT ready** — no PITR, no automated backup (HIGH-2). Do not
+> treat this runbook as GO until HIGH-2 is resolved by the Programme Director / Sponsor.
+>
+> _(Original R1 blocking note, for the record: catch-up was NOT guaranteed lossless — `catch_up` fetched only the
+> 200 oldest messages in a single call; that is the defect PR #497 fixed.)_
 
 > **Mixed-version is UNSAFE (verified).** `AcquiredMessage.non_genuine` and `PendingSignalApproval.chat_id` are NOT
 > NULL with no DB default → OLD code + NEW schema fails inserts; NEW code + OLD schema hits undefined columns. The
@@ -16,12 +24,18 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 
 ## A. Preconditions
 1. `main` HEAD = `48db801`; host `/home/ubuntu/guvfx-app` fast-forwarded to it.
-2. `signal_intake` applied = **0009**; 0010/0011 pending (`showmigrations signal_intake`).
+2. `signal_intake` applied = **0009**; **0010/0011/0012 pending** (`showmigrations signal_intake`). 0012 (`catchup_checkpoint`) is additive + watermark-backfilled (DARK) and UNCONDITIONALLY reversible (drop column; RunPython reverse is a noop).
 3. Providers ARMED, chats unchanged: `ti_signals` `-1004480146594`, `wayond` `-1003842321905`. **Record exact live watermarks now** (must only advance).
 4. Flags: `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` OFF (keep OFF); `PROVIDER_COMMANDS_ENABLED` OFF; `MT5_ALLOW_LIVE` unset; `BROKER_INTELLIGENCE_INGEST_ENABLED=1` (leave).
 5. **Pin rollback images by IMAGE ID (not the mutable `:latest`):** `docker tag 8e289a18ba29 guvfx-prod-guvfx-backend:rollback-preT1` (current backend) and `docker tag <current listener id, e.g. 7dd209f33a83> guvfx-wayond-listener:rollback-preT1`.
 6. **(BLOCKING, separate authorization) a consistent pre-migration recovery point exists** — see §B.
 7. No concurrent migration/deploy of another subsystem.
+8. **(R2 §6 — checkpoint-init reconciliation GATE, run BEFORE §C.6 migrate, read-only, fail-closed):**
+   `docker compose run --rm --no-deps guvfx-backend python manage.py reconcile_catchup_checkpoint --gate`. It
+   compares each provider's watermark (the 0012 seed) to the highest genuine acquired id and **exits non-zero** on any
+   REVIEW / no-match. A PASS means the seed is CONSISTENT + behaviour-preserving — NOT a proof of historical
+   completeness (DB evidence can't prove it: Telegram ids are non-contiguous). On REVIEW, do NOT apply 0012 / deploy;
+   escalate (a watermark reset to re-scan history is a separate Sponsor-gated cutover, never done here).
 
 ## B. Backup & recovery (BLOCKED — see readiness report)
 - **No PITR** (`archive_mode=off`, `wal_level=replica`) and **no automated backup** on prod. The only capability is an on-demand logical `pg_dump` (pg_dump 15.15 in `guvfx-postgres`; DB ≈ 2.77 GB).
@@ -38,7 +52,7 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 5. **STOP the acquisition writer:** `docker stop guvfx-wayond-listener`. **Record the window start.** Telegram retains messages (caught up in §C.8 — subject to the completeness limits in §catch-up).
 6. **Apply migrations** (new image, one-off): `cd /home/ubuntu/guvfx-prod && docker compose run --rm --no-deps guvfx-backend python manage.py migrate signal_intake`. Rehearsed prod-scale ≈ 0.84 s; allow generously for lock acquisition under load (§F abort bound).
 7. **Recreate backend:** `docker compose up -d --force-recreate --no-deps guvfx-backend`. **NEVER `--remove-orphans`.**
-8. **Recreate the listener (new image) using the exact launch contract (§D):** `docker rm -f guvfx-wayond-listener` then the canonical `docker run` (§D). It catches up from each provider's watermark — **verify completeness (§E) before declaring success.**
+8. **Recreate the listener (new image) using the exact launch contract (§D):** `docker rm -f guvfx-wayond-listener` then the canonical `docker run` (§D). It catches up each provider from its durable CHECKPOINT (bounded, resumable, paginated) — **verify per-provider `COMPLETE` (§E) before declaring success.**
 9. (Version consistency, NOT safety-critical; they only READ signal_intake) optionally recreate the other backend-image workers. **Do not restart LIVE order workers / MT5 / Windows unnecessarily.**
 
 ## D. Listener recreation contract (reflects the CURRENTLY-RUNNING container)
@@ -54,15 +68,20 @@ docker run -d --name guvfx-wayond-listener --restart unless-stopped \
 - **Rollback launch contract:** identical command with `guvfx-wayond-listener:rollback-preT1` (the pinned pre-T1 image id).
 
 ## E. Verification (expected post-DARK state) + catch-up completeness
-- `showmigrations signal_intake` → `0011`. Providers ARMED, chats unchanged; **watermarks ≥ pre-deploy** (never reset/regressed). `PendingSignalApproval` `chat_id<>''` ≈ 857 (6 `wayond` stay `''`); `AcquiredMessage` `non_genuine=True` = 121. Flag OFF → `SignalExecutionPlan.chat_id` still `''`; no new `ExecutionJob` from the deploy; engine DARK.
-- **Catch-up completeness (both providers) — NOT auto-guaranteed:** after relaunch, confirm for EACH provider that the live watermark has advanced to the channel's newest message id (no gap) and that `catch_up` reported `processed` consistent with the backlog. If the backlog exceeded ~200 messages, or the window exceeded the 600 s staleness window, catch-up is INCOMPLETE (messages abandoned by the 200-cap, or acquired STALE rather than tradeable). Treat such a deployment as a failed window (§failure/recovery).
+- `showmigrations signal_intake` → `0012`. Providers ARMED, chats unchanged; **watermarks ≥ pre-deploy** (never reset/regressed); each provider's `catchup_checkpoint_message_id` backfilled from its watermark by 0012 then advanced by the catch-up pass. `PendingSignalApproval` `chat_id<>''` ≈ 857 (6 `wayond` stay `''`); `AcquiredMessage` `non_genuine=True` = 121. Flag OFF → `SignalExecutionPlan.chat_id` still `''`; no new `ExecutionJob` from the deploy; engine DARK.
+- **Catch-up completeness (both providers) — read the per-provider STATUS, do not infer from liveness:** the listener log line `wayond listener catch-up: provider=<slug> status=<STATUS> from=<checkpoint> checkpoint=<id> pages=N retrieved=N acquired=N …` is emitted once per provider. **Success requires `status=COMPLETE` for EVERY provider.** The container health file turning green is LIVENESS, not completeness — a provider can be INCOMPLETE while the listener is healthy (the listener also logs a WARNING: `catch-up INCOMPLETE for providers=…`). Confirm each provider's `checkpoint` advanced to (or past) the channel's newest acquired id with no gap.
+
+### §catch-up — operational contract for an INCOMPLETE catch-up
+- `status=COMPLETE` → backlog drained within all bounds; done.
+- `status=INCOMPLETE_CEILING` (page ceiling) or `INCOMPLETE_ERROR` (fetch/flood-wait/time-budget/processing error) → the backlog is **NOT** fully drained, but **nothing is silently lost**: the durable `catchup_checkpoint_message_id` was advanced ONLY past genuinely-acquired messages, so a **re-run resumes from the checkpoint with no skip and no duplicate durable rows** (acquisition dedups; a non-genuine DROPPED_NOT_ARMED row never advances the checkpoint, so a paused→armed provider is never stranded). Action: re-run catch-up (restart the listener, or re-invoke) and confirm it reaches `COMPLETE`; if it will not converge within a window ≪ the 600 s staleness window, treat the deployment as a **failed window** (§G) — do NOT declare success on an INCOMPLETE pass.
+- A message aged past the 600 s staleness window is recorded **STALE** (genuine, advances the checkpoint) — NOT a tradeable recovery; this is expected, not an incompleteness.
 
 ## F. Failure detection (signatures) & timing bounds
 - Migration error / partial apply → §G. Each migration is transactional (clean rollback on failure).
 - Listener logs `NotNullViolation`/`UndefinedColumn` on insert → code/schema version mismatch; stop and correct ordering.
 - A watermark **regresses** → never expected; abort.
 - Unexpected duplicate `PendingSignalApproval` for one `(source, chat_id, message_id)`; or any `SignalExecutionPlan` with a non-blank `chat_id` while the flag is OFF → abort.
-- **Timing/abort bounds (set before execution):** max acquisition interruption ≪ **600 s** (hard: the staleness window — beyond it, in-flight signals age to STALE); max migration lock wait (e.g. 30 s — abort before migrate if not acquired); max catch-up backlog **< 200 per provider** (above it, catch-up is incomplete). Abort BEFORE §C.6 if any precondition or the window budget is already exceeded.
+- **Timing/abort bounds (set before execution):** max acquisition interruption ≪ **600 s** (hard: the staleness window — beyond it, in-flight signals age to STALE); max migration lock wait (e.g. 30 s — abort before migrate if not acquired); **each provider's catch-up pass must reach `status=COMPLETE` within a window ≪ 600 s** (an `INCOMPLETE` pass is a failed window — not a silent loss; it resumes from the durable checkpoint on re-run; §E). The catch-up itself is self-bounded (page size/count, `WAYOND_CATCHUP_TIME_BUDGET_SECONDS`, bounded + deadline-aware flood-wait). Abort BEFORE §C.6 if any precondition or the window budget is already exceeded.
 
 ## G. Rollback
 - **Migration failed mid-apply:** transactional → re-run after fixing, or reverse (§H), then redeploy `rollback-preT1` images to backend + listener.
@@ -70,6 +89,7 @@ docker run -d --name guvfx-wayond-listener --restart unless-stopped \
 - Image-only rollback is **insufficient alone** when the schema is already migrated (old code + new schema is unsafe) — code and schema must be rolled back together.
 
 ## H. Migration-reversal boundaries (three distinct states — do not conflate)
+- **0012 (`catchup_checkpoint`) is UNCONDITIONALLY reversible** at any data state: its reverse drops the added column and its `RunPython` reverse is a noop (it never rewrites or deletes rows). The boundaries below concern the 0011→0010→0009 reverses only.
 - `REVERSIBLE_IN_CLEAN_STATE` — no rows.
 - `REVERSIBLE_WITH_EXISTING_DATA` — holds **only** while no `(provider, chat_id, message_id)` has both a `non_genuine=True` and a `non_genuine=False` row (0011 reverse), and no `(provider, message_id)` spans two chats (0009 reverse). **This coexistence can form pre-cutover** (PAUSED drop → re-armed genuine, same id) — verified: the reverse then fails with `could not create unique index`. **Detection (run READ-ONLY before any reverse):**
   ```sql

@@ -176,14 +176,26 @@ def _record_update(provider, message, parsed, mid, chat_id, *, edited=False):
                      .filter(provider=provider, chat_id=chat_id, message_id=reply_to,
                              non_genuine=False)
                      .values_list("id", flat=True).first())
-    SignalUpdate.objects.create(
-        provider=provider, chat_id=chat_id, message_id=mid,
-        reply_to_message_id=reply_to,
-        kind=kind_map.get(getattr(parsed, "update_type", ""), SignalUpdate.Kind.OTHER),
-        raw_payload={"raw_text": getattr(parsed, "raw_text", ""),
-                     "edited": bool(edited),
-                     "origin_acquired_id": origin_id},
-    )
+    # Idempotent per (provider, chat_id, message_id, edited-ness). The fresh update row is
+    # written here in AUTOCOMMIT, BEFORE acquire_message commits the AcquiredMessage that would
+    # dedup a replay — so a crash/restart (or a re-run of _classify) between the two would
+    # otherwise double-write the SignalUpdate (nothing else guards it), a latent double-action
+    # once the update engine is armed (T1 R2 adversarial MEDIUM). Guard the create like
+    # _maybe_record_command guards its ProviderCommand. Keying on the ``edited`` flag preserves
+    # the by-design DISTINCT original (edited=False) + amended (edited=True) rows. This closes the
+    # crash/restart/replay path; the narrow FULLY-CONCURRENT double-create race still needs a DB
+    # unique constraint on SignalUpdate (a data-reconciled migration — tracked in KNOWN_ISSUES).
+    if not SignalUpdate.objects.filter(
+            provider=provider, chat_id=chat_id, message_id=mid,
+            raw_payload__edited=bool(edited)).exists():
+        SignalUpdate.objects.create(
+            provider=provider, chat_id=chat_id, message_id=mid,
+            reply_to_message_id=reply_to,
+            kind=kind_map.get(getattr(parsed, "update_type", ""), SignalUpdate.Kind.OTHER),
+            raw_payload={"raw_text": getattr(parsed, "raw_text", ""),
+                         "edited": bool(edited),
+                         "origin_acquired_id": origin_id},
+        )
 
 
 def _record_amendment(provider, original, message, mid, tg_date, now):

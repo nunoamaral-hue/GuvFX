@@ -16,6 +16,7 @@ from django.test import TransactionTestCase
 APP = "signal_intake"
 AT_0009 = [(APP, "0009_providercommand")]
 AT_0011 = [(APP, "0011_acquired_message_chat_identity_refused")]
+AT_0012 = [(APP, "0012_catchup_checkpoint")]
 
 
 class HistoricalMigrationTests(TransactionTestCase):
@@ -146,3 +147,36 @@ class HistoricalMigrationTests(TransactionTestCase):
         # Both genuine rows coexist under the chat-scoped key — the T1 goal.
         self.assertEqual(
             M.objects.filter(provider_id=prov.id, message_id="5", non_genuine=False).count(), 2)
+
+    def test_0012_checkpoint_backfilled_from_watermark_is_dark(self):
+        """T1 R1 HIGH-1: migration 0012 adds the durable catch-up checkpoint and seeds it
+        from the existing watermark, so first-deploy catch-up resumes from exactly the old
+        point (behaviour-preserving / DARK). A provider with no watermark gets no spurious
+        checkpoint; rollback drops the column but preserves rows + watermark; reapply
+        re-seeds deterministically."""
+        old = self._migrate(AT_0011)
+        PP = old.get_model(APP, "ParserProfile")
+        Prov = old.get_model(APP, "SignalProvider")
+        pp = PP.objects.create(slug="wayond_v1")
+        # (a) provider WITH a watermark → checkpoint seeded = watermark (resume point unchanged).
+        Prov.objects.create(slug="wayond", telegram_chat_id="1001", parser_profile=pp,
+                            status="ARMED", watermark_last_message_id="889")
+        # (b) provider with NO watermark → checkpoint stays '' (nothing to seed).
+        Prov.objects.create(slug="ti", telegram_chat_id="-100", parser_profile=pp,
+                            status="PAUSED", watermark_last_message_id="")
+
+        new = self._migrate(AT_0012)
+        P2 = new.get_model(APP, "SignalProvider")
+        self.assertEqual(P2.objects.get(slug="wayond").catchup_checkpoint_message_id, "889")  # DARK seed
+        self.assertEqual(P2.objects.get(slug="ti").catchup_checkpoint_message_id, "")         # no spurious seed
+
+        # Rollback past 0012: column dropped (RunPython reverse is noop; AddField reverse drops),
+        # rows + watermark preserved.
+        back = self._migrate(AT_0011)
+        PB = back.get_model(APP, "SignalProvider")
+        self.assertNotIn("catchup_checkpoint_message_id", {f.name for f in PB._meta.get_fields()})
+        self.assertEqual(PB.objects.get(slug="wayond").watermark_last_message_id, "889")       # intact
+        # Reapply forward: re-seeds deterministically.
+        re = self._migrate(AT_0012)
+        PR = re.get_model(APP, "SignalProvider")
+        self.assertEqual(PR.objects.get(slug="wayond").catchup_checkpoint_message_id, "889")
