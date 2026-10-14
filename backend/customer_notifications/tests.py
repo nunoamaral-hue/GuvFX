@@ -5,6 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
 import pathlib
+import re
 from unittest.mock import MagicMock, patch
 import urllib.error
 from urllib.parse import parse_qs, urlparse
@@ -54,6 +55,21 @@ from .services import (
     redeem_connection_token,
     request_workspace_readiness_notification,
 )
+
+
+# Machine timestamps (ISO-8601 or logging-style, with optional fractional seconds and offset/Z) are
+# redacted before a raw chat-id substring leak-scan: a timestamp's fractional seconds can coincidentally
+# contain a chat-id's digits (e.g. "2026-10-14T18:05:22.695111+00:00" contains "111"), a time-dependent
+# false positive that is NOT a leak. A timestamp is not a recipient-id leak vector; a genuine chat-id
+# disclosure appears outside a timestamp and is still caught. Shared by the worker-output leak test and
+# its regression so both exercise the same logic.
+_TIMESTAMP_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:[+-]\d{2}:\d{2}|Z)?"
+)
+
+
+def _scrub_machine_timestamps(text: str) -> str:
+    return _TIMESTAMP_RE.sub("<ts>", text)
 
 
 SETTINGS = dict(
@@ -634,9 +650,30 @@ class DeliverySafetyTests(CustomerTelegramTestBase):
         output = StringIO()
         call_command("run_customer_notification_worker", "--once", stdout=output)
         rendered = output.getvalue()
-        self.assertNotIn("111", rendered)
+        # The chat-id leak-scan runs on a timestamp-scrubbed copy (see _scrub_machine_timestamps): a
+        # heartbeat timestamp's fractional seconds can coincidentally contain the chat-id substring,
+        # which was a time-flaky false positive. Credential checks stay on the UNTOUCHED output.
+        self.assertNotIn("111", _scrub_machine_timestamps(rendered))
         self.assertNotIn("test-only-token", rendered)
         self.assertNotIn("test-webhook-secret", rendered)
+
+    def test_chatid_leak_scan_distinguishes_timestamps_from_real_disclosures(self):
+        # Committed regression for the timestamp-substring deflake (exercises the SAME scrub helper the
+        # worker-output test uses, so it cannot drift from the real check).
+        # A) a timestamp whose fractional seconds contain "111" is NOT a leak (scrubbed away):
+        for ts in (
+            '{"worker_last_heartbeat_at": "2026-10-14T18:05:22.695111+00:00"}',
+            "2026-10-14 18:05:22,111 worker tick",
+            '{"t": "2026-10-14T18:05:22.000111Z"}',
+        ):
+            self.assertNotIn("111", _scrub_machine_timestamps(ts))
+        # B) a genuine raw chat-id disclosure IS still caught:
+        self.assertIn("111", _scrub_machine_timestamps("delivering to chat_id=111 at 2026-10-14T18:05:22.695000+00:00"))
+        # C) a JSON-style chat-id disclosure IS still caught:
+        self.assertIn("111", _scrub_machine_timestamps('{"chat": 111, "at": "2026-10-14T18:05:22.695000+00:00"}'))
+        # D) credentials are never scrubbed (only timestamps are), so credential leak checks are unaffected:
+        self.assertIn("test-only-token", _scrub_machine_timestamps("token=test-only-token at 2026-10-14T18:05:22.695111+00:00"))
+        self.assertIn("test-webhook-secret", _scrub_machine_timestamps("secret=test-webhook-secret"))
 
     def test_trade_creation_has_no_customer_notification_observer(self):
         with self.captureOnCommitCallbacks(execute=True):
