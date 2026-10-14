@@ -28,9 +28,28 @@ List active problems with reproduction steps and workarounds.
   uniqueness constraint for active providers, or status-aware owner resolution) is a schema/semantics change
   (AMBER) tracked as a separate follow-up — deliberately NOT done in the DARK catch-up packet.
 - **Catch-up durable checkpoint (migration 0012, PR #497, DARK).** `SignalProvider.catchup_checkpoint_message_id` is
-  the resume floor (distinct from the contaminable `watermark_last_message_id`); it advances only past GENUINE
-  acquisitions. Migration `0012` backfills it from the watermark (first-deploy behaviour unchanged). The deploy
-  migration path is now `0009→0010→0011→0012`; 0012 is unconditionally reversible. Not deployed.
+  the resume floor (distinct from the contaminable `watermark_last_message_id`); it advances only past a GENUINE
+  acquisition AND never past the earliest UNACCOUNTED retrieval of a pass (R2: ignored/non-genuine ids can't be
+  masked by a later genuine id). Migration `0012` backfills it from the watermark (first-deploy behaviour unchanged).
+  The deploy migration path is now `0009→0010→0011→0012`; 0012 is unconditionally reversible. Not deployed.
+- **`SignalUpdate` has no DB unique constraint — a fully-concurrent double-create race remains (LOW; recorded
+  2026-10-14, PR #497 R2).** `_record_update` is now idempotent against crash/restart/replay (it skips the create when
+  a row for `(provider, chat_id, message_id, edited)` already exists — matching `ProviderCommand`'s dedup). That
+  closes the catch-up crash path. A genuinely concurrent double-create (two workers both pass `.exists()==False` then
+  both `.create()`) is still possible because `SignalUpdate` has no unique constraint (migration 0004 created it
+  without one; 0010/0011 widened the other ledgers but not this). The update-consuming engine is DARK
+  (`PROVIDER_COMMANDS_ENABLED` OFF), so a duplicate is latent today. A proper fix is a unique constraint on
+  `SignalUpdate`, but it must be a **data-reconciled** migration (the ledger is append-only/immutable per `data.md`, so
+  pre-existing duplicates must be reconciled, never silently deleted) — tracked as a separate follow-up, not done in
+  the DARK catch-up packet. (A single message edited MULTIPLE times with distinct text now collapses onto one
+  `edited=True` `SignalUpdate` row; the full edit history is still retained in the immutable `MessageAmendment` ledger.)
+- **Production checkpoint-initialization reconciliation is a mandatory pre-deploy gate (PR #497 R2 §6).** Migration
+  0012 seeds the checkpoint from the watermark: behaviour-preserving (identical to the pre-T1 resume cursor) but NOT a
+  proof of historical completeness (a past live event could have advanced the watermark; the pre-pagination 200-cap
+  could have abandoned a backlog). DB evidence CANNOT prove completeness (Telegram ids are non-contiguous). Run the
+  read-only `manage.py reconcile_catchup_checkpoint --gate` BEFORE applying 0012; a REVIEW verdict (or an unverifiable
+  watermark) blocks the deploy fail-closed. Closing a suspected gap below the seed needs a watermark reset (separate
+  Sponsor-gated cutover), never a code path.
 
 ## 🟠 BROKER SERVER environment data-quality issues (recorded 2026-10-12, read-only reconciliation)
 

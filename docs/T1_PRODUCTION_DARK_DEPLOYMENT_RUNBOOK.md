@@ -30,6 +30,12 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 5. **Pin rollback images by IMAGE ID (not the mutable `:latest`):** `docker tag 8e289a18ba29 guvfx-prod-guvfx-backend:rollback-preT1` (current backend) and `docker tag <current listener id, e.g. 7dd209f33a83> guvfx-wayond-listener:rollback-preT1`.
 6. **(BLOCKING, separate authorization) a consistent pre-migration recovery point exists** — see §B.
 7. No concurrent migration/deploy of another subsystem.
+8. **(R2 §6 — checkpoint-init reconciliation GATE, run BEFORE §C.6 migrate, read-only, fail-closed):**
+   `docker compose run --rm --no-deps guvfx-backend python manage.py reconcile_catchup_checkpoint --gate`. It
+   compares each provider's watermark (the 0012 seed) to the highest genuine acquired id and **exits non-zero** on any
+   REVIEW / no-match. A PASS means the seed is CONSISTENT + behaviour-preserving — NOT a proof of historical
+   completeness (DB evidence can't prove it: Telegram ids are non-contiguous). On REVIEW, do NOT apply 0012 / deploy;
+   escalate (a watermark reset to re-scan history is a separate Sponsor-gated cutover, never done here).
 
 ## B. Backup & recovery (BLOCKED — see readiness report)
 - **No PITR** (`archive_mode=off`, `wal_level=replica`) and **no automated backup** on prod. The only capability is an on-demand logical `pg_dump` (pg_dump 15.15 in `guvfx-postgres`; DB ≈ 2.77 GB).

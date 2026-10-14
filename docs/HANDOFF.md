@@ -1,5 +1,71 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — T1 Telegram catch-up completeness R2 (PR #497, DARK, auto-merge OFF)
+
+```
+PM HANDOFF
+
+Handoff ID: T1-TELEGRAM-CATCHUP-COMPLETENESS-R2-2026-10-14
+Packet ID: T1_TELEGRAM_CATCHUP_COMPLETENESS_R2 (parent T1_TELEGRAM_CATCHUP_COMPLETENESS_HARDENING)
+Status: PASS (3 PD findings + 3 renewed-adversarial findings fixed + re-verified; DARK; auto-merge OFF; no merge
+  without PD re-acceptance)
+
+Initial branch/HEAD/status: feat/signal-intake-catchup-completeness @ 834b0a5 (R1, pushed to #497); R2 edits present
+  uncommitted in the working tree.
+Convergence base: main 0d41731 (unchanged since R1; no new concurrent work)
+Convergence branch: feat/signal-intake-catchup-completeness (same PR #497 — corrected in place, no replacement)
+Preservation cherry-pick commit: None (new commits on top; no history rewrite, no force-push)
+Governance commit: ceab594 (fix(signal_intake): T1 catch-up R2 — accounted-boundary checkpoint, FloodWait
+  rate-limit, checkpoint-init gate); docs in the same-named docs commit.
+Files added: backend/signal_intake/management/commands/reconcile_catchup_checkpoint.py (read-only reconciliation gate)
+Files modified: signal_intake/listener/adapter.py (unaccounted_floor accounted-boundary checkpoint; CatchupResult
+  retrieval_position/non_genuine/durably_complete; FloodWait rejects oversized waits; run() held-boundary log);
+  signal_intake/acquisition.py (_record_update idempotent per (provider,chat,message,edited));
+  signal_intake/migrations/0012_catchup_checkpoint.py (corrected the unsupported "uncontaminated watermark"
+  assertion); signal_intake/tests_catchup_completeness.py (matrix 48→64);
+  docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md, docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md, docs/STATUS.md,
+  docs/NEXT.md, docs/HANDOFF.md, docs/KNOWN_ISSUES.md.
+Exact ignored local .claude files: None (untracked docs/ACCOUNT46_*.md and node_modules/ left untouched)
+Original draft hash verification: N/A
+Scoped rules verification: architecture (additive; no LLM trade authority; acquisition architecture NOT reopened —
+  only _record_update made idempotent), data (checkpoint is a rebuildable cursor; immutable ledgers never rewritten;
+  SignalUpdate dedup via guard, NOT by deleting rows — unique-constraint migration deferred as data-reconciled),
+  security (no secrets; command is read-only), evidence (this handoff; actual results), handoff, notion (no Notion).
+Secret-scan result: PASS — no secret literals introduced.
+Unit-test result: full backend suite 5866 tests OK (skipped=1) on the committed tree; focused catch-up/acquisition/
+  execution suites green (89 then 330 combined).
+Make governance-check result: not run locally; CI (governance check) runs on push.
+Make check result: backend portion run directly (full suite OK); frontend untouched (0 frontend files) → CI covers it.
+Evidence/privacy validation: tests use synthetic SIGNAL/PING/UPDATE fixtures only; no prod creds / Telegram content;
+  no secrets in docs.
+Commit identity/message validation: conventional commit; Co-Authored-By: Claude Opus 4.8 present.
+Final branch/HEAD/status: feat/signal-intake-catchup-completeness @ docs commit (clean re T1 files).
+Flow A ref unchanged: Yes (main untouched)
+Branch pushed: Yes — pushed to update PR #497 (DARK).
+
+Commands executed: git add (R2 files) / commit ceab594 / docs edits+commit / push; manage.py test (full 5866 OK +
+  focused); makemigrations --check (only pre-existing ProviderCommand index drift); two Workflow reviews (8-dimension
+  find→verify, then 3-fix re-verify, all_resolved); secret-scan grep.
+Verified facts: the R1 genuine-only checkpoint guard still allowed a later genuine id to skip an earlier
+  unaccounted one — fixed via res.unaccounted_floor (Scenarios A–E prove it); FloodWait rejects oversized waits;
+  reconcile gate is read-only + fail-closed + schema-safe; SignalUpdate crash double-create closed (idempotent
+  _record_update); re-verify all_resolved=true, no regressions.
+Assumptions made: production providers have distinct chats (fix-D resolution unaffected); the SignalUpdate
+  consumer is DARK (PROVIDER_COMMANDS_ENABLED OFF) so the deferred concurrent-race duplicate is latent, not active.
+Deviations from packet: none material. The SignalUpdate concurrent-race unique constraint was DEFERRED (not fixed
+  in-packet) because a unique-constraint migration on an append-only ledger needs data reconciliation and must not
+  delete rows (data.md) — recorded in KNOWN_ISSUES; the crash/replay path (the Scenario-D requirement) IS fixed.
+Amber decisions proposed: None (all additive/behaviour-preserving; flag OFF; acquisition architecture not reopened).
+Red decisions requiring Nuno: PR #497 merge; the production DARK deployment; HIGH-2 DB-recovery resolution; a future
+  SignalUpdate unique-constraint (data-reconciled) migration.
+Risks discovered: SignalUpdate has no unique constraint (concurrent-race duplicate, LOW, DARK consumer) — KNOWN_ISSUES.
+Out-of-scope access performed: No.
+Rollback/recovery: revert ceab594 (+ the docs commit); migration 0012 reverse unconditionally drops the column
+  (noop RunPython reverse) — no data loss. Nothing deployed.
+Recommended next packet: PD re-acceptance of PR #497 (DARK). Overall T1 production DARK deployment remains NO-GO,
+  gated ONLY by HIGH-2 (production DB recovery), a separate Sponsor dependency.
+```
+
 ## 2026-10-14 — T1 Telegram catch-up completeness R1 (PR #497, DARK, auto-merge OFF)
 
 ```

@@ -26,6 +26,14 @@ assessment. Deltas since:
   **0010/0011/0012 pending**). 0012 is UNCONDITIONALLY reversible (drop column; `RunPython` reverse is a
   noop) — it does NOT carry the 0011 coexistence hazard (HIGH-3). Earlier notes that catch-up was
   "code-only, no migration" are superseded by 0012.
+- **R2 corrections (2026-10-14) folded in:** the durable checkpoint is now the highest SAFELY-ACCOUNTED boundary —
+  it never advances past the earliest UNACCOUNTED (ignored/non-genuine) retrieval of a pass, so a later genuine id
+  cannot mask an earlier one (closes a silent-loss gap the R1 genuine-only guard left). FloodWait now REJECTS an
+  oversized server-requested wait (fail-closed → INCOMPLETE) rather than shortening-and-retrying. **Checkpoint-init
+  is now a mandatory pre-deploy GATE:** run the read-only `reconcile_catchup_checkpoint --gate` before applying 0012
+  (see runbook §A.8); it is behaviour-preserving-consistent, NOT a historical-completeness proof. Renewed adversarial
+  review (R2): 3 confirmed fixed + re-verified; `SignalUpdate` crash double-create closed (concurrent-race unique
+  constraint deferred — KNOWN_ISSUES).
 - **Overall verdict UNCHANGED: NO-GO.** HIGH-2 (production DB recovery) remains **BLOCKED** (separate Sponsor
   dependency; out of scope here). HIGH-1's code blocker is resolved, but deployment stays gated by HIGH-2.
 

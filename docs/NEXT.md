@@ -6,12 +6,14 @@ readiness assessed (read-only prod inspection + isolated rehearsal): **GO condit
 window** — mixed-version is UNSAFE so deploy = stop listener → migrate → recreate backend+listener (watermark
 catch-up; flag stays OFF). Runbook + report: `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`,
 `docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`.
-**CATCH-UP COMPLETENESS (readiness HIGH-1) — code correction DONE + certified DARK (2026-10-14, PR #497).**
-`catch_up` now paginates beyond 200, resumes from a durable per-provider CHECKPOINT (migration **0012**,
-watermark-backfilled, DARK — path now `0009→0010→0011→0012`), bounds pages/wall-clock/flood-wait, and reports a
-per-provider `COMPLETE`/`INCOMPLETE` status. Renewed adversarial review: 4 confirmed defects fixed + re-verified.
-Full backend **5850 OK**. **Overall DARK-deployment readiness still NO-GO — gated now ONLY by HIGH-2 (production DB
-recovery: no PITR/auto-backup), a separate Sponsor dependency.**
+**CATCH-UP COMPLETENESS (readiness HIGH-1) — code correction DONE + certified DARK (R1+R2, 2026-10-14, PR #497).**
+`catch_up` paginates beyond 200 and resumes from a durable per-provider CHECKPOINT (migration **0012**,
+watermark-backfilled, DARK — path now `0009→0010→0011→0012`); bounds pages/wall-clock/flood-wait. **R2:** the
+checkpoint is the highest SAFELY-ACCOUNTED boundary — never advances past the earliest unaccounted (ignored/
+non-genuine) retrieval; FloodWait rejects oversized server waits (no premature retry); migration 0012 init is gated by
+the read-only `reconcile_catchup_checkpoint --gate` (DB can't prove historical completeness). Two renewed adversarial
+reviews: R1 4 + R2 3 confirmed defects fixed + re-verified. Full backend **OK**. **Overall DARK-deployment readiness
+still NO-GO — gated now ONLY by HIGH-2 (production DB recovery: no PITR/auto-backup), a separate Sponsor dependency.**
 One bounded next action: **await the PD's re-acceptance of PR #497 (DARK; auto-merge OFF; do NOT merge without it).**
 **Do NOT** deploy, apply prod migrations, switch the Telegram channel, reset the watermark, restart the listener, or
 change any flag. The Telegram **source switch remains a separate, future Sponsor-authorised cutover packet**

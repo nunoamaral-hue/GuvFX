@@ -14,6 +14,28 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — R2 CORRECTIONS (PR #497, DARK, auto-merge OFF).**
+  PD accepted the R1 architecture and raised 3 findings; all fixed on the same PR, plus 3 confirmed by a renewed
+  8-dimension adversarial review (then re-verified, all resolved, no regressions). Still DARK — no deploy/migration/
+  Telegram change/watermark reset; flag OFF.
+  - **HIGH — checkpoint skipped an earlier unaccounted message.** The R1 genuine-only guard still let a LATER genuine
+    id advance the checkpoint PAST an earlier non-genuine/ignored id (→ silent loss once re-armed). Fix: the durable
+    checkpoint is now the highest SAFELY-ACCOUNTED boundary — it never advances to/past the pass's EARLIEST
+    unaccounted retrieval (`res.unaccounted_floor`); a later genuine id can't mask an earlier unaccounted one. New
+    `retrieval_position` / `durably_complete` observability; may still cross legitimate numbering gaps.
+  - **MEDIUM — FloodWait rate-limit compliance.** `_floodwait` now honours the FULL server-requested wait and
+    REJECTS (fail-closed → INCOMPLETE) any wait exceeding the permitted single-wait or the deadline — never
+    shortens-and-retries early.
+  - **§6 — production checkpoint-init safety.** Corrected migration 0012's unsupported "uncontaminated watermark"
+    assertion; added read-only `reconcile_catchup_checkpoint` (fail-closed `--gate`, `--json`) as the mandatory
+    pre-deploy reconciliation gate (DB evidence can't prove historical completeness — Telegram ids non-contiguous).
+  - **Renewed adversarial review → 3 confirmed fixed + re-verified:** (1, MEDIUM) `SignalUpdate` crash double-create →
+    `_record_update` now idempotent per `(provider, chat, message, edited)`; concurrent-race unique constraint is a
+    KNOWN_ISSUES follow-up (DARK consumer). (2, LOW) `--gate` fail-open on empty match → fails closed. (3, LOW)
+    genuineness proxy counted chat-refusal rows → uses `non_genuine=False` post-0011. One rejected (unreachable).
+  - Tests: catch-up matrix 48→64 (Scenarios A–E, FloodWait R2, reconciliation gate, adversarial-fix regressions).
+    Full backend suite **OK**. PR #497 DARK, auto-merge OFF; readiness still **NO-GO** (HIGH-2 DB recovery, Sponsor).
+
 - **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — HARDENED + R1 CORRECTIONS (PR #497, DARK, auto-merge OFF).**
   Resolves the readiness **HIGH-1 code** blocker: `WayondListener.catch_up` is now bounded, resumable and
   observable. No deploy, no migration applied to prod, no Telegram change, no watermark reset; flag OFF.
