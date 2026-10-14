@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - DB RECOVERY FOUNDATION FINAL CERTIFICATION (PR #498, DARK, HOLD).** PD accepted through
+  `915a872` (89/89); two bounded TEST-HARNESS fixes. **MEDIUM-A (non-vacuous):** the self-test hook did
+  `up ... || true`, so a silent startup failure could let `certify_cleanup.sh` pass cleanup for a
+  postmaster that never ran → the hook now REQUIRES a confirmed-RUNNING postmaster (pg_ctl status +
+  sysid==offline) and records `running=1`+sysid; `certify_cleanup.sh` gates on that evidence and adds a
+  negative (forced start-failure → `running=0`). **MEDIUM-B (cert cleanup safety):** `certify_cleanup.sh`'s
+  own EXIT trap raw-`rm`'d after an unverified stop → new shared `eph_safe_remove_root` (stop + verify
+  `pg_ctl status` before rm; leave + non-zero on unconfirmed shutdown) is used by the trap and tested
+  (failed-shutdown preserves the dir; safe retry removes it). **Re-certified 93/93** (64 recovery + 18
+  provisioner + 11 cleanup). Focused adversarial review ran. `certify.sh`/`lib.sh`/backup/verify/restore/
+  audit/`setup_isolated_cluster.sh` UNCHANGED. **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
 - **2026-10-14 - DB RECOVERY FOUNDATION R3 CLOSEOUT (PR #498, DARK, HOLD).** PD accepted the R3
   architecture (head `3bafb6d`, 80/80); two bounded harness-safety MEDIUMs. **MEDIUM-A:** the provisioner
   test harness tracked ephemeral roots in a shell var set inside a `$(mktroot)` **subshell**, so the
@@ -24,7 +36,7 @@
   `pg_ctl stop || true` then unconditional `rm -rf` → now **verifies the postmaster stopped before any
   rm**, else refuses + preserves data dir/stamp/state + exits non-zero (same protection in the
   failed-setup cleanup); new provisioner tests 17/18 (stop-failure via a shim → refuse+preserve; real
-  retry succeeds). **Re-certified 89/89** (64 recovery + 18 provisioner + 7 cleanup). Focused adversarial
+  retry succeeds). **Re-certified 93/93** (64 recovery + 18 provisioner + 11 cleanup). Focused adversarial
   review ran. `certify.sh`/`lib.sh`/backup/verify/restore/audit UNCHANGED. **Activation GO/NO-GO: NO-GO.**
   No prod/shared-cluster change.
 

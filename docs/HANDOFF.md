@@ -1,5 +1,38 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — DB Recovery Foundation FINAL CERTIFICATION (PR #498, DARK, HOLD)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-FINAL-CERT-2026-10-14
+Packet ID: DB_RECOVERY_FOUNDATION_CERTIFICATION_FINAL (parent: the foundation packet)
+Status: PASS (2 test-harness MEDIUMs corrected + re-certified 93/93 = 64 recovery + 18 provisioner + 11 cleanup; DARK; HOLD; NO-GO)
+Branch/PR: feat/db-recovery-foundation / PR #498 (continued; not merged; auto-merge OFF)
+PD accepted everything through commit 915a872 (89/89). Two bounded TEST-HARNESS fixes:
+MEDIUM-A (non-vacuous cleanup test): the certify_provisioner.sh self-test hook previously did
+  `up ... || true`, so a silent ephemeral-startup failure could let certify_cleanup.sh "pass" cleanup
+  for a postmaster that never ran. FIX: the hook now REQUIRES up() success + a confirmed-RUNNING
+  postmaster (pg_ctl status) at the expected private data dir + live sysid == offline pg_controldata
+  sysid, and records running=1 + sysid as positive startup evidence; on failure it records running=0
+  (never a fake success). certify_cleanup.sh REQUIRES running=1 + sysid before certifying the
+  stop/removal assertions (STARTED_OK gate), plus a NEGATIVE test that forces pg_ctl start to fail and
+  asserts running=0.
+MEDIUM-B (certification cleanup safety): certify_cleanup.sh's own EXIT trap did a raw `rm -rf "$SROOT"`
+  after an unverified stop. FIX: new shared eph_safe_remove_root (eph_tracking.sh) stops + VERIFIES
+  (pg_ctl status) a cluster stopped BEFORE any rm, LEAVES the data dir + returns non-zero on unconfirmed
+  shutdown; the trap (and eph_cleanup_tracked) now route through it. Tests: failed-shutdown (stop no-op
+  shim) PRESERVES the dir; safe retry removes it; main cluster unchanged throughout.
+Files: ops/recovery/tests/{eph_tracking.sh,certify_provisioner.sh,certify_cleanup.sh,CERTIFICATION_EVIDENCE.txt}
+  + docs. certify.sh / lib.sh / backup/verify/restore/audit + setup_isolated_cluster.sh UNCHANGED in FINAL.
+Certification: 93/93 PASS. Focused adversarial review ran (Workflow, 2 dimensions). Main cluster DB/role
+  counts verified unchanged; 0 ephemeral postmasters leaked after a full run. Evidence committed.
+Untested production characteristics: PG 15 on Linux (Docker unavailable -> PG 17 synthetic); off-host;
+  PITR; RESTORE_TESTED vs prod data. -> still BLOCKED.
+Rollback: additive; revert the branch commits. Nothing deployed.
+Recommended next: Sponsor authorizes off-host storage + FS fix -> PRODUCTION_BACKUP_ACTIVE path.
+```
+
 ## 2026-10-14 — DB Recovery Foundation R3 CLOSEOUT (PR #498, DARK, HOLD)
 
 ```
@@ -7,7 +40,7 @@ PM HANDOFF
 
 Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-R3-CLOSEOUT-2026-10-14
 Packet ID: DB_RECOVERY_FOUNDATION_R3_CLOSEOUT (parent: the foundation packet)
-Status: PASS (2 MEDIUM corrected + re-certified 89/89 = 64 recovery + 18 provisioner + 7 cleanup; DARK; HOLD; NO-GO)
+Status: PASS (2 MEDIUM corrected + re-certified 93/93 = 64 recovery + 18 provisioner + 11 cleanup; DARK; HOLD; NO-GO)
 Branch/PR: feat/db-recovery-foundation / PR #498 (continued; not merged; auto-merge OFF)
 PD accepted the R3 architecture at head 3bafb6d (80/80). Two bounded harness-safety MEDIUMs fixed:
 MEDIUM-A (harness cleanup tracking): certify_provisioner.sh called mktroot as R=$(mktroot) -- a SUBSHELL
@@ -29,7 +62,7 @@ Files: ops/recovery/tests/{eph_tracking.sh (new),certify_cleanup.sh (new),certif
   setup_isolated_cluster.sh,CERTIFICATION_EVIDENCE.txt}, docs/DB_RECOVERY_FOUNDATION.md,
   ops/recovery/README.md, docs/{STATUS,NEXT,HANDOFF,KNOWN_ISSUES}.md. certify.sh/lib.sh/backup/verify/
   restore/audit UNCHANGED (bounded CLOSEOUT).
-Certification: 89/89 PASS. Focused adversarial review ran (Workflow, 3 dimensions). Main cluster DB/role
+Certification: 93/93 PASS. Focused adversarial review ran (Workflow, 3 dimensions). Main cluster DB/role
   counts verified unchanged across the suite. Evidence committed. No static credential in Git.
 Untested production characteristics: PG 15 on Linux (Docker unavailable -> PG 17 synthetic); off-host;
   PITR; RESTORE_TESTED vs prod data. -> still BLOCKED.

@@ -19,7 +19,7 @@ One bounded next action: **progress the DB Recovery Foundation → then PD gover
 
 ## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK; R3)
 Addresses HIGH-2. Design + certified DARK tooling (`docs/DB_RECOVERY_FOUNDATION.md`, `ops/recovery/`, isolated cert
-**89/89** = 64 recovery + 18 provisioner + 7 cleanup, least-privilege role). **R3 correction (final bounded safety):** the
+**93/93** = 64 recovery + 18 provisioner + 11 cleanup, least-privilege role). **R3 correction (final bounded safety):** the
 privileged provisioner `tests/setup_isolated_cluster.sh` now `initdb`s its OWN dedicated ephemeral cluster (private
 socket, no TCP) instead of doing DDL against a shared cluster; setup AND teardown require the production id and act
 only on the stamped ephemeral dir they own; `tests/certify_provisioner.sh` (18 cases) certifies the trust

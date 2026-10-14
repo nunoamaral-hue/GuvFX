@@ -74,7 +74,7 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
 | `tests/attest_isolated.sh` | sourced guard: independent isolated-cluster attestation (no mutation) | n/a |
 | `tests/eph_tracking.sh` | sourced helper: subshell-safe (file-based) ephemeral-root tracking + cleanup | n/a |
 | `tests/certify_provisioner.sh` | privileged-provisioner trust-boundary certification (R3; 18 cases: setup/teardown symmetry, production-selection refusal, redirection neutralisation, verified-shutdown teardown, cleanup safety) | runs |
-| `tests/certify_cleanup.sh` | harness cleanup-tracking certification (R3 CLOSEOUT; 7 cases: tracking survives a subshell; the trap cleans an abnormal exit; main + unrelated dirs untouched) | runs |
+| `tests/certify_cleanup.sh` | harness cleanup-tracking certification (R3 CLOSEOUT; 11 cases: tracking survives a subshell; the trap cleans an abnormal exit; main + unrelated dirs untouched) | runs |
 | `tests/certify.sh` | isolated recovery backup/verify/restore/reconcile certification (64 cases), run **as the least-privilege role** after independent attestation | runs |
 
 ## Typical isolated use (dev/test)

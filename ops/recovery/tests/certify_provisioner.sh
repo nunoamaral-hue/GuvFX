@@ -47,16 +47,29 @@ refuses() { local desc="$1" exp="$2"; shift 2; local out
   if out="$("$@" 2>&1)"; then pbad "$desc (SHOULD have refused but succeeded)";
   else case "$out" in *"$exp"*) pok "$desc";; *) pbad "$desc (refused for WRONG reason: $(printf '%s' "$out" | grep -i refused | tail -1))";; esac; fi; }
 
-# SELF-TEST HOOK (R3 CLOSEOUT MEDIUM-A regression, used ONLY by certify_cleanup.sh): provision ONE
-# ephemeral cluster via the REAL mktroot (a `$(mktroot)` subshell) + up, record its root for the
-# caller, then abort WITHOUT tearing it down -- firing the EXIT trap. This exercises the production
-# trap's abnormal-exit cleanup: with the fix it removes the cluster; if the fix regresses (tracking
-# lost to the subshell) the trap is a no-op and the caller detects the leak. Not part of a normal run.
+# SELF-TEST HOOK (used ONLY by certify_cleanup.sh): provision ONE ephemeral cluster via the REAL
+# mktroot (a `$(mktroot)` subshell) + up, then abort WITHOUT tearing it down -- firing the EXIT trap --
+# so the caller can verify the production trap's abnormal-exit cleanup.
+# MEDIUM-A (final): startup failures are NO LONGER suppressed. We REQUIRE a confirmed-RUNNING postmaster
+# at the expected private data dir with a verifiable cluster identity, and record POSITIVE startup
+# evidence, BEFORE the intentional abort. If startup fails we record running=0 and exit distinctly --
+# never a fake success -- so certify_cleanup.sh cannot "pass" a cleanup for a postmaster that never ran.
 if [ "${GUVFX_PROVCERT_SELFTEST_ABORT:-0}" = "1" ]; then
-  RSELF="$(mktroot)"; up "$RSELF" >/dev/null 2>&1 || true
-  printf '%s\n' "$RSELF" > "${GUVFX_PROVCERT_SELFTEST_ROOTFILE:-/dev/null}"
-  note "SELFTEST: provisioned $RSELF then aborting (exit 1) to exercise the abnormal-exit cleanup trap"
-  exit 1
+  EV="${GUVFX_PROVCERT_SELFTEST_EVIDENCE:-/dev/null}"
+  RSELF="$(mktroot)"
+  if up "$RSELF" >/dev/null 2>&1 \
+     && [ -d "$RSELF/pgdata" ] \
+     && pg_ctl -D "$RSELF/pgdata" status >/dev/null 2>&1 \
+     && SELFSYS="$(sed -n 's/^sysid=//p' "$RSELF/.guvfx_ephemeral" | head -1)" && [ -n "$SELFSYS" ] \
+     && [ "$SELFSYS" = "$(pg_controldata "$RSELF/pgdata" 2>/dev/null | sed -n 's/.*system identifier: *//p' | head -1)" ]; then
+    { printf 'running=1\n'; printf 'root=%s\n' "$RSELF"; printf 'datadir=%s\n' "$RSELF/pgdata"; printf 'sysid=%s\n' "$SELFSYS"; } > "$EV"
+    printf '%s\n' "$RSELF" > "${GUVFX_PROVCERT_SELFTEST_ROOTFILE:-/dev/null}"
+    note "SELFTEST: provisioned + verified RUNNING postmaster at $RSELF (sysid=$SELFSYS); aborting (exit 1) to exercise the trap"
+    exit 1
+  fi
+  printf 'running=0\n' > "$EV"
+  note "SELFTEST: ephemeral startup could NOT be confirmed running -- recorded running=0 (no fake success); aborting"
+  exit 2
 fi
 
 echo; note "=== 1/2: verified disposable-cluster setup + teardown succeed ==="

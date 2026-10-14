@@ -29,24 +29,32 @@ export GUVFX_EPH_ROOTS_FILE
 # parent will read -- no per-subshell file is ever created.
 eph_track_root() { printf '%s\n' "$1" >> "$GUVFX_EPH_ROOTS_FILE"; }
 
-# Stop + remove every tracked ephemeral cluster. Fail-safe: a cluster that will not stop is LEFT in
-# place (not removed under a running postmaster). Removes only tracked absolute-path dirs; drops no
-# role/database. Clears the tracking file when done.
+# Safely retire ONE ephemeral root (the shared cleanup-safety contract): stop its postmaster (waited),
+# VERIFY it stopped (`pg_ctl status` non-zero = not running), and remove the dir ONLY if confirmed
+# stopped; otherwise LEAVE the data dir in place (never rm under a running postmaster) and return
+# non-zero so a caller can treat an uncertain shutdown as a failure and preserve evidence. Acts only
+# on an absolute `.../pgdata`-bearing tracked path; drops no role/database; touches no other cluster.
+eph_safe_remove_root() {
+  local r="$1"
+  [ -n "$r" ] || return 0
+  case "$r" in /*) : ;; *) return 0 ;; esac
+  if [ -d "$r/pgdata" ]; then
+    pg_ctl -D "$r/pgdata" -w -m immediate stop >/dev/null 2>&1 || true
+    if pg_ctl -D "$r/pgdata" status >/dev/null 2>&1; then
+      printf '%s [eph_tracking][WARN] postmaster at %s did not stop -- leaving data dir in place (safe); evidence preserved\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$r/pgdata" >&2
+      return 1
+    fi
+  fi
+  rm -rf "$r" 2>/dev/null || true
+  return 0
+}
+
+# Stop + remove every tracked ephemeral cluster via the safe contract above. A cluster that will not
+# stop is LEFT in place. Clears the tracking file when done.
 eph_cleanup_tracked() {
   local r f="${GUVFX_EPH_ROOTS_FILE:-}"
   [ -n "$f" ] && [ -f "$f" ] || return 0
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    case "$r" in /*) : ;; *) continue ;; esac   # only absolute paths we recorded
-    if [ -d "$r/pgdata" ]; then
-      pg_ctl -D "$r/pgdata" -w -m immediate stop >/dev/null 2>&1 || true
-      if pg_ctl -D "$r/pgdata" status >/dev/null 2>&1; then
-        printf '%s [eph_tracking][WARN] postmaster at %s did not stop -- leaving it in place (safe leak)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$r/pgdata" >&2
-        continue
-      fi
-    fi
-    rm -rf "$r" 2>/dev/null || true
-  done < "$f"
+  while IFS= read -r r; do [ -n "$r" ] && eph_safe_remove_root "$r" || true; done < "$f"
   rm -f "$f" 2>/dev/null || true
   return 0
 }

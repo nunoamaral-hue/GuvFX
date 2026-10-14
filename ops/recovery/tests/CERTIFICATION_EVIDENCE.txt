@@ -1,9 +1,8 @@
-=== GuvFX Production Database Recovery Foundation -- ISOLATED CERTIFICATION EVIDENCE (R3 CLOSEOUT) ===
-Captured (UTC): 2026-10-14T18:00:04Z
-Git commit (pre-commit of this run): 3bafb6d
-Harnesses: certify_cleanup.sh (7, MEDIUM-A: subshell-safe tracking + end-to-end abnormal-exit trap)
-  + certify_provisioner.sh (18, incl. MEDIUM-B 17/18 verified-shutdown teardown) + certify.sh (64, recovery)
-  + setup_isolated_cluster.sh (ephemeral cluster) + eph_tracking.sh + attest_isolated.sh
+=== GuvFX Production Database Recovery Foundation -- ISOLATED CERTIFICATION EVIDENCE (FINAL) ===
+Captured (UTC): 2026-10-14T18:36:24Z
+Git commit (pre-commit of this run): 915a872
+Harnesses: certify_cleanup.sh (11) + certify_provisioner.sh (18) + certify.sh (64, recovery)
+  + setup_isolated_cluster.sh (ephemeral cluster) + eph_tracking.sh (parent-exported tracking + safe-remove contract) + attest_isolated.sh
 
 --- Environment ---
 PostgreSQL: PostgreSQL 17.6 (Homebrew) on aarch64-apple-darwin24.4.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.3), 64-bit
@@ -12,18 +11,19 @@ Shell: GNU bash, version 5.3.9(1)-release (aarch64-apple-darwin25.1.0)
 GnuPG: gpg (GnuPG) 2.5.24
 initdb/pg_ctl/pg_controldata: PostgreSQL 17.6 (Homebrew)
 
---- R3 CLOSEOUT fixes ---
-MEDIUM-A (harness cleanup tracking): the ephemeral-root tracking file is established + EXPORTED in
-  the PARENT at source time (tests/eph_tracking.sh), so `R=$(mktroot)` command-substitution
-  subshells INHERIT it and the parent EXIT/INT/TERM trap sees every root on an abnormal exit.
-  (The earlier revision created it lazily inside the subshell -> the trap was a no-op and leaked
-  a cluster + one tracking file per call.) Proven NON-VACUOUS: with the broken helper restored,
-  certify_cleanup.sh FAILS points 2/3 + the subshell-persistence check; with the fix all 7 PASS.
-MEDIUM-B (teardown stop-failure): --down and the failed-setup cleanup VERIFY the postmaster is
-  stopped (pg_ctl status) BEFORE any rm; if unconfirmed they refuse, preserve the data dir +
-  ownership stamp + state, and exit non-zero (safe operator retry).
+--- FINAL cert-harness fixes ---
+MEDIUM-A (non-vacuous cleanup test): the self-test hook no longer suppresses startup; it REQUIRES a
+  confirmed-RUNNING postmaster (pg_ctl status) at the expected private data dir with live sysid ==
+  offline pg_controldata sysid, and records running=1 + sysid BEFORE the intentional abort. On
+  failure it records running=0 (never a fake success). certify_cleanup.sh REQUIRES running=1 +
+  sysid before certifying the stop/removal assertions; a negative test forces a start failure and
+  asserts running=0.
+MEDIUM-B (certification cleanup safety): eph_safe_remove_root stops + VERIFIES (pg_ctl status) a
+  cluster stopped BEFORE any rm, LEAVES the data dir + returns non-zero on unconfirmed shutdown;
+  certify_cleanup.sh own EXIT trap uses it (no raw rm of a cluster dir). Tests: failed-shutdown
+  PRESERVES the dir; safe retry removes it; main cluster unchanged throughout.
 
---- MEDIUM-A: harness cleanup-tracking certification ---
+--- MEDIUM-A/B: harness cleanup-tracking certification ---
 
 [cleanup-certify] === static bind: certify_provisioner.sh actually uses the shared tracking helper ===
   PASS  certify_provisioner.sh sources eph_tracking.sh and wires track + trap (test binds to real harness)
@@ -31,20 +31,29 @@ MEDIUM-B (teardown stop-failure): --down and the failed-setup cleanup VERIFY the
 [cleanup-certify] === subshell persistence: a root tracked inside a $(...) subshell is visible to the parent ===
   PASS  root tracked from a command-substitution subshell IS visible to the parent
 
-[cleanup-certify] === END-TO-END: real certify_provisioner.sh aborts mid-suite; its trap must clean up ===
-  PASS  1. the harness recorded the ephemeral root it created (/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_provcert.JJnNZA)
-  PASS  2. the owned ephemeral postmaster was stopped by the abnormal-exit trap
-  PASS  3. the temporary ephemeral directory was removed by the abnormal-exit trap
-  PASS  4. the main PostgreSQL cluster is unchanged (dbs=7 roles=19)
-  PASS  5. unrelated directory + sentinel untouched
+[cleanup-certify] === END-TO-END: real certify_provisioner.sh provisions + verifies RUNNING, aborts, trap cleans up ===
+  PASS  positive startup evidence: a RUNNING postmaster was confirmed before abort (running=1 + sysid)
+  PASS  the owned ephemeral postmaster was stopped by the abnormal-exit trap
+  PASS  the temporary ephemeral directory was removed by the abnormal-exit trap
+  PASS  the main PostgreSQL cluster is unchanged (dbs=7 roles=19)
+  PASS  unrelated directory + sentinel untouched
 
-[cleanup-certify] ================= CLEANUP CERTIFY SUMMARY: PASS=7 FAIL=0 =================
+[cleanup-certify] === MEDIUM-A negative: a FAILED ephemeral startup must NOT record a fake success ===
+  PASS  forced-startup-failure records running=0 (no fake success for a postmaster that never started)
+
+[cleanup-certify] === MEDIUM-B: cleanup contract -- a cluster whose shutdown is unconfirmed is PRESERVED, retry succeeds ===
+2026-10-14T18:35:45Z [eph_tracking][WARN] postmaster at /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_mb_eph.Vtx2cg/pgdata did not stop -- leaving data dir in place (safe); evidence preserved
+  PASS  failed shutdown PRESERVES the data directory (not deleted under a running postmaster)
+  PASS  safe retry (real shutdown) stops + removes the cluster
+  PASS  main cluster unchanged throughout the cleanup-contract tests (dbs=7 roles=19)
+
+[cleanup-certify] ================= CLEANUP CERTIFY SUMMARY: PASS=11 FAIL=0 =================
 [cleanup-certify] CLEANUP CERTIFICATION PASSED
 
---- Provisioner trust-boundary certification (incl. MEDIUM-B tests 17/18) ---
+--- Provisioner trust-boundary certification ---
 
 [prov-certify] === 1/2: verified disposable-cluster setup + teardown succeed ===
-  PASS  verified disposable-cluster setup succeeds (fresh sysid=7696584692385301099 != main)
+  PASS  verified disposable-cluster setup succeeds (fresh sysid=7696594049098732030 != main)
   PASS  verified disposable-cluster teardown succeeds (data dir removed)
 
 [prov-certify] === 3: --teardown with NO production identifier is refused ===
@@ -93,9 +102,9 @@ MEDIUM-B (teardown stop-failure): --down and the failed-setup cleanup VERIFY the
 [prov-certify] PROVISIONER CERTIFICATION PASSED
 
 --- Recovery certification (64) on an ephemeral cluster ---
-[certify] independent isolation OK: attested+marked cluster sysid=7696584790976696079 marker=guvfx_recovery_isolated_ok role=guvfx_recov_tester (non-superuser)
-[certify] scratch src=guvfx_recov_src_81709_1792000791 work=/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.4fa2Xw
-[certify] seeded synthetic data into guvfx_recov_src_81709_1792000791
+[certify] independent isolation OK: attested+marked cluster sysid=7696594149544267435 marker=guvfx_recovery_isolated_ok role=guvfx_recov_tester (non-superuser)
+[certify] scratch src=guvfx_recov_src_93897_1792002970 work=/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.VpgLeu
+[certify] seeded synthetic data into guvfx_recov_src_93897_1792002970
 
 [certify] === Gate F: unencrypted backup -> verify -> restore -> reconcile ===
   PASS  backup dry-run refuses to act without --execute
@@ -104,9 +113,9 @@ MEDIUM-B (teardown stop-failure): --down and the failed-setup cleanup VERIFY the
   PASS  verify passes on a good backup
   PASS  restore dry-run does not populate the target
   PASS  restore --execute into the fresh empty target
-  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt_81709_1792000791
-  PASS  referential integrity: no orphan trades (guvfx_recov_tgt_81709_1792000791)
-  PASS  immutable audit md5 match (guvfx_recov_tgt_81709_1792000791)
+  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt_93897_1792002970
+  PASS  referential integrity: no orphan trades (guvfx_recov_tgt_93897_1792002970)
+  PASS  immutable audit md5 match (guvfx_recov_tgt_93897_1792002970)
 
 [certify] === Gate F: ENCRYPTED streaming round-trip (no plaintext on disk) ===
   PASS  encrypted backup --execute produces a .gpg artifact
@@ -114,9 +123,9 @@ MEDIUM-B (teardown stop-failure): --down and the failed-setup cleanup VERIFY the
   PASS  HIGH-3: NO plaintext .dump exists for the encrypted backup (only .dump.gpg)
   PASS  verify decrypts + reads TOC of the encrypted backup
   PASS  restore the ENCRYPTED backup into a fresh empty target
-  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt2_81709_1792000791
-  PASS  referential integrity: no orphan trades (guvfx_recov_tgt2_81709_1792000791)
-  PASS  immutable audit md5 match (guvfx_recov_tgt2_81709_1792000791)
+  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt2_93897_1792002970
+  PASS  referential integrity: no orphan trades (guvfx_recov_tgt2_93897_1792002970)
+  PASS  immutable audit md5 match (guvfx_recov_tgt2_93897_1792002970)
   PASS  verify FAILS on wrong passphrase
 
 [certify] === HIGH-1: INDEPENDENT isolation attestation negatives (precise refusal reason) ===
@@ -184,19 +193,19 @@ MEDIUM-B (teardown stop-failure): --down and the failed-setup cleanup VERIFY the
 [certify] === audit report (informational) ===
 LABEL                        CREATED_UTC            CLASS       ENCRYPTED BYTES        ARTIFACT
 -----                        -----------            -----       --------- -----        --------
-ceilok                     2026-10-14T18:00:00Z  test       false     38458       guvfx_ceilok_20261014T180000Z.dump (present=ok; integrity=VERIFIED)
-certify                    2026-10-14T17:59:52Z  test       false     38458       guvfx_certify_20261014T175952Z.dump (present=ok; integrity=VERIFIED)
-enc                        2026-10-14T17:59:53Z  test       true      11455       guvfx_enc_20261014T175953Z.dump.gpg (present=ok; integrity=VERIFIED)
+ceilok                     2026-10-14T18:36:19Z  test       false     38456       guvfx_ceilok_20261014T183619Z.dump (present=ok; integrity=VERIFIED)
+certify                    2026-10-14T18:36:11Z  test       false     38456       guvfx_certify_20261014T183611Z.dump (present=ok; integrity=VERIFIED)
+enc                        2026-10-14T18:36:13Z  test       true      11458       guvfx_enc_20261014T183612Z.dump.gpg (present=ok; integrity=VERIFIED)
 
-2026-10-14T18:00:04Z [recovery] 3 recovery point(s) found.
-2026-10-14T18:00:04Z [recovery] RECOVERY_POINT_RESTORE_TESTED is NOT established by this tool -- it requires an actual isolated restore (ops/recovery/restore.sh into a fresh empty DB).
-2026-10-14T18:00:04Z [recovery] audit issues: 0
+2026-10-14T18:36:23Z [recovery] 3 recovery point(s) found.
+2026-10-14T18:36:23Z [recovery] RECOVERY_POINT_RESTORE_TESTED is NOT established by this tool -- it requires an actual isolated restore (ops/recovery/restore.sh into a fresh empty DB).
+2026-10-14T18:36:23Z [recovery] audit issues: 0
 
 [certify] ================= CERTIFY SUMMARY: PASS=64 FAIL=0 =================
 [certify] CERTIFICATION PASSED
 
 --- Combined ---
-TOTAL: 7 (cleanup) + 18 (provisioner) + 64 (recovery) = 89 PASS, 0 FAIL.
+TOTAL: 11 (cleanup) + 18 (provisioner) + 64 (recovery) = 93 PASS, 0 FAIL.
 
 --- Coverage NOT established here (stated limitations) ---
   - PG 15 / Linux parity: NOT run (Docker unavailable; local PG 17 synthetic, least-privilege role). NOT production parity.
