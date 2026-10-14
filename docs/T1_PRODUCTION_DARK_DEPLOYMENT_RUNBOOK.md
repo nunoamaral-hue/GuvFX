@@ -39,10 +39,14 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 
 ## B. Backup & recovery (design CERTIFIED; production activation still BLOCKED)
 - **Recovery foundation:** design + certified DARK tooling now exist — `docs/DB_RECOVERY_FOUNDATION.md`
-  and `ops/recovery/` (backup/verify/restore/audit; isolated certification 41/41). The recovery
-  *design* is certified in isolation, but **`PRODUCTION_BACKUP_ACTIVE` is still BLOCKED**: no off-host
-  storage, no automated schedule, and the root FS is **96% full (9.2 GB free)** — a hard blocker for an
-  on-host dump/restore. Resolve those (Sponsor-gated) before relying on this for a real deployment.
+  and `ops/recovery/` (backup/verify/restore/audit; isolated certification 64/64, least-privilege
+  role). The recovery *design* is certified in isolation, but **`PRODUCTION_BACKUP_ACTIVE` is still
+  BLOCKED**: no off-host storage, no automated schedule, and the root FS is **96% full (9.2 GB free)**
+  — a hard blocker for an on-host dump/restore. Resolve those (Sponsor-gated) before relying on this
+  for a real deployment. **Recovery-readiness gate:** validate recovery points with
+  `ops/recovery/audit_report.sh --dir <dir> --gate-usable` (the usable-recovery gate: inventory **plus**
+  mandatory per-artifact integrity verification). Plain `--gate` is inventory-only and must NOT be
+  treated as proof a recovery point is restorable.
 - **No PITR** (`archive_mode=off`, `wal_level=replica`) and **no automated backup** on prod (verified
   2026-10-14). The only live capability is an on-demand logical `pg_dump` (pg_dump 15.15 in
   `guvfx-postgres`; DB ≈ 2.84 GB, ~79% of it the `core_auditevent` telemetry table).

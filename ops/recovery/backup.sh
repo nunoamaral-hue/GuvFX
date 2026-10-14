@@ -66,24 +66,46 @@ rec_log "preflight: server=$srv_ver pg_dump=$dump_ver"
 
 db_bytes="$(rec_psql_scalar "select pg_database_size(current_database())")" || rec_die "cannot read database size"
 free_bytes="$(rec_free_bytes "$OUT_DIR" 2>/dev/null || rec_free_bytes "$(dirname "$OUT_DIR")")"
-# CONSERVATIVE capacity bound (MEDIUM-2): do NOT depend on an assumed compression ratio. Budget for
-# a worst-case (poorly compressible) custom-format dump ~= the on-disk DB size + headroom, AND never
-# let the backup push the filesystem below a reserved free FLOOR -- defends the already-96%-full prod
-# FS from being driven toward 100% (which would halt Postgres writes). Streaming means only ONE
+# Capacity handling (MEDIUM-2). Two layers, because a dump size cannot be known in advance and must
+# NOT be presumed from a compression ratio:
+#  (1) a CONSERVATIVE ESTIMATE for the pre-flight sanity refusal -- it is an estimate (DB on-disk
+#      size + 100 MiB headroom), explicitly NOT a guaranteed maximum (an incompressible or
+#      concurrently-growing DB can exceed it); and
+#  (2) an ENFORCEABLE output-size CEILING on the single artifact FILE, applied during the run via
+#      `ulimit -f` (an rlimit on the size of any file the process writes), so the artifact file cannot
+#      grow past `free - reserved_floor` -- i.e. this backup cannot by itself drive the filesystem
+#      below the reserved free FLOOR. If the dump would exceed it, the write fails (SIGXFSZ, like
+#      ENOSPC); the partial is removed by the trap and NO metadata is written -- an incomplete
+#      artifact is never certified. (It bounds the artifact file; it is not a quota over other files.)
+# This defends the already-96%-full prod FS without trusting the estimate. Streaming means only ONE
 # artifact (ciphertext or plaintext) is ever on disk, so there is no plaintext+ciphertext peak.
 reserved_floor="${GUVFX_BACKUP_MIN_FREE_BYTES:-2147483648}"   # keep >= 2 GiB free by default
 # Validate the override is a non-negative integer -- a non-integer would make the `[ -lt ]` test
 # error to a non-zero status and SKIP the floor check (fail-open). Refuse instead. Same for free_bytes.
 case "$reserved_floor" in ''|*[!0-9]*) rec_die "GUVFX_BACKUP_MIN_FREE_BYTES='$reserved_floor' is not a non-negative integer. Fail-closed." ;; esac
 case "${free_bytes:-}" in ''|*[!0-9]*) rec_die "could not determine free space at $OUT_DIR (df gave '${free_bytes:-}'). Fail-closed." ;; esac
-need_bytes=$(( db_bytes + 104857600 ))
-rec_log "preflight: db_size=$db_bytes B, worst_case_need>=$need_bytes B, reserved_floor=$reserved_floor B, free=$free_bytes B at $OUT_DIR"
-if [ "$free_bytes" -lt "$need_bytes" ]; then
-  rec_die "preflight: insufficient free space (worst-case need >= $need_bytes B, have $free_bytes B). Fail-closed."
+est_bytes=$(( db_bytes + 104857600 ))   # CONSERVATIVE ESTIMATE for the sanity refusal (NOT a guaranteed max)
+rec_log "preflight: db_size=$db_bytes B, conservative_estimate(not a max)=$est_bytes B, reserved_floor=$reserved_floor B, free=$free_bytes B at $OUT_DIR"
+if [ "$free_bytes" -lt "$est_bytes" ]; then
+  rec_die "preflight: insufficient free space (conservative estimate >= $est_bytes B, have $free_bytes B). Fail-closed."
 fi
-if [ "$(( free_bytes - need_bytes ))" -lt "$reserved_floor" ]; then
-  rec_die "preflight: backup would leave < reserved floor ($reserved_floor B) free -- refusing to risk filling the filesystem. Set GUVFX_BACKUP_MIN_FREE_BYTES to override deliberately. Fail-closed."
+if [ "$(( free_bytes - est_bytes ))" -lt "$reserved_floor" ]; then
+  rec_die "preflight: backup's estimated size would leave < reserved floor ($reserved_floor B) free -- refusing to risk filling the filesystem. Set GUVFX_BACKUP_MIN_FREE_BYTES to override deliberately. Fail-closed."
 fi
+# ENFORCEABLE output ceiling (bytes): the artifact may never consume the reserved floor. Optionally
+# capped lower by GUVFX_BACKUP_MAX_ARTIFACT_BYTES (explicit operator quota). Converted to 512-byte
+# blocks for `ulimit -f`. This is a HARD runtime bound, unlike the estimate above.
+ceiling_bytes=$(( free_bytes - reserved_floor ))
+if [ -n "${GUVFX_BACKUP_MAX_ARTIFACT_BYTES:-}" ]; then
+  case "$GUVFX_BACKUP_MAX_ARTIFACT_BYTES" in ''|*[!0-9]*) rec_die "GUVFX_BACKUP_MAX_ARTIFACT_BYTES='$GUVFX_BACKUP_MAX_ARTIFACT_BYTES' is not a non-negative integer. Fail-closed." ;; esac
+  [ "$GUVFX_BACKUP_MAX_ARTIFACT_BYTES" -lt "$ceiling_bytes" ] && ceiling_bytes="$GUVFX_BACKUP_MAX_ARTIFACT_BYTES"
+fi
+[ "$ceiling_bytes" -gt 0 ] || rec_die "computed enforceable output ceiling <= 0 B -- insufficient headroom above the reserved floor. Fail-closed."
+# bash's `ulimit -f` unit is 1024-byte blocks (POSIX sh would be 512; this script runs under bash via
+# its shebang). Dividing by 1024 (floor) keeps the enforced ceiling AT OR BELOW ceiling_bytes, so it
+# never exceeds the intended bound. (A 512 divisor would set a 2x-too-large limit -- R2 review HIGH.)
+ceiling_blocks=$(( ceiling_bytes / 1024 ))
+[ "$ceiling_blocks" -gt 0 ] || rec_die "enforceable output ceiling < 1024 B -- refusing. Fail-closed."
 
 # Encryption policy: production-class backups MUST be encrypted.
 pp_src=""; if rec_passphrase_source >/dev/null 2>&1; then pp_src="$(rec_passphrase_source)"; fi
@@ -114,6 +136,7 @@ if [ "$EXECUTE" = "0" ]; then
   else
     rec_log "  plaintext artifact (pg_dump -Fc; non-production, --no-encrypt): $final"
   fi
+  rec_log "  enforceable output ceiling (ulimit -f): $ceiling_bytes B ($ceiling_blocks x 512B blocks) -- a larger dump fails safely (no partial certified)"
   rec_log "  metadata (written LAST, only after integrity check + atomic finalize): $meta"
   rec_log "Preflight PASSED. Re-run with --execute to create the backup."
   exit 0
@@ -130,8 +153,13 @@ if [ "$NO_ENCRYPT" = "0" ]; then
   # Feed the passphrase on fd 3 (NEVER argv): file -> cat FILE; env -> printf (bash builtin, not
   # visible in ps). pg_dump streams on gpg's stdin so plaintext is NEVER written to disk (HIGH-3).
   if [ "$pp_src" = "file" ]; then feed() { cat "$GUVFX_BACKUP_PASSPHRASE_FILE"; }; else feed() { printf '%s' "$GUVFX_BACKUP_PASSPHRASE"; }; fi
-  rec_log "streaming encrypted backup: pg_dump -Fc | gpg AES256 -> temp (no plaintext on disk)"
-  pg_dump -Fc -Z 6 | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 -o "$PARTIAL" 3< <(feed)
+  rec_log "streaming encrypted backup: pg_dump -Fc | gpg AES256 -> temp (no plaintext on disk; output ceiling ${ceiling_bytes} B)"
+  # `ulimit -f` in a subshell bounds the ciphertext artifact gpg writes: if the dump would exceed the
+  # ceiling, gpg dies on SIGXFSZ (ENOSPC-equivalent), the pipeline fails, and the partial is removed
+  # by the trap below with NO metadata written. pg_dump writes to the PIPE (not size-limited); gpg
+  # writes the regular file (limited). Fail-closed.
+  ( ulimit -f "$ceiling_blocks"; pg_dump -Fc -Z 6 | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 -o "$PARTIAL" 3< <(feed) ) \
+    || rec_die "encrypted backup FAILED or exceeded the enforceable output ceiling (${ceiling_bytes} B; reserved floor protected) -- partial removed, no metadata. Fail-closed."
   # integrity-before-finalize: a FULL decrypt to STDOUT -> /dev/null (well-formed, not truncated,
   # MDC intact, passphrase correct) -- no plaintext file on disk. (gpg's '-o /dev/null' is unusable
   # because gpg writes a <output>.part temp; decrypting to stdout avoids that.) Failure -> not
@@ -140,8 +168,11 @@ if [ "$NO_ENCRYPT" = "0" ]; then
     || rec_die "post-encryption integrity check FAILED (decrypt) -- not finalizing. Fail-closed."
   enc="true"
 else
-  rec_log "backup (UNENCRYPTED, non-production): pg_dump -Fc -> temp"
-  pg_dump -Fc -Z 6 -f "$PARTIAL"
+  rec_log "backup (UNENCRYPTED, non-production): pg_dump -Fc -> temp (output ceiling ${ceiling_bytes} B)"
+  # Same enforceable ceiling: pg_dump writes the regular file, so a dump exceeding the ceiling dies
+  # on SIGXFSZ, the partial is removed by the trap, and no metadata is written. Fail-closed.
+  ( ulimit -f "$ceiling_blocks"; pg_dump -Fc -Z 6 -f "$PARTIAL" ) \
+    || rec_die "unencrypted backup FAILED or exceeded the enforceable output ceiling (${ceiling_bytes} B) -- partial removed, no metadata. Fail-closed."
   pg_restore --list "$PARTIAL" >/dev/null 2>&1 || rec_die "post-dump integrity check FAILED (unreadable TOC) -- not finalizing. Fail-closed."
 fi
 

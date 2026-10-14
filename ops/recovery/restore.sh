@@ -2,9 +2,13 @@
 # GuvFX recovery tooling — restore into an ISOLATED target (DARK; dry-run by default).
 #
 # Restores a verified backup artifact into a NON-PRODUCTION target database. A restore into a
-# production target is refused CATEGORICALLY; a non-production target is permitted ONLY when the
-# live cluster matches the attested isolated cluster (authoritative identity, lib.sh). The artifact
-# is verified (verify.sh) before any restore, and the restore is ATOMIC (--single-transaction).
+# production target is refused CATEGORICALLY. A non-production restore is permitted ONLY when BOTH
+# (a) the live CLUSTER matches the attested isolated cluster + carries the operator-planted
+# isolation marker (cluster authority, lib.sh rec_require_isolated_target), AND (b) the specific
+# target DATABASE is independently authorized: explicitly allowlisted, owned by a least-privilege
+# non-superuser role, and not an admin/template/production database (rec_require_authorized_target_db).
+# Cluster isolation does NOT by itself authorize every database on the cluster. The artifact is
+# verified (verify.sh) before any restore, and the restore is ATOMIC (--single-transaction).
 #
 # CLEAN-TARGET CONTRACT (HIGH-2): the target MUST be a freshly-created, EMPTY database. A non-empty
 # target is refused with NO override -- there is no --force/--clean (which would leave unrelated
@@ -42,7 +46,8 @@ export REC_PROD_ACK
 rec_require_cmd pg_restore psql awk
 
 cls="$(rec_target_class)"
-rec_guard_mutation "restore" restore   # categorically refuses a production target
+rec_guard_mutation "restore" restore   # CLUSTER authority: categorically refuses a production target
+rec_require_authorized_target_db "restore"   # DATABASE authority (HIGH-2): allowlisted+owned+non-admin
 
 # Verify the artifact BEFORE touching the target (fail-closed if corrupt/unreadable).
 rec_log "verifying artifact before restore ..."
@@ -75,9 +80,13 @@ if [ "$EXECUTE" = "0" ]; then
   exit 0
 fi
 
-# Re-assert the target is EMPTY immediately before the atomic restore (nothing should have
-# populated it since the earlier check; this tightens the clean-target guarantee). Fail closed.
-rec_target_is_empty || rec_die "target became NON-EMPTY before restore -- aborting (clean-target contract). Fail-closed."
+# Re-assert BOTH authorizations immediately before the atomic restore, to detect a target that
+# changed between preflight and operation (HIGH-2 / §6-H): re-verify the connected database is still
+# the allowlisted/owned disposable target (this rec_die's with its own precise reason if not), and
+# that an unrelated writer has not populated it since the earlier check. Each uses a fresh connection,
+# so a concurrent mutation is caught here. Fail closed.
+rec_require_authorized_target_db "restore"
+rec_target_is_empty || rec_die "target became NON-EMPTY before restore -- aborting (clean-target contract; an unrelated writer may have populated it). Fail-closed."
 rec_log "executing pg_restore (atomic --single-transaction) into $(rec_dsn_summary) ..."
 if [ "$encrypted" = "true" ]; then
   # STREAM decrypt -> pg_restore so the decrypted plaintext is NEVER written to disk (no temp). gpg

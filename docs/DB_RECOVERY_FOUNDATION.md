@@ -6,8 +6,10 @@ was performed.** Production inspection was strictly READ-ONLY. All tooling is DA
 by default, fail-closed, and permits a non-production mutation ONLY when production is not matched,
 a positive operator-planted isolation marker DB is present, and the live cluster's
 `system_identifier` matches the operator-attested isolated cluster (authoritative identity, not a
-caller label — and not `system_identifier` alone, which a physical clone shares); production is
-refused.
+caller label — and not `system_identifier` alone, which a physical clone shares). A destructive
+**restore** additionally requires the specific target **database** to be independently authorized
+(explicit allowlist, non-admin/non-production, owned by a least-privilege non-superuser role) and
+verified empty — cluster isolation alone does not authorize it. Production is refused.
 
 > **GO / NO-GO for operational activation: NO-GO.** The recovery *design* is certified in
 > isolation, but **no production recovery capability is active**: there is no off-host backup, no
@@ -135,7 +137,7 @@ required — PITR. Sponsor acceptance of any residual data-loss window is **not*
   (timestamp, server/dump version, WAL LSN, sha256, bytes, git SHA, class) are created **owner-only
   (0600)**. Labels are validated (`[A-Za-z0-9_-]`), and the tool refuses to **overwrite** an existing
   recovery point. Integrity is `sha256` + decrypt + `pg_restore --list` TOC (verify.sh).
-- **Authoritative target identity (HIGH-1/HIGH-4) — NOT an operator label, NOT `system_identifier`
+- **Authoritative target identity — CLUSTER scope (HIGH-1/HIGH-4) — NOT an operator label, NOT `system_identifier`
   alone:** a non-production mutation is permitted ONLY when, in order, (1) the live cluster's
   `system_identifier` / database do **not** match the production denylist
   (`GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` / `_DB`) — a deny wins first; (2) a **positive isolation
@@ -152,25 +154,57 @@ required — PITR. Sponsor acceptance of any residual data-loss window is **not*
   unverifiable identity or an absent marker **fails closed**. Restore into production is refused
   **categorically**; a production *backup* additionally needs the explicit **double-gate** (never set
   here).
+- **Restore-target authority — DATABASE scope (R2 HIGH-2) — cluster isolation is necessary, NOT
+  sufficient:** a valid cluster marker proves the *cluster* is isolated; it does not authorize
+  destroying *every* database on it (a cluster may hold application DBs beside scratch ones). So
+  `restore.sh` additionally requires, via `rec_require_authorized_target_db` (before and again
+  immediately before the atomic restore): (a) `PGDATABASE` set and `current_database()` == `PGDATABASE`
+  (no silent redirection); (b) the target in an **explicit exact allowlist**
+  (`GUVFX_RECOVERY_ALLOWED_TARGET_DB`) — a class label is *not* authorization; (c) target **not** an
+  admin/template DB (`postgres`/`template0|1`/common cloud-admin names) and **not**
+  `GUVFX_RECOVERY_PRODUCTION_DB`; (d) a **least-privilege, non-superuser** connecting role that **owns**
+  the target (a superuser has implicit rights over every DB → refused). A verified-empty DB that is
+  not *also* positively authorized is refused. Unknown/unverified ⇒ fail closed.
+- **Independent certification-harness isolation (R2 HIGH-1) — the destructive harness cannot
+  manufacture its own isolation evidence:** certification isolation is provisioned **out-of-band** by a
+  privileged operator (`tests/setup_isolated_cluster.sh`): a least-privilege **non-superuser** role and
+  a **pre-existing** marker DB owned by the privileged role. The destructive harness
+  (`tests/certify.sh`) then connects **as that non-superuser role** and calls
+  `attest_independent_test_cluster` (`tests/attest_isolated.sh`) **before any mutation**: it requires a
+  **mandatory** production denylist, an operator-attested isolated cluster id that **equals** the live
+  `system_identifier` (never derived from the connection), the **pre-existing marker it did not
+  create**, a non-superuser role, and an explicit loopback `PGHOST`; **localhost is not proof**. The
+  harness never creates the marker or derives the authorized id, and cleanup drops **only databases it
+  owns** (never the operator marker or any unrelated DB).
 - **Clean-target restore (HIGH-2):** restore goes ONLY into a freshly-created **empty** database
-  (verified empty immediately before the atomic `--single-transaction` restore). There is **no
-  `--force`/`--clean`** (which would leave unrelated pre-existing objects, so the result would not be
-  attributable to one backup). Re-restore = drop + recreate the target (explicit operator lifecycle).
-- **Capacity (MEDIUM-2):** preflight does not rely on an assumed compression ratio — it budgets a
-  worst-case dump ~= the DB size and refuses if the backup would push the FS below a reserved free
-  **floor** (`GUVFX_BACKUP_MIN_FREE_BYTES`, default 2 GiB), defending the 96%-full prod FS. A refusal
-  leaves no artifact/metadata. Streaming means only one artifact is ever on disk (no plaintext+
-  ciphertext peak).
+  (verified empty immediately before the atomic `--single-transaction` restore, which also detects a
+  writer that populated it between preflight and execution). There is **no `--force`/`--clean`** (which
+  would leave unrelated pre-existing objects, so the result would not be attributable to one backup).
+  Re-restore = drop + recreate the target (explicit operator lifecycle).
+- **Capacity (MEDIUM-2 + R2 §6) — estimate for sanity, `ulimit` for enforcement:** the preflight
+  figure (DB size + 100 MiB) is a **conservative ESTIMATE, explicitly not a guaranteed maximum** (an
+  incompressible or concurrently-growing DB can exceed it); it does not rely on a compression ratio.
+  Enforcement is a hard runtime **output ceiling** applied with `ulimit -f` (512-byte blocks) set to
+  `free − reserved_floor` (optionally capped lower by `GUVFX_BACKUP_MAX_ARTIFACT_BYTES`): if the dump
+  would drive the FS below the reserved **floor** (`GUVFX_BACKUP_MIN_FREE_BYTES`, default 2 GiB,
+  defending the 96%-full prod FS) the write fails like ENOSPC (SIGXFSZ), the trap removes the partial,
+  and **no metadata is written** — an incomplete artifact is never certified. Non-integer env refused.
+  Streaming means only one artifact is ever on disk (no plaintext+ciphertext peak).
 - **Live-DB safety:** the (read-only) backup connection sets a bounded `lock_timeout`
   (`GUVFX_BACKUP_LOCK_TIMEOUT_MS`, default 60s) so a gated production backup errors rather than
   stalling the live trading DB on a lock.
-- **Recovery-point audit (MEDIUM-1):** `audit_report.sh --verify-integrity --gate` runs verify.sh on
-  each present point, so inventory presence is never conflated with integrity. It distinguishes
-  PRESENT / FRESH / INTEGRITY_VERIFIED; RESTORE_TESTED is explicitly **not** established by the audit
-  (it requires an actual isolated restore).
-- **Capacity monitoring:** `audit_report.sh --gate` fails closed on no recovery point, staleness
-  beyond a threshold, an unencrypted production point, a broken point (missing artifact), or an
-  orphan artifact.
+- **Encrypted archive verification (R2 MEDIUM-1):** `verify.sh` streams an encrypted artifact through
+  `gpg --decrypt | pg_restore --list` (no plaintext file) and **rejects content that decrypts but is
+  not a non-empty PostgreSQL custom-format archive** — successful decryption alone is not verification.
+  sha256 is checked first. So encrypted non-PostgreSQL / truncated content fails `verify.sh` and the
+  usable-recovery audit gate.
+- **Two distinct audit gates (R2 MEDIUM-2) — never conflated:** `audit_report.sh --gate` is
+  **INVENTORY-ONLY** (presence / freshness / encryption-class / orphan) and explicitly does **not**
+  certify a usable recovery point (a present+fresh+corrupt artifact passes it). `--gate-usable` is the
+  **USABLE-RECOVERY** gate: it implies per-artifact integrity verification and **fails closed** on any
+  present-but-corrupt artifact; the operating runbook requires it for recovery readiness. The audit
+  distinguishes PRESENT / FRESH / INTEGRITY_VERIFIED; RESTORE_TESTED is explicitly **not** established
+  by either gate (it requires an actual isolated restore).
 - **Retention & cleanup:** documented policy (e.g. keep N daily + all pre-deploy points off-host;
   prune on-host copies once replicated). Cleanup is operator-run and governed; **immutable evidence
   is never deleted to reclaim space.**
@@ -186,15 +220,23 @@ All scripts are **non-mutating by default** (dry-run), **fail-closed**, and neve
 without the explicit gates above. See `ops/recovery/README.md` for the operator contract.
 
 - `lib.sh` — safety core: production deny-first, positive isolation-marker requirement, authoritative
-  `system_identifier` attestation, double-gate, broadened empty-target check, no-secret config,
-  preflight helpers.
+  `system_identifier` cluster attestation, **per-database restore-target authorization**
+  (`rec_require_authorized_target_db`: allowlist + ownership + non-superuser + admin/prod denials),
+  double-gate, broadened empty-target check, no-secret config, preflight helpers.
 - `backup.sh` — STREAMED `pg_dump -Fc | gpg` AES256 (no plaintext on disk) → temp → integrity →
-  atomic finalize → metadata; conservative capacity + reserved floor; dry-run default.
-- `verify.sh` — integrity (sha256) + decrypt + `pg_restore --list` TOC (read-only; no DB write).
-- `restore.sh` — atomic `--single-transaction` restore into a verified-EMPTY non-production target
-  (no `--force`); production refused categorically; dry-run default.
-- `audit_report.sh` — recovery-point observability; `--verify-integrity` + fail-closed `--gate`.
-- `tests/certify.sh` — the isolated certification harness (Gate F/H), attestation-gated.
+  atomic finalize → metadata; conservative capacity estimate + **enforceable `ulimit -f` output
+  ceiling** above the reserved floor; dry-run default.
+- `verify.sh` — integrity (sha256) + **streamed `gpg | pg_restore --list` TOC for encrypted artifacts**
+  (validates archive format, not just decryptability; no plaintext temp); read-only, no DB write.
+- `restore.sh` — atomic `--single-transaction` restore into a verified-EMPTY, **positively-authorized**
+  non-production target (no `--force`); production refused categorically; dry-run default.
+- `audit_report.sh` — recovery-point observability; **`--gate` (inventory-only)** vs **`--gate-usable`
+  (inventory + mandatory integrity, fail-closed on corruption)**.
+- `tests/attest_isolated.sh` — the independent isolated-cluster attestation guard (R2 HIGH-1).
+- `tests/setup_isolated_cluster.sh` — **privileged, out-of-band** operator provisioning of the test
+  boundary (least-privilege role + pre-existing marker); separate from the destructive harness.
+- `tests/certify.sh` — the isolated certification harness (Gate F/H), run **as the least-privilege
+  role** and gated on independent attestation.
 
 ---
 
@@ -203,27 +245,51 @@ without the explicit gates above. See `ops/recovery/README.md` for the operator 
 Run against isolated throwaway scratch databases on a local PostgreSQL with **synthetic data only**
 (no production/app DB touched). Full evidence: `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
 
-**Result: 41 / 41 PASS.** Exercised: backup (dry-run refusal + execute), integrity verify, restore
+Run **as a least-privilege non-superuser role** against an **independently-attested** throwaway cluster
+(provisioned out-of-band by `tests/setup_isolated_cluster.sh`), with **synthetic data only** (no
+production/app DB touched). Full evidence: `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
+
+**Result: 64 / 64 PASS.** Exercised: backup (dry-run refusal + execute), integrity verify, restore
 into a fresh empty DB, **row-count reconciliation across 9 tables**, **referential integrity**
 (no orphans; FK constraints), **immutable-audit md5 match**, **encrypted STREAMING round-trip**
-(+ assertion that NO plaintext/partial artifact exists; wrong-passphrase rejected), and the R1 +
-renewed-review regressions: **HIGH-1** authoritative isolation (mutation refused when the attested
-isolated cluster id ≠ live `system_identifier`, when no attestation is set, when the **isolation
-marker DB is absent** — the clone-shares-prod-id defence — and when the live cluster/db matches the
-production denylist; a mislabelled class cannot override); **HIGH-2** clean-target contract (non-empty
-refused for an ordinary table, a matview-only target, a non-public-schema target, and a
-view/sequence/function-bearing target; `--force` removed/rejected; re-restore only via drop+recreate);
-**HIGH-3** backup/verify/restore no-plaintext (streamed round-trip; assertion no decrypted temp
-exists); backup safety (invalid label refused; **non-integer reserved-floor refused**; reserved-floor
-refusal leaves no artifact/metadata); **MEDIUM-1** audit `--verify-integrity --gate` fails on a
-present-but-corrupt artifact and on an unparseable timestamp, and passes on a healthy dir; plus the
-production/undeclared refusals.
+(+ assertion that NO plaintext/partial artifact exists; wrong-passphrase rejected), and the R1 + R2
+regressions:
+- **R2 HIGH-1 independent harness isolation** — attestation refuses a production-like local cluster,
+  an absent production denylist, self-attestation against the wrong cluster, a missing attestation, a
+  non-loopback `PGHOST`, a missing attest flag, an **absent pre-existing marker** (harness must not
+  create it), and a **superuser** connecting role — each with the **precise** refusal reason;
+- **R2 HIGH-2 restore-target DB authorization** — refuses when no allowlist is set, an admin DB
+  (`postgres`), an unknown (non-allowlisted) target, a **non-owned** DB (the operator marker), and a
+  `GUVFX_RECOVERY_PRODUCTION_DB` match even if allowlisted; and cleanup **cannot** drop a non-owned DB;
+- **HIGH-2 clean-target** — non-empty refused for an ordinary table, matview-only, non-public-schema,
+  and view/sequence/function-bearing targets; `--force` rejected; re-restore only via drop+recreate;
+  a target **populated between preflight and execute** is detected and the restore aborts;
+- **R2 MEDIUM-1 encrypted format verification** — `verify.sh` and `audit --gate-usable` reject an
+  encrypted **non-PostgreSQL** artifact (valid sha256 + correct passphrase, decrypts fine, not an archive);
+- **R2 MEDIUM-2 gate semantics** — a present+fresh+corrupt artifact **passes `--gate` (inventory)** but
+  **fails `--gate-usable`**; `--verify-integrity --gate` fails on a corrupt artifact; unparseable
+  timestamp fails closed; healthy dir passes `--gate-usable`;
+- **§6 capacity/ENOSPC** — a dump exceeding the enforceable `ulimit -f` ceiling fails safely leaving no
+  artifact/partial/metadata; non-integer reserved-floor and `GUVFX_BACKUP_MAX_ARTIFACT_BYTES` refused;
+- plus HIGH-3 no-plaintext assertions and the production/undeclared refusals.
+
+**Renewed adversarial review (R2):** a 54-agent find→skeptic-verify workflow over the changed files
+produced 48 raw findings, 8 confirmed. All were fixed and re-certified: the `ulimit -f` unit (bash uses
+**1024-byte** blocks, not 512 — the ceiling was 2× too large) → divide by 1024 (+ a positive/negative
+capacity control in the harness, RULE 11); `--gate-usable` asserted "fresh" without evaluating
+freshness → it now **requires `--max-age-hours`** and the PASS message claims only what ran;
+`--max-age-hours` was unvalidated (non-integer silently skipped the staleness check, fail-open) → now
+refused; the restore allowlist split was subject to **CWD globbing** → pathname expansion disabled; and
+the encrypted `verify.sh` discarded gpg's decrypt/MDC exit status (a tail-corrupt/truncated archive with
+a matching sha could pass once `pg_restore --list` read the front TOC) → a full decrypt-integrity pass
+whose status is **enforced** now precedes the format pass.
 
 **Not covered / untested production characteristics (stated):** synthetic data on a single local
 **PG 17** server (Docker was unavailable here for a **PG 15** parity run — prod is PG 15; the backup
 preflight enforces `pg_dump_major ≥ server_major`); not a production-representative dataset; no
-off-host-transfer or PITR test. These are supplementary evidence, **not production parity** — a
-PG 15/Linux certification against an ephemeral (non-production) cluster is a Sponsor-gated follow-up.
+off-host-transfer or PITR test; `RECOVERY_POINT_RESTORE_TESTED` against production data is never
+established. These are supplementary engineering evidence, **not production parity** — a PG 15/Linux
+certification against an ephemeral (non-production) cluster is a Sponsor-gated follow-up.
 
 ---
 
@@ -244,7 +310,7 @@ These are DISTINCT milestones and must not be conflated (synthetic in-test passi
 | Milestone | Status | Basis |
 |---|---|---|
 | `ENGINEERING_READY` | **PASS** | tooling implemented; parses; dry-run + fail-closed behaviour verified |
-| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 41/41 on synthetic data, local PG 17 (Gate F) |
+| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 64/64 on synthetic data, local PG 17, least-privilege role (Gate F) |
 | `RECOVERY_DESIGN_CERTIFIED` | **PASS** | design (B/C/D) + the isolated certification above |
 | `PRODUCTION_BACKUP_ACTIVE` | **BLOCKED** | no scheduled backup, no off-host storage provisioned; gated by the 96% FS risk; Sponsor-gated |
 | `PRODUCTION_RECOVERY_VERIFIED` | **BLOCKED** | restore demonstrated only in isolation with synthetic data on PG 17; never against a production-representative dataset or a PG 15 cluster |

@@ -14,6 +14,24 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - DB RECOVERY FOUNDATION R2 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted R1; raised
+  2 HIGH + 2 MEDIUM + §6, all fixed + re-certified **64/64** (least-privilege role). **HIGH-1** the
+  certification harness can no longer manufacture its own isolation: independent attestation
+  (`tests/attest_isolated.sh`) runs before any mutation (mandatory prod denylist; operator-attested id ==
+  live sysid, never derived; pre-existing marker it did NOT create; non-superuser role; loopback-only),
+  provisioned out-of-band by `tests/setup_isolated_cluster.sh`; harness runs as the non-superuser role;
+  cleanup drops only owned DBs. **HIGH-2** per-DATABASE restore-target authorization
+  (`rec_require_authorized_target_db`: exact allowlist + current_database==PGDATABASE + non-admin/non-prod
+  + non-superuser owner), re-asserted before the atomic restore — cluster isolation alone is not
+  sufficient. **MEDIUM-1** encrypted verify STREAMS `gpg|pg_restore --list` (archive-format, not just
+  decryptability). **MEDIUM-2** `--gate` inventory-only vs `--gate-usable` (mandatory integrity, fail
+  closed on corruption); runbook requires `--gate-usable`. **§6** capacity = conservative ESTIMATE +
+  enforceable `ulimit -f` ceiling (ENOSPC-safe, no incomplete artifact certified); writer-between-
+  preflight-and-execute detected. Renewed adversarial review ran (Workflow). Milestones distinguished:
+  `TOOLING_CERTIFIED_IN_TESTS` + `RECOVERY_DESIGN_CERTIFIED` PASS; `PRODUCTION_BACKUP_ACTIVE` /
+  `PRODUCTION_RECOVERY_VERIFIED` / `T1_PRODUCTION_DARK_DEPLOYMENT_READY` BLOCKED. Local PG 17 synthetic
+  only (PG 15/Linux parity = Sponsor follow-up). **Activation GO/NO-GO: NO-GO.** No prod change.
+
 - **2026-10-14 - DB RECOVERY FOUNDATION R1 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted the
   architecture; raised 4 HIGH + 2 MEDIUM, all fixed + re-certified **41/41**. **HIGH-1/4** authoritative
   target identity = live `system_identifier` vs operator-attested isolated cluster (a class label can no

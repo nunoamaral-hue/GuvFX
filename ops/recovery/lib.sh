@@ -135,6 +135,51 @@ rec_require_isolated_target() {
   rec_log "isolation OK: '$op' on attested+marked isolated cluster sysid=$sysid db=${db:-?}"
 }
 
+# --- RESTORE TARGET authorization (per-DATABASE, not just per-cluster) -----
+# HIGH-2: a valid cluster isolation marker proves the CLUSTER is isolated; it does NOT prove that
+# the specific database selected as the destructive restore TARGET is an approved, disposable test
+# database. A cluster can hold application databases alongside scratch ones, so a cluster-scoped
+# marker must not authorize destruction of EVERY database on it. This gate establishes, fail-closed
+# and BEFORE any mutation, that PGDATABASE is an explicitly-allowlisted, operator-OWNED, non-admin,
+# non-production disposable database -- independent of the advisory class label, and under a
+# least-privilege (non-superuser) role that has no implicit rights over other databases.
+#   A verified-EMPTY database is NOT sufficient (an empty app DB is still unauthorized); both the
+#   empty contract AND this positive authorization are required.
+rec_require_authorized_target_db() {
+  local op="$1" db su owns al name found=0 OLDIFS
+  [ -n "${PGDATABASE:-}" ] || rec_die "REFUSED: PGDATABASE must be explicitly set to the restore target for '$op' (no libpq default database). Fail-closed."
+  db="$(rec_psql_scalar "select current_database()" 2>/dev/null)" || rec_die "REFUSED: cannot read current_database() for '$op'. Fail-closed."
+  # The libpq-resolved connected database MUST be exactly what was requested (no silent redirection
+  # via PGSERVICE / connection defaults between what the caller declared and where it landed).
+  [ "$db" = "${PGDATABASE}" ] || rec_die "REFUSED: connected database '$db' != requested PGDATABASE '${PGDATABASE}' for '$op' -- ambiguous target. Fail-closed."
+  # Hard denials regardless of class / marker / allowlist:
+  case "$db" in
+    postgres|template0|template1|rdsadmin|cloudsqladmin|alloydbadmin|azure_maintenance|azure_sys)
+      rec_die "REFUSED: '$db' is a template/administrative database -- never a destructive restore target. Fail-closed." ;;
+  esac
+  if [ -n "${GUVFX_RECOVERY_PRODUCTION_DB:-}" ] && [ "$db" = "${GUVFX_RECOVERY_PRODUCTION_DB}" ]; then
+    rec_die "REFUSED: target '$db' matches GUVFX_RECOVERY_PRODUCTION_DB -- never a restore target. Fail-closed."
+  fi
+  # Positive, EXACT target allowlist (independent of the class label; a label is not authorization).
+  al="${GUVFX_RECOVERY_ALLOWED_TARGET_DB:-}"
+  [ -n "$al" ] || rec_die "REFUSED: GUVFX_RECOVERY_ALLOWED_TARGET_DB is not set -- a destructive restore requires an explicit, exact disposable-target allowlist, not a class label. Fail-closed."
+  # Split on commas ONLY, with pathname expansion DISABLED (set -f): otherwise an allowlist entry
+  # containing a glob metacharacter would expand against files in the CWD and defeat the EXACT-name
+  # contract. Restore both IFS and the prior noglob state afterwards.
+  OLDIFS="$IFS"; local had_f=0; case "$-" in *f*) had_f=1 ;; esac
+  set -f; IFS=','
+  for name in $al; do [ "$name" = "$db" ] && found=1; done
+  IFS="$OLDIFS"; [ "$had_f" = "1" ] || set +f
+  [ "$found" = "1" ] || rec_die "REFUSED: restore target '$db' is not in GUVFX_RECOVERY_ALLOWED_TARGET_DB -- unknown/unauthorized target. Fail-closed."
+  # Least privilege: the connecting role must NOT be a superuser (a superuser implicitly has rights
+  # over EVERY database on the cluster, including production ones) and MUST OWN the target database.
+  su="$(rec_psql_scalar "select rolsuper from pg_roles where rolname=current_user" 2>/dev/null)" || rec_die "REFUSED: cannot read role privileges for '$op'. Fail-closed."
+  [ "$su" = "f" ] || rec_die "REFUSED: restore role is a SUPERUSER -- a destructive restore requires a least-privilege, non-superuser role that owns ONLY disposable targets (a superuser can mutate production databases). Fail-closed."
+  owns="$(rec_psql_scalar "select count(*) from pg_database d join pg_roles r on r.oid=d.datdba where d.datname='$db' and r.rolname=current_user" 2>/dev/null)" || rec_die "REFUSED: cannot verify ownership of '$db' for '$op'. Fail-closed."
+  [ "${owns:-0}" = "1" ] || rec_die "REFUSED: restore role does not OWN target database '$db' -- refusing to destructively restore into a database owned by another role. Fail-closed."
+  rec_log "target-db authz OK: '$op' into allowlisted, owned, non-admin disposable db '$db'"
+}
+
 # Guard a MUTATING operation. $1 = operation name, $2 = "restore" to apply the
 # categorical production-restore refusal. The caller must export REC_PROD_ACK=1
 # (set from its --i-understand-production flag) for a production-allowed op.

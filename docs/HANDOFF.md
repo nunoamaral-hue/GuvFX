@@ -1,5 +1,45 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — DB Recovery Foundation R2 corrections (PR #498, DARK, HOLD)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-R2-2026-10-14
+Packet ID: GUVFX_PRODUCTION_DATABASE_RECOVERY_FOUNDATION_R2 (parent: the foundation packet)
+Status: PASS (2 HIGH + 2 MEDIUM + §6 corrected + re-certified 64/64; DARK; HOLD; activation NO-GO)
+Branch/PR: feat/db-recovery-foundation / PR #498 (continued; not merged; auto-merge OFF)
+HIGH-1 (harness self-attestation): de-circularized. certify.sh no longer derives the authorized cluster
+  id from the live connection and no longer creates the marker. New tests/attest_isolated.sh guard runs
+  BEFORE any mutation (mandatory production denylist; operator-attested id must EQUAL live sysid;
+  pre-existing marker the harness did NOT create; NON-SUPERUSER role; loopback-only; localhost not proof).
+  New tests/setup_isolated_cluster.sh provisions the boundary out-of-band (privileged): least-privilege
+  non-superuser role + marker owned by the privileged role. certify.sh now runs AS the non-superuser role;
+  cleanup drops only owned DBs (never the marker/unrelated DBs).
+HIGH-2 (restore target authz): new lib.sh rec_require_authorized_target_db -- per-DATABASE positive
+  allowlist (GUVFX_RECOVERY_ALLOWED_TARGET_DB) + current_database()==PGDATABASE + non-admin/non-template +
+  not GUVFX_RECOVERY_PRODUCTION_DB + non-superuser role owning the target; re-asserted immediately before
+  the atomic restore. Cluster isolation is necessary, not sufficient. A class label is not authorization.
+MEDIUM-1 (encrypted verify): verify.sh encrypted path now STREAMS gpg|pg_restore --list and rejects
+  content that decrypts but is not a non-empty PG custom-format archive (no plaintext temp).
+MEDIUM-2 (gate semantics): audit_report.sh --gate is inventory-only; new --gate-usable forces per-artifact
+  integrity and fails closed on corruption. Runbook requires --gate-usable for recovery readiness.
+§6 (capacity): DB-size+100MiB is labelled a conservative ESTIMATE (not a max); enforceable ulimit -f output
+  ceiling (free - reserved floor; optional GUVFX_BACKUP_MAX_ARTIFACT_BYTES) -> ENOSPC-equivalent fail with
+  no artifact/partial/metadata. §6-H: a writer between preflight and execute is detected (re-assert empty).
+Files: ops/recovery/{lib.sh,backup.sh,verify.sh,restore.sh,audit_report.sh}, tests/{attest_isolated.sh(new),
+  setup_isolated_cluster.sh(new),certify.sh,CERTIFICATION_EVIDENCE.txt}, docs/DB_RECOVERY_FOUNDATION.md,
+  ops/recovery/README.md, docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md, docs/{STATUS,NEXT,HANDOFF,KNOWN_ISSUES}.md.
+Certification: 64/64 PASS, isolated, synthetic, local PG 17, run as a least-privilege non-superuser role.
+  Renewed adversarial review ran (Workflow, 6 dimensions, skeptic verification). Evidence committed.
+Secret-scan: PASS (throwaway cert role/marker provisioned out-of-band and torn down; no secret in evidence/Git).
+Untested production characteristics: PG 15 on Linux (Docker unavailable here -> PG 17 synthetic only);
+  production-representative dataset; off-host transfer; PITR; RESTORE_TESTED vs prod data. -> still BLOCKED.
+Rollback: additive; revert the branch commits. Nothing deployed.
+Recommended next: Sponsor authorizes off-host storage + FS fix, then a governed PG15/Linux parity +
+  first production-representative restore test -> PRODUCTION_BACKUP_ACTIVE / PRODUCTION_RECOVERY_VERIFIED.
+```
+
 ## 2026-10-14 — DB Recovery Foundation R1 corrections (PR #498, DARK, HOLD)
 
 ```

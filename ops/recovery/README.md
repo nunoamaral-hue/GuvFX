@@ -13,7 +13,7 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
   Unset ⇒ the tool refuses to run (fail-closed).
 - **Dry-run by default.** `backup.sh` and `restore.sh` only print the plan + preflight unless you
   pass `--execute`.
-- **Authoritative target identity (NOT a caller label, NOT `system_identifier` alone).** A
+- **Authoritative target identity — CLUSTER scope (NOT a caller label, NOT `system_identifier` alone).** A
   non-production mutation is permitted ONLY when, in order: (1) the live cluster/db do **not** match
   `GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` / `GUVFX_RECOVERY_PRODUCTION_DB` (deny wins first); (2) a
   **positive isolation marker database** is present — `GUVFX_RECOVERY_ISOLATION_MARKER_DB` (default
@@ -30,19 +30,35 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
     **and** `--i-understand-production` (this double-gate is intentionally *not* used in the repo).
   - A **restore** into `production` is refused **categorically** — the tool never restores into
     production. A production restore is a separate, manually-governed operation.
+- **Restore-target authority — DATABASE scope (cluster isolation is necessary, not sufficient).** A
+  destructive restore ALSO requires `GUVFX_RECOVERY_ALLOWED_TARGET_DB` to list the exact target DB,
+  `current_database()` to equal `PGDATABASE`, the target to be neither an admin/template DB nor
+  `GUVFX_RECOVERY_PRODUCTION_DB`, and the connecting role to be **non-superuser and the owner** of the
+  target. A verified-empty DB that is not also positively authorized is refused; a class label is not
+  authorization. (This is re-checked immediately before the atomic restore.)
 - **Clean-target restore (no `--force`).** Restore goes ONLY into a freshly-created **empty** database
-  (verified empty immediately before the atomic restore). To re-restore, drop + recreate the target.
+  (verified empty immediately before the atomic restore, which also detects a writer that populated it
+  after preflight). To re-restore, drop + recreate the target.
 - **No plaintext at rest (tool-wide).** An encrypted backup STREAMS `pg_dump | gpg` — no plaintext
   dump file is ever written. The artifact is written to a temp, integrity-checked, atomically
   renamed, then metadata is written last. A failure leaves at most a ciphertext fragment and no
-  metadata. `verify.sh` decrypts to **stdout** and `restore.sh` STREAMS `gpg | pg_restore` — neither
-  writes a decrypted temp, so no step depends on plaintext shredding.
+  metadata. `verify.sh` STREAMS `gpg --decrypt | pg_restore --list` and `restore.sh` STREAMS
+  `gpg | pg_restore` — neither writes a decrypted temp, so no step depends on plaintext shredding.
+- **Encrypted verification validates the ARCHIVE, not just decryptability.** `verify.sh` requires the
+  decrypted stream to be a non-empty PostgreSQL custom-format archive (`pg_restore --list` TOC), so
+  encrypted non-PostgreSQL content with a correct passphrase/sha256 is **rejected**.
 - **No secrets in the tool.** DB auth via libpq (`PGPASSWORD`/`~/.pgpass`/`PGSERVICE`); passphrase via
   `GUVFX_BACKUP_PASSPHRASE[_FILE]`, fed to gpg on a dedicated fd. Nothing secret on argv or in logs.
 - **Encryption.** Production-class backups must be encrypted (AES256). Non-production may opt out with
   `--no-encrypt`.
-- **Capacity.** Backup preflight budgets a worst-case dump ~= DB size and refuses below a reserved free
-  floor (`GUVFX_BACKUP_MIN_FREE_BYTES`, default 2 GiB).
+- **Capacity: conservative estimate + enforceable ceiling.** The preflight figure (DB size + 100 MiB)
+  is a conservative **estimate, not a guaranteed maximum**. Enforcement is a hard `ulimit -f` output
+  ceiling (`free − GUVFX_BACKUP_MIN_FREE_BYTES`, default floor 2 GiB; optionally capped lower by
+  `GUVFX_BACKUP_MAX_ARTIFACT_BYTES`): a dump that would breach the floor fails like ENOSPC, the partial
+  is removed, and no metadata is written (an incomplete artifact is never certified).
+- **Audit gates (do not conflate).** `--gate` is **inventory-only** (presence/freshness/encryption/
+  orphan) and does not certify usability; **`--gate-usable`** adds mandatory per-artifact integrity
+  verification and fails closed on a present-but-corrupt artifact. Use `--gate-usable` for readiness.
 - **On-host is not enough.** An on-host backup does not survive host/storage loss — replicate the
   artifact + its `.meta.json` sidecar **off-host** (NAS / object store). The tool does not transfer.
 
@@ -50,11 +66,13 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
 
 | Script | Purpose | Default |
 |---|---|---|
-| `backup.sh --out DIR [--label L] [--execute] [--no-encrypt]` | STREAMED `pg_dump -Fc` (+ AES256, no plaintext) → temp → integrity → atomic finalize → metadata | dry-run |
-| `verify.sh --meta M.json` | integrity (sha256) + decrypt + `pg_restore --list` TOC (read-only) | acts (read-only) |
-| `restore.sh --meta M.json [--execute]` | atomic restore into a verified-EMPTY non-production target (no `--force`) | dry-run |
-| `audit_report.sh --dir DIR [--max-age-hours H] [--verify-integrity] [--gate]` | recovery-point observability; `--verify-integrity` proves each artifact; `--gate` fails closed | report |
-| `tests/certify.sh` | isolated backup/verify/restore/reconcile + fail-closed certification (needs `GUVFX_RECOVERY_ATTEST_ISOLATED=1`) | runs |
+| `backup.sh --out DIR [--label L] [--execute] [--no-encrypt]` | STREAMED `pg_dump -Fc` (+ AES256, no plaintext) → temp → integrity → atomic finalize → metadata; enforceable `ulimit -f` ceiling | dry-run |
+| `verify.sh --meta M.json` | integrity (sha256) + for encrypted: streamed `gpg | pg_restore --list` TOC (archive-format, read-only) | acts (read-only) |
+| `restore.sh --meta M.json [--execute]` | atomic restore into a verified-EMPTY, allowlisted+owned non-production target (no `--force`) | dry-run |
+| `audit_report.sh --dir DIR [--max-age-hours H] [--verify-integrity] [--gate | --gate-usable]` | recovery-point observability; `--gate` inventory-only, `--gate-usable` adds mandatory integrity | report |
+| `tests/setup_isolated_cluster.sh` | **privileged** out-of-band provisioning of the test boundary (least-privilege role + pre-existing marker); `--teardown` removes them | acts (privileged) |
+| `tests/attest_isolated.sh` | sourced guard: independent isolated-cluster attestation (no mutation) | n/a |
+| `tests/certify.sh` | isolated backup/verify/restore/reconcile + fail-closed certification, run **as the least-privilege role** after independent attestation | runs |
 
 ## Typical isolated use (dev/test)
 
@@ -70,16 +88,37 @@ ops/recovery/backup.sh --out /secure/backups --label predeploy --execute
 ops/recovery/verify.sh  --meta /secure/backups/guvfx_predeploy_*.meta.json
 # copy the artifact + .meta.json OFF-HOST here (operator step; not done by the tool)
 
-createdb scratch_restore_target; export PGDATABASE=scratch_restore_target   # a FRESH, EMPTY DB
+createdb scratch_restore_target; export PGDATABASE=scratch_restore_target   # a FRESH, EMPTY DB you OWN
+export GUVFX_RECOVERY_ALLOWED_TARGET_DB=scratch_restore_target               # positive per-DB authorization
 ops/recovery/restore.sh --meta /secure/backups/guvfx_predeploy_*.meta.json            # dry-run
 ops/recovery/restore.sh --meta /secure/backups/guvfx_predeploy_*.meta.json --execute
 ```
 
 ## Certification
 
-`GUVFX_RECOVERY_ATTEST_ISOLATED=1 bash ops/recovery/tests/certify.sh` attests a throwaway cluster
-(refusing if it matches `GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID`), creates scratch databases, seeds
-synthetic data, and asserts the full backup→verify→restore→reconcile round-trip (incl. the encrypted
-streaming case) plus the HIGH-1/2/3/4 + MEDIUM-1/2 fail-closed matrix. Requires a local Postgres the
-current user can `createdb`/`dropdb` on, and `gpg`. Evidence: `tests/CERTIFICATION_EVIDENCE.txt`.
-Note: certified on local PG 17 (synthetic) — a PG 15 / Linux parity run is a Sponsor-gated follow-up.
+Certification runs in two deliberately-separate steps so the destructive harness cannot establish its
+own isolation evidence:
+
+```bash
+# 1) PRIVILEGED, out-of-band: provision the isolation boundary the harness will only VERIFY.
+#    Creates a least-privilege NON-SUPERUSER role + the pre-existing marker DB (owned by the privileged role).
+GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID=<prod sysid> GUVFX_RECOVERY_TESTER_PASSWORD=<throwaway> \
+  bash ops/recovery/tests/setup_isolated_cluster.sh
+# (it prints the exact env to export, incl. PGUSER=<non-superuser role> and ISOLATED_CLUSTER_ID)
+
+# 2) LEAST-PRIVILEGE: run the destructive certification AS the non-superuser role.
+GUVFX_RECOVERY_ATTEST_ISOLATED=1 bash ops/recovery/tests/certify.sh
+
+# teardown when done:
+GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID=<prod sysid> bash ops/recovery/tests/setup_isolated_cluster.sh --teardown
+```
+
+`certify.sh` calls `attest_independent_test_cluster` **before any mutation** (mandatory production
+denylist; operator-attested cluster id must equal the live `system_identifier`; pre-existing marker it
+did NOT create; non-superuser role; loopback-only; localhost is not proof), then asserts the full
+backup→verify→restore→reconcile round-trip (incl. the encrypted streaming case) plus the R1 + R2
+fail-closed matrix (cluster isolation, per-DB target authorization, encrypted archive-format
+verification, inventory-vs-usable gates, enforceable capacity ceiling). Requires `gpg` and a local
+throwaway Postgres. Evidence: `tests/CERTIFICATION_EVIDENCE.txt`.
+Note: certified on local PG 17 (synthetic, least-privilege role) — **not production parity**; a
+PG 15 / Linux parity run against an ephemeral cluster is a Sponsor-gated follow-up.
