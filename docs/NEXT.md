@@ -12,9 +12,18 @@ watermark-backfilled, DARK — path now `0009→0010→0011→0012`); bounds pag
 checkpoint is the highest SAFELY-ACCOUNTED boundary — never advances past the earliest unaccounted (ignored/
 non-genuine) retrieval; FloodWait rejects oversized server waits (no premature retry); migration 0012 init is gated by
 the read-only `reconcile_catchup_checkpoint --gate` (DB can't prove historical completeness). Two renewed adversarial
-reviews: R1 4 + R2 3 confirmed defects fixed + re-verified. Full backend **OK**. **Overall DARK-deployment readiness
-still NO-GO — gated now ONLY by HIGH-2 (production DB recovery: no PITR/auto-backup), a separate Sponsor dependency.**
-One bounded next action: **await the PD's re-acceptance of PR #497 (DARK; auto-merge OFF; do NOT merge without it).**
+reviews: R1 4 + R2 3 confirmed defects fixed + re-verified. **PR #497 MERGED to `main` (`ac4f6b4`, squash, PD-authorized,
+CI 10/10) 2026-10-14 — still DARK, NOT deployed, migration 0012 NOT applied to prod.** Overall production DARK-deployment
+remains **NO-GO**, gated by **HIGH-2 (production DB recovery)** — now being addressed by the DB Recovery Foundation below.
+One bounded next action: **progress the DB Recovery Foundation → then PD governs production DARK deployment separately.**
+
+## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK)
+Addresses HIGH-2. Design + certified DARK tooling (`docs/DB_RECOVERY_FOUNDATION.md`, `ops/recovery/`, isolated cert
+35/35). **`PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RESTORE_TESTED` BLOCKED.** Remaining Sponsor decisions (none done here):
+(1) provision **off-host** storage (NAS/object store); (2) resolve the **root FS 96%** P0 (expand / governed prune of
+~1.7 GB stale dumps); (3) authorize an automated backup schedule + its passphrase secret; (4) decide if sub-hour RPO
+(→ PITR) is required; (5) OVH snapshots for host-loss DR; (6) optional `data_checksums` + audit-retention policy.
+**Do NOT** create/run a production backup or restore, change PITR/WAL/DB config, or recreate containers.
 **Do NOT** deploy, apply prod migrations, switch the Telegram channel, reset the watermark, restart the listener, or
 change any flag. The Telegram **source switch remains a separate, future Sponsor-authorised cutover packet**
 (`docs/T1_SOURCE_AWARE_IDENTITY.md`: reset watermark via `onboard_provider --reset-watermark`; set

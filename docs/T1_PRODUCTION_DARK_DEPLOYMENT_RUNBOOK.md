@@ -37,8 +37,15 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
    completeness (DB evidence can't prove it: Telegram ids are non-contiguous). On REVIEW, do NOT apply 0012 / deploy;
    escalate (a watermark reset to re-scan history is a separate Sponsor-gated cutover, never done here).
 
-## B. Backup & recovery (BLOCKED — see readiness report)
-- **No PITR** (`archive_mode=off`, `wal_level=replica`) and **no automated backup** on prod. The only capability is an on-demand logical `pg_dump` (pg_dump 15.15 in `guvfx-postgres`; DB ≈ 2.77 GB).
+## B. Backup & recovery (design CERTIFIED; production activation still BLOCKED)
+- **Recovery foundation:** design + certified DARK tooling now exist — `docs/DB_RECOVERY_FOUNDATION.md`
+  and `ops/recovery/` (backup/verify/restore/audit; isolated certification 35/35). The recovery
+  *design* is certified in isolation, but **`PRODUCTION_BACKUP_ACTIVE` is still BLOCKED**: no off-host
+  storage, no automated schedule, and the root FS is **96% full (9.2 GB free)** — a hard blocker for an
+  on-host dump/restore. Resolve those (Sponsor-gated) before relying on this for a real deployment.
+- **No PITR** (`archive_mode=off`, `wal_level=replica`) and **no automated backup** on prod (verified
+  2026-10-14). The only live capability is an on-demand logical `pg_dump` (pg_dump 15.15 in
+  `guvfx-postgres`; DB ≈ 2.84 GB, ~79% of it the `core_auditevent` telemetry table).
 - **Recovery-point sequencing (CORRECTED — do NOT take the full dump inside the window):** a full-DB `pg_dump` of ≈ 2.77 GB takes minutes and MUST NOT run between the listener stop and the recreate — that would blow the acquisition interruption past the 600 s freshness window and age in-flight signals to STALE. Instead, take the full-DB recovery dump **BEFORE** the maintenance window (before §C.4, listener still running — a logical dump is a consistent MVCC snapshot). Its recovery point is then slightly earlier than the migrate; the few messages acquired between the dump and the migrate are *after* the recovery point and are re-acquired by catch-up on restart (subject to the §catch-up limits). A tiny `signal_intake`-scoped consistency dump MAY additionally be taken in-window (sub-second) for a precise schema-state snapshot, but a scoped restore risks cross-app FK inconsistency, so the full-DB dump remains the authoritative recovery artifact. All dumps on-host, mode 0600, owner `ubuntu`, encrypted at rest, retained ≥ until stable; **never off-host**; contains signal text → sensitive. **This procedure does not by itself guarantee a bounded interruption** — the interruption bound comes from excluding the dump from the window (and from §catch-up completeness, still BLOCKED).
 - **Restore procedure (rehearsed in isolation — dump/restore round-trip preserves the partitioned-unique schema and coexisting rows):** `createdb` scratch → `psql -f dump` → verify counts → promote only under a full maintenance stop. A **full-DB restore reverts ALL subsystems** to the recovery point (trades, withdrawal evidence, etc. written since are **lost**) → it is a **last resort**, not the primary rollback.
 - **Max recovery-point loss:** primary rollback (schema reverse, §G) = 0 rows lost; last-resort full restore = everything since the pre-migration dump (heavy blast radius). **Max restoration downtime:** full logical restore of ~2.77 GB ≈ minutes, all services down.
@@ -87,6 +94,33 @@ docker run -d --name guvfx-wayond-listener --restart unless-stopped \
 - **Migration failed mid-apply:** transactional → re-run after fixing, or reverse (§H), then redeploy `rollback-preT1` images to backend + listener.
 - **New code faulty:** run the §H detection query; if REVERSIBLE, reverse to `0009` **and** redeploy `rollback-preT1` to backend + listener (code+schema move together). If NOT reversible → last-resort full-DB restore from the §B recovery point (heavy blast radius) under a full maintenance stop.
 - Image-only rollback is **insufficient alone** when the schema is already migrated (old code + new schema is unsafe) — code and schema must be rolled back together.
+
+### G.1 Recovery decision matrix (recovery foundation)
+Integrated with `docs/DB_RECOVERY_FOUNDATION.md` + the certified tooling `ops/recovery/`. **Routine
+responses preserve committed data; a full-DB restore is a separately-authorized last resort; immutable
+ledger rows are NEVER deleted to force an older uniqueness constraint.** The pre-deploy recovery point
+is the §B logical backup (encrypted, off-host once activated — `PRODUCTION_BACKUP_ACTIVE` is still
+BLOCKED, so today the point is the manual pre-window dump).
+
+- **A. Migration fails BEFORE commit** → each migration is transactional → automatic rollback; **0 rows
+  lost**. Fix forward and re-run `migrate`; no restore. Abort the window if it cannot complete.
+- **B. Migration commits but application START fails** → schema is at `0012`, data intact. Prefer a
+  **forward fix** (the new schema is additive + DARK). If the code is unrecoverable: run the §H
+  detection query; if `REVERSIBLE`, reverse to `0009` **and** redeploy `rollback-preT1` (code+schema
+  together). **0 rows lost.** No full restore.
+- **C. Application starts but listener CATCH-UP is INCOMPLETE** → NOT a data-loss event and NOT a
+  rollback trigger. The durable `catchup_checkpoint_message_id` means a re-run resumes without skip
+  (runbook §E §catch-up). Re-run catch-up; if it will not reach `COMPLETE` within a window ≪ 600 s,
+  treat as a failed window and roll back code+schema (B) — still **0 rows lost**.
+- **D. Application faulty AFTER new records were written** → **preserve the new records.** Forward-fix
+  in place where safe. If a code rollback is required, reverse schema (§H) only if `REVERSIBLE` and
+  redeploy `rollback-preT1`; the post-deploy rows remain. A full-DB restore to the pre-deploy point
+  would **discard** those rows (and unrelated trading / Withdrawal V1 activity) → **last resort only**,
+  under a full maintenance stop, with explicit authorization.
+- **E. Schema reversal BLOCKED by legitimate genuine/non-genuine coexistence** (§H detection query
+  `>0`) → do **not** force it; never delete immutable rows to satisfy an old constraint. Keep the new
+  schema and forward-fix the code, **or** (last resort, authorized) restore the full DB from the §B
+  recovery point under a full stop, accepting the recovery-point loss window.
 
 ## H. Migration-reversal boundaries (three distinct states — do not conflate)
 - **0012 (`catchup_checkpoint`) is UNCONDITIONALLY reversible** at any data state: its reverse drops the added column and its `RunPython` reverse is a noop (it never rewrites or deletes rows). The boundaries below concern the 0011→0010→0009 reverses only.

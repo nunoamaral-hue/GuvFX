@@ -1,0 +1,66 @@
+GuvFX recovery tooling — isolated certification evidence
+Captured (UTC): 2026-10-14T08:35:12Z
+Host: Darwin 27.0.0 | psql 17.6 | gpg 2.5.24
+Scope: Gate F + Gate H + adversarial-review fix regressions. Isolated scratch DBs + synthetic data ONLY; no production/app DB touched.
+========================================================================
+[certify] scratch src=guvfx_recov_src_60612_1791966912 tgt=guvfx_recov_tgt_60612_1791966912 work=/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.WmYTg7
+[certify] seeded synthetic data into guvfx_recov_src_60612_1791966912
+
+[certify] === Gate F: backup -> verify -> restore -> reconcile (UNENCRYPTED) ===
+  PASS  backup dry-run refuses to act without --execute (produces no artifact)
+  PASS  backup --execute creates an archive + metadata
+  PASS  metadata sidecar present
+  PASS  verify passes on a good backup
+  PASS  restore dry-run does not populate the target
+  PASS  restore --execute into the fresh target
+
+[certify] --- reconciliation (row counts, referential integrity, immutable audit) ---
+  PASS  row count customer = 25
+  PASS  row count trading_account = 40
+  PASS  row count trade = 500
+  PASS  row count execution_job = 120
+  PASS  row count acquired_message = 300
+  PASS  row count provider_checkpoint = 2
+  PASS  row count broker_event = 60
+  PASS  row count withdrawal_history = 12
+  PASS  row count audit_event = 2000
+  PASS  referential integrity: no orphan trades
+  PASS  foreign-key constraints restored (5)
+  PASS  immutable audit_event content preserved (md5 match)
+
+[certify] === Gate F: encrypted round-trip ===
+  PASS  encrypted backup --execute produces a .gpg artifact
+  PASS  metadata marks encrypted=true
+  PASS  verify decrypts + reads TOC of the encrypted backup
+  PASS  restore the ENCRYPTED backup into a fresh target
+  PASS  encrypted restore reconciles (trade=500)
+  PASS  verify FAILS on wrong passphrase
+
+[certify] === Gate H: failure containment (fail-closed) ===
+  PASS  undeclared target class is refused
+  PASS  backup of a PRODUCTION target refused without the double-gate
+  PASS  RESTORE into a PRODUCTION target refused categorically (by the guard, not arg-parse)
+  PASS  restore into a NON-EMPTY target refused without --force
+  PASS  idempotent restore into non-empty target WITH --force succeeds
+  PASS  re-restore reconciles (trade=500)
+  PASS  verify REJECTS a truncated/corrupt artifact (sha mismatch)
+  PASS  verify FAILS on missing metadata file
+  PASS  backup refused when PGDATABASE matches GUVFX_RECOVERY_PRODUCTION_DB but class!=production
+  PASS  restore refuses a target that holds a matview (non-empty) without --force
+  PASS  audit --gate fails closed on an unparseable recovery-point timestamp
+
+[certify] === audit report ===
+LABEL                        CREATED_UTC            CLASS       ENCRYPTED BYTES        ARTIFACT
+-----                        -----------            -----       --------- -----        --------
+badts                        not-a-timestamp        test        false     1            guvfx_certify_dummy.dump (ok)
+2026-10-14T08:35:17Z [recovery][ERROR] unparseable created_utc 'not-a-timestamp' in /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.WmYTg7/guvfx_badts_60612_1791966912.meta.json
+certify                      2026-10-14T08:35:13Z   test        false     38015        guvfx_certify_20261014T083513Z.dump (ok)
+                                                                false     ?            guvfx_corrupt_60612_1791966912.dump (ok)
+2026-10-14T08:35:17Z [recovery][ERROR] unparseable created_utc '' in /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.WmYTg7/guvfx_corrupt_60612_1791966912.meta.json
+enc                          2026-10-14T08:35:15Z   test        true      11524        guvfx_enc_20261014T083514Z.dump.gpg (ok)
+
+2026-10-14T08:35:17Z [recovery] 4 recovery point(s) found.
+2026-10-14T08:35:17Z [recovery] audit issues: 1
+
+[certify] ================= CERTIFY SUMMARY: PASS=35 FAIL=0 =================
+[certify] CERTIFICATION PASSED

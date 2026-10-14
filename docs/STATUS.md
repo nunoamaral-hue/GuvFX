@@ -14,7 +14,29 @@
 
 ## Execution workstream log
 
-- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — R2 CORRECTIONS (PR #497, DARK, auto-merge OFF).**
+- **2026-10-14 - PRODUCTION DATABASE RECOVERY FOUNDATION — ENGINEERING + DESIGN (DARK; NO prod change).**
+  `T1_SOURCE_AWARE_IDENTITY_MERGED` + `T1_TELEGRAM_CATCHUP_MERGED` (PR #497 squash `ac4f6b4`) +
+  `T1_ENGINEERING_CERTIFIED_IN_TESTS`; `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.
+  **`DATABASE_RECOVERY_FOUNDATION_IN_PROGRESS`.** Addresses the remaining HIGH-2 blocker.
+  - **Gate A (read-only, verified 2026-10-14):** PostgreSQL 15.15 single OVH VPS; DB `guvfx` = 2835 MB
+    (**core_auditevent 2237 MB / 79%** — bulk is audit/health telemetry; financial/trading tables tiny).
+    **No PITR** (`archive_mode=off`), **no automated backup** (only 104 ad-hoc `pg_dump` ~1.7 GB on-host),
+    `data_checksums=off`; durability on (fsync/full_page_writes/synchronous_commit). **P0 risk: root FS
+    96% full (9.2 GB free)** — DB + all backups share one FS; no off-host storage.
+  - **Design (Gates B–D, G, I):** RPO/RTO per scenario (host/storage-loss + full DR declared BLOCKED;
+    zero-data-loss NOT asserted). Recommended = encrypted logical backups + **off-host** replication +
+    forward-fix/migration-reverse as routine rollback (never a full rewind) + OVH snapshots for host-loss
+    DR; PITR only if a sub-hour RPO is required. `docs/DB_RECOVERY_FOUNDATION.md`.
+  - **DARK tooling (Gate E):** `ops/recovery/` (backup/verify/restore/audit) — dry-run default, fail-closed,
+    never targets production. **Isolated certification (Gate F/H): 35/35 PASS** (backup→verify→restore→
+    reconcile incl. encrypted + referential integrity + immutable-audit md5 + fail-closed matrix);
+    evidence `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
+  - **Milestones:** `ENGINEERING_READY` PASS, `RECOVERY_DESIGN_CERTIFIED` PASS, `PRODUCTION_BACKUP_ACTIVE`
+    **BLOCKED**, `PRODUCTION_RESTORE_TESTED` **BLOCKED** (synthetic only), `T1_PRODUCTION_DARK_DEPLOYMENT_READY`
+    **BLOCKED**. **GO/NO-GO for activation: NO-GO** (no off-host backup; FS 96%). All DARK; no prod backup/
+    restore/PITR/config change performed.
+
+- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — R2 CORRECTIONS (PR #497 — MERGED to main `ac4f6b4`, DARK).**
   PD accepted the R1 architecture and raised 3 findings; all fixed on the same PR, plus 3 confirmed by a renewed
   8-dimension adversarial review (then re-verified, all resolved, no regressions). Still DARK — no deploy/migration/
   Telegram change/watermark reset; flag OFF.

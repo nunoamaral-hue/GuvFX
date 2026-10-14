@@ -2,6 +2,27 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔴 Production database recovery posture (verified 2026-10-14; `docs/DB_RECOVERY_FOUNDATION.md`)
+
+- **P0 — root filesystem 96% full (9.2 GB free).** `/dev/sda1` (193 GB) holds the Postgres data volume
+  AND all 104 on-host `pg_dump` artifacts (~1.7 GB). A full FS halts Postgres writes (availability
+  incident) and makes on-host backup/restore of the 2.84 GB DB unsafe. Needs capacity expansion and/or
+  governed pruning of stale dumps. **Gates any on-host backup activation.** (Not actioned — inspection only.)
+- **No off-host backup / no disaster recovery.** Every backup is on the same host as the DB → a host or
+  storage loss is total. Off-host replication (NAS `100.73.130.98` / object store) is **designed, not
+  provisioned** (Sponsor-gated). `PRODUCTION_BACKUP_ACTIVE` = BLOCKED.
+- **No automated backup, no PITR.** `archive_mode=off`; backups are manual pre-deploy dumps only →
+  corruption RPO is "since the last manual dump" (hours–days); host-loss RPO is total. PITR would need
+  a config change + restart + off-host WAL + FS headroom.
+- **`data_checksums=off`.** Silent on-disk corruption is undetectable by Postgres. Enabling needs a
+  dump/restore or `pg_checksums` with downtime (Sponsor-gated).
+- **`core_auditevent` dominates the DB (2.24 GB / 79%, ~4.8M rows).** Drives DB + backup growth. An
+  audit retention/archival policy (separate packet) would bound it — archived off-DB, **never deleted**
+  (immutable evidence, data.md).
+- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic data, 35/35) but
+  `PRODUCTION_RESTORE_TESTED` against a production-representative dataset = BLOCKED. Not wired to any
+  scheduler; never targets production.
+
 ## 🟡 T1 source-aware identity — residuals (recorded 2026-10-13, PR #495, DARK; R1-updated)
 
 - **Channel-switch cutover is BLOCKING on a watermark reset.** The dedup fix alone does not make a switch safe: the

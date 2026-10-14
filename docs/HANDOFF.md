@@ -1,5 +1,50 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — Production Database Recovery Foundation (DARK; branch feat/db-recovery-foundation)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-2026-10-14
+Packet ID: GUVFX_PRODUCTION_DATABASE_RECOVERY_FOUNDATION (P0, DARK)
+Status: PARTIAL -- engineering + design + isolated certification COMPLETE; production activation NO-GO
+  (PRODUCTION_BACKUP_ACTIVE / PRODUCTION_RESTORE_TESTED / T1_PRODUCTION_DARK_DEPLOYMENT_READY all BLOCKED).
+
+Initial branch/HEAD/status: feat/db-recovery-foundation from origin/main ac4f6b4 (post-T1-merge).
+Convergence base: main ac4f6b4
+Files added: ops/recovery/{lib.sh,backup.sh,verify.sh,restore.sh,audit_report.sh,README.md},
+  ops/recovery/tests/{certify.sh,CERTIFICATION_EVIDENCE.txt}, docs/DB_RECOVERY_FOUNDATION.md
+Files modified: docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md (§B header + §G.1 recovery decision matrix),
+  docs/STATUS.md, docs/NEXT.md, docs/HANDOFF.md, docs/KNOWN_ISSUES.md
+Scoped rules verification: data (immutable evidence never deleted to reclaim space / force a constraint;
+  raw not mutated; backups are a rebuildable cache), security (no secrets in scripts/Git/logs; encryption
+  AES256; DB auth via libpq; passphrase via secret store; production restore refused), architecture
+  (smallest reliable solution; no speculative infra; off-host designed not provisioned), evidence, handoff.
+Secret-scan result: PASS -- no secret literals; production docker-inspect Env never dumped.
+Gate A inspection: READ-ONLY over SSH to ubuntu@100.119.23.29 (version/settings/sizes/disk/backups/timers);
+  no config change, no backup created, no data/secret copied, no expensive queries.
+Isolated certification: ops/recovery/tests/certify.sh -> 35/35 PASS (Gate F backup/verify/restore/reconcile
+  incl. encrypted round-trip; Gate H fail-closed matrix). Evidence file committed. Scratch DBs only; no app DB.
+Unit/CI: shell tooling parses (bash -n) for all scripts; certification is a standalone harness (createdb +
+  external pg_dump) run locally with captured evidence -- NOT part of `manage.py test`. CI runs on push.
+Deviations from packet: delivered as ONE coherent PR rather than three (docs/tooling/tests are interdependent
+  and reviewable together); permitted by the packet ("multiple PRs if necessary").
+Amber decisions proposed: None. (Recommendation favours the smallest reliable solution; no infra provisioned.)
+Red decisions requiring Nuno: provision off-host storage; resolve the 96% FS; authorize an automated backup
+  schedule + passphrase secret; enable PITR (archive_mode) if sub-hour RPO required; OVH snapshots; enable
+  data_checksums; audit-retention policy; and the subsequent T1 production DARK deployment.
+Risks discovered: root FS 96% full (P0); no off-host backup / no DR; no PITR; data_checksums off; audit table
+  = 79% of DB and growing. All recorded in KNOWN_ISSUES + DB_RECOVERY_FOUNDATION.md.
+Out-of-scope access performed: No production mutation. Read-only SSH inspection only (packet Gate A).
+Local environment note: installed `gnupg` (brew) on the dev Mac to certify the AES256 encryption path;
+  reversible (brew uninstall), not a project/repo dependency change.
+Rollback/recovery: pure additive (new ops/recovery/ + docs); revert the branch commit to remove. Nothing
+  deployed; no production state changed.
+Recommended next packet: Sponsor authorization to provision off-host storage + resolve the 96% FS, then a
+  governed "activate production backup" packet (schedule + off-host replication + first production-representative
+  restore test) -> PRODUCTION_BACKUP_ACTIVE / PRODUCTION_RESTORE_TESTED -> then T1 production DARK deployment.
+```
+
 ## 2026-10-14 — T1 Telegram catch-up completeness R2 (PR #497, DARK, auto-merge OFF)
 
 ```
