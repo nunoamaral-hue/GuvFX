@@ -4,12 +4,18 @@ from django.db import migrations, models
 
 
 def backfill_checkpoint(apps, schema_editor):
-    """Seed the new durable catch-up checkpoint from the existing watermark for every
-    provider. Today the watermark IS the contiguous catch-up boundary (no live-event
-    contamination has occurred under the pre-T1 single-threaded flow), so first-deploy
-    catch-up resumes from exactly the same point the old code used — behaviour-preserving
-    (DARK). The checkpoint only DIVERGES from the watermark afterwards, when a live event
-    advances the watermark but not the checkpoint; that divergence is the HIGH-1 fix."""
+    """Seed the new durable catch-up checkpoint from the existing watermark for every provider.
+
+    BEHAVIOUR-PRESERVING, NOT a completeness proof (T1 R2 §6): the pre-T1 code already resumes
+    catch-up from ``watermark_last_message_id``, so seeding the checkpoint from it makes the
+    FIRST post-deploy catch-up resume from EXACTLY the same point the old code used — no NEW
+    loss. It does NOT assert the historical watermark is a proven-complete boundary: a past
+    live event under telethon.sync could have advanced the watermark, and the pre-pagination
+    200-cap could have abandoned a backlog, so a pre-existing gap BELOW the seeded checkpoint
+    may exist. That is a pre-existing condition surfaced (not caused) by T1; closing it would
+    require a watermark reset (separate Sponsor-gated cutover). A read-only pre-deploy
+    reconciliation gate (``manage.py reconcile_catchup_checkpoint`` + runbook) must be run
+    before this migration is applied in production."""
     SignalProvider = apps.get_model("signal_intake", "SignalProvider")
     for p in SignalProvider.objects.exclude(watermark_last_message_id="").only(
             "id", "watermark_last_message_id", "catchup_checkpoint_message_id"):

@@ -20,6 +20,7 @@ from signal_intake.tests_listener import FakeClient, FakeMsg, FloodWaitError
 SIGNAL = ("XAUUSD | Potential downward movement\n\nXAUUSD | SELL 3350.0\n\n"
           "❌ Stop Loss 3360.0 (100 pips)\n\n✅ TP1 3335.0\n✅ TP2 3320.0")
 PING = "gm all"  # non-signal → QUARANTINED (fast, genuine, no approval)
+UPDATE_MSG = "TP1 hit! +150 pips. Move SL to 3350.0"  # parses as Kind.UPDATE → SignalUpdate
 
 
 def _msgs(lo, hi, chat=1001, text=PING, now=None, age_s=5):
@@ -488,22 +489,23 @@ class BoundedResourceTests(_Base):
         self.assertEqual(c.flood_calls, 4)
         self.assertEqual(r.retrieved, 0)             # nothing drained; NOT a false COMPLETE
 
-    def test_35_floodwait_single_sleep_is_capped(self):
+    def test_35_oversized_floodwait_is_rejected_not_shortened(self):
+        # T1 R2 MEDIUM: a server-requested wait LONGER than the permitted single wait must be
+        # REJECTED (re-raised → INCOMPLETE), never shortened-and-retried early (rate-limit).
         import signal_intake.listener.adapter as A
         from unittest import mock
         calls = {"n": 0}
 
         def fn():
             calls["n"] += 1
-            if calls["n"] == 1:
-                raise FloodWaitError(100000)   # absurd server-demanded wait
-            return "ok"
+            raise FloodWaitError(100000)           # server demands far more than permitted
 
         slept = []
         with mock.patch.object(A.time, "sleep", side_effect=lambda s: slept.append(s)):
-            out = WayondListener()._floodwait(fn, max_waits=3, max_single_s=5)
-        self.assertEqual(out, "ok")
-        self.assertEqual(slept, [5])               # 100000 capped to 5 — never slept 100000
+            with self.assertRaises(FloodWaitError):
+                WayondListener()._floodwait(fn, max_waits=3, max_single_s=5)
+        self.assertEqual(slept, [])                # never shortened-and-slept → no premature retry
+        self.assertEqual(calls["n"], 1)            # one attempt, then rejected
 
     def test_36_catch_up_param_clamps_nonpositive_page_size(self):
         for bad in (0, -10):
@@ -699,3 +701,303 @@ class AdversarialR1FixTests(_Base):
             results = lis.catch_up_all(FakeClient(messages=_msgs(1, 3, chat=1001)))
         self.assertEqual(len(results), 1)                      # chat caught up ONCE, not per-provider
         self.assertTrue(any("share" in m for m in cm.output))  # collision warned
+
+
+# ---- N. R2 adversarial-review fixes — checkpoint gap across mixed outcomes (49-53) -------
+# HIGH (T1 R2 §2-4): the durable checkpoint must represent the highest SAFELY-ACCOUNTED
+# boundary — it must never advance PAST an earlier unaccounted retrieval (ignored OR
+# non-genuine) just because a LATER genuine message succeeded. Else the earlier message is
+# never re-fetched and is silently lost once the provider is (re-)armed.
+class AdversarialR2CheckpointGapTests(_Base):
+    def test_49_non_genuine_then_genuine_does_not_skip(self):
+        """Scenario A: in ONE pass id 100 is non-genuine (provider PAUSED) and id 101 is
+        genuine (provider ARMED mid-pass). The checkpoint must hold below 100; on restart 100
+        is re-fetched and genuinely acquired — never skipped, no duplicate approval."""
+        self.prov.catchup_checkpoint_message_id = "99"
+        self.prov.save(update_fields=["catchup_checkpoint_message_id"])
+        now = timezone.now()
+        m100 = FakeMsg(100, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5))
+        m101 = FakeMsg(101, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5))
+        pid = self.prov.id
+
+        class _ArmMidPass(WayondListener):
+            def acquire_raw(self, raw):
+                rid = self._raw_id(raw)
+                if rid == 100:   # PAUSED when 100 is processed → non-genuine DROP
+                    SignalProvider.objects.filter(id=pid).update(status=SignalProvider.Status.PAUSED)
+                elif rid == 101:  # ARMED again when 101 is processed → genuine
+                    SignalProvider.objects.filter(id=pid).update(status=SignalProvider.Status.ARMED)
+                return super().acquire_raw(raw)
+
+        r1 = _ArmMidPass().catch_up(FakeClient(messages=[m100, m101]), self.prov)
+        self.assertTrue(r1.complete)
+        self.assertFalse(r1.durably_complete)          # a boundary is held back
+        self.assertEqual(r1.checkpoint, 99)            # NOT advanced past the non-genuine 100
+        self.assertEqual(r1.unaccounted_floor, 100)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "99")
+        self.assertTrue(AcquiredMessage.objects.filter(message_id="100", non_genuine=True).exists())
+        self.assertEqual(PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 1)   # 101 only
+        # Restart (provider ARMED): 100 re-fetched + genuinely acquired — not skipped, no dup.
+        r2 = self._cu(FakeClient(messages=[m100, m101]))
+        self.assertTrue(r2.durably_complete)
+        self.assertEqual(r2.checkpoint, 101)
+        self.assertTrue(AcquiredMessage.objects.filter(message_id="100", non_genuine=False).exists())
+        self.assertEqual(PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 2)   # 100 + 101
+
+    def test_50_ignored_then_genuine_does_not_skip(self):
+        """Scenario B: id 100 resolves to no provider (ignored); id 101 is genuine. The
+        checkpoint must not advance past the ignored 100 just because 101 succeeded."""
+        self.prov.catchup_checkpoint_message_id = "99"
+        self.prov.save(update_fields=["catchup_checkpoint_message_id"])
+        now = timezone.now()
+        msgs = [FakeMsg(100, 9999, text=PING, date=now),                       # foreign → ignored
+                FakeMsg(101, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5))]
+        r = self._cu(FakeClient(messages=msgs))
+        self.assertTrue(r.complete)
+        self.assertFalse(r.durably_complete)
+        self.assertEqual(r.ignored, 1)
+        self.assertEqual(r.unaccounted_floor, 100)
+        self.assertEqual(r.checkpoint, 99)             # NOT advanced past the ignored 100
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "99")
+
+    def test_51_unaccounted_at_page_end_blocks_next_page_advance(self):
+        """Scenario C: an unaccounted id at the END of page 1 stops the durable checkpoint;
+        genuine messages on page 2 cannot advance it past that boundary."""
+        now = timezone.now()
+        msgs = [FakeMsg(1, 1001, text=PING, date=now),
+                FakeMsg(2, 1001, text=PING, date=now),
+                FakeMsg(3, 9999, text=PING, date=now),   # ignored — end of page 1
+                FakeMsg(4, 1001, text=PING, date=now),   # page 2
+                FakeMsg(5, 1001, text=PING, date=now)]
+        r = self._cu(FakeClient(messages=msgs), page_size=3)
+        self.assertTrue(r.complete)
+        self.assertEqual(r.pages, 2)
+        self.assertEqual(r.unaccounted_floor, 3)
+        self.assertEqual(r.checkpoint, 2)              # held at 2 (<3); page-2 (4,5) can't pass 3
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "2")
+
+    def test_52_interrupt_in_mixed_page_loses_no_evidence_no_dup(self):
+        """Scenario D: a mixed page is interrupted after a genuine message committed. Restart
+        re-accounts everything with no lost durable evidence and no duplicate downstream."""
+        now = timezone.now()
+        msgs = [FakeMsg(1, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5)),  # genuine signal
+                FakeMsg(2, 9999, text=PING, date=now),                              # ignored
+                FakeMsg(3, 1001, text=SIGNAL, date=now - dt.timedelta(seconds=5))]  # genuine signal
+
+        class _BoomAt3(WayondListener):
+            def acquire_raw(self, raw):
+                if self._raw_id(raw) == 3:
+                    raise RuntimeError("crash at 3")
+                return super().acquire_raw(raw)
+
+        r1 = _BoomAt3().catch_up(FakeClient(messages=msgs), self.prov, page_size=10)
+        self.assertEqual(r1.status, CatchupStatus.INCOMPLETE_ERROR)
+        # msg 1 committed (genuine, approval). Page raised before its checkpoint commit → the
+        # persisted checkpoint stays at the start (fail-closed re-scan — never a skip).
+        self.assertTrue(AcquiredMessage.objects.filter(message_id="1", non_genuine=False).exists())
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "")
+        approvals_after_crash = PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count()
+        self.assertEqual(approvals_after_crash, 1)   # msg 1 only
+        # Restart clean: 1 re-fetched (dedup, no new approval), 3 newly acquired.
+        r2 = self._cu(FakeClient(messages=msgs))
+        self.assertTrue(r2.complete)
+        self.assertEqual(PendingSignalApproval.objects.filter(
+            status=PendingSignalApproval.Status.PENDING_APPROVAL).count(), 2)   # 1 + 3, no dup
+        self.assertEqual(AcquiredMessage.objects.filter(message_id="1", non_genuine=False).count(), 1)
+
+    def test_53_armed_then_paused_midpass_holds_checkpoint(self):
+        """Scenario E: provider transitions ARMED→PAUSED mid-pass; messages after the
+        transition are non-genuine (fail-closed). The checkpoint holds at the last genuine id
+        before the transition, never past the first non-genuine one."""
+        self.prov.catchup_checkpoint_message_id = "0"
+        self.prov.save(update_fields=["catchup_checkpoint_message_id"])
+        now = timezone.now()
+        msgs = [FakeMsg(i, 1001, text=PING, date=now) for i in (10, 11, 12)]
+        pid = self.prov.id
+
+        class _PauseMidPass(WayondListener):
+            def acquire_raw(self, raw):
+                if self._raw_id(raw) == 11:   # PAUSE before 11 → 11 and 12 become non-genuine
+                    SignalProvider.objects.filter(id=pid).update(status=SignalProvider.Status.PAUSED)
+                return super().acquire_raw(raw)
+
+        r = _PauseMidPass().catch_up(FakeClient(messages=msgs), self.prov)
+        self.assertTrue(r.complete)
+        self.assertFalse(r.durably_complete)
+        self.assertEqual(r.checkpoint, 10)             # last genuine before the transition
+        self.assertEqual(r.unaccounted_floor, 11)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, "10")
+
+
+# ---- O. R2 MEDIUM — FloodWait rate-limit compliance (54-56) ----------------
+class FloodWaitR2Tests(_Base):
+    def test_54_permitted_floodwait_is_honoured_in_full(self):
+        import signal_intake.listener.adapter as A
+        from unittest import mock
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise FloodWaitError(5)
+            return "ok"
+
+        slept = []
+        with mock.patch.object(A.time, "sleep", side_effect=lambda s: slept.append(s)):
+            out = WayondListener()._floodwait(fn, max_waits=3, max_single_s=10)
+        self.assertEqual(out, "ok")
+        self.assertEqual(slept, [5])               # FULL requested wait honoured, not shortened
+        self.assertEqual(calls["n"], 2)            # exactly one retry after the honoured wait
+
+    def test_55_floodwait_retry_count_and_total_time_bounded(self):
+        import signal_intake.listener.adapter as A
+        from unittest import mock
+        slept = []
+
+        def fn():
+            raise FloodWaitError(2)                # permitted (<= max_single_s) → honoured each time
+
+        with mock.patch.object(A.time, "sleep", side_effect=lambda s: slept.append(s)):
+            with self.assertRaises(FloodWaitError):
+                WayondListener()._floodwait(fn, max_waits=3, max_single_s=10)
+        self.assertEqual(slept, [2, 2, 2])         # exactly max_waits honoured waits, then re-raise
+        self.assertLessEqual(sum(slept), 3 * 10)   # total bounded by max_waits * max_single_s
+
+    def test_56_floodwait_pass_does_not_make_expired_signal_tradeable(self):
+        old = timezone.now() - dt.timedelta(seconds=1200)
+
+        class _FloodOnceThenAged(FakeClient):
+            def __init__(self, msgs):
+                super().__init__(messages=msgs); self._f = False
+
+            def iter_messages(self, entity, min_id=0, limit=200, reverse=False):
+                rows = super().iter_messages(entity, min_id=min_id, limit=limit, reverse=reverse)
+                outer = self
+
+                def gen():
+                    if not outer._f:
+                        outer._f = True
+                        raise FloodWaitError(0)    # permitted; honoured (0s), then retry
+                    for r in rows:
+                        yield r
+                return gen()
+
+        msgs = [FakeMsg(i, 1001, text=SIGNAL, date=old) for i in range(1, 4)]
+        r = self._cu(_FloodOnceThenAged(msgs), page_size=200)
+        self.assertTrue(r.complete)
+        self.assertEqual(r.stale, 3)               # aged → STALE despite the flood-wait…
+        self.assertEqual(r.tradeable_approvals, 0)  # …never resurrected into a tradeable approval
+        self.assertEqual(PendingSignalApproval.objects.count(), 0)
+
+
+# ---- P. R2 §6 — read-only checkpoint-initialization reconciliation gate (57-61) ----------
+class ReconcileCheckpointCommandTests(_Base):
+    def _run(self, *args):
+        from io import StringIO
+        out = StringIO()
+        call_command("reconcile_catchup_checkpoint", *args, stdout=out)
+        return out.getvalue()
+
+    def _seed_ledger(self, lo, hi, outcome=None):
+        outcome = outcome or AcquiredMessage.Outcome.INTAKEN
+        for i in range(lo, hi + 1):
+            AcquiredMessage.objects.create(provider=self.prov, chat_id="1001",
+                                           message_id=str(i), outcome=outcome)
+
+    def test_57_consistent_watermark_passes_and_is_read_only(self):
+        self.prov.watermark_last_message_id = "5"
+        self.prov.save(update_fields=["watermark_last_message_id"])
+        self._seed_ledger(1, 5)
+        before_wm, before_ckpt = self.prov.watermark_last_message_id, self.prov.catchup_checkpoint_message_id
+        out = self._run("--slug", "wayond")
+        self.assertIn("[PASS]", out)
+        self.prov.refresh_from_db()
+        self.assertEqual(self.prov.watermark_last_message_id, before_wm)          # unchanged
+        self.assertEqual(self.prov.catchup_checkpoint_message_id, before_ckpt)    # no write
+
+    def test_58_watermark_ahead_of_ledger_is_review(self):
+        self.prov.watermark_last_message_id = "900"        # ahead of any acquired row
+        self.prov.save(update_fields=["watermark_last_message_id"])
+        self._seed_ledger(100, 100)
+        out = self._run("--slug", "wayond")
+        self.assertIn("[REVIEW]", out)
+        self.assertIn("AHEAD", out)
+
+    def test_59_empty_watermark_is_review(self):
+        self.prov.watermark_last_message_id = ""
+        self.prov.save(update_fields=["watermark_last_message_id"])
+        out = self._run("--slug", "wayond")
+        self.assertIn("[REVIEW]", out)
+
+    def test_60_gate_exits_nonzero_on_review(self):
+        from django.core.management.base import CommandError
+        self.prov.watermark_last_message_id = ""
+        self.prov.save(update_fields=["watermark_last_message_id"])
+        with self.assertRaises(CommandError):
+            self._run("--slug", "wayond", "--gate")
+
+    def test_61_json_output_is_machine_readable(self):
+        import json
+        self.prov.watermark_last_message_id = "5"
+        self.prov.save(update_fields=["watermark_last_message_id"])
+        self._seed_ledger(1, 5)
+        data = json.loads(self._run("--slug", "wayond", "--json"))
+        self.assertIn("providers", data)
+        self.assertIn("caveat", data)
+        self.assertEqual(data["providers"][0]["verdict"], "PASS")
+        self.assertFalse(data["any_review"])
+
+
+# ---- Q. R2 adversarial-review FIX regressions (62-64) ----------------------
+class AdversarialR2FixRegressionTests(_Base):
+    def test_62_signal_update_crash_replay_is_idempotent(self):
+        """R2 adversarial MEDIUM: the fresh SignalUpdate is written in autocommit BEFORE the
+        AcquiredMessage commits, so a crash between them re-runs _classify on restart. Simulate
+        by deleting the AcquiredMessage (as if it never committed) and re-processing — the
+        SignalUpdate must NOT double-create (it now dedups per (provider, chat, message, edited))."""
+        from signal_intake.models import SignalUpdate
+        lis = WayondListener()
+        raw = FakeMsg(500, 1001, text=UPDATE_MSG, date=timezone.now())
+        lis.acquire_raw(raw)   # fresh UPDATE → AcquiredMessage(500, UPDATE) + SignalUpdate(500)
+        self.assertEqual(SignalUpdate.objects.filter(message_id="500").count(), 1)
+        self.assertEqual(
+            AcquiredMessage.objects.filter(message_id="500", non_genuine=False).count(), 1)
+        AcquiredMessage.objects.filter(message_id="500").delete()   # simulate the crash
+        lis.acquire_raw(raw)   # restart re-processes 500 → _classify → _record_update again
+        self.assertEqual(SignalUpdate.objects.filter(message_id="500").count(), 1)   # NOT 2
+        self.assertEqual(
+            AcquiredMessage.objects.filter(message_id="500", non_genuine=False).count(), 1)
+
+    def test_63_reconcile_gate_fails_closed_on_no_match(self):
+        """R2 adversarial LOW: a --gate run that matches NO provider reconciled nothing and must
+        NOT read green (fail-closed), rather than exit 0."""
+        from io import StringIO
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command("reconcile_catchup_checkpoint", "--slug", "does-not-exist", "--gate",
+                         stdout=StringIO())
+
+    def test_64_reconcile_excludes_non_genuine_quarantine_from_genuine(self):
+        """R2 adversarial LOW: a chat-refusal row is QUARANTINED + non_genuine=True; it must NOT
+        count as a genuine acquisition, so a watermark above the true genuine max is correctly
+        flagged REVIEW (not a false PASS masked by the non-genuine row)."""
+        from io import StringIO
+        self.prov.watermark_last_message_id = "900"
+        self.prov.save(update_fields=["watermark_last_message_id"])
+        AcquiredMessage.objects.create(provider=self.prov, chat_id="1001", message_id="100",
+                                       outcome=AcquiredMessage.Outcome.INTAKEN, non_genuine=False)
+        AcquiredMessage.objects.create(provider=self.prov, chat_id="1001", message_id="900",
+                                       outcome=AcquiredMessage.Outcome.QUARANTINED, non_genuine=True)
+        out = StringIO()
+        call_command("reconcile_catchup_checkpoint", "--slug", "wayond", stdout=out)
+        text = out.getvalue()
+        self.assertIn("[REVIEW]", text)        # wm 900 AHEAD of the true genuine max (100)
+        self.assertIn("AHEAD", text)
