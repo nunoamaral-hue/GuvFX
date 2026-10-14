@@ -5,6 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
 import pathlib
+import re
 from unittest.mock import MagicMock, patch
 import urllib.error
 from urllib.parse import parse_qs, urlparse
@@ -634,7 +635,17 @@ class DeliverySafetyTests(CustomerTelegramTestBase):
         output = StringIO()
         call_command("run_customer_notification_worker", "--once", stdout=output)
         rendered = output.getvalue()
-        self.assertNotIn("111", rendered)
+        # Scrub machine timestamps before the raw chat-id substring check. The worker emits a health
+        # payload containing an ISO heartbeat timestamp whose microseconds can coincidentally contain a
+        # chat-id substring (e.g. "...22.695111+00:00" contains "111") -- a time-flaky false positive
+        # that is not a leak. (Same reasoning as the health-payload test above, which drops *_at fields.)
+        # A timestamp is not a recipient-id leak vector; a genuine chat-id leak would appear outside a
+        # timestamp and is still caught. Credential checks stay on the untouched output.
+        chatid_scan = re.sub(
+            r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:[+-]\d{2}:\d{2}|Z)?",
+            "<ts>", rendered,
+        )
+        self.assertNotIn("111", chatid_scan)
         self.assertNotIn("test-only-token", rendered)
         self.assertNotIn("test-webhook-secret", rendered)
 
