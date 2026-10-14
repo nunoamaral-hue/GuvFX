@@ -128,7 +128,16 @@ if [ "$MODE" = "up" ]; then
   # provably did not pre-exist (we refused above if $PGDATA existed), and $SOCKDIR/$STATE live under
   # the controlled root, so removing exactly them can never touch a shared/production cluster.
   cleanup_up() {
-    [ "$STARTED" = "1" ] && pg_ctl -D "$PGDATA" -s -m immediate stop >/dev/null 2>&1 || true
+    # MEDIUM-B (equivalent protection for failed-setup cleanup): stop the postmaster and WAIT; then,
+    # if it is still running, LEAVE the data dir in place (never rm a running cluster's files) and
+    # report, rather than deleting to make cleanup look successful.
+    if [ "$STARTED" = "1" ] && pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+      pg_ctl -D "$PGDATA" -w -m immediate stop >/dev/null 2>&1 || true
+    fi
+    if [ -d "$PGDATA" ] && pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+      rec_err "failed-setup cleanup: postmaster at $PGDATA is still running -- LEAVING the data dir in place for investigation (stop it and remove $ROOT manually). Not deleting a live cluster."
+      return 0
+    fi
     rm -rf "$PGDATA" "$SOCKDIR" "$STATE" 2>/dev/null || true
     [ -z "${GUVFX_RECOVERY_EPHEMERAL_ROOT:-}" ] && rmdir "$ROOT" 2>/dev/null || true
     return 0
@@ -234,9 +243,19 @@ off="$(eph_offline_sysid)"
 [ "$off" = "$recorded_sysid" ] || rec_die "REFUSED: data-dir system_identifier '$off' != recorded ephemeral sysid '$recorded_sysid' -- not the cluster we provisioned. Fail-closed."
 [ "$off" != "${GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID}" ] || rec_die "REFUSED: data-dir system_identifier matches GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID -- refusing. Fail-closed."
 root_supplied="$(sed -n 's/^root_was_supplied=//p' "$STATE" | head -1)"   # read BEFORE removing STATE
-rec_log "stopping ephemeral postmaster (if running) and removing ONLY our files under $ROOT"
-pg_ctl -D "$PGDATA" -s -m immediate stop >/dev/null 2>&1 || true
+# MEDIUM-B: VERIFY the ephemeral postmaster is actually stopped BEFORE any rm. A graceful stop is
+# attempted (waiting for completion); then `pg_ctl status` must report NOT running (non-zero). If it
+# is still running / uncertain, we do NOT delete the data directory -- that would corrupt a live
+# cluster and destroy the evidence -- we preserve the ownership stamp + state, exit non-zero, and let
+# the operator stop it and retry. (`pg_ctl status`: exit 0 = a server is running, non-zero = not.)
+rec_log "stopping ephemeral postmaster (if running) under $ROOT, then verifying it stopped before removal"
+if pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+  pg_ctl -D "$PGDATA" -w -m fast stop >/dev/null 2>&1 || pg_ctl -D "$PGDATA" -w -m immediate stop >/dev/null 2>&1 || true
+fi
+if pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+  rec_die "REFUSED: the ephemeral postmaster at $PGDATA did NOT stop -- refusing to remove a running cluster's data directory. Ownership stamp + state file are PRESERVED for investigation; stop the postmaster and re-run --down to retry. Fail-closed."
+fi
 rm -rf "$PGDATA" "$SOCKDIR" "$STATE"
 # Remove the root dir only if WE created it (not an operator-supplied directory with other contents).
 [ "$root_supplied" = "1" ] || rmdir "$ROOT" 2>/dev/null || true
-rec_log "teardown complete: disposable cluster at $PGDATA removed. No shared cluster was touched."
+rec_log "teardown complete: disposable cluster at $PGDATA stopped and removed. No shared cluster was touched."

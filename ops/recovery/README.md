@@ -70,9 +70,11 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
 | `verify.sh --meta M.json` | integrity (sha256) + for encrypted: streamed `gpg | pg_restore --list` TOC (archive-format, read-only) | acts (read-only) |
 | `restore.sh --meta M.json [--execute]` | atomic restore into a verified-EMPTY, allowlisted+owned non-production target (no `--force`) | dry-run |
 | `audit_report.sh --dir DIR [--max-age-hours H] [--verify-integrity] [--gate | --gate-usable]` | recovery-point observability; `--gate` inventory-only, `--gate-usable` adds mandatory integrity | report |
-| `tests/setup_isolated_cluster.sh --up` / `--down` | **privileged** provisioner that **`initdb`s a dedicated ephemeral cluster** (private socket, no TCP, least-privilege role + marker inside it); `--down` stops + removes only the files it created. No DDL against a shared cluster | acts (privileged) |
+| `tests/setup_isolated_cluster.sh --up` / `--down` | **privileged** provisioner that **`initdb`s a dedicated ephemeral cluster** (private socket, no TCP, least-privilege role + marker inside it); `--down` **verifies the postmaster stopped before any `rm`** (refuses + preserves evidence otherwise) and removes only the files it created. No DDL against a shared cluster | acts (privileged) |
 | `tests/attest_isolated.sh` | sourced guard: independent isolated-cluster attestation (no mutation) | n/a |
-| `tests/certify_provisioner.sh` | privileged-provisioner trust-boundary certification (R3; 16 cases: setup/teardown symmetry, production-selection refusal, redirection neutralisation, cleanup safety) | runs |
+| `tests/eph_tracking.sh` | sourced helper: subshell-safe (file-based) ephemeral-root tracking + cleanup | n/a |
+| `tests/certify_provisioner.sh` | privileged-provisioner trust-boundary certification (R3; 18 cases: setup/teardown symmetry, production-selection refusal, redirection neutralisation, verified-shutdown teardown, cleanup safety) | runs |
+| `tests/certify_cleanup.sh` | harness cleanup-tracking certification (R3 CLOSEOUT; 7 cases: tracking survives a subshell; the trap cleans an abnormal exit; main + unrelated dirs untouched) | runs |
 | `tests/certify.sh` | isolated recovery backup/verify/restore/reconcile certification (64 cases), run **as the least-privilege role** after independent attestation | runs |
 
 ## Typical isolated use (dev/test)
@@ -102,7 +104,7 @@ the privileged provisioner never does DDL against a shared cluster — it **`ini
 cluster**:
 
 ```bash
-# 0) (optional) certify the privileged provisioner's trust boundary itself (16 cases).
+# 0) (optional) certify the privileged provisioner's trust boundary itself (18 cases).
 bash ops/recovery/tests/certify_provisioner.sh
 
 # 1) PRIVILEGED: provision a DEDICATED EPHEMERAL cluster (private data dir/socket, no TCP). This

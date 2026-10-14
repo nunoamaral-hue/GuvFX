@@ -31,17 +31,14 @@ MAIN_DBS_BEFORE="$(psql -tAqc 'select count(*) from pg_database' postgres)"
 MAIN_ROLES_BEFORE="$(psql -tAqc 'select count(*) from pg_roles' postgres)"
 PW="prov_throwaway_$$_$(date +%s)"   # per-run throwaway tester password (no static credential in Git)
 
-ROOTS=""   # track every ephemeral root we create so the trap can destroy them
-mktroot()  { local r; r="$(mktemp -d "${TMPDIR:-/tmp}/guvfx_provcert.XXXXXX")"; ROOTS="$ROOTS $r"; printf '%s' "$r"; }
-cleanup() {
-  local r
-  for r in $ROOTS; do
-    [ -d "$r/pgdata" ] && pg_ctl -D "$r/pgdata" -s -m immediate stop >/dev/null 2>&1 || true
-    rm -rf "$r" 2>/dev/null || true
-  done
-  return 0
-}
-trap cleanup EXIT INT TERM
+# MEDIUM-A: track each ephemeral root in a FILE (via the shared helper), because mktroot is called as
+# `R="$(mktroot)"` -- a subshell -- so a shell-variable append would NOT reach the parent trap. File
+# writes from the subshell persist, so the EXIT/INT/TERM trap always has the authoritative root list
+# even on an abnormal mid-suite termination.
+# shellcheck source=eph_tracking.sh
+. "$HERE/eph_tracking.sh"
+mktroot()  { local r; r="$(mktemp -d "${TMPDIR:-/tmp}/guvfx_provcert.XXXXXX")"; eph_track_root "$r"; printf '%s' "$r"; }
+trap eph_cleanup_tracked EXIT INT TERM
 
 up()   { GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_TESTER_PASSWORD="$PW" GUVFX_RECOVERY_EPHEMERAL_ROOT="$1" bash "$SETUP" --up; }
 down() { GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_EPHEMERAL_ROOT="$1" bash "$SETUP" --down; }
@@ -49,6 +46,18 @@ down() { GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_EPHEMERA
 refuses() { local desc="$1" exp="$2"; shift 2; local out
   if out="$("$@" 2>&1)"; then pbad "$desc (SHOULD have refused but succeeded)";
   else case "$out" in *"$exp"*) pok "$desc";; *) pbad "$desc (refused for WRONG reason: $(printf '%s' "$out" | grep -i refused | tail -1))";; esac; fi; }
+
+# SELF-TEST HOOK (R3 CLOSEOUT MEDIUM-A regression, used ONLY by certify_cleanup.sh): provision ONE
+# ephemeral cluster via the REAL mktroot (a `$(mktroot)` subshell) + up, record its root for the
+# caller, then abort WITHOUT tearing it down -- firing the EXIT trap. This exercises the production
+# trap's abnormal-exit cleanup: with the fix it removes the cluster; if the fix regresses (tracking
+# lost to the subshell) the trap is a no-op and the caller detects the leak. Not part of a normal run.
+if [ "${GUVFX_PROVCERT_SELFTEST_ABORT:-0}" = "1" ]; then
+  RSELF="$(mktroot)"; up "$RSELF" >/dev/null 2>&1 || true
+  printf '%s\n' "$RSELF" > "${GUVFX_PROVCERT_SELFTEST_ROOTFILE:-/dev/null}"
+  note "SELFTEST: provisioned $RSELF then aborting (exit 1) to exercise the abnormal-exit cleanup trap"
+  exit 1
+fi
 
 echo; note "=== 1/2: verified disposable-cluster setup + teardown succeed ==="
 R1="$(mktroot)"
@@ -146,6 +155,27 @@ refuses "teardown refuses a stamp token that does not match the recorded state t
 # restore the real token so the trap can clean it up
 printf '%s' "$(sed -n 's/^owner_token=//p' "$R16/.guvfx_ephemeral" | head -1)" > "$R16/pgdata/.guvfx_ephemeral_owner"
 down "$R16" >/dev/null 2>&1 || true
+
+echo; note "=== 17: MEDIUM-B -- teardown REFUSES to delete when the postmaster did NOT stop (verified shutdown) ==="
+R17="$(mktroot)"; up "$R17" >/dev/null 2>&1
+# pg_ctl shim: `stop` is a no-op success (the postmaster stays UP); everything else (incl. `status`)
+# delegates to the REAL pg_ctl -- so after the "stop" the status check still reports a running server.
+SHIM="$R17/shimbin"; mkdir -p "$SHIM"; REAL_PGCTL="$(command -v pg_ctl)"
+cat > "$SHIM/pg_ctl" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do [ "\$a" = "stop" ] && exit 0; done
+exec "$REAL_PGCTL" "\$@"
+SH
+chmod +x "$SHIM/pg_ctl"
+if out="$( PATH="$SHIM:$PATH" GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_EPHEMERAL_ROOT="$R17" bash "$SETUP" --down 2>&1 )"; then
+  pbad "teardown should FAIL (non-zero) when the postmaster did not stop"
+else
+  if printf '%s' "$out" | grep -q "did NOT stop" && [ -f "$R17/pgdata/PG_VERSION" ] && [ -f "$R17/.guvfx_ephemeral" ] && [ -f "$R17/pgdata/.guvfx_ephemeral_owner" ]; then
+    pok "teardown REFUSES (non-zero) and PRESERVES data dir + state + ownership stamp when shutdown is unconfirmed"
+  else pbad "teardown refusal/evidence-preservation wrong (reason: $(printf '%s' "$out" | grep -i refused | tail -1))"; fi
+fi
+echo; note "=== 18: MEDIUM-B -- a subsequent real teardown succeeds (safe operator retry) ==="
+if down "$R17" >/dev/null 2>&1 && [ ! -e "$R17/pgdata" ]; then pok "retry teardown (real pg_ctl) stops + removes the cluster"; else pbad "retry teardown should succeed after the postmaster can stop"; fi
 
 echo; note "================= PROVISIONER CERTIFY SUMMARY: PASS=$PASS FAIL=$FAIL ================="
 [ "$FAIL" -eq 0 ] || { note "PROVISIONER CERTIFICATION FAILED"; exit 1; }

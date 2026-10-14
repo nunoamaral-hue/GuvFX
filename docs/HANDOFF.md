@@ -1,5 +1,42 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — DB Recovery Foundation R3 CLOSEOUT (PR #498, DARK, HOLD)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-R3-CLOSEOUT-2026-10-14
+Packet ID: DB_RECOVERY_FOUNDATION_R3_CLOSEOUT (parent: the foundation packet)
+Status: PASS (2 MEDIUM corrected + re-certified 89/89 = 64 recovery + 18 provisioner + 7 cleanup; DARK; HOLD; NO-GO)
+Branch/PR: feat/db-recovery-foundation / PR #498 (continued; not merged; auto-merge OFF)
+PD accepted the R3 architecture at head 3bafb6d (80/80). Two bounded harness-safety MEDIUMs fixed:
+MEDIUM-A (harness cleanup tracking): certify_provisioner.sh called mktroot as R=$(mktroot) -- a SUBSHELL
+  -- so its ROOTS shell-var append never reached the parent trap (abnormal mid-suite exit would leak
+  ephemeral clusters). Fix: new tests/eph_tracking.sh records each root in a FILE whose path is
+  established + EXPORTED in the PARENT at SOURCE TIME, so command-substitution subshells INHERIT it and
+  the parent EXIT/INT/TERM trap sees every root; eph_cleanup_tracked stops the owned postmaster, removes
+  only tracked dirs, leaves a non-stopping cluster in place, never drops roles/dbs. (The focused review
+  caught a first attempt that still created the file lazily INSIDE the subshell -- a no-op trap that
+  leaked ~160 clusters + one tracking file per call; that HIGH is fixed here.) New tests/certify_cleanup.sh
+  (7) proves it END-TO-END by aborting the real certify_provisioner.sh and asserting its trap cleaned up;
+  proven NON-VACUOUS (it FAILS against the broken helper).
+MEDIUM-B (teardown stop-failure): --down did `pg_ctl stop || true` then unconditional rm -rf. Fix: VERIFY
+  the postmaster is stopped (pg_ctl status non-zero) BEFORE any rm; if unconfirmed, refuse, preserve data
+  dir + stamp + state, exit non-zero, allow retry. Same protection added to the failed-setup cleanup_up
+  trap (leave a live cluster rather than delete it). New certify_provisioner.sh tests 17/18 (stop-failure
+  via a pg_ctl `stop` no-op shim -> refuse + evidence preserved; real retry succeeds).
+Files: ops/recovery/tests/{eph_tracking.sh (new),certify_cleanup.sh (new),certify_provisioner.sh,
+  setup_isolated_cluster.sh,CERTIFICATION_EVIDENCE.txt}, docs/DB_RECOVERY_FOUNDATION.md,
+  ops/recovery/README.md, docs/{STATUS,NEXT,HANDOFF,KNOWN_ISSUES}.md. certify.sh/lib.sh/backup/verify/
+  restore/audit UNCHANGED (bounded CLOSEOUT).
+Certification: 89/89 PASS. Focused adversarial review ran (Workflow, 3 dimensions). Main cluster DB/role
+  counts verified unchanged across the suite. Evidence committed. No static credential in Git.
+Untested production characteristics: PG 15 on Linux (Docker unavailable -> PG 17 synthetic); off-host;
+  PITR; RESTORE_TESTED vs prod data. -> still BLOCKED.
+Rollback: additive; revert the branch commits. Nothing deployed.
+Recommended next: Sponsor authorizes off-host storage + FS fix -> PRODUCTION_BACKUP_ACTIVE path.
+```
+
 ## 2026-10-14 — DB Recovery Foundation R3 correction (PR #498, DARK, HOLD)
 
 ```
