@@ -70,9 +70,10 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
 | `verify.sh --meta M.json` | integrity (sha256) + for encrypted: streamed `gpg | pg_restore --list` TOC (archive-format, read-only) | acts (read-only) |
 | `restore.sh --meta M.json [--execute]` | atomic restore into a verified-EMPTY, allowlisted+owned non-production target (no `--force`) | dry-run |
 | `audit_report.sh --dir DIR [--max-age-hours H] [--verify-integrity] [--gate | --gate-usable]` | recovery-point observability; `--gate` inventory-only, `--gate-usable` adds mandatory integrity | report |
-| `tests/setup_isolated_cluster.sh` | **privileged** out-of-band provisioning of the test boundary (least-privilege role + pre-existing marker); `--teardown` removes them | acts (privileged) |
+| `tests/setup_isolated_cluster.sh --up` / `--down` | **privileged** provisioner that **`initdb`s a dedicated ephemeral cluster** (private socket, no TCP, least-privilege role + marker inside it); `--down` stops + removes only the files it created. No DDL against a shared cluster | acts (privileged) |
 | `tests/attest_isolated.sh` | sourced guard: independent isolated-cluster attestation (no mutation) | n/a |
-| `tests/certify.sh` | isolated backup/verify/restore/reconcile + fail-closed certification, run **as the least-privilege role** after independent attestation | runs |
+| `tests/certify_provisioner.sh` | privileged-provisioner trust-boundary certification (R3; 16 cases: setup/teardown symmetry, production-selection refusal, redirection neutralisation, cleanup safety) | runs |
+| `tests/certify.sh` | isolated recovery backup/verify/restore/reconcile certification (64 cases), run **as the least-privilege role** after independent attestation | runs |
 
 ## Typical isolated use (dev/test)
 
@@ -96,21 +97,26 @@ ops/recovery/restore.sh --meta /secure/backups/guvfx_predeploy_*.meta.json --exe
 
 ## Certification
 
-Certification runs in two deliberately-separate steps so the destructive harness cannot establish its
-own isolation evidence:
+Certification is split so the destructive harness never establishes its own isolation evidence, and
+the privileged provisioner never does DDL against a shared cluster — it **`initdb`s its own disposable
+cluster**:
 
 ```bash
-# 1) PRIVILEGED, out-of-band: provision the isolation boundary the harness will only VERIFY.
-#    Creates a least-privilege NON-SUPERUSER role + the pre-existing marker DB (owned by the privileged role).
-GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID=<prod sysid> GUVFX_RECOVERY_TESTER_PASSWORD=<throwaway> \
-  bash ops/recovery/tests/setup_isolated_cluster.sh
-# (it prints the exact env to export, incl. PGUSER=<non-superuser role> and ISOLATED_CLUSTER_ID)
+# 0) (optional) certify the privileged provisioner's trust boundary itself (16 cases).
+bash ops/recovery/tests/certify_provisioner.sh
 
-# 2) LEAST-PRIVILEGE: run the destructive certification AS the non-superuser role.
+# 1) PRIVILEGED: provision a DEDICATED EPHEMERAL cluster (private data dir/socket, no TCP). This
+#    creates the least-privilege role + marker INSIDE the fresh cluster it owns.
+GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID=<main/prod sysid> GUVFX_RECOVERY_TESTER_PASSWORD=<throwaway> \
+  GUVFX_RECOVERY_EPHEMERAL_ROOT=/path/to/new/dir  bash ops/recovery/tests/setup_isolated_cluster.sh --up
+# (it prints the exact env to export: PGHOST=<socket> PGPORT PGUSER=<non-superuser role> ISOLATED_CLUSTER_ID ...)
+
+# 2) LEAST-PRIVILEGE: run the destructive recovery certification AS the non-superuser role (64 cases).
 GUVFX_RECOVERY_ATTEST_ISOLATED=1 bash ops/recovery/tests/certify.sh
 
-# teardown when done:
-GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID=<prod sysid> bash ops/recovery/tests/setup_isolated_cluster.sh --teardown
+# 3) teardown: stop + remove ONLY the ephemeral cluster's files (no shared-cluster DDL).
+GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID=<main/prod sysid> \
+  GUVFX_RECOVERY_EPHEMERAL_ROOT=/path/to/that/dir  bash ops/recovery/tests/setup_isolated_cluster.sh --down
 ```
 
 `certify.sh` calls `attest_independent_test_cluster` **before any mutation** (mandatory production
@@ -118,7 +124,10 @@ denylist; operator-attested cluster id must equal the live `system_identifier`; 
 did NOT create; non-superuser role; loopback-only; localhost is not proof), then asserts the full
 backup→verify→restore→reconcile round-trip (incl. the encrypted streaming case) plus the R1 + R2
 fail-closed matrix (cluster isolation, per-DB target authorization, encrypted archive-format
-verification, inventory-vs-usable gates, enforceable capacity ceiling). Requires `gpg` and a local
-throwaway Postgres. Evidence: `tests/CERTIFICATION_EVIDENCE.txt`.
+verification, inventory-vs-usable gates, enforceable capacity ceiling). `certify_provisioner.sh` (R3)
+certifies the provisioner itself: the production id is mandatory on setup AND teardown; setup never
+adopts a pre-existing cluster; teardown refuses an unidentified/unstamped/mismatched/production-matching
+target and removes only files it owns; `PGSERVICE`/libpq defaults cannot redirect it. Requires `gpg`,
+`initdb`/`pg_ctl`/`pg_controldata`, and a local Postgres. Evidence: `tests/CERTIFICATION_EVIDENCE.txt`.
 Note: certified on local PG 17 (synthetic, least-privilege role) — **not production parity**; a
-PG 15 / Linux parity run against an ephemeral cluster is a Sponsor-gated follow-up.
+PG 15 / Linux parity run is a Sponsor-gated follow-up.

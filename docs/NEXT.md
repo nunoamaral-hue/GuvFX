@@ -17,13 +17,14 @@ CI 10/10) 2026-10-14 — still DARK, NOT deployed, migration 0012 NOT applied to
 remains **NO-GO**, gated by **HIGH-2 (production DB recovery)** — now being addressed by the DB Recovery Foundation below.
 One bounded next action: **progress the DB Recovery Foundation → then PD governs production DARK deployment separately.**
 
-## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK; R2)
+## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK; R3)
 Addresses HIGH-2. Design + certified DARK tooling (`docs/DB_RECOVERY_FOUNDATION.md`, `ops/recovery/`, isolated cert
-**64/64**, R2, least-privilege role). R2 corrections: independent certification-harness attestation (harness can no
-longer self-attest / self-mark; runs as a non-superuser role via `tests/setup_isolated_cluster.sh` +
-`tests/attest_isolated.sh`); per-database restore-target authorization (allowlist + ownership + non-superuser;
-cluster isolation alone is not sufficient); encrypted-archive FORMAT verification (`gpg | pg_restore --list`);
-distinct `--gate` (inventory) vs `--gate-usable` (integrity); enforceable `ulimit -f` capacity ceiling. PR #498 DARK,
+**80/80** = 64 recovery + 16 provisioner, least-privilege role). **R3 correction (final bounded safety):** the
+privileged provisioner `tests/setup_isolated_cluster.sh` now `initdb`s its OWN dedicated ephemeral cluster (private
+socket, no TCP) instead of doing DDL against a shared cluster; setup AND teardown require the production id and act
+only on the stamped ephemeral dir they own; new `tests/certify_provisioner.sh` (16 cases) certifies the trust
+boundary. R2 (retained): independent harness attestation; per-database restore-target authorization; encrypted-archive
+FORMAT verification; `--gate` vs `--gate-usable`; enforceable `ulimit -f` ceiling. PR #498 DARK,
 NOT merged, auto-merge OFF. **`PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RESTORE_TESTED` BLOCKED.** Remaining Sponsor decisions (none done here):
 (1) provision **off-host** storage (NAS/object store); (2) resolve the **root FS 96%** P0 (expand / governed prune of
 ~1.7 GB stale dumps); (3) authorize an automated backup schedule + its passphrase secret; (4) decide if sub-hour RPO

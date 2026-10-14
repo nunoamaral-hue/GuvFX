@@ -1,5 +1,43 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — DB Recovery Foundation R3 correction (PR #498, DARK, HOLD)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-R3-2026-10-14
+Packet ID: GUVFX_PRODUCTION_DATABASE_RECOVERY_FOUNDATION_R3 (parent: the foundation packet)
+Status: PASS (1 HIGH corrected + re-certified 80/80 = 64 recovery + 16 provisioner; DARK; HOLD; activation NO-GO)
+Branch/PR: feat/db-recovery-foundation / PR #498 (continued; not merged; auto-merge OFF)
+HIGH (privileged provisioning trust boundary): the provisioner no longer does privileged DDL against a
+  SHARED cluster and teardown no longer runs destructive ops before the production check. tests/
+  setup_isolated_cluster.sh now `initdb`s its OWN dedicated ephemeral cluster (private data dir under a
+  controlled GUVFX_RECOVERY_EPHEMERAL_ROOT, private unix socket, listen_addresses= so NO TCP). The only
+  CREATE ROLE/CREATE DATABASE run inside that fresh cluster; disposability is intrinsic (brand-new
+  system_identifier). --down stops the postmaster and rm's ONLY the files it created, gated by an
+  ownership stamp (token must match the state file) and the data-dir's offline system_identifier
+  (pg_controldata). GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID is MANDATORY on BOTH --up and --down; libpq/
+  PGSERVICE are neutralised (explicit private socket); a failed/interrupted setup cleans up only the
+  ephemeral paths it created. A placeholder production id authorizes nothing (authorization = positive
+  ownership of a cluster we initdb'd).
+New file: tests/certify_provisioner.sh (16 cases) — setup+teardown succeed; teardown refused w/o prod id;
+  setup won't adopt a pre-existing cluster; teardown refuses identity-mismatch / unstamped / production-
+  match (pre-destruction); hostile PGHOST/PGPORT/PGSERVICE/PGUSER neutralised; main cluster DBs+roles
+  untouched; failed setup no unsafe cleanup; recovery certify.sh (64) still passes on the ephemeral cluster.
+Files: ops/recovery/tests/{setup_isolated_cluster.sh (rewritten),certify_provisioner.sh (new),
+  CERTIFICATION_EVIDENCE.txt}, docs/DB_RECOVERY_FOUNDATION.md, ops/recovery/README.md,
+  docs/{STATUS,NEXT,HANDOFF,KNOWN_ISSUES}.md. (certify.sh / lib.sh / backup/verify/restore/audit unchanged in R3.)
+Certification: 80/80 PASS (64 recovery + 16 provisioner), isolated, synthetic, local PG 17, least-privilege
+  role; ephemeral cluster via initdb. Focused adversarial review ran (Workflow). Evidence committed.
+Secret-scan: PASS. No shared/main cluster was mutated (verified DB/role counts unchanged by teardown).
+Untested production characteristics: PG 15 on Linux (Docker unavailable -> PG 17 synthetic only);
+  production-representative dataset; off-host transfer; PITR; RESTORE_TESTED vs prod data. -> still BLOCKED.
+macOS note: provisioner exports LC_ALL=C to avoid a 'postmaster became multithreaded' startup abort.
+Rollback: additive; revert the branch commits. Nothing deployed.
+Recommended next: Sponsor authorizes off-host storage + FS fix, then a governed PG15/Linux parity +
+  first production-representative restore test -> PRODUCTION_BACKUP_ACTIVE / PRODUCTION_RECOVERY_VERIFIED.
+```
+
 ## 2026-10-14 — DB Recovery Foundation R2 corrections (PR #498, DARK, HOLD)
 
 ```

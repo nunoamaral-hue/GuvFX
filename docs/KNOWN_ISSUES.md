@@ -19,11 +19,13 @@ List active problems with reproduction steps and workarounds.
 - **`core_auditevent` dominates the DB (2.24 GB / 79%, ~4.8M rows).** Drives DB + backup growth. An
   audit retention/archival policy (separate packet) would bound it — archived off-DB, **never deleted**
   (immutable evidence, data.md).
-- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic, **64/64**, R2,
-  least-privilege role). Cluster protection is AUTHORITATIVE (live `system_identifier` vs attested
-  isolated cluster + positive marker; a class label cannot override); the certification harness can no
-  longer self-attest/self-mark (independent `tests/attest_isolated.sh` + out-of-band
-  `tests/setup_isolated_cluster.sh`, run as a non-superuser role); a destructive restore also requires
+- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic, **80/80** = 64
+  recovery + 16 provisioner, R3, least-privilege role). Cluster protection is AUTHORITATIVE (live
+  `system_identifier` vs attested isolated cluster + positive marker; a class label cannot override);
+  the certification harness can no longer self-attest/self-mark (independent `tests/attest_isolated.sh`);
+  **the privileged provisioner `tests/setup_isolated_cluster.sh` now `initdb`s its OWN ephemeral cluster
+  (private socket, no TCP) — no DDL against a shared cluster, and teardown stops+removes only the files
+  it owns; prod id mandatory on setup AND teardown (R3)**; a destructive restore also requires
   per-DATABASE authorization (exact allowlist + ownership + non-superuser, non-admin/non-prod);
   encrypted backups STREAM `pg_dump|gpg` (no plaintext) and encrypted verify validates the PG
   archive FORMAT (`gpg|pg_restore --list`, not just decryptability); restore requires a verified-EMPTY

@@ -14,6 +14,20 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - DB RECOVERY FOUNDATION R3 CORRECTION (PR #498, DARK, HOLD).** PD accepted R2; one
+  remaining HIGH on the privileged provisioning/teardown script. **Fix:** `tests/setup_isolated_cluster.sh`
+  now `initdb`s its OWN dedicated ephemeral cluster (private data dir/socket, no TCP) instead of doing
+  privileged DDL against a shared cluster — disposability is intrinsic (fresh `system_identifier`), the
+  only CREATE ROLE/DB run inside that cluster, and `--down` stops + removes ONLY the files it created
+  (ownership-stamp + offline `pg_controldata` sysid gated). `GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` is
+  MANDATORY on setup AND teardown; libpq/PGSERVICE neutralised; failed setup cleans up only its own
+  paths; a placeholder prod id authorizes nothing. New `tests/certify_provisioner.sh` (16 cases) proves
+  the trust boundary; recovery `certify.sh` (64) still passes on the ephemeral cluster. **Re-certified
+  80/80** (64 recovery + 16 provisioner). Focused adversarial review ran. Milestones:
+  `TOOLING_CERTIFIED_IN_TESTS` + `PRIVILEGED_PROVISIONING_CERTIFIED` + `RECOVERY_DESIGN_CERTIFIED` PASS;
+  `PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RECOVERY_VERIFIED` / `T1_PRODUCTION_DARK_DEPLOYMENT_READY`
+  BLOCKED. Local PG 17 synthetic only. **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
 - **2026-10-14 - DB RECOVERY FOUNDATION R2 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted R1; raised
   2 HIGH + 2 MEDIUM + §6, all fixed + re-certified **64/64** (least-privilege role). **HIGH-1** the
   certification harness can no longer manufacture its own isolation: independent attestation
