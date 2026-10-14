@@ -34,14 +34,26 @@ eph_track_root() { printf '%s\n' "$1" >> "$GUVFX_EPH_ROOTS_FILE"; }
 # stopped; otherwise LEAVE the data dir in place (never rm under a running postmaster) and return
 # non-zero so a caller can treat an uncertain shutdown as a failure and preserve evidence. Acts only
 # on an absolute `.../pgdata`-bearing tracked path; drops no role/database; touches no other cluster.
+# `pg_ctl status` exit codes: 0 = running, 3 = NOT running (cleanly stopped), 4 = inaccessible /
+# unspecified data dir, other = error. Confirmed-stopped is ONLY exit 3; 0 and any other code (UNKNOWN)
+# both mean "do not delete". Identical contract to lib.sh rec_pg_confirmed_stopped (kept local so this
+# helper has no lib.sh dependency; delegates to it when available to stay provably consistent).
+eph_pg_confirmed_stopped() {
+  if command -v rec_pg_confirmed_stopped >/dev/null 2>&1; then rec_pg_confirmed_stopped "$1"; return; fi
+  local rc=0
+  pg_ctl -D "$1" status >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 3 ]
+}
+
 eph_safe_remove_root() {
   local r="$1"
   [ -n "$r" ] || return 0
   case "$r" in /*) : ;; *) return 0 ;; esac
   if [ -d "$r/pgdata" ]; then
     pg_ctl -D "$r/pgdata" -w -m immediate stop >/dev/null 2>&1 || true
-    if pg_ctl -D "$r/pgdata" status >/dev/null 2>&1; then
-      printf '%s [eph_tracking][WARN] postmaster at %s did not stop -- leaving data dir in place (safe); evidence preserved\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$r/pgdata" >&2
+    # Remove ONLY on a POSITIVE stopped (exit 3). Running (0) or UNKNOWN (4/error) -> leave + non-zero.
+    if ! eph_pg_confirmed_stopped "$r/pgdata"; then
+      printf '%s [eph_tracking][WARN] postmaster at %s not CONFIRMED stopped (pg_ctl status != 3) -- leaving data dir in place (safe); evidence preserved\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$r/pgdata" >&2
       return 1
     fi
   fi

@@ -42,6 +42,17 @@ rec_require_cmd() {
   done
 }
 
+# `pg_ctl status` exit codes (documented, stable): 0 = server running, 3 = server NOT running (cleanly
+# stopped), 4 = inaccessible / unspecified data directory, other = error. A destructive cleanup may
+# proceed ONLY on a POSITIVE "stopped" (exit 3). 0 (running) and ANY other code (4 / error / UNKNOWN)
+# both mean DO NOT DELETE -- an error or an inaccessible data dir must never be interpreted as a
+# successful shutdown. Returns 0 iff the postmaster at $1 is CONFIRMED stopped (exit exactly 3).
+rec_pg_confirmed_stopped() {
+  local rc=0
+  pg_ctl -D "$1" status >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 3 ]
+}
+
 rec_sha256() {
   # Portable sha256 (Linux: sha256sum; macOS: shasum -a 256). Prints the hash only.
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';

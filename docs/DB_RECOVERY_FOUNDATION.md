@@ -180,9 +180,11 @@ required — PITR. Sponsor acceptance of any residual data-loss window is **not*
   therefore **intrinsic** — the cluster is brand-new (a fresh `system_identifier` sharing nothing with
   any existing/production cluster) and we created every byte of it. The **only** `CREATE ROLE` /
   `CREATE DATABASE` run inside that fresh cluster; the provisioner performs **no DDL against any shared
-  cluster**. `--down` stops that postmaster, **verifies it is actually stopped (`pg_ctl status`) before
-  any `rm`** — refusing and preserving the data dir + ownership stamp + state (non-zero exit) if
-  shutdown is unconfirmed, so a live cluster is never deleted (R3 CLOSEOUT MEDIUM-B) — then `rm`s
+  cluster**. `--down` stops that postmaster, **verifies it is actually stopped — a POSITIVE `pg_ctl
+  status` exit `3` — before any `rm`** (exit `0`=running and `4`=inaccessible/other=error all refuse;
+  an error is never read as a clean stop), refusing and preserving the data dir + ownership stamp +
+  state (non-zero exit) if shutdown is unconfirmed, so a live/uncertain cluster is never deleted
+  (R3 CLOSEOUT MEDIUM-B + exit-code closeout) — then `rm`s
   **only the files we created**, gated by an ownership stamp whose token must match the recorded state
   and by the data-dir's own `system_identifier` (via offline `pg_controldata`). The **same trust
   boundary** applies to setup and teardown: `GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` is **mandatory on
@@ -255,10 +257,10 @@ without the explicit gates above. See `ops/recovery/README.md` for the operator 
   shared cluster.
 - `tests/eph_tracking.sh` — sourced helper: subshell-safe (file-based) ephemeral-root tracking + cleanup
   (R3 CLOSEOUT MEDIUM-A), used by the provisioner and cleanup certifications.
-- `tests/certify_provisioner.sh` — the provisioner trust-boundary certification (R3; 18 cases) — setup/
+- `tests/certify_provisioner.sh` — the provisioner trust-boundary certification (R3; 19 cases) — setup/
   teardown symmetry, production-selection refusal, connection-redirection neutralisation, verified-
   shutdown teardown, cleanup safety.
-- `tests/certify_cleanup.sh` — the harness cleanup-tracking certification (R3 CLOSEOUT; 11 cases) —
+- `tests/certify_cleanup.sh` — the harness cleanup-tracking certification (R3 CLOSEOUT+FINAL; 13 cases) —
   proves tracking survives a subshell and the trap cleans an abnormal mid-suite exit.
 - `tests/certify.sh` — the isolated recovery certification harness (Gate F/H; 64 cases), run **as the
   least-privilege role** and gated on independent attestation.
@@ -271,9 +273,9 @@ Run **as a least-privilege non-superuser role** against a **dedicated ephemeral 
 by `tests/setup_isolated_cluster.sh`; private socket, no TCP), with **synthetic data only** (no
 production/app DB touched). Full evidence: `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
 
-**Combined result: 93 / 93 PASS** = **recovery certification 64/64** (`tests/certify.sh`) **+ privileged-
-provisioner trust-boundary certification 18/18** (`tests/certify_provisioner.sh`) **+ harness
-cleanup-tracking certification 11/11** (`tests/certify_cleanup.sh`, R3 CLOSEOUT+FINAL). The provisioner suite
+**Combined result: 96 / 96 PASS** = **recovery certification 64/64** (`tests/certify.sh`) **+ privileged-
+provisioner trust-boundary certification 19/19** (`tests/certify_provisioner.sh`) **+ harness
+cleanup-tracking certification 13/13** (`tests/certify_cleanup.sh`, R3 CLOSEOUT+FINAL). The provisioner suite
 proves: verified disposable-cluster setup + teardown succeed; the production id is required on setup AND
 teardown; setup refuses to adopt/clobber a pre-existing cluster; teardown refuses an identity mismatch,
 an unstamped/unknown dir, a stamp-token/state mismatch, and a production-denylist match (before any
@@ -290,6 +292,13 @@ abort) before certifying any cleanup, with a negative test that a forced startup
 `running=0` (never a fake success); and the cleanup suite's OWN teardown uses the shared
 `eph_safe_remove_root` contract (stop + verify before `rm`; a cluster whose shutdown is unconfirmed is
 preserved, with safe retry), tested with a failed-shutdown-preserves + retry-succeeds pair.
+**(REPOSITORY CLOSEOUT — `pg_ctl status` exit-code semantics):** a destructive `rm` proceeds ONLY on a
+**positive confirmed-stopped (exit exactly `3`)**; `0` (running) **and any other code (`4` =
+inaccessible/unspecified data dir, or an unexpected error) REFUSE** — an error or inaccessible data dir
+is never read as a clean shutdown. The same `rec_pg_confirmed_stopped` / `eph_pg_confirmed_stopped`
+semantics apply in `eph_safe_remove_root`, `setup_isolated_cluster.sh --down`, and the failed-setup
+`cleanup_up` trap. Certified A running(`0`)→refuse, B/E stopped(`3`)→permit+retry, C status `4`→refuse,
+D unexpected-error→refuse, F main cluster unchanged; provisioner test 19 = `--down` refuses on status `4`.
 
 **Recovery certification — 64 / 64 PASS.** Exercised: backup (dry-run refusal + execute), integrity verify, restore
 into a fresh empty DB, **row-count reconciliation across 9 tables**, **referential integrity**
@@ -352,8 +361,8 @@ These are DISTINCT milestones and must not be conflated (synthetic in-test passi
 | Milestone | Status | Basis |
 |---|---|---|
 | `ENGINEERING_READY` | **PASS** | tooling implemented; parses; dry-run + fail-closed behaviour verified |
-| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 93/93 (64 recovery + 18 provisioner + 11 cleanup) on synthetic data, local PG 17, least-privilege role (Gate F) |
-| `PRIVILEGED_PROVISIONING_CERTIFIED` | **PASS** | dedicated ephemeral-cluster provisioner; no DDL against a shared cluster; setup/teardown symmetric; verified-shutdown teardown + subshell-safe cleanup tracking; 18/18 + 11/11 (Gate F) |
+| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 96/96 (64 recovery + 19 provisioner + 13 cleanup) on synthetic data, local PG 17, least-privilege role (Gate F) |
+| `PRIVILEGED_PROVISIONING_CERTIFIED` | **PASS** | dedicated ephemeral-cluster provisioner; no DDL against a shared cluster; setup/teardown symmetric; verified-shutdown teardown + subshell-safe cleanup tracking; 19/19 + 13/13 (Gate F) |
 | `RECOVERY_DESIGN_CERTIFIED` | **PASS** | design (B/C/D) + the isolated certification above |
 | `PRODUCTION_BACKUP_ACTIVE` | **BLOCKED** | no scheduled backup, no off-host storage provisioned; gated by the 96% FS risk; Sponsor-gated |
 | `PRODUCTION_RECOVERY_VERIFIED` | **BLOCKED** | restore demonstrated only in isolation with synthetic data on PG 17; never against a production-representative dataset or a PG 15 cluster |

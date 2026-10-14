@@ -19,8 +19,8 @@ List active problems with reproduction steps and workarounds.
 - **`core_auditevent` dominates the DB (2.24 GB / 79%, ~4.8M rows).** Drives DB + backup growth. An
   audit retention/archival policy (separate packet) would bound it — archived off-DB, **never deleted**
   (immutable evidence, data.md).
-- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic, **93/93** = 64
-  recovery + 18 provisioner + 11 cleanup, R3 CLOSEOUT+FINAL, least-privilege role). Cluster protection is AUTHORITATIVE (live
+- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic, **96/96** = 64
+  recovery + 19 provisioner + 13 cleanup, R3 CLOSEOUT+FINAL, least-privilege role). Cluster protection is AUTHORITATIVE (live
   `system_identifier` vs attested isolated cluster + positive marker; a class label cannot override);
   the certification harness can no longer self-attest/self-mark (independent `tests/attest_isolated.sh`);
   **the privileged provisioner `tests/setup_isolated_cluster.sh` now `initdb`s its OWN ephemeral cluster

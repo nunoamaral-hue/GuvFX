@@ -183,12 +183,28 @@ chmod +x "$SHIM/pg_ctl"
 if out="$( PATH="$SHIM:$PATH" GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_EPHEMERAL_ROOT="$R17" bash "$SETUP" --down 2>&1 )"; then
   pbad "teardown should FAIL (non-zero) when the postmaster did not stop"
 else
-  if printf '%s' "$out" | grep -q "did NOT stop" && [ -f "$R17/pgdata/PG_VERSION" ] && [ -f "$R17/.guvfx_ephemeral" ] && [ -f "$R17/pgdata/.guvfx_ephemeral_owner" ]; then
-    pok "teardown REFUSES (non-zero) and PRESERVES data dir + state + ownership stamp when shutdown is unconfirmed"
+  if printf '%s' "$out" | grep -q "not CONFIRMED stopped" && [ -f "$R17/pgdata/PG_VERSION" ] && [ -f "$R17/.guvfx_ephemeral" ] && [ -f "$R17/pgdata/.guvfx_ephemeral_owner" ]; then
+    pok "teardown REFUSES (non-zero) and PRESERVES data dir + state + ownership stamp when shutdown is unconfirmed (status 0/running)"
   else pbad "teardown refusal/evidence-preservation wrong (reason: $(printf '%s' "$out" | grep -i refused | tail -1))"; fi
 fi
 echo; note "=== 18: MEDIUM-B -- a subsequent real teardown succeeds (safe operator retry) ==="
 if down "$R17" >/dev/null 2>&1 && [ ! -e "$R17/pgdata" ]; then pok "retry teardown (real pg_ctl) stops + removes the cluster"; else pbad "retry teardown should succeed after the postmaster can stop"; fi
+
+echo; note "=== 19: exit-code semantics -- setup --down refuses on an UNKNOWN pg_ctl status (4), not just running ==="
+# pg_ctl status exit 4 = inaccessible / unspecified data dir (UNKNOWN). Teardown must NOT treat that as
+# a clean shutdown. Shim: status->4, stop->no-op (cluster stays up); setup --down must REFUSE + preserve.
+R19="$(mktroot)"; up "$R19" >/dev/null 2>&1
+SHIM19="$R19/shim19"; mkdir -p "$SHIM19"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for a in "$@"; do [ "$a" = "stop" ] && exit 0; [ "$a" = "status" ] && exit 4; done\n'
+  printf 'exec "%s" "$@"\n' "$(command -v pg_ctl)"; } > "$SHIM19/pg_ctl"
+chmod +x "$SHIM19/pg_ctl"
+if out="$( PATH="$SHIM19:$PATH" GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_EPHEMERAL_ROOT="$R19" bash "$SETUP" --down 2>&1 )"; then
+  pbad "19: setup --down should FAIL (non-zero) on an UNKNOWN (status 4) shutdown"
+else
+  if printf '%s' "$out" | grep -q "not CONFIRMED stopped" && [ -f "$R19/pgdata/PG_VERSION" ] && [ -f "$R19/.guvfx_ephemeral" ]; then pok "19: setup --down refuses on status 4 (UNKNOWN) and PRESERVES data dir + state"; else pbad "19: wrong refusal/evidence on status 4 (out: $(printf '%s' "$out" | grep -i refused | tail -1))"; fi
+fi
+down "$R19" >/dev/null 2>&1 || true   # real teardown cleans it up
 
 echo; note "================= PROVISIONER CERTIFY SUMMARY: PASS=$PASS FAIL=$FAIL ================="
 [ "$FAIL" -eq 0 ] || { note "PROVISIONER CERTIFICATION FAILED"; exit 1; }

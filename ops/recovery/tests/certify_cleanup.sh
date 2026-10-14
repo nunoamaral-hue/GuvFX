@@ -95,26 +95,34 @@ env -u GUVFX_EPH_ROOTS_FILE PATH="$SHIMS:$PATH" GUVFX_PROVCERT_SELFTEST_ABORT=1 
 if grep -q '^running=0' "$EVN" 2>/dev/null && ! grep -q '^running=1' "$EVN" 2>/dev/null; then pok "forced-startup-failure records running=0 (no fake success for a postmaster that never started)"; else pbad "startup failure should record running=0, got: $(tr '\n' ' ' < "$EVN" 2>/dev/null)"; fi
 rm -rf "$SHIMS" "$EVN"
 
-echo; note "=== MEDIUM-B: cleanup contract -- a cluster whose shutdown is unconfirmed is PRESERVED, retry succeeds ==="
+echo; note "=== MEDIUM-B / pg_ctl status exit-code semantics: delete ONLY on confirmed-stopped (status==3) ==="
+# A pg_ctl shim that forces `status` to a chosen exit code and makes `stop` a no-op (the cluster stays
+# up), so eph_safe_remove_root's delete/preserve decision is exercised purely on the status exit code.
+status_shim() {  # $1 = exit code for `status`; prints the shim dir
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/guvfx_statshim.XXXXXX")"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'for a in "$@"; do [ "$a" = "stop" ] && exit 0; [ "$a" = "status" ] && exit %s; done\n' "$1"
+    printf 'exec "%s" "$@"\n' "$REALPGCTL"; } > "$d/pg_ctl"
+  chmod +x "$d/pg_ctl"; printf '%s' "$d"
+}
+remove_under_status() {  # $1=root $2=status-exit-code -> returns eph_safe_remove_root's rc
+  local d rc; d="$(status_shim "$2")"
+  if ( PATH="$d:$PATH"; eph_safe_remove_root "$1" ); then rc=0; else rc=$?; fi
+  rm -rf "$d"; return "$rc"
+}
 RMB="$(mktemp -d "${TMPDIR:-/tmp}/guvfx_mb_eph.XXXXXX")"
 GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_TESTER_PASSWORD="$PW" GUVFX_RECOVERY_EPHEMERAL_ROOT="$RMB" bash "$SETUP" --up >/dev/null 2>&1 || true
 if [ -d "$RMB/pgdata" ] && pg_ctl -D "$RMB/pgdata" status >/dev/null 2>&1; then
-  # B/C: simulate a failed shutdown (pg_ctl `stop` no-op shim) -> eph_safe_remove_root must LEAVE the dir.
-  SHIMT="$(mktemp -d "${TMPDIR:-/tmp}/guvfx_shim_stop.XXXXXX")"
-  cat > "$SHIMT/pg_ctl" <<SH
-#!/usr/bin/env bash
-for a in "\$@"; do [ "\$a" = "stop" ] && exit 0; done
-exec "$REALPGCTL" "\$@"
-SH
-  chmod +x "$SHIMT/pg_ctl"
-  if ( PATH="$SHIMT:$PATH"; eph_safe_remove_root "$RMB" ); then pbad "safe-remove should FAIL (return non-zero) when shutdown is unconfirmed"; else
-    if [ -d "$RMB/pgdata" ]; then pok "failed shutdown PRESERVES the data directory (not deleted under a running postmaster)"; else pbad "data dir was removed despite unconfirmed shutdown"; fi
-  fi
-  rm -rf "$SHIMT"
-  # D: safe retry with a REAL stop -> removes it.
-  if eph_safe_remove_root "$RMB" && [ ! -e "$RMB" ]; then pok "safe retry (real shutdown) stops + removes the cluster"; RMB=""; else pbad "safe retry should stop + remove the cluster"; fi
+  # A) running server (status 0) -> refuse deletion, preserve.
+  if remove_under_status "$RMB" 0; then pbad "A: status 0 (running) must refuse deletion"; elif [ -d "$RMB/pgdata" ]; then pok "A: running server (status 0) -> deletion refused, data dir preserved"; else pbad "A: data dir removed under a running server"; fi
+  # C) status 4 (inaccessible / unspecified data dir) is UNKNOWN -> refuse deletion, preserve.
+  if remove_under_status "$RMB" 4; then pbad "C: status 4 (inaccessible) must refuse deletion"; elif [ -d "$RMB/pgdata" ]; then pok "C: status 4 (inaccessible/unknown) -> deletion refused, data dir preserved"; else pbad "C: data dir removed on status 4 (treated error as stopped!)"; fi
+  # D) an unexpected status error (e.g. 1) is UNKNOWN -> refuse deletion, preserve.
+  if remove_under_status "$RMB" 1; then pbad "D: unexpected status error (1) must refuse deletion"; elif [ -d "$RMB/pgdata" ]; then pok "D: unexpected status error (1) -> deletion refused, data dir preserved"; else pbad "D: data dir removed on status error"; fi
+  # B+E) verified stopped (a real shutdown; status becomes 3) -> permit cleanup; failed stop then retry succeeds.
+  if eph_safe_remove_root "$RMB" && [ ! -e "$RMB" ]; then pok "B/E: verified-stopped (status 3) -> cleanup permitted; failed-stop-then-successful-retry removes the cluster"; RMB=""; else pbad "B/E: confirmed-stopped (status 3) retry should remove the cluster"; fi
 else
-  pbad "MEDIUM-B setup: expected a running ephemeral cluster to exercise the cleanup contract"
+  pbad "MEDIUM-B setup: expected a running ephemeral cluster"; pbad "(A skipped)"; pbad "(C skipped)"; pbad "(D skipped)"; pbad "(B/E skipped)"
 fi
 MDB2="$(psql -tAqc 'select count(*) from pg_database' postgres)"; MRL2="$(psql -tAqc 'select count(*) from pg_roles' postgres)"
 if [ "$MDB2" = "$MDB0" ] && [ "$MRL2" = "$MRL0" ]; then pok "main cluster unchanged throughout the cleanup-contract tests (dbs=$MDB2 roles=$MRL2)"; else pbad "main cluster changed during cleanup-contract tests"; fi

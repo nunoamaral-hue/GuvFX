@@ -1,5 +1,35 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — DB Recovery Foundation REPOSITORY CLOSEOUT (PR #498, DARK, merge-gated)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-REPO-CLOSEOUT-2026-10-14
+Packet ID: GUVFX_RECOVERY_AND_CI_REPOSITORY_CLOSEOUT
+Status: PASS (final shutdown-status correction + re-certified 96/96 = 64 recovery + 19 provisioner + 13 cleanup; DARK; merge authorized when gates pass; NO-GO production)
+Branch/PR: feat/db-recovery-foundation / PR #498 (continued; squash-merge authorized on gate pass; auto-merge OFF)
+Final safety correction (pg_ctl status exit codes): pg_ctl status returns 0=running, 3=stopped,
+  4=inaccessible/unspecified data dir, other=error. The cleanup previously treated ANY non-zero as
+  "not running" -> an exit 4 / error could permit deletion of a possibly-live/unknown cluster. FIX: a
+  destructive rm proceeds ONLY on a POSITIVE confirmed-stopped (exit exactly 3); 0 and any other code
+  (UNKNOWN) refuse, preserve data dir + ownership stamp + state, return non-zero, support safe retry.
+  Shared helper rec_pg_confirmed_stopped (lib.sh) + eph_pg_confirmed_stopped (eph_tracking.sh, delegates
+  to the lib.sh helper when present); applied in eph_safe_remove_root, setup --down, and cleanup_up
+  (which guards only when it launched a postmaster). Tests: A running(0)->refuse, B/E stopped(3)->permit
+  +retry, C status4->refuse, D unexpected-error->refuse, F main unchanged; provisioner test 19 = setup
+  --down refuses on status 4. certify.sh / lib.sh backup/verify/restore/audit behaviour UNCHANGED.
+Files: ops/recovery/{lib.sh, tests/eph_tracking.sh, tests/setup_isolated_cluster.sh, tests/certify_cleanup.sh,
+  tests/certify_provisioner.sh, tests/CERTIFICATION_EVIDENCE.txt} + docs. Adversarial review ran (Workflow).
+Certification: 96/96 PASS. Main cluster DB/role counts unchanged; 0 ephemeral postmasters leaked.
+MERGE: a governed squash merge of PR #498 is PD-authorized once all 7 gates hold (correction certified;
+  no unresolved findings; full recovery cert passing; all CI green; no main/PR collision; diff within
+  recovery scope; no production op). Auto-merge OFF; STOP+report if any gate fails.
+PR #499 (customer_notifications CI deflake) is independent (its own branch), with committed A-E regression;
+  routine squash merge authorized on its CI green; not a dependency of #498.
+Production: NO-GO. Off-host storage, FS remediation, PG15/Linux parity, PITR remain Sponsor-gated.
+```
+
 ## 2026-10-14 — DB Recovery Foundation FINAL CERTIFICATION (PR #498, DARK, HOLD)
 
 ```

@@ -14,6 +14,19 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - DB RECOVERY FOUNDATION REPOSITORY CLOSEOUT (PR #498, DARK; merge-gated).** PD accepted
+  through `c2ebfa1` (93/93) + authorized a governed squash merge on gate-pass. One final shutdown-status
+  correction: `pg_ctl status` returns 0=running, **3=stopped**, **4=inaccessible/unspecified**,
+  other=error — the cleanup previously treated ANY non-zero as "stopped", so an exit 4/error could permit
+  deleting a possibly-live/unknown cluster. **Fix:** delete ONLY on a positive exit `3`; 0 and any other
+  code refuse + preserve (data dir/stamp/state) + non-zero + safe retry. Shared `rec_pg_confirmed_stopped`
+  (lib.sh) + `eph_pg_confirmed_stopped` (eph_tracking.sh), applied in `eph_safe_remove_root`, setup
+  `--down`, and `cleanup_up`. Tests A(0)→refuse, B/E(3)→permit+retry, C(4)→refuse, D(error)→refuse,
+  F main unchanged; provisioner test 19 = `--down` refuses on status 4. **Re-certified 96/96** (64
+  recovery + 19 provisioner + 13 cleanup). Adversarial review ran. `certify.sh`/`lib.sh` backup/verify/
+  restore/audit UNCHANGED. PR #499 (CI deflake) independent, A–E committed. **MERGE authorized on gate-pass
+  (auto-merge OFF).** **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
 - **2026-10-14 - DB RECOVERY FOUNDATION FINAL CERTIFICATION (PR #498, DARK, HOLD).** PD accepted through
   `915a872` (89/89); two bounded TEST-HARNESS fixes. **MEDIUM-A (non-vacuous):** the self-test hook did
   `up ... || true`, so a silent startup failure could let `certify_cleanup.sh` pass cleanup for a

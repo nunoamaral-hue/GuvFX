@@ -128,15 +128,18 @@ if [ "$MODE" = "up" ]; then
   # provably did not pre-exist (we refused above if $PGDATA existed), and $SOCKDIR/$STATE live under
   # the controlled root, so removing exactly them can never touch a shared/production cluster.
   cleanup_up() {
-    # MEDIUM-B (equivalent protection for failed-setup cleanup): stop the postmaster and WAIT; then,
-    # if it is still running, LEAVE the data dir in place (never rm a running cluster's files) and
-    # report, rather than deleting to make cleanup look successful.
-    if [ "$STARTED" = "1" ] && pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+    # Equivalent protection for failed-setup cleanup, with the same exit-code semantics as teardown.
+    # Only guard when WE launched a postmaster (STARTED=1): stop it, WAIT, then require a POSITIVE
+    # stopped (pg_ctl status exit 3) before any rm; if it is running (0) or UNKNOWN (4/other) LEAVE
+    # the data dir in place and report, rather than deleting to make cleanup look successful. When no
+    # postmaster was launched (initdb/start never succeeded) there is no live server, so the partial
+    # paths this run created are removed.
+    if [ "$STARTED" = "1" ]; then
       pg_ctl -D "$PGDATA" -w -m immediate stop >/dev/null 2>&1 || true
-    fi
-    if [ -d "$PGDATA" ] && pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
-      rec_err "failed-setup cleanup: postmaster at $PGDATA is still running -- LEAVING the data dir in place for investigation (stop it and remove $ROOT manually). Not deleting a live cluster."
-      return 0
+      if ! rec_pg_confirmed_stopped "$PGDATA"; then
+        rec_err "failed-setup cleanup: postmaster at $PGDATA is not CONFIRMED stopped (pg_ctl status != 3) -- LEAVING the data dir in place for investigation (stop it and remove $ROOT manually). Not deleting a live/uncertain cluster."
+        return 0
+      fi
     fi
     rm -rf "$PGDATA" "$SOCKDIR" "$STATE" 2>/dev/null || true
     [ -z "${GUVFX_RECOVERY_EPHEMERAL_ROOT:-}" ] && rmdir "$ROOT" 2>/dev/null || true
@@ -249,12 +252,13 @@ root_supplied="$(sed -n 's/^root_was_supplied=//p' "$STATE" | head -1)"   # read
 # cluster and destroy the evidence -- we preserve the ownership stamp + state, exit non-zero, and let
 # the operator stop it and retry. (`pg_ctl status`: exit 0 = a server is running, non-zero = not.)
 rec_log "stopping ephemeral postmaster (if running) under $ROOT, then verifying it stopped before removal"
-if pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+if pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then   # exit 0 = running -> attempt a waited stop
   pg_ctl -D "$PGDATA" -w -m fast stop >/dev/null 2>&1 || pg_ctl -D "$PGDATA" -w -m immediate stop >/dev/null 2>&1 || true
 fi
-if pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
-  rec_die "REFUSED: the ephemeral postmaster at $PGDATA did NOT stop -- refusing to remove a running cluster's data directory. Ownership stamp + state file are PRESERVED for investigation; stop the postmaster and re-run --down to retry. Fail-closed."
-fi
+# Require a POSITIVE "stopped" (pg_ctl status exit 3) before any rm. 0 (running) and 4/other (UNKNOWN:
+# inaccessible/unspecified data dir, or an unexpected error) both refuse -- an error or inaccessible
+# data dir must never be read as a clean shutdown (R-closeout correction).
+rec_pg_confirmed_stopped "$PGDATA" || rec_die "REFUSED: the ephemeral postmaster at $PGDATA is not CONFIRMED stopped (pg_ctl status != 3; 0=running, 4=inaccessible, other=error) -- refusing to remove its data directory. Ownership stamp + state file are PRESERVED for investigation; resolve and re-run --down to retry. Fail-closed."
 rm -rf "$PGDATA" "$SOCKDIR" "$STATE"
 # Remove the root dir only if WE created it (not an operator-supplied directory with other contents).
 [ "$root_supplied" = "1" ] || rmdir "$ROOT" 2>/dev/null || true
