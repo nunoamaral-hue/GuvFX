@@ -123,18 +123,19 @@ if [ "$MODE" = "up" ]; then
   case "$GUVFX_RECOVERY_TESTER_PASSWORD" in *[!A-Za-z0-9_-]*|'') rec_die "GUVFX_RECOVERY_TESTER_PASSWORD must match [A-Za-z0-9_-]." ;; esac
 
   OWNER_TOKEN="guvfx-eph-$$-$(date -u +%Y%m%dT%H%M%SZ)"
-  STARTED=0
+  START_ATTEMPTED=0
   # J -- a failed/interrupted setup cleans up ONLY the ephemeral paths THIS run creates. These paths
   # provably did not pre-exist (we refused above if $PGDATA existed), and $SOCKDIR/$STATE live under
   # the controlled root, so removing exactly them can never touch a shared/production cluster.
   cleanup_up() {
-    # Equivalent protection for failed-setup cleanup, with the same exit-code semantics as teardown.
-    # Only guard when WE launched a postmaster (STARTED=1): stop it, WAIT, then require a POSITIVE
-    # stopped (pg_ctl status exit 3) before any rm; if it is running (0) or UNKNOWN (4/other) LEAVE
-    # the data dir in place and report, rather than deleting to make cleanup look successful. When no
-    # postmaster was launched (initdb/start never succeeded) there is no live server, so the partial
-    # paths this run created are removed.
-    if [ "$STARTED" = "1" ]; then
+    # Equivalent protection for failed-setup cleanup, with the SAME exit-code semantics as teardown.
+    # Guard whenever a postmaster START WAS ATTEMPTED -- NOT only when pg_ctl reported success: a
+    # `pg_ctl -w start` can return NON-ZERO while the forked postmaster keeps running (e.g. PGCTLTIMEOUT
+    # elapsed, or an interrupted wait), so gating on success would skip the guard and rm a LIVE cluster.
+    # So: once start was attempted, stop + WAIT, then require a POSITIVE stopped (pg_ctl status exit 3)
+    # before any rm; if running (0) or UNKNOWN (4/other) LEAVE the data dir in place and report. Only
+    # when start was NEVER attempted (initdb failed first -> no postmaster) are the partial paths removed.
+    if [ "$START_ATTEMPTED" = "1" ]; then
       pg_ctl -D "$PGDATA" -w -m immediate stop >/dev/null 2>&1 || true
       if ! rec_pg_confirmed_stopped "$PGDATA"; then
         rec_err "failed-setup cleanup: postmaster at $PGDATA is not CONFIRMED stopped (pg_ctl status != 3) -- LEAVING the data dir in place for investigation (stop it and remove $ROOT manually). Not deleting a live/uncertain cluster."
@@ -152,9 +153,11 @@ if [ "$MODE" = "up" ]; then
       || rec_die "initdb failed -- could not create the disposable cluster. Fail-closed."
   printf '%s' "$OWNER_TOKEN" > "$PGDATA/.guvfx_ephemeral_owner"
   rec_log "starting ephemeral postmaster: socket-only (listen_addresses=''), -k $SOCKDIR -p $PORT"
+  # Mark the attempt BEFORE the call: `pg_ctl -w start` can exit non-zero with the postmaster still
+  # alive, so cleanup_up must run its stop+confirm guard even if the start below reports failure.
+  START_ATTEMPTED=1
   pg_ctl -D "$PGDATA" -w -l "$PGDATA/startup.log" -o "-k $SOCKDIR -p $PORT -c listen_addresses= -c unix_socket_permissions=0700" start >/dev/null 2>&1 \
     || rec_die "pg_ctl start failed (see $PGDATA/startup.log). Fail-closed."
-  STARTED=1
 
   # G,14,F -- STRUCTURAL anti-redirection check FIRST, fail-closed, BEFORE any other connection or DDL.
   # `off` is the data dir's OWN system_identifier read OFFLINE from disk (no connection); `live_sysid`

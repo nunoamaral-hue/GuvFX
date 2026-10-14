@@ -257,7 +257,7 @@ without the explicit gates above. See `ops/recovery/README.md` for the operator 
   shared cluster.
 - `tests/eph_tracking.sh` — sourced helper: subshell-safe (file-based) ephemeral-root tracking + cleanup
   (R3 CLOSEOUT MEDIUM-A), used by the provisioner and cleanup certifications.
-- `tests/certify_provisioner.sh` — the provisioner trust-boundary certification (R3; 19 cases) — setup/
+- `tests/certify_provisioner.sh` — the provisioner trust-boundary certification (R3; 20 cases) — setup/
   teardown symmetry, production-selection refusal, connection-redirection neutralisation, verified-
   shutdown teardown, cleanup safety.
 - `tests/certify_cleanup.sh` — the harness cleanup-tracking certification (R3 CLOSEOUT+FINAL; 13 cases) —
@@ -273,8 +273,8 @@ Run **as a least-privilege non-superuser role** against a **dedicated ephemeral 
 by `tests/setup_isolated_cluster.sh`; private socket, no TCP), with **synthetic data only** (no
 production/app DB touched). Full evidence: `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
 
-**Combined result: 96 / 96 PASS** = **recovery certification 64/64** (`tests/certify.sh`) **+ privileged-
-provisioner trust-boundary certification 19/19** (`tests/certify_provisioner.sh`) **+ harness
+**Combined result: 97 / 97 PASS** = **recovery certification 64/64** (`tests/certify.sh`) **+ privileged-
+provisioner trust-boundary certification 20/20** (`tests/certify_provisioner.sh`) **+ harness
 cleanup-tracking certification 13/13** (`tests/certify_cleanup.sh`, R3 CLOSEOUT+FINAL). The provisioner suite
 proves: verified disposable-cluster setup + teardown succeed; the production id is required on setup AND
 teardown; setup refuses to adopt/clobber a pre-existing cluster; teardown refuses an identity mismatch,
@@ -361,8 +361,8 @@ These are DISTINCT milestones and must not be conflated (synthetic in-test passi
 | Milestone | Status | Basis |
 |---|---|---|
 | `ENGINEERING_READY` | **PASS** | tooling implemented; parses; dry-run + fail-closed behaviour verified |
-| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 96/96 (64 recovery + 19 provisioner + 13 cleanup) on synthetic data, local PG 17, least-privilege role (Gate F) |
-| `PRIVILEGED_PROVISIONING_CERTIFIED` | **PASS** | dedicated ephemeral-cluster provisioner; no DDL against a shared cluster; setup/teardown symmetric; verified-shutdown teardown + subshell-safe cleanup tracking; 19/19 + 13/13 (Gate F) |
+| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 97/97 (64 recovery + 20 provisioner + 13 cleanup) on synthetic data, local PG 17, least-privilege role (Gate F) |
+| `PRIVILEGED_PROVISIONING_CERTIFIED` | **PASS** | dedicated ephemeral-cluster provisioner; no DDL against a shared cluster; setup/teardown symmetric; verified-shutdown teardown + subshell-safe cleanup tracking; 20/20 + 13/13 (Gate F) |
 | `RECOVERY_DESIGN_CERTIFIED` | **PASS** | design (B/C/D) + the isolated certification above |
 | `PRODUCTION_BACKUP_ACTIVE` | **BLOCKED** | no scheduled backup, no off-host storage provisioned; gated by the 96% FS risk; Sponsor-gated |
 | `PRODUCTION_RECOVERY_VERIFIED` | **BLOCKED** | restore demonstrated only in isolation with synthetic data on PG 17; never against a production-representative dataset or a PG 15 cluster |

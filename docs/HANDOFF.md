@@ -7,7 +7,7 @@ PM HANDOFF
 
 Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-REPO-CLOSEOUT-2026-10-14
 Packet ID: GUVFX_RECOVERY_AND_CI_REPOSITORY_CLOSEOUT
-Status: PASS (final shutdown-status correction + re-certified 96/96 = 64 recovery + 19 provisioner + 13 cleanup; DARK; merge authorized when gates pass; NO-GO production)
+Status: PASS (final shutdown-status correction + re-certified 97/97 = 64 recovery + 20 provisioner + 13 cleanup; DARK; merge authorized when gates pass; NO-GO production)
 Branch/PR: feat/db-recovery-foundation / PR #498 (continued; squash-merge authorized on gate pass; auto-merge OFF)
 Final safety correction (pg_ctl status exit codes): pg_ctl status returns 0=running, 3=stopped,
   4=inaccessible/unspecified data dir, other=error. The cleanup previously treated ANY non-zero as
@@ -21,7 +21,7 @@ Final safety correction (pg_ctl status exit codes): pg_ctl status returns 0=runn
   --down refuses on status 4. certify.sh / lib.sh backup/verify/restore/audit behaviour UNCHANGED.
 Files: ops/recovery/{lib.sh, tests/eph_tracking.sh, tests/setup_isolated_cluster.sh, tests/certify_cleanup.sh,
   tests/certify_provisioner.sh, tests/CERTIFICATION_EVIDENCE.txt} + docs. Adversarial review ran (Workflow).
-Certification: 96/96 PASS. Main cluster DB/role counts unchanged; 0 ephemeral postmasters leaked.
+Certification: 97/97 PASS. Main cluster DB/role counts unchanged; 0 ephemeral postmasters leaked.
 MERGE: a governed squash merge of PR #498 is PD-authorized once all 7 gates hold (correction certified;
   no unresolved findings; full recovery cert passing; all CI green; no main/PR collision; diff within
   recovery scope; no production op). Auto-merge OFF; STOP+report if any gate fails.

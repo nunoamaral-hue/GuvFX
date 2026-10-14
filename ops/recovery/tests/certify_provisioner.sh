@@ -206,6 +206,30 @@ else
 fi
 down "$R19" >/dev/null 2>&1 || true   # real teardown cleans it up
 
+echo; note "=== 20: failed-setup cleanup does NOT delete a LIVE cluster when pg_ctl start REPORTS failure but the postmaster is up ==="
+# Reachable case: `pg_ctl -w start` can exit non-zero (e.g. PGCTLTIMEOUT) while the postmaster it forked
+# keeps running. The failed-setup trap (cleanup_up) must still stop+confirm before any rm, NOT rm a live
+# cluster. Shim: `start` runs the REAL start (postmaster comes up) then reports failure (exit 1); `stop`
+# is a no-op (postmaster stays up); `status` delegates to real (reports running). With the guard keyed on
+# start-ATTEMPTED, cleanup_up refuses to delete and PRESERVES the live data dir.
+R20="$(mktemp -d "${TMPDIR:-/tmp}/guvfx_t20.XXXXXX")"
+SHIM20="$R20/shim20"; mkdir -p "$SHIM20"; REAL20="$(command -v pg_ctl)"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for a in "$@"; do\n'
+  printf '  [ "$a" = "start" ] && { "%s" "$@"; exit 1; }\n' "$REAL20"
+  printf '  [ "$a" = "stop" ] && exit 0\n'
+  printf 'done\n'
+  printf 'exec "%s" "$@"\n' "$REAL20"; } > "$SHIM20/pg_ctl"
+chmod +x "$SHIM20/pg_ctl"
+( PATH="$SHIM20:$PATH" GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID="$MAINSYS" GUVFX_RECOVERY_TESTER_PASSWORD="$PW" GUVFX_RECOVERY_EPHEMERAL_ROOT="$R20" bash "$SETUP" --up ) >/dev/null 2>&1 || true
+if [ -f "$R20/pgdata/PG_VERSION" ] && pg_ctl -D "$R20/pgdata" status >/dev/null 2>&1; then
+  pok "20: start-reports-failure-but-running -> failed-setup cleanup PRESERVED the live data dir (did not rm a running cluster)"
+else
+  pbad "20: live data dir was removed (or cluster not running) after a start-reports-failure -- cleanup deleted under a live server"
+fi
+# real teardown: stop the leaked postmaster + remove its dir
+pg_ctl -D "$R20/pgdata" -w -m immediate stop >/dev/null 2>&1 || true; rm -rf "$R20" 2>/dev/null || true
+
 echo; note "================= PROVISIONER CERTIFY SUMMARY: PASS=$PASS FAIL=$FAIL ================="
 [ "$FAIL" -eq 0 ] || { note "PROVISIONER CERTIFICATION FAILED"; exit 1; }
 note "PROVISIONER CERTIFICATION PASSED"

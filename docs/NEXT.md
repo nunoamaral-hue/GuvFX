@@ -19,10 +19,10 @@ One bounded next action: **progress the DB Recovery Foundation → then PD gover
 
 ## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK; R3)
 Addresses HIGH-2. Design + certified DARK tooling (`docs/DB_RECOVERY_FOUNDATION.md`, `ops/recovery/`, isolated cert
-**96/96** = 64 recovery + 19 provisioner + 13 cleanup, least-privilege role). **R3 correction (final bounded safety):** the
+**97/97** = 64 recovery + 20 provisioner + 13 cleanup, least-privilege role). **R3 correction (final bounded safety):** the
 privileged provisioner `tests/setup_isolated_cluster.sh` now `initdb`s its OWN dedicated ephemeral cluster (private
 socket, no TCP) instead of doing DDL against a shared cluster; setup AND teardown require the production id and act
-only on the stamped ephemeral dir they own; `tests/certify_provisioner.sh` (19 cases) certifies the trust
+only on the stamped ephemeral dir they own; `tests/certify_provisioner.sh` (20 cases) certifies the trust
 boundary. **R3 CLOSEOUT (two harness-safety MEDIUMs):** subshell-safe cleanup tracking via `tests/eph_tracking.sh`
 (a `$(mktroot)` subshell no longer loses the trap's root list) + `tests/certify_cleanup.sh` (6); teardown now
 **verifies the postmaster stopped before any `rm`** (refuse + preserve evidence otherwise). R2 (retained): independent harness attestation; per-database restore-target authorization; encrypted-archive

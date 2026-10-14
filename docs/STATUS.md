@@ -22,8 +22,8 @@
   code refuse + preserve (data dir/stamp/state) + non-zero + safe retry. Shared `rec_pg_confirmed_stopped`
   (lib.sh) + `eph_pg_confirmed_stopped` (eph_tracking.sh), applied in `eph_safe_remove_root`, setup
   `--down`, and `cleanup_up`. Tests A(0)→refuse, B/E(3)→permit+retry, C(4)→refuse, D(error)→refuse,
-  F main unchanged; provisioner test 19 = `--down` refuses on status 4. **Re-certified 96/96** (64
-  recovery + 19 provisioner + 13 cleanup). Adversarial review ran. `certify.sh`/`lib.sh` backup/verify/
+  F main unchanged; provisioner test 19 = `--down` refuses on status 4. **Re-certified 97/97** (64
+  recovery + 20 provisioner + 13 cleanup). Adversarial review ran. `certify.sh`/`lib.sh` backup/verify/
   restore/audit UNCHANGED. PR #499 (CI deflake) independent, A–E committed. **MERGE authorized on gate-pass
   (auto-merge OFF).** **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
 
