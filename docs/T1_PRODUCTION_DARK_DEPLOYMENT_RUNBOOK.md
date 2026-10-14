@@ -39,7 +39,7 @@ operator. **Not** an authorization to deploy. T1 merged to `main` at `48db801`; 
 
 ## B. Backup & recovery (design CERTIFIED; production activation still BLOCKED)
 - **Recovery foundation:** design + certified DARK tooling now exist — `docs/DB_RECOVERY_FOUNDATION.md`
-  and `ops/recovery/` (backup/verify/restore/audit; isolated certification 35/35). The recovery
+  and `ops/recovery/` (backup/verify/restore/audit; isolated certification 41/41). The recovery
   *design* is certified in isolation, but **`PRODUCTION_BACKUP_ACTIVE` is still BLOCKED**: no off-host
   storage, no automated schedule, and the root FS is **96% full (9.2 GB free)** — a hard blocker for an
   on-host dump/restore. Resolve those (Sponsor-gated) before relying on this for a real deployment.

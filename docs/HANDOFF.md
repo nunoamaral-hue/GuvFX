@@ -1,5 +1,38 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-14 — DB Recovery Foundation R1 corrections (PR #498, DARK, HOLD)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-DB-RECOVERY-FOUNDATION-R1-2026-10-14
+Packet ID: GUVFX_PRODUCTION_DATABASE_RECOVERY_FOUNDATION_R1 (parent: the foundation packet)
+Status: PASS (4 HIGH + 2 MEDIUM corrected + re-certified 41/41; DARK; HOLD; activation NO-GO)
+Branch/PR: feat/db-recovery-foundation / PR #498 (continued; not merged; auto-merge OFF)
+Files modified: ops/recovery/lib.sh (authoritative system_identifier isolation gate + deny-list),
+  backup.sh (streamed pg_dump|gpg, no plaintext; temp->integrity->atomic finalize->metadata; label
+  validation; overwrite refusal; conservative capacity + reserved floor; lock_timeout),
+  restore.sh (verified-EMPTY target only; removed --force/--clean/--jobs; atomic; re-assert empty),
+  verify.sh (trap INT/TERM; umask), audit_report.sh (--verify-integrity + PRESENT/FRESH/INTEGRITY
+  distinction), tests/certify.sh (attestation; 41 checks incl. all R1 regressions),
+  tests/CERTIFICATION_EVIDENCE.txt; docs/DB_RECOVERY_FOUNDATION.md, ops/recovery/README.md,
+  docs/{STATUS,NEXT,HANDOFF,KNOWN_ISSUES}.md, docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md (counts).
+HIGH-1/HIGH-4: production isolation no longer keys on a caller label -- a non-production mutation needs
+  the LIVE system_identifier to match the attested GUVFX_RECOVERY_ISOLATED_CLUSTER_ID; deny on the
+  production cluster/db; harness needs GUVFX_RECOVERY_ATTEST_ISOLATED=1. HIGH-2: restore only into a
+  verified-empty DB (no --force). HIGH-3: streamed encryption, no plaintext at rest, fail-closed finalize.
+  MEDIUM-1: integrity folded into the audit gate. MEDIUM-2: conservative worst-case + reserved free floor.
+Certification: 41/41 PASS, isolated, synthetic, local PG 17. Evidence committed.
+Scoped rules: data (immutable evidence never deleted; backups rebuildable), security (no secrets; AES256;
+  authoritative identity; fail-closed), architecture (smallest reliable; no prod change), evidence, handoff.
+Secret-scan: PASS. Out-of-scope access: No (no prod mutation; Gate A was read-only earlier).
+Untested production characteristics: PG 15 on Linux (Docker unavailable here -> PG 17 synthetic only);
+  production-representative dataset; off-host transfer; PITR. -> PRODUCTION_RECOVERY_VERIFIED BLOCKED.
+Rollback: additive; revert the branch commits. Nothing deployed.
+Recommended next: Sponsor authorizes off-host storage + FS fix, then a governed PG15/Linux parity +
+  first production-representative restore test -> PRODUCTION_BACKUP_ACTIVE / PRODUCTION_RECOVERY_VERIFIED.
+```
+
 ## 2026-10-14 — Production Database Recovery Foundation (DARK; branch feat/db-recovery-foundation)
 
 ```
@@ -23,7 +56,7 @@ Scoped rules verification: data (immutable evidence never deleted to reclaim spa
 Secret-scan result: PASS -- no secret literals; production docker-inspect Env never dumped.
 Gate A inspection: READ-ONLY over SSH to ubuntu@100.119.23.29 (version/settings/sizes/disk/backups/timers);
   no config change, no backup created, no data/secret copied, no expensive queries.
-Isolated certification: ops/recovery/tests/certify.sh -> 35/35 PASS (Gate F backup/verify/restore/reconcile
+Isolated certification: ops/recovery/tests/certify.sh -> 41/41 PASS (Gate F backup/verify/restore/reconcile
   incl. encrypted round-trip; Gate H fail-closed matrix). Evidence file committed. Scratch DBs only; no app DB.
 Unit/CI: shell tooling parses (bash -n) for all scripts; certification is a standalone harness (createdb +
   external pg_dump) run locally with captured evidence -- NOT part of `manage.py test`. CI runs on push.

@@ -3,8 +3,11 @@
 Packet `GUVFX_PRODUCTION_DATABASE_RECOVERY_FOUNDATION` (P0, DARK). Engineering + design only.
 **No production infrastructure change, backup creation, restoration, PITR change, or deployment
 was performed.** Production inspection was strictly READ-ONLY. All tooling is DARK, non-mutating
-by default, fail-closed, and refuses to act on a target **declared** (or **DSN-detected**, when the
-optional production denylist is configured) as production.
+by default, fail-closed, and permits a non-production mutation ONLY when production is not matched,
+a positive operator-planted isolation marker DB is present, and the live cluster's
+`system_identifier` matches the operator-attested isolated cluster (authoritative identity, not a
+caller label — and not `system_identifier` alone, which a physical clone shares); production is
+refused.
 
 > **GO / NO-GO for operational activation: NO-GO.** The recovery *design* is certified in
 > isolation, but **no production recovery capability is active**: there is no off-host backup, no
@@ -117,26 +120,54 @@ required — PITR. Sponsor acceptance of any residual data-loss window is **not*
   (secret store / env), **never** hard-coded or logged, **never** on argv. Production-class backups
   **must** be encrypted (the tool refuses `--no-encrypt` for a production target).
 - **No secrets in Git / scripts / logs:** DB auth via standard libpq (`PGPASSWORD`/`~/.pgpass`);
-  the tooling prints host/port/db/user but never the password or passphrase. A transient plaintext
-  dump (pre-encryption) and any decrypted temp are shredded on **every** exit path (`trap EXIT INT
-  TERM`), so a failed/interrupted encryption never leaves plaintext at rest. (`shred` is best-effort
-  on copy-on-write / overlay / tmpfs filesystems — encryption + restricted storage is the primary
-  confidentiality control, not erasure.)
+  the tooling prints host/port/db/user but never the password or passphrase. The backup passphrase
+  is fed to gpg on a dedicated fd (never argv).
+- **No plaintext at rest (HIGH-3) — tool-wide:** an encrypted backup STREAMS `pg_dump -Fc | gpg` so a
+  plaintext dump file is **never written to disk**; the ciphertext is written to a temp, a full
+  decrypt-to-stdout integrity check runs, the temp is then **atomically renamed** to the final
+  artifact, and only **then** is metadata written. A failed/interrupted encryption leaves at most a
+  temp **ciphertext** fragment (removed by `trap`; even a fragment surviving SIGKILL/power-loss is
+  encrypted, not plaintext) and **no metadata**. `verify.sh` decrypts to **stdout** (`→ /dev/null`,
+  integrity via gpg MDC) and `restore.sh` STREAMS `gpg | pg_restore` — neither writes a decrypted
+  temp. So confidentiality does **not** depend on best-effort plaintext shredding anywhere, and the
+  `--verify-integrity` audit has no decrypt-to-/tmp footprint.
 - **Restricted access & provenance:** scripts set `umask 077`, so artifacts + the metadata sidecar
   (timestamp, server/dump version, WAL LSN, sha256, bytes, git SHA, class) are created **owner-only
-  (0600)**; integrity is `sha256` + a `pg_restore --list` TOC check on verify.
-- **Production protection (honest model):** the guard keys primarily on the operator-declared
-  `GUVFX_RECOVERY_TARGET_CLASS` — **declaring the class correctly is an operator responsibility.** As
-  a configured backstop against a *mislabelled* class, set `GUVFX_RECOVERY_PRODUCTION_HOST` /
-  `GUVFX_RECOVERY_PRODUCTION_DB` in the production operator environment: if the live DSN matches them
-  while the declared class is not `production`, every mutating op **fails closed**. restore into a
-  production target is refused **categorically**; a non-empty target is refused without `--force`;
-  a production *backup* needs an explicit **double-gate** (never set in this packet). The tool does
-  not auto-detect production from an unconfigured DSN — hence the operator-declaration + optional
-  denylist model above.
+  (0600)**. Labels are validated (`[A-Za-z0-9_-]`), and the tool refuses to **overwrite** an existing
+  recovery point. Integrity is `sha256` + decrypt + `pg_restore --list` TOC (verify.sh).
+- **Authoritative target identity (HIGH-1/HIGH-4) — NOT an operator label, NOT `system_identifier`
+  alone:** a non-production mutation is permitted ONLY when, in order, (1) the live cluster's
+  `system_identifier` / database do **not** match the production denylist
+  (`GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` / `_DB`) — a deny wins first; (2) a **positive isolation
+  marker database** is present (`GUVFX_RECOVERY_ISOLATION_MARKER_DB`, default
+  `guvfx_recovery_isolated_ok`) — an operator-planted, cluster-scoped object that production
+  **structurally lacks**; and (3) the live `system_identifier` (read from the connection; not
+  forgeable via libpq env / `PGSERVICE`) matches the operator-attested
+  `GUVFX_RECOVERY_ISOLATED_CLUSTER_ID`. The marker is required because `system_identifier` is
+  **preserved by physical clones / `pg_basebackup` standbys / snapshots** — so a byte-for-byte copy
+  of production shares prod's id, and identity-by-id alone would accept it. The marker is a
+  *positive* signal the operator must deliberately create on a genuine scratch cluster; it
+  distinguishes a clone-prepared-as-isolated from a bare production clone. A mislabelled
+  `GUVFX_RECOVERY_TARGET_CLASS` (advisory only) can **never** override any of this; an unset /
+  unverifiable identity or an absent marker **fails closed**. Restore into production is refused
+  **categorically**; a production *backup* additionally needs the explicit **double-gate** (never set
+  here).
+- **Clean-target restore (HIGH-2):** restore goes ONLY into a freshly-created **empty** database
+  (verified empty immediately before the atomic `--single-transaction` restore). There is **no
+  `--force`/`--clean`** (which would leave unrelated pre-existing objects, so the result would not be
+  attributable to one backup). Re-restore = drop + recreate the target (explicit operator lifecycle).
+- **Capacity (MEDIUM-2):** preflight does not rely on an assumed compression ratio — it budgets a
+  worst-case dump ~= the DB size and refuses if the backup would push the FS below a reserved free
+  **floor** (`GUVFX_BACKUP_MIN_FREE_BYTES`, default 2 GiB), defending the 96%-full prod FS. A refusal
+  leaves no artifact/metadata. Streaming means only one artifact is ever on disk (no plaintext+
+  ciphertext peak).
 - **Live-DB safety:** the (read-only) backup connection sets a bounded `lock_timeout`
   (`GUVFX_BACKUP_LOCK_TIMEOUT_MS`, default 60s) so a gated production backup errors rather than
   stalling the live trading DB on a lock.
+- **Recovery-point audit (MEDIUM-1):** `audit_report.sh --verify-integrity --gate` runs verify.sh on
+  each present point, so inventory presence is never conflated with integrity. It distinguishes
+  PRESENT / FRESH / INTEGRITY_VERIFIED; RESTORE_TESTED is explicitly **not** established by the audit
+  (it requires an actual isolated restore).
 - **Capacity monitoring:** `audit_report.sh --gate` fails closed on no recovery point, staleness
   beyond a threshold, an unencrypted production point, a broken point (missing artifact), or an
   orphan artifact.
@@ -154,13 +185,16 @@ required — PITR. Sponsor acceptance of any residual data-loss window is **not*
 All scripts are **non-mutating by default** (dry-run), **fail-closed**, and never target production
 without the explicit gates above. See `ops/recovery/README.md` for the operator contract.
 
-- `lib.sh` — safety core: target-class gate, production guard, no-secret config, preflight helpers.
-- `backup.sh` — consistent `pg_dump -Fc` + optional AES256 + recovery-point metadata (dry-run default).
-- `verify.sh` — integrity (sha256) + decrypt test + `pg_restore --list` TOC (read-only; no DB write).
-- `restore.sh` — restore into a NON-production target (dry-run default; atomic `--single-transaction`;
-  production refused categorically).
-- `audit_report.sh` — recovery-point observability + fail-closed `--gate`.
-- `tests/certify.sh` — the isolated certification harness (Gate F/H).
+- `lib.sh` — safety core: production deny-first, positive isolation-marker requirement, authoritative
+  `system_identifier` attestation, double-gate, broadened empty-target check, no-secret config,
+  preflight helpers.
+- `backup.sh` — STREAMED `pg_dump -Fc | gpg` AES256 (no plaintext on disk) → temp → integrity →
+  atomic finalize → metadata; conservative capacity + reserved floor; dry-run default.
+- `verify.sh` — integrity (sha256) + decrypt + `pg_restore --list` TOC (read-only; no DB write).
+- `restore.sh` — atomic `--single-transaction` restore into a verified-EMPTY non-production target
+  (no `--force`); production refused categorically; dry-run default.
+- `audit_report.sh` — recovery-point observability; `--verify-integrity` + fail-closed `--gate`.
+- `tests/certify.sh` — the isolated certification harness (Gate F/H), attestation-gated.
 
 ---
 
@@ -169,18 +203,27 @@ without the explicit gates above. See `ops/recovery/README.md` for the operator 
 Run against isolated throwaway scratch databases on a local PostgreSQL with **synthetic data only**
 (no production/app DB touched). Full evidence: `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
 
-**Result: 35 / 35 PASS.** Exercised: backup (dry-run refusal + execute), integrity verify,
-restore into a fresh DB, **row-count reconciliation across 9 tables** (customer, trading_account,
-trade, execution_job, acquired_message, provider_checkpoint, broker_event, withdrawal_history,
-audit_event), **referential integrity** (no orphans; FK constraints restored), **immutable-audit
-content preserved (md5 match)**, **encrypted round-trip** (backup→encrypt→verify-decrypt→restore→
-reconcile; wrong-passphrase rejected), and the **Gate H fail-closed matrix** (undeclared class;
-production-backup double-gate; production-restore categorical refusal; non-empty-target refusal;
-idempotent `--force` re-restore; corrupt/truncated-artifact rejection; missing-metadata rejection).
+**Result: 41 / 41 PASS.** Exercised: backup (dry-run refusal + execute), integrity verify, restore
+into a fresh empty DB, **row-count reconciliation across 9 tables**, **referential integrity**
+(no orphans; FK constraints), **immutable-audit md5 match**, **encrypted STREAMING round-trip**
+(+ assertion that NO plaintext/partial artifact exists; wrong-passphrase rejected), and the R1 +
+renewed-review regressions: **HIGH-1** authoritative isolation (mutation refused when the attested
+isolated cluster id ≠ live `system_identifier`, when no attestation is set, when the **isolation
+marker DB is absent** — the clone-shares-prod-id defence — and when the live cluster/db matches the
+production denylist; a mislabelled class cannot override); **HIGH-2** clean-target contract (non-empty
+refused for an ordinary table, a matview-only target, a non-public-schema target, and a
+view/sequence/function-bearing target; `--force` removed/rejected; re-restore only via drop+recreate);
+**HIGH-3** backup/verify/restore no-plaintext (streamed round-trip; assertion no decrypted temp
+exists); backup safety (invalid label refused; **non-integer reserved-floor refused**; reserved-floor
+refusal leaves no artifact/metadata); **MEDIUM-1** audit `--verify-integrity --gate` fails on a
+present-but-corrupt artifact and on an unparseable timestamp, and passes on a healthy dir; plus the
+production/undeclared refusals.
 
-**Not covered (stated):** certification used synthetic data on a single local PG 17 instance; it is
-**not** a production-representative dataset, not cross-major-version (prod is PG 15; the preflight
-enforces `pg_dump_major ≥ server_major`), and not a test of off-host transfer or PITR.
+**Not covered / untested production characteristics (stated):** synthetic data on a single local
+**PG 17** server (Docker was unavailable here for a **PG 15** parity run — prod is PG 15; the backup
+preflight enforces `pg_dump_major ≥ server_major`); not a production-representative dataset; no
+off-host-transfer or PITR test. These are supplementary evidence, **not production parity** — a
+PG 15/Linux certification against an ephemeral (non-production) cluster is a Sponsor-gated follow-up.
 
 ---
 
@@ -196,13 +239,16 @@ immutable ledger rows are never deleted to force an older uniqueness constraint.
 
 ## Gate I — Operational readiness milestones
 
+These are DISTINCT milestones and must not be conflated (synthetic in-test passing is NOT production readiness):
+
 | Milestone | Status | Basis |
 |---|---|---|
 | `ENGINEERING_READY` | **PASS** | tooling implemented; parses; dry-run + fail-closed behaviour verified |
-| `RECOVERY_DESIGN_CERTIFIED` | **PASS** | design (B/C/D) + isolated certification 35/35 (Gate F) |
+| `TOOLING_CERTIFIED_IN_TESTS` | **PASS** | isolated certification 41/41 on synthetic data, local PG 17 (Gate F) |
+| `RECOVERY_DESIGN_CERTIFIED` | **PASS** | design (B/C/D) + the isolated certification above |
 | `PRODUCTION_BACKUP_ACTIVE` | **BLOCKED** | no scheduled backup, no off-host storage provisioned; gated by the 96% FS risk; Sponsor-gated |
-| `PRODUCTION_RESTORE_TESTED` | **BLOCKED** | certified only in isolation with synthetic data; not against a production-representative dataset / prod-equivalent infra |
-| `T1_PRODUCTION_DARK_DEPLOYMENT_READY` | **BLOCKED** | gated by `PRODUCTION_BACKUP_ACTIVE` (a real off-host recovery point) + the FS-capacity risk |
+| `PRODUCTION_RECOVERY_VERIFIED` | **BLOCKED** | restore demonstrated only in isolation with synthetic data on PG 17; never against a production-representative dataset or a PG 15 cluster |
+| `T1_PRODUCTION_DARK_DEPLOYMENT_READY` | **BLOCKED** | gated by `PRODUCTION_BACKUP_ACTIVE` (a real off-host recovery point) + `PRODUCTION_RECOVERY_VERIFIED` + the FS-capacity risk |
 
 **Remaining Sponsor decisions:** (1) authorize + provision off-host storage (NAS or object store);
 (2) resolve the 96% FS (expand and/or prune stale on-host dumps under governance); (3) authorize an

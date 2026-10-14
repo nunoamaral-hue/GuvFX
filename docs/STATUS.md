@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-10-14 - DB RECOVERY FOUNDATION R1 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted the
+  architecture; raised 4 HIGH + 2 MEDIUM, all fixed + re-certified **41/41**. **HIGH-1/4** authoritative
+  target identity = live `system_identifier` vs operator-attested isolated cluster (a class label can no
+  longer permit a production mutation; harness requires `GUVFX_RECOVERY_ATTEST_ISOLATED=1`). **HIGH-2**
+  clean-target restore: verified-EMPTY only, `--force`/`--clean` removed. **HIGH-3** backup STREAMS
+  `pg_dump|gpg` (no plaintext on disk) → temp → integrity → atomic finalize → metadata-last. **MEDIUM-1**
+  audit `--verify-integrity --gate` (presence ≠ integrity). **MEDIUM-2** conservative capacity + reserved
+  free floor. Renewed adversarial review pending/clean. Milestones distinguished: `TOOLING_CERTIFIED_IN_TESTS`
+  + `RECOVERY_DESIGN_CERTIFIED` PASS; `PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RECOVERY_VERIFIED` /
+  `T1_PRODUCTION_DARK_DEPLOYMENT_READY` BLOCKED. Certified local PG 17 only (PG 15/Linux parity = Sponsor
+  follow-up; Docker unavailable here). **Activation GO/NO-GO: NO-GO.** No prod change.
+
 - **2026-10-14 - PRODUCTION DATABASE RECOVERY FOUNDATION — ENGINEERING + DESIGN (DARK; NO prod change).**
   `T1_SOURCE_AWARE_IDENTITY_MERGED` + `T1_TELEGRAM_CATCHUP_MERGED` (PR #497 squash `ac4f6b4`) +
   `T1_ENGINEERING_CERTIFIED_IN_TESTS`; `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.
@@ -28,7 +40,7 @@
     forward-fix/migration-reverse as routine rollback (never a full rewind) + OVH snapshots for host-loss
     DR; PITR only if a sub-hour RPO is required. `docs/DB_RECOVERY_FOUNDATION.md`.
   - **DARK tooling (Gate E):** `ops/recovery/` (backup/verify/restore/audit) — dry-run default, fail-closed,
-    never targets production. **Isolated certification (Gate F/H): 35/35 PASS** (backup→verify→restore→
+    never targets production. **Isolated certification (Gate F/H): 41/41 PASS** (backup→verify→restore→
     reconcile incl. encrypted + referential integrity + immutable-audit md5 + fail-closed matrix);
     evidence `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
   - **Milestones:** `ENGINEERING_READY` PASS, `RECOVERY_DESIGN_CERTIFIED` PASS, `PRODUCTION_BACKUP_ACTIVE`

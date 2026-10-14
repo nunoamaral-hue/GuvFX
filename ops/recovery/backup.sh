@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # GuvFX recovery tooling — consistent logical backup (DARK; dry-run by default).
 #
-# Produces a single consistent pg_dump custom-format archive (-Fc) of the configured
-# target, an optional GPG-symmetric-encrypted copy, and a recovery-point METADATA
-# sidecar (JSON) carrying provenance + a sha256 integrity digest. Read-only on the DB,
-# but gated: a backup of a PRODUCTION target is refused unless the explicit double-gate
-# is set (this packet never sets it). DEFAULT IS DRY-RUN -- pass --execute to act.
+# Produces a consistent pg_dump custom-format (-Fc) recovery point of the configured target plus
+# a recovery-point METADATA sidecar (JSON: provenance + sha256). When encrypting, pg_dump is
+# STREAMED directly into gpg (AES256) so NO plaintext dump is ever written to disk; the artifact
+# is written to a temp, integrity-checked, atomically finalized, and only THEN is metadata
+# written. Read-only on the DB, but gated: a backup of a PRODUCTION target is refused unless the
+# explicit double-gate is set (this packet never sets it). DEFAULT IS DRY-RUN -- pass --execute.
 #
 # Connection: standard libpq env (PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD|~/.pgpass).
 # Encryption passphrase: GUVFX_BACKUP_PASSPHRASE or GUVFX_BACKUP_PASSPHRASE_FILE.
@@ -33,6 +34,8 @@ while [ $# -gt 0 ]; do
 done
 export REC_PROD_ACK
 [ -n "$OUT_DIR" ] || rec_die "--out DIR is required"
+# Validate the label (it becomes part of the filename): ASCII word chars only, bounded (HIGH-3 F/G).
+printf '%s' "$LABEL" | grep -qE '^[A-Za-z0-9_-]{1,40}$' || rec_die "invalid --label '$LABEL' (allowed [A-Za-z0-9_-], 1-40 chars)."
 
 umask 077   # all artifacts + the metadata sidecar are created owner-only (Gate D)
 # Bound how long the (read-only) dump may wait on a lock, so a gated production backup can
@@ -40,13 +43,12 @@ umask 077   # all artifacts + the metadata sidecar are created owner-only (Gate 
 # (ms); do NOT set a statement_timeout (a large-table dump legitimately takes a while).
 export PGOPTIONS="${PGOPTIONS:-} -c lock_timeout=${GUVFX_BACKUP_LOCK_TIMEOUT_MS:-60000}"
 
-# Fail-safe erasure of a transient plaintext dump on ANY exit (incl. a failed/interrupted
-# encryption) -- the plaintext must never survive when encryption was intended (Gate D, HIGH).
-PLAINTEXT_TO_SHRED=""
-cleanup_backup() {
-  [ -n "$PLAINTEXT_TO_SHRED" ] && [ -e "$PLAINTEXT_TO_SHRED" ] && { shred -u "$PLAINTEXT_TO_SHRED" 2>/dev/null || rm -f "$PLAINTEXT_TO_SHRED"; }
-  return 0
-}
+# Fail-closed cleanup: the temp .partial artifact is removed on ANY exit (incl. interrupt), so an
+# incomplete/failed backup never leaves a certified-looking artifact. For an ENCRYPTED backup the
+# temp is CIPHERTEXT (pg_dump is STREAMED straight into gpg -- plaintext never touches disk), so a
+# fragment surviving SIGKILL/power-loss/snapshot is encrypted, not plaintext (HIGH-3).
+PARTIAL=""
+cleanup_backup() { [ -n "$PARTIAL" ] && [ -e "$PARTIAL" ] && rm -f "$PARTIAL"; return 0; }
 trap cleanup_backup EXIT INT TERM
 
 rec_require_cmd pg_dump psql awk df date
@@ -64,14 +66,23 @@ rec_log "preflight: server=$srv_ver pg_dump=$dump_ver"
 
 db_bytes="$(rec_psql_scalar "select pg_database_size(current_database())")" || rec_die "cannot read database size"
 free_bytes="$(rec_free_bytes "$OUT_DIR" 2>/dev/null || rec_free_bytes "$(dirname "$OUT_DIR")")"
-# A custom-format dump is compressed (~0.6x DB). When ENCRYPTING, the plaintext .dump and the
-# .dump.gpg COEXIST until the plaintext is shredded post-encryption, so the transient peak is
-# ~1.2x. Budget for the worst case so a backup can't fill a near-full FS mid-encryption.
-if [ "$NO_ENCRYPT" = "1" ]; then factor=6; else factor=12; fi
-need_bytes=$(( db_bytes * factor / 10 + 104857600 ))
-rec_log "preflight: db_size=$db_bytes B, est_need=$need_bytes B (factor $((factor/10)).$((factor%10))x), free=$free_bytes B at $OUT_DIR"
-if [ "${free_bytes:-0}" -lt "$need_bytes" ]; then
-  rec_die "preflight: insufficient free space (need ~$need_bytes B, have $free_bytes B). Fail-closed."
+# CONSERVATIVE capacity bound (MEDIUM-2): do NOT depend on an assumed compression ratio. Budget for
+# a worst-case (poorly compressible) custom-format dump ~= the on-disk DB size + headroom, AND never
+# let the backup push the filesystem below a reserved free FLOOR -- defends the already-96%-full prod
+# FS from being driven toward 100% (which would halt Postgres writes). Streaming means only ONE
+# artifact (ciphertext or plaintext) is ever on disk, so there is no plaintext+ciphertext peak.
+reserved_floor="${GUVFX_BACKUP_MIN_FREE_BYTES:-2147483648}"   # keep >= 2 GiB free by default
+# Validate the override is a non-negative integer -- a non-integer would make the `[ -lt ]` test
+# error to a non-zero status and SKIP the floor check (fail-open). Refuse instead. Same for free_bytes.
+case "$reserved_floor" in ''|*[!0-9]*) rec_die "GUVFX_BACKUP_MIN_FREE_BYTES='$reserved_floor' is not a non-negative integer. Fail-closed." ;; esac
+case "${free_bytes:-}" in ''|*[!0-9]*) rec_die "could not determine free space at $OUT_DIR (df gave '${free_bytes:-}'). Fail-closed." ;; esac
+need_bytes=$(( db_bytes + 104857600 ))
+rec_log "preflight: db_size=$db_bytes B, worst_case_need>=$need_bytes B, reserved_floor=$reserved_floor B, free=$free_bytes B at $OUT_DIR"
+if [ "$free_bytes" -lt "$need_bytes" ]; then
+  rec_die "preflight: insufficient free space (worst-case need >= $need_bytes B, have $free_bytes B). Fail-closed."
+fi
+if [ "$(( free_bytes - need_bytes ))" -lt "$reserved_floor" ]; then
+  rec_die "preflight: backup would leave < reserved floor ($reserved_floor B) free -- refusing to risk filling the filesystem. Set GUVFX_BACKUP_MIN_FREE_BYTES to override deliberately. Fail-closed."
 fi
 
 # Encryption policy: production-class backups MUST be encrypted.
@@ -90,45 +101,57 @@ fi
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 base="guvfx_${LABEL}_${stamp}"
-archive="$OUT_DIR/${base}.dump"
+if [ "$NO_ENCRYPT" = "0" ]; then final="$OUT_DIR/${base}.dump.gpg"; else final="$OUT_DIR/${base}.dump"; fi
 meta="$OUT_DIR/${base}.meta.json"
 git_sha="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Never silently overwrite an existing recovery point (HIGH-3 E).
+if [ -e "$final" ] || [ -e "$meta" ]; then rec_die "refusing to overwrite an existing recovery point ($final / $meta). Fail-closed."; fi
 
 if [ "$EXECUTE" = "0" ]; then
   rec_log "DRY-RUN (default). Would create:"
-  rec_log "  archive: $archive  (pg_dump -Fc)"
-  [ "$NO_ENCRYPT" = "0" ] && rec_log "  encrypted: ${archive}.gpg  (AES256, passphrase from $pp_src)"
-  rec_log "  metadata: $meta"
+  if [ "$NO_ENCRYPT" = "0" ]; then
+    rec_log "  encrypted artifact (STREAMED pg_dump -Fc | gpg AES256, passphrase from $pp_src; no plaintext on disk): $final"
+  else
+    rec_log "  plaintext artifact (pg_dump -Fc; non-production, --no-encrypt): $final"
+  fi
+  rec_log "  metadata (written LAST, only after integrity check + atomic finalize): $meta"
   rec_log "Preflight PASSED. Re-run with --execute to create the backup."
   exit 0
 fi
 
-# --- execute ---------------------------------------------------------------
+# --- execute (stream -> temp -> integrity -> atomic finalize -> metadata) ---
 mkdir -p "$OUT_DIR"
 lsn="$(rec_psql_scalar "select pg_current_wal_lsn()" 2>/dev/null || echo unknown)"
-# Arm the plaintext fail-safe BEFORE writing any plaintext when encryption is intended, so an
-# interrupt DURING pg_dump / hashing (not only during gpg) also shreds it (closes the arming window).
-[ "$NO_ENCRYPT" = "0" ] && PLAINTEXT_TO_SHRED="$archive"
-rec_log "executing pg_dump -Fc -> $archive"
-pg_dump -Fc -Z 6 -f "$archive"
-bytes="$(wc -c < "$archive" | tr -d ' ')"
-sha="$(rec_sha256 "$archive")"
+sysid="$(rec_cluster_sysid || echo unknown)"
+PARTIAL="$OUT_DIR/.$(basename "$final").partial.$$"   # temp; removed on ANY exit; atomic-renamed on success
+enc="false"
 
-final="$archive"; enc="false"
 if [ "$NO_ENCRYPT" = "0" ]; then
-  rec_log "encrypting (AES256) -> ${archive}.gpg"
-  if [ "$pp_src" = "file" ]; then
-    gpg --batch --yes --symmetric --cipher-algo AES256 \
-        --passphrase-file "$GUVFX_BACKUP_PASSPHRASE_FILE" -o "${archive}.gpg" "$archive"
-  else
-    printf '%s' "$GUVFX_BACKUP_PASSPHRASE" | gpg --batch --yes --symmetric --cipher-algo AES256 \
-        --passphrase-fd 0 -o "${archive}.gpg" "$archive"
-  fi
-  shred -u "$archive" 2>/dev/null || rm -f "$archive"
-  PLAINTEXT_TO_SHRED=""           # plaintext removed on the success path; disarm the trap
-  final="${archive}.gpg"; enc="true"; bytes="$(wc -c < "$final" | tr -d ' ')"; sha="$(rec_sha256 "$final")"
+  # Feed the passphrase on fd 3 (NEVER argv): file -> cat FILE; env -> printf (bash builtin, not
+  # visible in ps). pg_dump streams on gpg's stdin so plaintext is NEVER written to disk (HIGH-3).
+  if [ "$pp_src" = "file" ]; then feed() { cat "$GUVFX_BACKUP_PASSPHRASE_FILE"; }; else feed() { printf '%s' "$GUVFX_BACKUP_PASSPHRASE"; }; fi
+  rec_log "streaming encrypted backup: pg_dump -Fc | gpg AES256 -> temp (no plaintext on disk)"
+  pg_dump -Fc -Z 6 | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 -o "$PARTIAL" 3< <(feed)
+  # integrity-before-finalize: a FULL decrypt to STDOUT -> /dev/null (well-formed, not truncated,
+  # MDC intact, passphrase correct) -- no plaintext file on disk. (gpg's '-o /dev/null' is unusable
+  # because gpg writes a <output>.part temp; decrypting to stdout avoids that.) Failure -> not
+  # finalized, no metadata (HIGH-3 B/C).
+  gpg --batch --yes --quiet --decrypt --passphrase-fd 3 "$PARTIAL" >/dev/null 3< <(feed) \
+    || rec_die "post-encryption integrity check FAILED (decrypt) -- not finalizing. Fail-closed."
+  enc="true"
+else
+  rec_log "backup (UNENCRYPTED, non-production): pg_dump -Fc -> temp"
+  pg_dump -Fc -Z 6 -f "$PARTIAL"
+  pg_restore --list "$PARTIAL" >/dev/null 2>&1 || rec_die "post-dump integrity check FAILED (unreadable TOC) -- not finalizing. Fail-closed."
 fi
 
+bytes="$(wc -c < "$PARTIAL" | tr -d ' ')"
+sha="$(rec_sha256 "$PARTIAL")"
+if [ -e "$final" ]; then rec_die "refusing to overwrite existing artifact at finalize: $final"; fi
+mv "$PARTIAL" "$final"   # atomic within the same directory
+PARTIAL=""               # finalized -> disarm the cleanup trap
+
+# Metadata is written LAST -- only after a complete, integrity-checked, atomically-finalized artifact.
 cat > "$meta" <<JSON
 {
   "schema": "guvfx.recovery.recovery_point/1",
@@ -136,6 +159,7 @@ cat > "$meta" <<JSON
   "created_utc": "$(rec_ts)",
   "target_class": "$cls",
   "database": "${PGDATABASE:-}",
+  "system_identifier": "$sysid",
   "server_version": "$srv_ver",
   "pg_dump_version": "$dump_ver",
   "dump_format": "custom(-Fc)",
@@ -150,6 +174,6 @@ cat > "$meta" <<JSON
   "tool_version": "$REC_VERSION"
 }
 JSON
-rec_log "backup complete: $final ($bytes B, sha256=$sha)"
+rec_log "backup complete: $final ($bytes B, sha256=$sha, encrypted=$enc)"
 rec_log "metadata: $meta"
-rec_log "NOTE: on-host only. Copy to OFF-HOST storage to protect against host/storage loss (Gate D)."
+rec_log "NOTE: on-host only. Copy $final + $meta to OFF-HOST storage to protect against host/storage loss (Gate D)."

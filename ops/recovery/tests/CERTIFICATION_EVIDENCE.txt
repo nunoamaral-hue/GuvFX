@@ -1,66 +1,76 @@
-GuvFX recovery tooling — isolated certification evidence
-Captured (UTC): 2026-10-14T08:35:12Z
-Host: Darwin 27.0.0 | psql 17.6 | gpg 2.5.24
-Scope: Gate F + Gate H + adversarial-review fix regressions. Isolated scratch DBs + synthetic data ONLY; no production/app DB touched.
+GuvFX recovery tooling — isolated certification evidence (R1, renewed)
+Captured (UTC): 2026-10-14T11:23:13Z
+Host/OS: Darwin 27.0.0 | psql 17.6 | server PG 17.6 | gpg 2.5.24
+Isolation: positive marker DB + attested system_identifier + production deny; throwaway scratch DBs; synthetic data ONLY.
+Untested production characteristics: PG 15 on Linux (local server PG 17; Docker unavailable here); production-representative dataset; off-host transfer; PITR.
 ========================================================================
-[certify] scratch src=guvfx_recov_src_60612_1791966912 tgt=guvfx_recov_tgt_60612_1791966912 work=/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.WmYTg7
-[certify] seeded synthetic data into guvfx_recov_src_60612_1791966912
+[certify] attested isolated cluster sysid=7490484431797939483  marker=guvfx_recov_marker_84001_1791976993  scratch src=guvfx_recov_src_84001_1791976993  work=/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.uOOKNp
+[certify] seeded synthetic data into guvfx_recov_src_84001_1791976993
 
-[certify] === Gate F: backup -> verify -> restore -> reconcile (UNENCRYPTED) ===
-  PASS  backup dry-run refuses to act without --execute (produces no artifact)
-  PASS  backup --execute creates an archive + metadata
+[certify] === Gate F: unencrypted backup -> verify -> restore -> reconcile ===
+  PASS  backup dry-run refuses to act without --execute
+  PASS  backup --execute creates artifact + metadata
   PASS  metadata sidecar present
   PASS  verify passes on a good backup
   PASS  restore dry-run does not populate the target
-  PASS  restore --execute into the fresh target
+  PASS  restore --execute into the fresh empty target
+  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt_84001_1791976993
+  PASS  referential integrity: no orphan trades (guvfx_recov_tgt_84001_1791976993)
+  PASS  immutable audit md5 match (guvfx_recov_tgt_84001_1791976993)
 
-[certify] --- reconciliation (row counts, referential integrity, immutable audit) ---
-  PASS  row count customer = 25
-  PASS  row count trading_account = 40
-  PASS  row count trade = 500
-  PASS  row count execution_job = 120
-  PASS  row count acquired_message = 300
-  PASS  row count provider_checkpoint = 2
-  PASS  row count broker_event = 60
-  PASS  row count withdrawal_history = 12
-  PASS  row count audit_event = 2000
-  PASS  referential integrity: no orphan trades
-  PASS  foreign-key constraints restored (5)
-  PASS  immutable audit_event content preserved (md5 match)
-
-[certify] === Gate F: encrypted round-trip ===
+[certify] === Gate F: ENCRYPTED streaming round-trip (no plaintext on disk) ===
   PASS  encrypted backup --execute produces a .gpg artifact
   PASS  metadata marks encrypted=true
+  PASS  HIGH-3: NO plaintext .dump exists for the encrypted backup (only .dump.gpg)
   PASS  verify decrypts + reads TOC of the encrypted backup
-  PASS  restore the ENCRYPTED backup into a fresh target
-  PASS  encrypted restore reconciles (trade=500)
+  PASS  restore the ENCRYPTED backup into a fresh empty target
+  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt2_84001_1791976993
+  PASS  referential integrity: no orphan trades (guvfx_recov_tgt2_84001_1791976993)
+  PASS  immutable audit md5 match (guvfx_recov_tgt2_84001_1791976993)
   PASS  verify FAILS on wrong passphrase
 
-[certify] === Gate H: failure containment (fail-closed) ===
-  PASS  undeclared target class is refused
-  PASS  backup of a PRODUCTION target refused without the double-gate
-  PASS  RESTORE into a PRODUCTION target refused categorically (by the guard, not arg-parse)
-  PASS  restore into a NON-EMPTY target refused without --force
-  PASS  idempotent restore into non-empty target WITH --force succeeds
-  PASS  re-restore reconciles (trade=500)
-  PASS  verify REJECTS a truncated/corrupt artifact (sha mismatch)
-  PASS  verify FAILS on missing metadata file
-  PASS  backup refused when PGDATABASE matches GUVFX_RECOVERY_PRODUCTION_DB but class!=production
-  PASS  restore refuses a target that holds a matview (non-empty) without --force
-  PASS  audit --gate fails closed on an unparseable recovery-point timestamp
+[certify] === HIGH-1: authoritative target isolation (system_identifier) ===
+  PASS  mutation refused when attested ISOLATED_CLUSTER_ID != live cluster (mislabel cannot override)
+  PASS  mutation refused when no isolated-cluster attestation is set
+  PASS  mutation refused when live cluster matches GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID (deny)
+  PASS  restore refused when PGDATABASE matches GUVFX_RECOVERY_PRODUCTION_DB (deny)
+  PASS  mutation refused when the isolation MARKER db is ABSENT (a bare clone-of-prod cannot masquerade; system_identifier alone is insufficient)
 
-[certify] === audit report ===
+[certify] === Gate H: production + undeclared refusals ===
+  PASS  undeclared target class is refused
+  PASS  PRODUCTION backup refused without the double-gate
+  PASS  RESTORE into a PRODUCTION target refused categorically (by the guard)
+
+[certify] === HIGH-2: clean-target restore contract (no --force) ===
+  PASS  restore into a NON-EMPTY target refused (ordinary table), no override
+  PASS  --force is rejected as an unknown arg (removed)
+  PASS  restore refuses a matview-only (non-empty) target
+  PASS  restore refuses a target with data only in a NON-public schema
+  PASS  restore refuses a target holding only a view/sequence/function (non-empty; attribution guarantee)
+  PASS  idempotent re-restore via explicit drop+recreate (clean lifecycle)
+  PASS  re-restore reconciles (trade=500)
+
+[certify] === HIGH-3: backup safety (label, fail-closed finalize) + MEDIUM-2 capacity ===
+  PASS  invalid --label is refused
+  PASS  non-integer reserved-floor override is refused (fail-closed, not fail-open)
+  PASS  MEDIUM-2: backup refused at the reserved free floor; leaves NO artifact/metadata (fail-closed finalize)
+
+[certify] === integrity + audit (MEDIUM-1) ===
+  PASS  verify FAILS on a corrupted artifact (sha mismatch vs recorded)
+  PASS  verify FAILS on missing metadata file
+  PASS  audit --verify-integrity --gate FAILS on a present-but-corrupt artifact
+  PASS  audit --gate fails closed on an unparseable recovery-point timestamp
+  PASS  audit --verify-integrity --gate PASSES on the healthy recovery-point dir
+
+[certify] === audit report (informational) ===
 LABEL                        CREATED_UTC            CLASS       ENCRYPTED BYTES        ARTIFACT
 -----                        -----------            -----       --------- -----        --------
-badts                        not-a-timestamp        test        false     1            guvfx_certify_dummy.dump (ok)
-2026-10-14T08:35:17Z [recovery][ERROR] unparseable created_utc 'not-a-timestamp' in /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.WmYTg7/guvfx_badts_60612_1791966912.meta.json
-certify                      2026-10-14T08:35:13Z   test        false     38015        guvfx_certify_20261014T083513Z.dump (ok)
-                                                                false     ?            guvfx_corrupt_60612_1791966912.dump (ok)
-2026-10-14T08:35:17Z [recovery][ERROR] unparseable created_utc '' in /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.WmYTg7/guvfx_corrupt_60612_1791966912.meta.json
-enc                          2026-10-14T08:35:15Z   test        true      11524        guvfx_enc_20261014T083514Z.dump.gpg (ok)
+certify                    2026-10-14T11:23:14Z  test       false     38014       guvfx_certify_20261014T112314Z.dump (present=ok; integrity=VERIFIED)
+enc                        2026-10-14T11:23:16Z  test       true      11452       guvfx_enc_20261014T112315Z.dump.gpg (present=ok; integrity=VERIFIED)
 
-2026-10-14T08:35:17Z [recovery] 4 recovery point(s) found.
-2026-10-14T08:35:17Z [recovery] audit issues: 1
+2026-10-14T11:23:21Z [recovery] 2 recovery point(s) found.
+2026-10-14T11:23:21Z [recovery] RECOVERY_POINT_RESTORE_TESTED is NOT established by this tool -- it requires an actual isolated restore (ops/recovery/restore.sh into a fresh empty DB).
+2026-10-14T11:23:21Z [recovery] audit issues: 0
 
-[certify] ================= CERTIFY SUMMARY: PASS=35 FAIL=0 =================
+[certify] ================= CERTIFY SUMMARY: PASS=41 FAIL=0 =================
 [certify] CERTIFICATION PASSED

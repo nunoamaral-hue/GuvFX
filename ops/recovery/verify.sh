@@ -38,30 +38,25 @@ rec_log "verify: artifact=$artifact encrypted=$encrypted"
 [ -r "$artifact" ] || rec_die "artifact not found/readable: $artifact"
 
 got_sha="$(rec_sha256 "$artifact")"
-[ "$got_sha" = "$want_sha" ] || rec_die "sha256 MISMATCH: recorded=$want_sha actual=$got_sha (corrupt/truncated/tampered). Fail-closed."
+# sha256 vs the sidecar detects CORRUPTION / TRUNCATION / accidental modification. It is NOT a MAC:
+# the sidecar is unsigned, so a determined tamperer who also rewrites the sidecar is not caught here
+# (a signed/MAC'd manifest is a tracked follow-up). This check is integrity, not authenticity.
+[ "$got_sha" = "$want_sha" ] || rec_die "sha256 MISMATCH: recorded=$want_sha actual=$got_sha -- artifact differs from its recorded digest (corruption/truncation/accidental modification). Fail-closed."
 rec_log "sha256 OK ($got_sha)"
 
-umask 077   # any decrypted temp is owner-only
-tmp=""; cleanup() { [ -n "$tmp" ] && { shred -u "$tmp" 2>/dev/null || rm -f "$tmp"; }; return 0; }
-trap cleanup EXIT INT TERM   # shred the decrypted plaintext even on operator interrupt
-toc_target="$artifact"
 if [ "$encrypted" = "true" ]; then
   rec_require_cmd gpg
   pp_src="$(rec_passphrase_source)" || rec_die "artifact is encrypted but no passphrase configured (GUVFX_BACKUP_PASSPHRASE[_FILE])"
-  tmp="$(mktemp "${TMPDIR:-/tmp}/guvfx_verify.XXXXXX")"
-  rec_log "test-decrypting (AES256) via passphrase source: $pp_src"
-  if [ "$pp_src" = "file" ]; then
-    gpg --batch --yes --quiet --decrypt --passphrase-file "$GUVFX_BACKUP_PASSPHRASE_FILE" -o "$tmp" "$artifact" \
-      || rec_die "GPG decryption FAILED (wrong passphrase or corrupt ciphertext). Fail-closed."
-  else
-    printf '%s' "$GUVFX_BACKUP_PASSPHRASE" | gpg --batch --yes --quiet --decrypt --passphrase-fd 0 -o "$tmp" "$artifact" \
-      || rec_die "GPG decryption FAILED (wrong passphrase or corrupt ciphertext). Fail-closed."
-  fi
-  rec_log "decryption OK"
-  toc_target="$tmp"
+  # Decrypt to STDOUT -> /dev/null: proves the ciphertext is complete + decryptable (gpg MDC catches
+  # truncation/tamper) WITHOUT ever writing plaintext to disk. Passphrase on fd 3 (never argv).
+  rec_log "test-decrypting (AES256, to stdout; NO plaintext on disk) via $pp_src"
+  if [ "$pp_src" = "file" ]; then feed() { cat "$GUVFX_BACKUP_PASSPHRASE_FILE"; }; else feed() { printf '%s' "$GUVFX_BACKUP_PASSPHRASE"; }; fi
+  gpg --batch --yes --quiet --decrypt --passphrase-fd 3 "$artifact" >/dev/null 3< <(feed) \
+    || rec_die "GPG decryption FAILED (wrong passphrase / corrupt / truncated ciphertext). Fail-closed."
+  rec_log "decryption + MDC integrity OK (ciphertext complete and decryptable)"
+else
+  n="$(pg_restore --list "$artifact" 2>/dev/null | grep -cvE '^(;|$)' || true)"
+  [ "${n:-0}" -gt 0 ] || rec_die "pg_restore --list produced no TOC entries -- not a readable custom-format dump. Fail-closed."
+  rec_log "pg_restore TOC OK ($n entries)"
 fi
-
-n="$(pg_restore --list "$toc_target" 2>/dev/null | grep -cvE '^(;|$)' || true)"
-[ "${n:-0}" -gt 0 ] || rec_die "pg_restore --list produced no TOC entries -- archive is not a readable custom-format dump. Fail-closed."
-rec_log "pg_restore TOC OK ($n entries)"
 rec_log "VERIFY PASSED for $(basename "$artifact")"

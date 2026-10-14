@@ -19,9 +19,13 @@ List active problems with reproduction steps and workarounds.
 - **`core_auditevent` dominates the DB (2.24 GB / 79%, ~4.8M rows).** Drives DB + backup growth. An
   audit retention/archival policy (separate packet) would bound it — archived off-DB, **never deleted**
   (immutable evidence, data.md).
-- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic data, 35/35) but
-  `PRODUCTION_RESTORE_TESTED` against a production-representative dataset = BLOCKED. Not wired to any
-  scheduler; never targets production.
+- **Recovery tooling is DARK** (`ops/recovery/`): certified in isolation (synthetic, **41/41**, R1).
+  Production protection is now AUTHORITATIVE (live `system_identifier` must match the attested isolated
+  cluster; a class label cannot override); encrypted backups STREAM `pg_dump|gpg` (no plaintext on
+  disk); restore requires a verified-EMPTY target (no `--force`); audit `--verify-integrity` proves
+  artifacts. Certified on local **PG 17** only — a **PG 15/Linux** parity run and
+  `PRODUCTION_RECOVERY_VERIFIED` against a production-representative dataset remain **BLOCKED**
+  (Sponsor follow-up). Not wired to any scheduler; never targets production.
 
 ## 🟡 T1 source-aware identity — residuals (recorded 2026-10-13, PR #495, DARK; R1-updated)
 

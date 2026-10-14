@@ -19,7 +19,7 @@ One bounded next action: **progress the DB Recovery Foundation → then PD gover
 
 ## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK)
 Addresses HIGH-2. Design + certified DARK tooling (`docs/DB_RECOVERY_FOUNDATION.md`, `ops/recovery/`, isolated cert
-35/35). **`PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RESTORE_TESTED` BLOCKED.** Remaining Sponsor decisions (none done here):
+41/41). **`PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RESTORE_TESTED` BLOCKED.** Remaining Sponsor decisions (none done here):
 (1) provision **off-host** storage (NAS/object store); (2) resolve the **root FS 96%** P0 (expand / governed prune of
 ~1.7 GB stale dumps); (3) authorize an automated backup schedule + its passphrase secret; (4) decide if sub-hour RPO
 (→ PITR) is required; (5) OVH snapshots for host-loss DR; (6) optional `data_checksums` + audit-retention policy.
