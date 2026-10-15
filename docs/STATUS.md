@@ -14,7 +14,112 @@
 
 ## Execution workstream log
 
-- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — R2 CORRECTIONS (PR #497, DARK, auto-merge OFF).**
+- **2026-10-14 - DB RECOVERY FOUNDATION REPOSITORY CLOSEOUT (PR #498, DARK; merge-gated).** PD accepted
+  through `c2ebfa1` (93/93) + authorized a governed squash merge on gate-pass. One final shutdown-status
+  correction: `pg_ctl status` returns 0=running, **3=stopped**, **4=inaccessible/unspecified**,
+  other=error — the cleanup previously treated ANY non-zero as "stopped", so an exit 4/error could permit
+  deleting a possibly-live/unknown cluster. **Fix:** delete ONLY on a positive exit `3`; 0 and any other
+  code refuse + preserve (data dir/stamp/state) + non-zero + safe retry. Shared `rec_pg_confirmed_stopped`
+  (lib.sh) + `eph_pg_confirmed_stopped` (eph_tracking.sh), applied in `eph_safe_remove_root`, setup
+  `--down`, and `cleanup_up`. Tests A(0)→refuse, B/E(3)→permit+retry, C(4)→refuse, D(error)→refuse,
+  F main unchanged; provisioner test 19 = `--down` refuses on status 4. **Re-certified 97/97** (64
+  recovery + 20 provisioner + 13 cleanup). Adversarial review ran. `certify.sh`/`lib.sh` backup/verify/
+  restore/audit UNCHANGED. PR #499 (CI deflake) independent, A–E committed. **MERGE authorized on gate-pass
+  (auto-merge OFF).** **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION FINAL CERTIFICATION (PR #498, DARK, HOLD).** PD accepted through
+  `915a872` (89/89); two bounded TEST-HARNESS fixes. **MEDIUM-A (non-vacuous):** the self-test hook did
+  `up ... || true`, so a silent startup failure could let `certify_cleanup.sh` pass cleanup for a
+  postmaster that never ran → the hook now REQUIRES a confirmed-RUNNING postmaster (pg_ctl status +
+  sysid==offline) and records `running=1`+sysid; `certify_cleanup.sh` gates on that evidence and adds a
+  negative (forced start-failure → `running=0`). **MEDIUM-B (cert cleanup safety):** `certify_cleanup.sh`'s
+  own EXIT trap raw-`rm`'d after an unverified stop → new shared `eph_safe_remove_root` (stop + verify
+  `pg_ctl status` before rm; leave + non-zero on unconfirmed shutdown) is used by the trap and tested
+  (failed-shutdown preserves the dir; safe retry removes it). **Re-certified 93/93** (64 recovery + 18
+  provisioner + 11 cleanup). Focused adversarial review ran. `certify.sh`/`lib.sh`/backup/verify/restore/
+  audit/`setup_isolated_cluster.sh` UNCHANGED. **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R3 CLOSEOUT (PR #498, DARK, HOLD).** PD accepted the R3
+  architecture (head `3bafb6d`, 80/80); two bounded harness-safety MEDIUMs. **MEDIUM-A:** the provisioner
+  test harness tracked ephemeral roots in a shell var set inside a `$(mktroot)` **subshell**, so the
+  cleanup trap saw nothing on an abnormal exit → fixed with a file-based shared helper
+  (`tests/eph_tracking.sh`, established+exported in the PARENT at source time); new
+  `tests/certify_cleanup.sh` (7) proves — end-to-end against the real harness — tracking survives the subshell and
+  the trap cleans an abnormal exit (main + unrelated dirs untouched). **MEDIUM-B:** `--down` did
+  `pg_ctl stop || true` then unconditional `rm -rf` → now **verifies the postmaster stopped before any
+  rm**, else refuses + preserves data dir/stamp/state + exits non-zero (same protection in the
+  failed-setup cleanup); new provisioner tests 17/18 (stop-failure via a shim → refuse+preserve; real
+  retry succeeds). **Re-certified 93/93** (64 recovery + 18 provisioner + 11 cleanup). Focused adversarial
+  review ran. `certify.sh`/`lib.sh`/backup/verify/restore/audit UNCHANGED. **Activation GO/NO-GO: NO-GO.**
+  No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R3 CORRECTION (PR #498, DARK, HOLD).** PD accepted R2; one
+  remaining HIGH on the privileged provisioning/teardown script. **Fix:** `tests/setup_isolated_cluster.sh`
+  now `initdb`s its OWN dedicated ephemeral cluster (private data dir/socket, no TCP) instead of doing
+  privileged DDL against a shared cluster — disposability is intrinsic (fresh `system_identifier`), the
+  only CREATE ROLE/DB run inside that cluster, and `--down` stops + removes ONLY the files it created
+  (ownership-stamp + offline `pg_controldata` sysid gated). `GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` is
+  MANDATORY on setup AND teardown; libpq/PGSERVICE neutralised; failed setup cleans up only its own
+  paths; a placeholder prod id authorizes nothing. New `tests/certify_provisioner.sh` (16 cases) proves
+  the trust boundary; recovery `certify.sh` (64) still passes on the ephemeral cluster. **Re-certified
+  80/80** (64 recovery + 16 provisioner). Focused adversarial review ran. Milestones:
+  `TOOLING_CERTIFIED_IN_TESTS` + `PRIVILEGED_PROVISIONING_CERTIFIED` + `RECOVERY_DESIGN_CERTIFIED` PASS;
+  `PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RECOVERY_VERIFIED` / `T1_PRODUCTION_DARK_DEPLOYMENT_READY`
+  BLOCKED. Local PG 17 synthetic only. **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R2 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted R1; raised
+  2 HIGH + 2 MEDIUM + §6, all fixed + re-certified **64/64** (least-privilege role). **HIGH-1** the
+  certification harness can no longer manufacture its own isolation: independent attestation
+  (`tests/attest_isolated.sh`) runs before any mutation (mandatory prod denylist; operator-attested id ==
+  live sysid, never derived; pre-existing marker it did NOT create; non-superuser role; loopback-only),
+  provisioned out-of-band by `tests/setup_isolated_cluster.sh`; harness runs as the non-superuser role;
+  cleanup drops only owned DBs. **HIGH-2** per-DATABASE restore-target authorization
+  (`rec_require_authorized_target_db`: exact allowlist + current_database==PGDATABASE + non-admin/non-prod
+  + non-superuser owner), re-asserted before the atomic restore — cluster isolation alone is not
+  sufficient. **MEDIUM-1** encrypted verify STREAMS `gpg|pg_restore --list` (archive-format, not just
+  decryptability). **MEDIUM-2** `--gate` inventory-only vs `--gate-usable` (mandatory integrity, fail
+  closed on corruption); runbook requires `--gate-usable`. **§6** capacity = conservative ESTIMATE +
+  enforceable `ulimit -f` ceiling (ENOSPC-safe, no incomplete artifact certified); writer-between-
+  preflight-and-execute detected. Renewed adversarial review ran (Workflow). Milestones distinguished:
+  `TOOLING_CERTIFIED_IN_TESTS` + `RECOVERY_DESIGN_CERTIFIED` PASS; `PRODUCTION_BACKUP_ACTIVE` /
+  `PRODUCTION_RECOVERY_VERIFIED` / `T1_PRODUCTION_DARK_DEPLOYMENT_READY` BLOCKED. Local PG 17 synthetic
+  only (PG 15/Linux parity = Sponsor follow-up). **Activation GO/NO-GO: NO-GO.** No prod change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R1 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted the
+  architecture; raised 4 HIGH + 2 MEDIUM, all fixed + re-certified **41/41**. **HIGH-1/4** authoritative
+  target identity = live `system_identifier` vs operator-attested isolated cluster (a class label can no
+  longer permit a production mutation; harness requires `GUVFX_RECOVERY_ATTEST_ISOLATED=1`). **HIGH-2**
+  clean-target restore: verified-EMPTY only, `--force`/`--clean` removed. **HIGH-3** backup STREAMS
+  `pg_dump|gpg` (no plaintext on disk) → temp → integrity → atomic finalize → metadata-last. **MEDIUM-1**
+  audit `--verify-integrity --gate` (presence ≠ integrity). **MEDIUM-2** conservative capacity + reserved
+  free floor. Renewed adversarial review pending/clean. Milestones distinguished: `TOOLING_CERTIFIED_IN_TESTS`
+  + `RECOVERY_DESIGN_CERTIFIED` PASS; `PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RECOVERY_VERIFIED` /
+  `T1_PRODUCTION_DARK_DEPLOYMENT_READY` BLOCKED. Certified local PG 17 only (PG 15/Linux parity = Sponsor
+  follow-up; Docker unavailable here). **Activation GO/NO-GO: NO-GO.** No prod change.
+
+- **2026-10-14 - PRODUCTION DATABASE RECOVERY FOUNDATION — ENGINEERING + DESIGN (DARK; NO prod change).**
+  `T1_SOURCE_AWARE_IDENTITY_MERGED` + `T1_TELEGRAM_CATCHUP_MERGED` (PR #497 squash `ac4f6b4`) +
+  `T1_ENGINEERING_CERTIFIED_IN_TESTS`; `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.
+  **`DATABASE_RECOVERY_FOUNDATION_IN_PROGRESS`.** Addresses the remaining HIGH-2 blocker.
+  - **Gate A (read-only, verified 2026-10-14):** PostgreSQL 15.15 single OVH VPS; DB `guvfx` = 2835 MB
+    (**core_auditevent 2237 MB / 79%** — bulk is audit/health telemetry; financial/trading tables tiny).
+    **No PITR** (`archive_mode=off`), **no automated backup** (only 104 ad-hoc `pg_dump` ~1.7 GB on-host),
+    `data_checksums=off`; durability on (fsync/full_page_writes/synchronous_commit). **P0 risk: root FS
+    96% full (9.2 GB free)** — DB + all backups share one FS; no off-host storage.
+  - **Design (Gates B–D, G, I):** RPO/RTO per scenario (host/storage-loss + full DR declared BLOCKED;
+    zero-data-loss NOT asserted). Recommended = encrypted logical backups + **off-host** replication +
+    forward-fix/migration-reverse as routine rollback (never a full rewind) + OVH snapshots for host-loss
+    DR; PITR only if a sub-hour RPO is required. `docs/DB_RECOVERY_FOUNDATION.md`.
+  - **DARK tooling (Gate E):** `ops/recovery/` (backup/verify/restore/audit) — dry-run default, fail-closed,
+    never targets production. **Isolated certification (Gate F/H): 41/41 PASS** (backup→verify→restore→
+    reconcile incl. encrypted + referential integrity + immutable-audit md5 + fail-closed matrix);
+    evidence `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
+  - **Milestones:** `ENGINEERING_READY` PASS, `RECOVERY_DESIGN_CERTIFIED` PASS, `PRODUCTION_BACKUP_ACTIVE`
+    **BLOCKED**, `PRODUCTION_RESTORE_TESTED` **BLOCKED** (synthetic only), `T1_PRODUCTION_DARK_DEPLOYMENT_READY`
+    **BLOCKED**. **GO/NO-GO for activation: NO-GO** (no off-host backup; FS 96%). All DARK; no prod backup/
+    restore/PITR/config change performed.
+
+- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — R2 CORRECTIONS (PR #497 — MERGED to main `ac4f6b4`, DARK).**
   PD accepted the R1 architecture and raised 3 findings; all fixed on the same PR, plus 3 confirmed by a renewed
   8-dimension adversarial review (then re-verified, all resolved, no regressions). Still DARK — no deploy/migration/
   Telegram change/watermark reset; flag OFF.

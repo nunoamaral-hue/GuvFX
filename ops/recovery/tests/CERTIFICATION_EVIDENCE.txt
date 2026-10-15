@@ -1,0 +1,223 @@
+=== GuvFX Production Database Recovery Foundation -- ISOLATED CERTIFICATION EVIDENCE (REPOSITORY CLOSEOUT) ===
+Captured (UTC): 2026-10-14T22:06:47Z
+Git commit (pre-commit of this run): 8adab46
+Harnesses: certify_cleanup.sh (13) + certify_provisioner.sh (20) + certify.sh (64, recovery)
+  + setup_isolated_cluster.sh (ephemeral cluster) + eph_tracking.sh + attest_isolated.sh
+
+--- Environment ---
+PostgreSQL: PostgreSQL 17.6 (Homebrew) on aarch64-apple-darwin24.4.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.3), 64-bit
+OS/arch: Darwin 27.0.0 arm64
+Shell: GNU bash, version 5.3.9(1)-release (aarch64-apple-darwin25.1.0)
+GnuPG: gpg (GnuPG) 2.5.24
+initdb/pg_ctl/pg_controldata: PostgreSQL 17.6 (Homebrew)
+
+--- pg_ctl status exit-code cleanup-safety correction ---
+pg_ctl status: 0=running, 3=stopped, 4=inaccessible/unspecified data dir, other=error. A destructive
+rm proceeds ONLY on a POSITIVE confirmed-stopped (exit 3); 0 and any other code (UNKNOWN) refuse +
+preserve + non-zero + retry. Shared rec_pg_confirmed_stopped (lib.sh) + eph_pg_confirmed_stopped
+(eph_tracking.sh). Applied in eph_safe_remove_root, setup --down, and the failed-setup cleanup_up
+trap -- which guards whenever a START WAS ATTEMPTED (not only on start success), because pg_ctl -w
+start can exit non-zero with the postmaster still running (e.g. PGCTLTIMEOUT); gating on success
+would skip the stop+confirm and rm a live cluster. Tests: A running(0)->refuse, B/E stopped(3)->
+permit+retry, C status4->refuse, D error->refuse, F main unchanged; provisioner 19 (setup --down
+on status4) + 20 (start-reports-failure-but-running -> failed-setup cleanup preserves the live dir).
+
+--- Cleanup / exit-code certification ---
+
+[cleanup-certify] === static bind: certify_provisioner.sh actually uses the shared tracking helper ===
+  PASS  certify_provisioner.sh sources eph_tracking.sh and wires track + trap (test binds to real harness)
+
+[cleanup-certify] === subshell persistence: a root tracked inside a $(...) subshell is visible to the parent ===
+  PASS  root tracked from a command-substitution subshell IS visible to the parent
+
+[cleanup-certify] === END-TO-END: real certify_provisioner.sh provisions + verifies RUNNING, aborts, trap cleans up ===
+  PASS  positive startup evidence: a RUNNING postmaster was confirmed before abort (running=1 + sysid)
+  PASS  the owned ephemeral postmaster was stopped by the abnormal-exit trap
+  PASS  the temporary ephemeral directory was removed by the abnormal-exit trap
+  PASS  the main PostgreSQL cluster is unchanged (dbs=7 roles=19)
+  PASS  unrelated directory + sentinel untouched
+
+[cleanup-certify] === MEDIUM-A negative: a FAILED ephemeral startup must NOT record a fake success ===
+  PASS  forced-startup-failure records running=0 (no fake success for a postmaster that never started)
+
+[cleanup-certify] === MEDIUM-B / pg_ctl status exit-code semantics: delete ONLY on confirmed-stopped (status==3) ===
+2026-10-14T22:06:08Z [eph_tracking][WARN] postmaster at /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_mb_eph.JvgmTO/pgdata not CONFIRMED stopped (pg_ctl status != 3) -- leaving data dir in place (safe); evidence preserved
+  PASS  A: running server (status 0) -> deletion refused, data dir preserved
+2026-10-14T22:06:09Z [eph_tracking][WARN] postmaster at /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_mb_eph.JvgmTO/pgdata not CONFIRMED stopped (pg_ctl status != 3) -- leaving data dir in place (safe); evidence preserved
+  PASS  C: status 4 (inaccessible/unknown) -> deletion refused, data dir preserved
+2026-10-14T22:06:09Z [eph_tracking][WARN] postmaster at /var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_mb_eph.JvgmTO/pgdata not CONFIRMED stopped (pg_ctl status != 3) -- leaving data dir in place (safe); evidence preserved
+  PASS  D: unexpected status error (1) -> deletion refused, data dir preserved
+  PASS  B/E: verified-stopped (status 3) -> cleanup permitted; failed-stop-then-successful-retry removes the cluster
+  PASS  main cluster unchanged throughout the cleanup-contract tests (dbs=7 roles=19)
+
+[cleanup-certify] ================= CLEANUP CERTIFY SUMMARY: PASS=13 FAIL=0 =================
+[cleanup-certify] CLEANUP CERTIFICATION PASSED
+
+--- Provisioner trust-boundary certification ---
+
+[prov-certify] === 1/2: verified disposable-cluster setup + teardown succeed ===
+  PASS  verified disposable-cluster setup succeeds (fresh sysid=7696648265387013552 != main)
+  PASS  verified disposable-cluster teardown succeeds (data dir removed)
+
+[prov-certify] === 3: --teardown with NO production identifier is refused ===
+  PASS  teardown refused with no GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID
+
+[prov-certify] === 4: setup cannot ADOPT a pre-existing cluster (sentinel id cannot authorize it) ===
+  PASS  setup refuses to adopt/clobber a pre-existing data dir (even with a prod id set)
+
+[prov-certify] === 5: teardown refuses when the data-dir identity != recorded ephemeral sysid ===
+  PASS  teardown refuses an identity mismatch (data-dir sysid != recorded)
+
+[prov-certify] === 6: teardown refuses an UNKNOWN (unstamped) data dir ===
+  PASS  teardown refuses a data dir with no GuvFX ownership stamp
+
+[prov-certify] === 7/8/9: hostile PGHOST / PGHOSTADDR / PGSERVICE / PGUSER cannot redirect the provisioner ===
+  PASS  inherited PGHOST/PGHOSTADDR/PGPORT/PGDATABASE/PGSERVICE/PGUSER are NEUTRALISED (provisioner used only its own socket; not redirected)
+
+[prov-certify] === 10/11: teardown cannot remove UNRELATED databases/roles (issues no DROP against a shared cluster) ===
+  PASS  teardown left the main cluster's databases untouched (7)
+  PASS  teardown left the main cluster's roles untouched (19)
+  PASS  teardown refuses an unrelated data dir (cannot be pointed at a foreign cluster)
+
+[prov-certify] === 12: a FAILED setup performs no unsafe cleanup and leaves the main cluster intact ===
+  PASS  failed setup refused BEFORE mutation; main cluster intact; pre-existing dir not clobbered
+
+[prov-certify] === 13: the existing recovery certification harness (64 cases) still succeeds on an ephemeral cluster ===
+  PASS  recovery certify.sh still PASSES on the ephemeral cluster (PASS=64 FAIL=0)
+
+[prov-certify] === 14: a production-like cluster is rejected BEFORE any destructive teardown op ===
+  PASS  teardown refuses when the target identity matches the production denylist (pre-destruction)
+  PASS  data dir still present after the refused teardown (nothing destroyed)
+
+[prov-certify] === 15: SETUP (not just teardown) refuses with no production identifier ===
+  PASS  setup refused with no GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID (mandatory on the setup path too)
+
+[prov-certify] === 16: anti-forgery -- teardown refuses when the stamp token DISAGREES with the recorded state ===
+  PASS  teardown refuses a stamp token that does not match the recorded state token
+
+[prov-certify] === 17: MEDIUM-B -- teardown REFUSES to delete when the postmaster did NOT stop (verified shutdown) ===
+  PASS  teardown REFUSES (non-zero) and PRESERVES data dir + state + ownership stamp when shutdown is unconfirmed (status 0/running)
+
+[prov-certify] === 18: MEDIUM-B -- a subsequent real teardown succeeds (safe operator retry) ===
+  PASS  retry teardown (real pg_ctl) stops + removes the cluster
+
+[prov-certify] === 19: exit-code semantics -- setup --down refuses on an UNKNOWN pg_ctl status (4), not just running ===
+  PASS  19: setup --down refuses on status 4 (UNKNOWN) and PRESERVES data dir + state
+
+[prov-certify] === 20: failed-setup cleanup does NOT delete a LIVE cluster when pg_ctl start REPORTS failure but the postmaster is up ===
+  PASS  20: start-reports-failure-but-running -> failed-setup cleanup PRESERVED the live data dir (did not rm a running cluster)
+
+[prov-certify] ================= PROVISIONER CERTIFY SUMMARY: PASS=20 FAIL=0 =================
+[prov-certify] PROVISIONER CERTIFICATION PASSED
+
+--- Recovery certification (64) on an ephemeral cluster ---
+[certify] independent isolation OK: attested+marked cluster sysid=7696648369140302558 marker=guvfx_recovery_isolated_ok role=guvfx_recov_tester (non-superuser)
+[certify] scratch src=guvfx_recov_src_49917_1792015594 work=/var/folders/gk/0vspftmj1t70tz_b8dpbfrw40000gn/T//guvfx_certify.eaUCHE
+[certify] seeded synthetic data into guvfx_recov_src_49917_1792015594
+
+[certify] === Gate F: unencrypted backup -> verify -> restore -> reconcile ===
+  PASS  backup dry-run refuses to act without --execute
+  PASS  backup --execute creates artifact + metadata
+  PASS  metadata sidecar present
+  PASS  verify passes on a good backup
+  PASS  restore dry-run does not populate the target
+  PASS  restore --execute into the fresh empty target
+  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt_49917_1792015594
+  PASS  referential integrity: no orphan trades (guvfx_recov_tgt_49917_1792015594)
+  PASS  immutable audit md5 match (guvfx_recov_tgt_49917_1792015594)
+
+[certify] === Gate F: ENCRYPTED streaming round-trip (no plaintext on disk) ===
+  PASS  encrypted backup --execute produces a .gpg artifact
+  PASS  metadata marks encrypted=true
+  PASS  HIGH-3: NO plaintext .dump exists for the encrypted backup (only .dump.gpg)
+  PASS  verify decrypts + reads TOC of the encrypted backup
+  PASS  restore the ENCRYPTED backup into a fresh empty target
+  PASS  row counts reconcile (9 tables) into guvfx_recov_tgt2_49917_1792015594
+  PASS  referential integrity: no orphan trades (guvfx_recov_tgt2_49917_1792015594)
+  PASS  immutable audit md5 match (guvfx_recov_tgt2_49917_1792015594)
+  PASS  verify FAILS on wrong passphrase
+
+[certify] === HIGH-1: INDEPENDENT isolation attestation negatives (precise refusal reason) ===
+  PASS  verified isolated cluster attestation succeeds
+  PASS  production-like LOCAL cluster refused (live sysid == PRODUCTION_CLUSTER_ID)
+  PASS  refused when production denylist ABSENT (cannot self-attest without identifying prod)
+  PASS  self-attestation against the WRONG cluster refused (attested id != live)
+  PASS  missing independent attestation refused (ISOLATED_CLUSTER_ID unset)
+  PASS  inherited non-loopback PGHOST refused before any DB contact
+  PASS  attestation flag missing refused
+  PASS  absent isolation MARKER refused (harness must NOT create it)
+  PASS  SUPERUSER connecting role refused (least-privilege required)
+
+[certify] === HIGH-2: restore TARGET-database authorization (per-DB, not just per-cluster) ===
+  PASS  restore refused when NO target allowlist is set (class label is not authorization)
+  PASS  restore refused into an administrative database (postgres), regardless of class/marker
+  PASS  restore refused when target not in the allowlist (unknown target)
+  PASS  restore refused into a database the role does NOT own (the operator marker)
+  PASS  restore refused when target matches GUVFX_RECOVERY_PRODUCTION_DB (even if allowlisted)
+  PASS  restore refused when the allowlist entry is a GLOB ('*') and a CWD file matches the target (no globbing)
+  PASS  cleanup CANNOT drop an unrelated / non-owned database (operator marker survives)
+
+[certify] === Gate H: production + undeclared refusals ===
+  PASS  undeclared target class is refused
+  PASS  PRODUCTION backup refused without the double-gate
+  PASS  RESTORE into a PRODUCTION target refused categorically (by the guard)
+
+[certify] === HIGH-2: clean-target restore contract (no --force) ===
+  PASS  restore into a NON-EMPTY target refused (ordinary table), no override
+  PASS  --force is rejected as an unknown arg (removed)
+  PASS  restore refuses a matview-only (non-empty) target
+  PASS  restore refuses a target with data only in a NON-public schema
+  PASS  restore refuses a target holding only a view/sequence/function (non-empty; attribution guarantee)
+  PASS  idempotent re-restore via explicit drop+recreate (clean lifecycle)
+  PASS  re-restore reconciles (trade=500)
+
+[certify] === HIGH-3 + §6: backup safety, capacity estimate, enforceable ceiling (ENOSPC-equivalent) ===
+  PASS  invalid --label is refused
+  PASS  non-integer reserved-floor override is refused (fail-closed, not fail-open)
+  PASS  non-integer GUVFX_BACKUP_MAX_ARTIFACT_BYTES is refused (fail-closed)
+  PASS  MEDIUM-2(R1): backup refused at the reserved free floor; leaves NO artifact/metadata
+  PASS  §6: dump EXCEEDING the enforceable output ceiling fails safely -- NO artifact/metadata/partial (ENOSPC-equivalent)
+  PASS  §6: dump WITHIN a generous ceiling SUCCEEDS (positive control -- ceiling tracks bytes, not always-fail)
+
+[certify] === MEDIUM-1: encrypted archive FORMAT verification (not just decryptability) ===
+  PASS  verify REJECTS an encrypted NON-PostgreSQL artifact (decrypts, but not an archive)
+  PASS  audit --gate-usable FAILS on the encrypted non-PostgreSQL artifact
+  PASS  R2: verify REJECTS a TRUNCATED encrypted artifact even with a MATCHING sha256 (gpg MDC enforced, not masked by front-TOC)
+
+[certify] === integrity + audit gate semantics (MEDIUM-1/MEDIUM-2) ===
+  PASS  verify FAILS on a corrupted artifact (sha mismatch vs recorded)
+  PASS  verify FAILS on missing metadata file
+  PASS  audit --verify-integrity --gate FAILS on a present-but-corrupt artifact
+  PASS  MEDIUM-2: plain --gate (INVENTORY) PASSES a present+fresh+corrupt artifact (inventory != usability)
+  PASS  MEDIUM-2: --gate-usable FAILS the same present+fresh+corrupt artifact (usable-recovery gate)
+  PASS  R2: --gate-usable WITHOUT --max-age-hours is refused (must evaluate freshness, not assume it)
+  PASS  R2: non-integer --max-age-hours is refused (fail-closed, not silently skipped)
+  PASS  R2: --gate-usable FAILS a present+integrity-valid but STALE recovery point (freshness bound enforced)
+  PASS  audit --gate fails closed on an unparseable recovery-point timestamp
+  PASS  audit --gate-usable PASSES on the healthy recovery-point dir (fresh + integrity-verified)
+
+[certify] === §6-H: target populated between preflight and execute is DETECTED ===
+  PASS  restore --execute aborts when the target became NON-EMPTY after preflight (re-assert empty)
+
+[certify] === audit report (informational) ===
+LABEL                        CREATED_UTC            CLASS       ENCRYPTED BYTES        ARTIFACT
+-----                        -----------            -----       --------- -----        --------
+ceilok                     2026-10-14T22:06:42Z  test       false     38459       guvfx_ceilok_20261014T220642Z.dump (present=ok; integrity=VERIFIED)
+certify                    2026-10-14T22:06:35Z  test       false     38459       guvfx_certify_20261014T220634Z.dump (present=ok; integrity=VERIFIED)
+enc                        2026-10-14T22:06:36Z  test       true      11466       guvfx_enc_20261014T220636Z.dump.gpg (present=ok; integrity=VERIFIED)
+
+2026-10-14T22:06:46Z [recovery] 3 recovery point(s) found.
+2026-10-14T22:06:46Z [recovery] RECOVERY_POINT_RESTORE_TESTED is NOT established by this tool -- it requires an actual isolated restore (ops/recovery/restore.sh into a fresh empty DB).
+2026-10-14T22:06:46Z [recovery] audit issues: 0
+
+[certify] ================= CERTIFY SUMMARY: PASS=64 FAIL=0 =================
+[certify] CERTIFICATION PASSED
+
+--- Combined ---
+TOTAL: 13 (cleanup) + 20 (provisioner) + 64 (recovery) = 97 PASS, 0 FAIL.
+
+--- Coverage NOT established here (stated limitations) ---
+  - PG 15 / Linux parity: NOT run (Docker unavailable; local PG 17 synthetic, least-privilege role). NOT production parity.
+  - RECOVERY_POINT_RESTORE_TESTED against production data: NOT established (never run against production).
+  - No production/shared cluster, credential, backup, schedule, PITR or off-host transfer was touched.
+  - macOS: provisioner sets LC_ALL=C to avoid a postmaster multithread-at-startup abort (no effect on Linux).
