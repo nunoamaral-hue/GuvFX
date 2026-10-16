@@ -227,6 +227,58 @@ class MailboxConnectApi(TestCase):
         finally:
             O.exchange_code, S.fetch_profile = orig_exc, orig_prof
 
+    def test_reconnect_same_owner_preserves_cursor_id_bindings_and_rotates_credential(self):
+        """OAUTH_RECOVERY §3: a same-owner re-consent (the recovery path after a refresh-token expiry) MUST update the
+        existing mailbox in place — preserving its id, the in-progress cursor, last_successful_sync, and broker-identity
+        bindings — while rotating to the NEW valid credential. It must NOT create a duplicate, reset the cursor to
+        'now', widen scope, or destroy the previous credential before the new one is proven usable."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        from broker_intelligence.credential_store import load_token
+        from broker_intelligence.models import BrokerEmailIdentity
+        from broker_intelligence.resolver import canonical_address
+        orig_exc, orig_prof = O.exchange_code, S.fetch_profile
+        try:
+            # (initial connect -> create; historyId 100 anchors the cursor on create only)
+            O.exchange_code = lambda **kw: {"access_token": "AT1", "refresh_token": "RT1", "expiry": "",
+                                            "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **kw: {"emailAddress": "owner@gmail.com", "historyId": "100"}
+            st = signing.dumps({"uid": self.u.id, "n": "x"}, salt=_STATE_SALT)
+            self.assertEqual(self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C1&state={st}").status_code, 200)
+            mb = ConnectedMailbox.objects.get(user=self.u)
+            orig_id, orig_ref = mb.id, mb.credential_ref
+            # simulate an in-progress worker state + a verified broker-identity binding
+            mb.cursor_state = "3204241"
+            mb.last_successful_sync = timezone.now() - datetime.timedelta(days=2)
+            mb.save(update_fields=["cursor_state", "last_successful_sync"])
+            orig_sync = ConnectedMailbox.objects.get(pk=orig_id).last_successful_sync
+            ident = BrokerEmailIdentity.objects.create(email="owner@googlemail.com", broker_name="TradersWay",
+                                                       user=self.u, connected_mailbox=mb,
+                                                       status=BrokerEmailIdentity.Status.VERIFIED)
+            # (RE-CONNECT -> update: SAME Google mailbox via the googlemail alias, NEW token, historyId now 999)
+            O.exchange_code = lambda **kw: {"access_token": "AT2", "refresh_token": "RT2", "expiry": "",
+                                            "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **kw: {"emailAddress": "owner@googlemail.com", "historyId": "999"}
+            st2 = signing.dumps({"uid": self.u.id, "n": "y"}, salt=_STATE_SALT)
+            self.assertEqual(self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C2&state={st2}").status_code, 200)
+            self.assertEqual(ConnectedMailbox.objects.filter(user=self.u).count(), 1)          # (8) no duplicate
+            mb2 = ConnectedMailbox.objects.get(user=self.u)
+            self.assertEqual(mb2.id, orig_id)                                                   # (1) same row
+            self.assertEqual(mb2.provider_mailbox_id, canonical_address("owner@gmail.com"))     # (3) stable canonical id
+            self.assertEqual(mb2.cursor_state, "3204241")                                       # (4) cursor PRESERVED (not 999)
+            self.assertEqual(mb2.last_successful_sync, orig_sync)                               # (5) last-sync not reset
+            self.assertEqual(mb2.status, ConnectedMailbox.Status.CONNECTED)
+            self.assertTrue(mb2.credential_ref and mb2.credential_ref != orig_ref)              # (12) credential rotated
+            self.assertEqual(load_token(mb2.credential_ref)["access_token"], "AT2")             # new grant usable
+            self.assertEqual(mb2.scopes, OAUTH.GMAIL_READONLY_SCOPE)                             # (9/10) readonly only
+            ident.refresh_from_db()
+            self.assertEqual(ident.connected_mailbox_id, orig_id)                               # (6/7) binding preserved
+            self.assertEqual(load_token(orig_ref)["access_token"], "AT1")                       # prev credential not destroyed
+        finally:
+            O.exchange_code, S.fetch_profile = orig_exc, orig_prof
+
     def test_callback_rejects_foreign_or_bad_state(self):
         from django.core import signing
         from broker_intelligence.views import _STATE_SALT
