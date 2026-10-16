@@ -385,6 +385,16 @@ class ConnectedMailbox(models.Model):
     scopes = models.CharField(max_length=512, blank=True, default="")           # granted read-only scope(s)
     cursor_state = models.CharField(max_length=255, blank=True, default="")     # Gmail historyId / IMAP UIDVALIDITY+UID
     last_successful_sync = models.DateTimeField(null=True, blank=True)
+    # INGESTION_INCIDENT_R1 (§5) — DARK mailbox-level health observability. All nullable/defaulted + additive, so the
+    # migration is a pure column-add (no backfill, reversible). Written ONLY by the ingestion worker's own per-pass
+    # bookkeeping on its OWN row (never evidence, never financial, never a secret) and read by the health read-model.
+    # They record HEALTH, not what a broker said; a successful systemd unit exit does NOT imply they say healthy.
+    last_attempted_sync = models.DateTimeField(null=True, blank=True)            # when the worker last RAN a pass
+    last_pass_cursor_advanced = models.BooleanField(null=True, blank=True)       # did the last pass advance the cursor?
+    last_error_code = models.CharField(max_length=48, blank=True, default="")    # secret-free diagnostic code (R1 §4)
+    last_error_http_status = models.PositiveSmallIntegerField(null=True, blank=True)  # safe Gmail HTTP status, if any
+    last_error_at = models.DateTimeField(null=True, blank=True)                  # when the last failure was recorded
+    consecutive_failures = models.PositiveIntegerField(default=0)                # resets to 0 on a successful pass
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
