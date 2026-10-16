@@ -402,3 +402,118 @@ class GmailApiClientTests(TestCase):
             self.assertEqual(CS.load_token(self.ref)["access_token"], "NEW")   # refreshed token persisted (same ref)
         finally:
             O.refresh_access_token = orig
+
+
+@override_settings(**CRED_SETTINGS, BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.com")
+class GmailApiClient404ToleranceTests(TestCase):
+    """INGESTION_INCIDENT_R2: a per-message Gmail 404 (a message DELETED from the mailbox between history.list and the
+    fetch) must be SKIPPED so one vanished message cannot deadlock the cursor forever; every OTHER non-200 still fails
+    closed (cursor held). Regression for the 2026-10-14 incident (history.list 200, 33 ids, a metadata 404 on id #2)."""
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="ga404", email="ga404@x.invalid", password="x")
+        tok = {"access_token": "ACCESS-1", "refresh_token": "REF-1",
+               "expiry": (timezone.now() + datetime.timedelta(hours=1)).isoformat(),
+               "scope": OAUTH.GMAIL_READONLY_SCOPE}
+        self.ref = CS.store_token(tok)
+        self.mb = ConnectedMailbox.objects.create(
+            user=self.u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id="gmail-404",
+            credential_ref=self.ref, cursor_state="")
+
+    def _client(self, http_get):
+        return GS.GmailApiClient(self.mb, client_id="CID", client_secret="SEC", http_get=http_get)
+
+    def test_404_on_metadata_skips_gone_message_and_batch_continues(self):
+        raw_b64 = base64.urlsafe_b64encode(SYNTHETIC_RAW).decode().rstrip("=")
+        pulled_raw = []
+
+        def http_get(url, headers):
+            if "/history?startHistoryId=100" in url:
+                return 200, json.dumps({"historyId": "150", "history": [
+                    {"messagesAdded": [{"message": {"id": "gone"}}]},
+                    {"messagesAdded": [{"message": {"id": "broker"}}]},
+                    {"messagesAdded": [{"message": {"id": "personal"}}]}]})
+            if "/messages/gone" in url:                           # deleted after it entered history -> 404 on metadata
+                return 404, "{}"
+            if "/messages/broker" in url and "format=metadata" in url:
+                return 200, _meta_from("no-reply@tradersway.com")
+            if "/messages/broker" in url:
+                pulled_raw.append("broker")
+                return 200, json.dumps({"id": "broker", "raw": raw_b64})
+            if "/messages/personal" in url and "format=metadata" in url:
+                return 200, _meta_from("mum@familymail.example")
+            if "/messages/personal" in url:
+                pulled_raw.append("personal")                     # must NEVER happen (non-broker filtered)
+                return 200, json.dumps({"id": "personal", "raw": raw_b64})
+            return 404, "{}"
+
+        client = self._client(http_get)
+        msgs, cursor = client.list_new_messages("100")
+        self.assertEqual([m["provider_message_id"] for m in msgs], ["broker"])
+        self.assertEqual(cursor, "150")                           # advanced PAST the gone message (no deadlock)
+        self.assertEqual(client.messages_gone, 1)
+        self.assertEqual(pulled_raw, ["broker"])                  # gone/personal never raw-fetched
+
+    def test_404_on_raw_after_metadata_ok_is_tolerated(self):
+        def http_get(url, headers):
+            if "/history?startHistoryId=100" in url:
+                return 200, json.dumps({"historyId": "150",
+                                        "history": [{"messagesAdded": [{"message": {"id": "broker"}}]}]})
+            if "/messages/broker" in url and "format=metadata" in url:
+                return 200, _meta_from("no-reply@tradersway.com")
+            if "/messages/broker" in url:                         # raw: gone between metadata and raw
+                return 404, "{}"
+            return 404, "{}"
+        client = self._client(http_get)
+        msgs, cursor = client.list_new_messages("100")
+        self.assertEqual(msgs, [])
+        self.assertEqual(cursor, "150")
+        self.assertEqual(client.messages_gone, 1)
+
+    def test_non_404_metadata_error_still_fails_closed(self):
+        for status in (401, 403, 429, 500, 503):
+            def http_get(url, headers, _s=status):
+                if "/history?startHistoryId=100" in url:
+                    return 200, json.dumps({"historyId": "150",
+                                            "history": [{"messagesAdded": [{"message": {"id": "m"}}]}]})
+                if "/messages/m" in url:
+                    return _s, "{}"
+                return 404, "{}"
+            client = self._client(http_get)
+            with self.assertRaises(GS.GmailApiError):
+                client.list_new_messages("100")                   # NOT tolerated -> cursor held
+
+    def test_capture_error_still_fails_closed(self):
+        def http_get(url, headers):
+            if "/history?startHistoryId=100" in url:
+                return 200, json.dumps({"historyId": "150",
+                                        "history": [{"messagesAdded": [{"message": {"id": "broker"}}]}]})
+            if "/messages/broker" in url and "format=metadata" in url:
+                return 200, _meta_from("no-reply@tradersway.com")
+            if "/messages/broker" in url:
+                return 200, json.dumps({"id": "broker", "raw": ""})   # empty raw -> MessageCaptureError (not a 404)
+            return 404, "{}"
+        client = self._client(http_get)
+        with self.assertRaises(GS.MessageCaptureError):
+            client.list_new_messages("100")
+
+    def test_initial_sync_tolerates_404(self):
+        raw_b64 = base64.urlsafe_b64encode(SYNTHETIC_RAW).decode().rstrip("=")
+
+        def http_get(url, headers):
+            if "/messages?maxResults=50" in url:
+                return 200, json.dumps({"messages": [{"id": "gone"}, {"id": "broker"}]})
+            if "/messages/gone" in url:
+                return 404, "{}"
+            if "/messages/broker" in url and "format=metadata" in url:
+                return 200, _meta_from("no-reply@tradersway.com")
+            if "/messages/broker" in url:
+                return 200, json.dumps({"id": "broker", "raw": raw_b64})
+            if url.endswith("/profile"):
+                return 200, json.dumps({"historyId": "77"})
+            return 404, "{}"
+        client = self._client(http_get)
+        msgs, cursor = client.list_new_messages("")
+        self.assertEqual([m["provider_message_id"] for m in msgs], ["broker"])
+        self.assertEqual(cursor, "77")
+        self.assertEqual(client.messages_gone, 1)
