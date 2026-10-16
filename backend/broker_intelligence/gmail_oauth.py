@@ -48,7 +48,14 @@ HttpPost = Callable[[str, dict], "tuple[int, str]"]
 
 
 class GmailOAuthError(Exception):
-    """Raised on a non-200 token response or a response missing the required fields (fail-closed)."""
+    """Raised on a non-200 token response or a response missing the required fields (fail-closed). ``status`` carries
+    the token-endpoint HTTP status when the failure was a non-200 (None otherwise) so the diagnostics layer can
+    distinguish a permission denial (400 invalid_grant / 401 / 403 — needs re-auth) from a transient refresh failure
+    (5xx / malformed body). Secret-free: never carries the token or the response body."""
+
+    def __init__(self, message: str = "", *, status: Optional[int] = None):
+        self.status = status
+        super().__init__(message)
 
 
 def build_authorization_url(*, client_id: str, redirect_uri: str, state: str) -> str:
@@ -109,7 +116,7 @@ def exchange_code(*, code: str, client_id: str, client_secret: str, redirect_uri
         "redirect_uri": redirect_uri, "grant_type": "authorization_code",
     })
     if status != 200:
-        raise GmailOAuthError(f"token exchange failed (http {status})")
+        raise GmailOAuthError(f"token exchange failed (http {status})", status=status)
     return _normalise_token(body, now=now)
 
 
@@ -126,5 +133,5 @@ def refresh_access_token(*, refresh_token: str, client_id: str, client_secret: s
         "grant_type": "refresh_token",
     })
     if status != 200:
-        raise GmailOAuthError(f"token refresh failed (http {status})")
+        raise GmailOAuthError(f"token refresh failed (http {status})", status=status)
     return _normalise_token(body, fallback_refresh=refresh_token, now=now)

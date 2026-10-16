@@ -2,6 +2,34 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🔴 Broker-email ingestion wedged — Gmail fetch failing (observed 2026-10-15; `docs/GUVFX_WITHDRAWAL_V1_P0_2026_10_15_REPORT.md`)
+
+- **Symptom.** `guvfx-broker-ingest.timer` is active+enabled and the systemd **unit exits 0**, but every
+  pass since **2026-10-14 20:12:54 UTC** fails: `mailbox ingest failed for mailbox 1: RuntimeError`
+  (`events=0 ingested=0 failed=1`). `ConnectedMailbox.last_successful_sync` frozen at 2026-10-14 20:12:54 UTC.
+- **Repro (read-only).** `ssh ubuntu@100.119.23.29 'journalctl -u guvfx-broker-ingest.service --since "-1h" --no-pager'`
+  → each pass shows `failed = 1` + the `RuntimeError` line. DB: `ConnectedMailbox.pk=1` cursor_state `3204241`
+  has **not** advanced (fail-closed; no data loss / no mis-ingest — recovers idempotently once fetch works).
+- **Cause (hedged).** Error class is `RuntimeError`, **not** `GmailOAuthError`, so the token-refresh path is
+  not failing → one of the `gmail_source.py` REST sites (`no stored credential` L362 / `gmail api http {status}`
+  L379 / `gmail profile http {status}` L495). Persistent ~12h + unchanged container ⇒ most-probably a non-200
+  from Gmail (consent/token revoked, 401/403). **Exact status unconfirmed** — confirming needs token decryption
+  or a live Gmail call (both out of bounds; RULE 11: not asserted as fact).
+- **Fix.** BLOCKER-1 = operational Gmail **re-auth** (read-only scope only) — Sponsor/ops, not an engineering
+  action; self-heals afterwards (recovers idempotently from the unadvanced cursor). BLOCKER-2 (product) = the worker
+  logged only `type(exc).__name__` (dropping the non-secret HTTP status) AND a single-mailbox hard-fail does not fail
+  the unit → the wedge stayed green.
+- **R1 status (2026-10-16, branch `fix/broker-ingest-diagnostics`, DARK, NOT deployed).** BLOCKER-2 **Green** is now
+  IMPLEMENTED: `broker_intelligence/ingest_diagnostics.py` (secret-free classifier — `history.list` 404 =
+  `GMAIL_HISTORY_CURSOR_INVALID`, distinct from a `messages.get` 404; a bare `RuntimeError` → `UNKNOWN_FAILURE`, never
+  inferred), typed Gmail-source exceptions, worker logs `code+http_status+operation+mailbox` only, `health.py` +
+  `broker_mailbox_health` command (5 states; staleness flags the ~35 h stale mailbox WITHOUT decrypting a credential),
+  migration 0011 (6 nullable health columns, separately gated). 35 new + 383 broker_intelligence tests pass. The §11
+  **Amber** (persistent hard-fail → non-zero exit / alert) is **prepared, NOT implemented** — live exit semantics
+  unchanged; needs a Programme Director/Sponsor decision. Deploying R1 makes the exact failure code one-glance (the
+  next pass self-labels), which is the prerequisite to choosing the right BLOCKER-1 response (re-auth vs
+  cursor-recovery). See `docs/WITHDRAWAL_V1_INGESTION_INCIDENT_R1.md`.
+
 ## 🔴 Production database recovery posture (verified 2026-10-14; `docs/DB_RECOVERY_FOUNDATION.md`)
 
 - **P0 — root filesystem 96% full (9.2 GB free).** `/dev/sda1` (193 GB) holds the Postgres data volume

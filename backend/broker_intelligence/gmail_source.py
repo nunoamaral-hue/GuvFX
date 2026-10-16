@@ -304,6 +304,39 @@ class MessageCaptureError(Exception):
     legitimately large email (e.g. one carrying a PDF statement)."""
 
 
+class MessageTooLargeError(MessageCaptureError):
+    """A single message's raw exceeds the capture ceiling. A subclass of ``MessageCaptureError`` so every existing
+    guard/handler that fails the batch on a capture problem still applies; the distinct type lets the diagnostics
+    layer report MESSAGE_TOO_LARGE (operator may raise ``BROKER_INTELLIGENCE_MAX_RAW_BYTES``) separately from an
+    empty-payload / page-ceiling capture failure."""
+
+
+class GmailApiError(Exception):
+    """A Gmail REST call returned a non-2xx status. Carries the STRUCTURED, secret-free ``status`` (int) and
+    ``operation`` (one of 'history.list' / 'messages.get' / 'messages.metadata' / 'messages.list' / 'profile') so the
+    diagnostics layer classifies by field — never by parsing this message. The message intentionally contains ONLY
+    the status + operation (never the URL, which could carry a query/message id). ``history.list`` + 404 means the
+    stored history cursor is too old/invalid (distinct from a 404 on a single message)."""
+
+    def __init__(self, status: int, operation: str = ""):
+        self.status = status
+        self.operation = operation or ""
+        super().__init__(f"gmail api http {status} on {self.operation or 'unknown-op'}")
+
+
+class CredentialMissingError(Exception):
+    """No stored credential file exists for the mailbox's ``credential_ref`` (distinct from a decrypt/key failure,
+    which raises ``credential_store.CredentialStoreError``). Secret-free: carries no ref, path, or token."""
+
+
+class GmailConnectionError(Exception):
+    """A network-level failure reaching Gmail (DNS/connection/TLS) — distinct from an HTTP non-2xx. Secret-free."""
+
+
+class GmailTimeout(Exception):
+    """A Gmail request timed out — distinct from a connection error and from an HTTP non-2xx. Secret-free."""
+
+
 def _max_raw_bytes() -> int:
     """Per-message raw-size ceiling, CONFIGURABLE (settings-then-env ``BROKER_INTELLIGENCE_MAX_RAW_BYTES``, bytes) so an
     operator can admit a larger broker email without a code change. Defaults to ``GmailApiClient.MAX_RAW_BYTES``."""
@@ -359,7 +392,7 @@ class GmailApiClient:
         from . import gmail_oauth
         tok = load_token(self._mailbox.credential_ref)
         if not tok:
-            raise RuntimeError("no stored credential for mailbox")
+            raise CredentialMissingError("no stored credential for mailbox")
         expiry = tok.get("expiry")
         expired = False
         if expiry:
@@ -373,10 +406,13 @@ class GmailApiClient:
             store_token(tok, credential_ref=self._mailbox.credential_ref)   # overwrite in place (same ref)
         return tok["access_token"]
 
-    def _get_json(self, url: str) -> dict:
+    def _get_json(self, url: str, *, operation: str) -> dict:
+        """One authenticated GET returning parsed JSON. ``operation`` is a STABLE, secret-free label of the endpoint
+        class (NOT the URL) so a non-2xx raises a typed ``GmailApiError`` the diagnostics layer can classify precisely
+        (e.g. a 404 on 'history.list' = invalid cursor, distinct from a 404 on 'messages.get')."""
         status, body = self._http_get(url, {"Authorization": "Bearer " + self._access_token()})
         if status != 200:
-            raise RuntimeError(f"gmail api http {status}")
+            raise GmailApiError(status, operation)
         return json.loads(body)
 
     def _fetch_message(self, mid: str) -> dict:
@@ -384,17 +420,18 @@ class GmailApiClient:
         payload, or raw exceeding the capture ceiling — RAISES ``MessageCaptureError`` so the batch fails WITHOUT
         advancing the cursor (durable-preservation contract). The pre-decode check on the base64 length bounds memory
         (a huge message is rejected before it is decoded), so an oversized message is never buffered whole."""
-        full = self._get_json(f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=raw")
+        full = self._get_json(f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=raw",
+                              operation="messages.get")
         raw_b64 = full.get("raw", "")
         if not raw_b64:
             raise MessageCaptureError(f"message {mid}: empty raw payload — cannot capture (not advancing cursor)")
         if len(raw_b64) * 3 // 4 > self._max_raw_bytes:   # base64 decodes to ~3/4 its length (bound memory pre-decode)
-            raise MessageCaptureError(
+            raise MessageTooLargeError(
                 f"message {mid}: raw exceeds capture ceiling {self._max_raw_bytes}B — "
                 "raise BROKER_INTELLIGENCE_MAX_RAW_BYTES to admit it (not advancing cursor; message not lost)")
         raw_bytes = base64.urlsafe_b64decode(raw_b64 + "=" * (-len(raw_b64) % 4))
         if len(raw_bytes) > self._max_raw_bytes:
-            raise MessageCaptureError(f"message {mid}: raw exceeds capture ceiling {self._max_raw_bytes}B")
+            raise MessageTooLargeError(f"message {mid}: raw exceeds capture ceiling {self._max_raw_bytes}B")
         return {"provider_message_id": mid, "raw_bytes": raw_bytes, **parse_rfc822(raw_bytes)}
 
     def _collect_added_ids(self, cursor: str) -> "Tuple[List[str], str]":
@@ -415,7 +452,7 @@ class GmailApiClient:
         page = f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}&historyTypes=messageAdded"
         drained = False
         for _ in range(max_pages):
-            hist = self._get_json(page)
+            hist = self._get_json(page, operation="history.list")
             new_cursor = str(hist.get("historyId", new_cursor) or new_cursor)
             for h in (hist.get("history") or []):
                 for added in (h.get("messagesAdded") or []):
@@ -437,14 +474,16 @@ class GmailApiClient:
         return ids, new_cursor
 
     def _profile_cursor(self, fallback: str) -> str:
-        return str(self._get_json(f"{_GMAIL_API}/profile").get("historyId", fallback) or fallback)
+        return str(self._get_json(f"{_GMAIL_API}/profile", operation="profile").get("historyId", fallback)
+                   or fallback)
 
     def _sender_allowed(self, mid: str) -> bool:
         """Metadata-only From pre-check (``format=metadata&metadataHeaders=From``) so a NON-broker message is never
         pulled in full raw. True iff the From domain is on the broker-sender allowlist (fail-closed: empty → False)."""
         from .broker_senders import is_allowlisted_broker_sender
         meta = self._get_json(
-            f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=metadata&metadataHeaders=From")
+            f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=metadata&metadataHeaders=From",
+            operation="messages.metadata")
         frm = ""
         for h in ((meta.get("payload") or {}).get("headers") or []):
             if (h.get("name") or "").lower() == "from":
@@ -479,7 +518,8 @@ class GmailApiClient:
         if not allow:
             return [], self._profile_cursor(cursor)
         q = "from:(" + " OR ".join(allow) + ")"
-        listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}&q={urllib.parse.quote(q)}")
+        listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}&q={urllib.parse.quote(q)}",
+                                 operation="messages.list")
         for m0 in (listing.get("messages") or []):
             if self._sender_allowed(m0["id"]):                  # defense-in-depth beyond the server-side q= filter
                 out.append(self._fetch_message(m0["id"]))
@@ -492,14 +532,25 @@ def fetch_profile(access_token: str, *, http_get: Optional[HttpGet] = None) -> d
     get = http_get or _default_http_get
     status, body = get(f"{_GMAIL_API}/profile", {"Authorization": "Bearer " + access_token})
     if status != 200:
-        raise RuntimeError(f"gmail profile http {status}")
+        raise GmailApiError(status, "profile")
     return json.loads(body)
 
 
 def _default_http_get(url: str, headers: dict) -> "Tuple[int, str]":
+    """Live HTTP GET. An HTTP non-2xx is returned as ``(status, body)`` so the caller raises a typed ``GmailApiError``
+    carrying the status. A network-level failure (no HTTP status at all) is raised as a typed ``GmailTimeout`` /
+    ``GmailConnectionError`` so it is classified distinctly from an HTTP error and never surfaces as a bare, unlabelled
+    exception. The exception text is secret-free (no URL/header)."""
+    import socket
     req = urllib.request.Request(url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.status, r.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "ignore")
+    except urllib.error.URLError as e:                       # DNS/connection/TLS/timeout — no HTTP status
+        if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            raise GmailTimeout("gmail request timed out") from None
+        raise GmailConnectionError("gmail connection error") from None
+    except (socket.timeout, TimeoutError):
+        raise GmailTimeout("gmail request timed out") from None
