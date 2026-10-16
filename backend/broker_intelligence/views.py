@@ -167,6 +167,7 @@ class MailboxConnectView(APIView):
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
         from . import gmail_oauth
         from .models import ConnectedMailbox
+        from .resolver import canonical_address
         # WRONG-ACCOUNT SAFEGUARD (OAUTH_RECOVERY_R2 §3): a TARGETED reconnect. If this member already has a CONNECTED
         # Gmail mailbox, bind its canonical identity into the signed, time-limited state. The callback then rejects a
         # consent that returns a DIFFERENT Google account — so an accidental wrong-account re-consent can never create
@@ -178,7 +179,10 @@ class MailboxConnectView(APIView):
                             status=ConnectedMailbox.Status.CONNECTED)
                     .exclude(provider_mailbox_id="").first())
         if existing is not None:
-            state_payload["expect"] = existing.provider_mailbox_id
+            # Re-canonicalize defensively: the stored provider_mailbox_id is already canonical for mailboxes connected
+            # on current builds, but re-canonicalizing makes the bound target self-idempotent and immune to any
+            # legacy/non-canonical row, so a legitimate same-account reconnect can never be false-rejected.
+            state_payload["expect"] = canonical_address(existing.provider_mailbox_id)
         state = signing.dumps(state_payload, salt=_STATE_SALT)
         url = gmail_oauth.build_authorization_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
         return Response({"authorization_url": url})
