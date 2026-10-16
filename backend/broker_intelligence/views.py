@@ -220,6 +220,21 @@ class MailboxCallbackView(APIView):
                  .exclude(user=request.user).first())
         if clash is not None:
             return Response({"ok": False, "error": "mailbox_already_connected"}, status=status.HTTP_409_CONFLICT)
+        # CREDENTIAL-LIFECYCLE SAFETY (OAUTH_RECOVERY §6): an unattended CONNECTED mailbox needs a USABLE replacement
+        # credential. Validate BEFORE store_token/update_or_create so a bad grant can never overwrite the existing
+        # working credential/cursor/identity bindings, and no orphaned credential file is written on rejection:
+        #   * a mailbox identity (emailAddress) must be present — else the dedup id would be random and a DUPLICATE
+        #     mailbox would be created instead of updating the existing row;
+        #   * a NON-EMPTY refresh_token — without it the next access-token expiry silently re-breaks ingestion;
+        #   * gmail.readonly present and NO write-capable scope (defence-in-depth beyond exchange_code's scope assert).
+        from .gmail_oauth import GMAIL_READONLY_SCOPE, _FORBIDDEN_SCOPES
+        granted_scopes = set(str(token.get("scope", "")).split())
+        if not email:
+            return Response({"ok": False, "error": "oauth_no_mailbox_identity"}, status=status.HTTP_400_BAD_REQUEST)
+        if not token.get("refresh_token"):
+            return Response({"ok": False, "error": "oauth_no_refresh_token"}, status=status.HTTP_400_BAD_REQUEST)
+        if GMAIL_READONLY_SCOPE not in granted_scopes or (granted_scopes & set(_FORBIDDEN_SCOPES)):
+            return Response({"ok": False, "error": "oauth_scope_insufficient"}, status=status.HTTP_400_BAD_REQUEST)
         credential_ref = store_token(token)   # encrypted; the DB stores only the ref
         common = dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
                       status=ConnectedMailbox.Status.CONNECTED)
