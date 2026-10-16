@@ -37,7 +37,9 @@ after: cursor_unchanged=true, last_successful_sync_unchanged=true, status_unchan
    (`GMAIL_MESSAGE_METADATA_HTTP_ERROR` / R1 `GMAIL_HTTP_404`).
 8. **What is definitively established:** `history.list` from cursor `3204241` succeeds (200, single page, 33 added ids)
    — so the cursor is **not** invalid and auth is **not** the problem. The worker's failure is a **per-message 404**: a
-   message that `history.list` reported has since been **deleted** from the mailbox, so `messages.get` returns 404. The
+   message that `history.list` reported is now **unavailable** — `messages.get` returns Gmail's not-found status (404).
+   A 404 is *unavailable at request time*; it is typically a message deleted/expunged from the mailbox, but this report
+   does not assert it is permanently deleted. The
    old worker raised `RuntimeError` on any non-200 → the whole batch failed → the cursor never advanced → every 5-minute
    pass re-walked the same frozen history (`3204241`) → the same 33 ids → the same deleted message → the same 404. That
    is a **deterministic poison-message deadlock** and exactly explains "fails every pass for 35h." It is **not** token
@@ -67,9 +69,10 @@ after: cursor_unchanged=true, last_successful_sync_unchanged=true, status_unchan
     **390/390**; full backend suite + adversarial review (5 lenses × 3 skeptics) — results appended on completion.
 16. **Remaining production deployment dependencies (separately gated — NOT under this packet):** deploy requires
     applying **migration 0011** (from R1, now on main) + recreating the backend container so the worker picks up both
-    the diagnostics and the 404 tolerance. On the first post-deploy pass the worker will walk the 33-id backlog, skip
-    the deleted message(s), capture any allowlisted broker emails, and **advance the cursor** — ingestion resumes. No
-    re-auth and no cursor reset are needed.
+    the diagnostics and the 404 tolerance. On the first post-deploy pass the worker is **expected to** walk the 33-id
+    backlog, skip the unavailable message(s), capture any allowlisted broker emails, and advance the cursor — but
+    successful cursor progression and backlog capture are **not guaranteed until the production worker demonstrates
+    them** and the persisted evidence/counters are reconciled (see Closeout qualifications). No re-auth / cursor reset.
 17. **Current TradersWay pilot readiness:** **BLOCKED** — gated on ingestion health restored (deploy the fix) **then** a
     genuine external withdrawal. 0 `Withdrawal` rows; positive classifier / correlation / UX remain DARK.
 
@@ -78,7 +81,24 @@ after: cursor_unchanged=true, last_successful_sync_unchanged=true, status_unchan
 | Marker | Verdict | Evidence |
 |---|---|---|
 | `GMAIL_DIAGNOSTIC_R2_COMPLETED` | **PASS** | Probe executed within budget (3/12 GETs), zero writes, secret-free |
-| `GMAIL_FAILURE_OPERATION_IDENTIFIED` | **PASS** | `messages.metadata` HTTP 404 (deleted message); deterministic poison-message deadlock |
+| `GMAIL_FAILURE_OPERATION_IDENTIFIED` | **PASS** | `messages.metadata` HTTP 404 (message unavailable at request time); deterministic poison-message deadlock |
+
+## Closeout qualifications (R2 CLOSEOUT §2)
+
+- **(A) A 404 means "unavailable at request time," not provably "permanently deleted."** Gmail returns 404 for a
+  not-found message (typically deleted/expunged). The fix skips a 404 and the batch's cursor advances past it, so a
+  skipped id is not re-fetched on later passes — therefore a 404 is treated as unavailable, and a *rising*
+  `messages_gone` must be investigated rather than assumed benign.
+- **(B) Skipping an unavailable message is observable, by design.** Each skip increments the secret-free
+  `messages_gone` counter surfaced on the worker result, the run summary, and an INFO log (count only). Non-zero counts
+  are the operator's signal.
+- **(C) Successful cursor progression is NOT guaranteed until the production worker demonstrates it.** The 33-id walk,
+  the skips, and the cursor advance are the *expected* behaviour; they are asserted only against synthetic fixtures
+  here. Production certification (§8 of the CLOSEOUT packet) requires an observed `failed=0` pass with the cursor and
+  `last_successful_sync` actually advancing.
+- **(D) No claim of complete financial-evidence recovery.** Whether the recovered backlog contains any genuine broker
+  withdrawal, and whether all retrievable broker mail was captured, is established only by post-deploy reconciliation
+  of persisted `EvidenceBlob`/`BrokerEvent` — not asserted here.
 | `GMAIL_CURSOR_PRESERVED` | **PASS** | `cursor_unchanged = true` before/after the probe |
 | `GMAIL_CREDENTIAL_UNCHANGED` | **PASS** | `refresh_invoked = false`; read-only load only; no credential write |
 | `WITHDRAWAL_INGESTION_PRODUCTION_HEALTHY` | **BLOCKED** | Fix is DARK/not deployed; prod still failing every pass. (Not claimed healthy — no successful end-to-end pass observed.) |
