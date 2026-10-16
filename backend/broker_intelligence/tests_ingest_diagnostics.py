@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.db import OperationalError, connection
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from broker_intelligence import gmail_source as GS
@@ -35,10 +35,11 @@ class _FakeClient:
     """A GmailClient stand-in. Either returns (messages, new_cursor) or raises a supplied exception from
     ``list_new_messages`` (simulating a fetch-layer failure) — never touches the network."""
 
-    def __init__(self, messages=None, new_cursor="c2", raise_exc=None):
+    def __init__(self, messages=None, new_cursor="c2", raise_exc=None, messages_gone=0):
         self._messages = messages or []
         self._new_cursor = new_cursor
         self._raise = raise_exc
+        self.messages_gone = messages_gone     # R2: skipped-as-gone count the worker reads off the client
 
     def list_new_messages(self, cursor_state):
         if self._raise is not None:
@@ -205,6 +206,12 @@ class WorkerIntegrationTests(TestCase):
         self.assertIsNotNone(mb.last_attempted_sync)
         self.assertTrue(mb.last_pass_cursor_advanced)
         self.assertEqual(H.mailbox_health(mb)["state"], H.MAILBOX_SYNC_SUCCESSFUL)
+
+    def test_r2_messages_gone_surfaced_in_result(self):
+        mb = _mailbox(cursor="c1")
+        res = ingest_mailbox(mb, client=_FakeClient(messages=[], new_cursor="c2", messages_gone=3))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["messages_gone"], 3)
 
     def test_s18_cursor_unchanged_after_fetch_failure_and_diagnostic_recorded(self):
         mb = _mailbox(cursor="c1")
@@ -377,32 +384,33 @@ class SecrecyAndSafetyTests(TestCase):
                 self.assertNotIn("from %s" % tok, src)
 
 
-class UnmigratedHealthTests(TransactionTestCase):
-    """NON-VACUOUS unmigrated-safety (regression for the review HIGH). Runs WITHOUT an enclosing transaction
-    (TransactionTestCase), so the committed INSERT leaves no pending trigger events and the ALTER TABLE DROP COLUMN is
-    clean. Drops the 6 R1 columns from the REAL table, then runs service_health() through the ACTUAL ORM query: it must
-    NOT raise and must still flag the ~35h-stale mailbox as RECOVERY_REQUIRED (the exact incident state the diagnostic
-    exists to reveal). The previous SimpleNamespace test never exercised the ORM SELECT and hid this."""
+class UnmigratedHealthSafetyTests(TestCase):
+    """NON-VACUOUS unmigrated-safety (regression for the review HIGH), proven WITHOUT live-schema DDL. Dropping real
+    columns via schema_editor in the shared, non-parallel test DB is order-dependent and can corrupt the schema for
+    every later test, so instead this patches the real unmigrated branch (``r1_columns_present()`` -> False) and
+    asserts BOTH that (a) ``service_health`` does not raise and still flags the ~35h-stale mailbox RECOVERY_REQUIRED,
+    and (b) the emitted ConnectedMailbox SELECT references NONE of the R1 columns — so the query is provably safe
+    against a column-less (unmigrated) table. If the ``.only(...)`` guard were missing, the SELECT would list the R1
+    columns and (b) would fail — the test is not vacuous."""
 
-    def test_service_health_survives_unmigrated_db_real_orm_path(self):
+    _R1_COLS = ("consecutive_failures", "last_attempted_sync", "last_pass_cursor_advanced",
+                "last_error_code", "last_error_http_status", "last_error_at")
+
+    def test_service_health_unmigrated_branch_is_column_safe(self):
+        from unittest import mock
+        from django.test.utils import CaptureQueriesContext
         mb = _mailbox(cursor="c1")
         mb.last_successful_sync = timezone.now() - datetime.timedelta(hours=35)
         mb.save(update_fields=["last_successful_sync"])
-        r1_names = ["last_attempted_sync", "last_pass_cursor_advanced", "last_error_code",
-                    "last_error_http_status", "last_error_at", "consecutive_failures"]
-        fields = [ConnectedMailbox._meta.get_field(n) for n in r1_names]
-        dropped = []
-        try:
-            with connection.schema_editor() as se:
-                for f in fields:
-                    se.remove_field(ConnectedMailbox, f)
-                    dropped.append(f)
-            self.assertFalse(H.r1_columns_present())            # introspection sees the columns gone
-            report = H.service_health()                         # MUST NOT raise against the column-less table
-            self.assertFalse(report["r1_columns_present"])
-            self.assertTrue(report["any_recovery_required"])
-            self.assertEqual(report["mailboxes"][0]["state"], H.RECOVERY_REQUIRED)
-        finally:
-            with connection.schema_editor() as se:              # restore the schema for subsequent tests
-                for f in dropped:
-                    se.add_field(ConnectedMailbox, f)
+        with mock.patch("broker_intelligence.health.r1_columns_present", return_value=False):
+            with CaptureQueriesContext(connection) as ctx:
+                report = H.service_health()
+        self.assertFalse(report["r1_columns_present"])
+        self.assertTrue(report["any_recovery_required"])
+        self.assertEqual(report["mailboxes"][0]["state"], H.RECOVERY_REQUIRED)
+        selects = [q["sql"] for q in ctx.captured_queries
+                   if "connectedmailbox" in q["sql"].lower() and q["sql"].lower().lstrip().startswith("select")]
+        self.assertTrue(selects, "expected a ConnectedMailbox SELECT")
+        for sql in selects:
+            for col in self._R1_COLS:
+                self.assertNotIn(col, sql)   # unmigrated-safe: no R1 column referenced in the query

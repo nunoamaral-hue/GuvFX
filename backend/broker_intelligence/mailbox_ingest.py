@@ -114,6 +114,12 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
 
     # SUCCESS: the cursor was advanced iff it changed; record health (resets the failure streak + clears last error).
     cursor_advanced = old_cursor != str(getattr(mailbox, "cursor_state", "") or "")
+    # INGESTION_INCIDENT_R2: history ids skipped because the message was deleted from the mailbox (Gmail 404). Surfaced
+    # so a non-zero count is visible at the run level (it is a normal, benign condition, not a failure).
+    messages_gone = int(getattr(client, "messages_gone", 0) or 0)
+    if messages_gone:
+        logger.info("mailbox %s: %s message(s) skipped as gone (Gmail 404 between history.list and fetch)",
+                    mailbox.id, messages_gone)
     _record_mailbox_health(mailbox, last_attempted_sync=attempted_at, last_error_code="",
                            last_error_http_status=None, last_error_at=None, consecutive_failures=0,
                            last_pass_cursor_advanced=cursor_advanced)
@@ -123,7 +129,8 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
     # operator at the run level, not only in the logs. (A parser crash is additionally WARNING-logged, distinct from
     # routine INFO; routine non-withdrawal broker mail would still produce an event with a non-withdrawal category.)
     return {"mailbox_id": mailbox.id, "ok": True, "ingested": ingested, "events": events,
-            "no_event": ingested - events, "diagnostic": None, "cursor_advanced": cursor_advanced}
+            "no_event": ingested - events, "diagnostic": None, "cursor_advanced": cursor_advanced,
+            "messages_gone": messages_gone}
 
 
 def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
@@ -137,7 +144,8 @@ def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
         qs = qs[:limit_mailboxes]
     # ``failure_codes`` (code -> count) surfaces the R1 secret-free classification at the run level, so the journal /
     # command output names WHY a pass failed (e.g. {'GMAIL_HTTP_401': 1}) instead of only "failed = 1".
-    summary = {"mailboxes": 0, "ingested": 0, "events": 0, "no_event": 0, "failed": 0, "failure_codes": {}}
+    summary = {"mailboxes": 0, "ingested": 0, "events": 0, "no_event": 0, "failed": 0, "messages_gone": 0,
+               "failure_codes": {}}
     for mailbox in qs:
         # Per-mailbox isolation (contract): NOTHING a single mailbox does — including a GmailApiClient/source
         # construction error or any unexpected raise before/around ingest — may abort the pass. A failure is
@@ -154,6 +162,7 @@ def run_mailbox_ingest(*, limit_mailboxes: Optional[int] = None) -> dict:
         summary["ingested"] += res.get("ingested", 0)
         summary["events"] += res.get("events", 0)
         summary["no_event"] += res.get("no_event", 0)   # acquired-but-no-event (quarantine / parse failure) volume
+        summary["messages_gone"] += res.get("messages_gone", 0)   # history ids skipped as deleted (Gmail 404)
         if not res.get("ok"):
             summary["failed"] += 1
             code = (res.get("diagnostic") or {}).get("code", "UNKNOWN_FAILURE")

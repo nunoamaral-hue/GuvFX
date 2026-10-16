@@ -386,6 +386,9 @@ class GmailApiClient:
         self._http_get = http_get or _default_http_get
         self._max = max_messages
         self._max_raw_bytes = _max_raw_bytes()
+        # INGESTION_INCIDENT_R2: count of history ids skipped because the message was DELETED from the mailbox
+        # (Gmail 404 on the metadata/raw fetch) between history.list and the fetch. Surfaced to the worker summary.
+        self.messages_gone = 0
 
     def _access_token(self) -> str:
         from .credential_store import load_token, store_token
@@ -491,6 +494,32 @@ class GmailApiClient:
                 break
         return is_allowlisted_broker_sender(frm)
 
+    def _acquire_if_broker(self, mid: str) -> Optional[dict]:
+        """Metadata sender-gate + (if allowlisted) raw fetch for ONE history id. Returns the fetched message dict, or
+        None to SKIP this id.
+
+        INGESTION_INCIDENT_R2 — poison-message tolerance (certified against the 2026-10-14 incident): a message that
+        history.list reported but that has since been DELETED from the mailbox returns Gmail **404** on the
+        metadata/raw fetch. That is the ONE non-200 that is both deterministic and IRRECOVERABLE — the message no
+        longer exists, so it can never be captured, and the old behaviour (raise on every non-200) made a single
+        deleted message deadlock the whole mailbox forever: the batch failed, the cursor never advanced, and every
+        5-minute pass re-walked the same frozen history to the same 404. A 404 is therefore skipped (and counted),
+        letting the batch complete and the cursor advance PAST the vanished message.
+
+        EVERY OTHER non-200 (401/403/429/5xx) still RAISES, so the batch fails closed and the cursor is NOT advanced —
+        the durable-preservation contract for recoverable conditions is unchanged. A ``MessageCaptureError`` (empty /
+        oversize / page-ceiling) also still raises. This tolerates a GONE message; it NEVER skips a message that
+        still exists (a message that exists does not 404)."""
+        try:
+            if self._sender_allowed(mid):
+                return self._fetch_message(mid)
+            return None
+        except GmailApiError as e:
+            if getattr(e, "status", None) == 404:
+                self.messages_gone += 1          # message deleted from the mailbox -> skip, continue the batch
+                return None
+            raise                                # 401/403/429/5xx etc. -> NOT tolerated, fail closed (cursor held)
+
     def list_new_messages(self, cursor_state: str) -> "Tuple[List[dict], str]":
         """INCREMENTAL when a cursor (historyId) is present — ``history.list`` collects the messages added since the
         cursor and advances to the response's latest historyId, so no message is skipped by the cursor jumping to 'now'.
@@ -510,9 +539,11 @@ class GmailApiClient:
         out: List[dict] = []
         if cursor:
             ids, new_cursor = self._collect_added_ids(cursor)   # always walk (advance cursor) — ids only, no raw
-            for mid in ids:
-                if allow and self._sender_allowed(mid):         # metadata gate BEFORE pulling full raw; empty → none
-                    out.append(self._fetch_message(mid))
+            if allow:                                           # empty allowlist → acquire nothing
+                for mid in ids:
+                    m = self._acquire_if_broker(mid)            # metadata gate + raw fetch; a 404 (gone) skips, else raises
+                    if m is not None:
+                        out.append(m)
             return out, new_cursor
         # INITIAL sync (forward-only). Empty allowlist → acquire nothing, just anchor the cursor (fail-closed).
         if not allow:
@@ -520,9 +551,10 @@ class GmailApiClient:
         q = "from:(" + " OR ".join(allow) + ")"
         listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}&q={urllib.parse.quote(q)}",
                                  operation="messages.list")
-        for m0 in (listing.get("messages") or []):
-            if self._sender_allowed(m0["id"]):                  # defense-in-depth beyond the server-side q= filter
-                out.append(self._fetch_message(m0["id"]))
+        for m0 in (listing.get("messages") or []):              # defense-in-depth beyond the server-side q= filter
+            m = self._acquire_if_broker(m0["id"])               # a 404 (gone) skips, any other non-200 raises
+            if m is not None:
+                out.append(m)
         return out, self._profile_cursor(cursor)
 
 
