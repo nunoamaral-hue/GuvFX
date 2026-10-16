@@ -57,6 +57,18 @@ Per RULE 11, this is stated as unconfirmed: confirming the exact status requires
 pass then self-labels the code + status) **or** a live diagnostic probe / token decryption — neither of which is
 authorized under this packet.
 
+> **UPDATE 2026-10-16 — controlled Gmail probe (packet GUVFX_WITHDRAWAL_V1_GMAIL_DIAGNOSTIC_PROBE) SUPERSEDES the
+> hypothesis above.** A Sponsor-approved 2-request read-only probe found: the stored access token is **VALID** (scope
+> `gmail.readonly` only), `GET /profile` → **200** (token accepted), and `GET /history?startHistoryId=3204241&maxResults=1`
+> → **200** (the existing cursor is accepted, not aged out). Classification **`GMAIL_HISTORY_CURSOR_ACCEPTED`**. This
+> **rules out** token-expiry, 401 auth-rejection, 403 permission, and 404 cursor-invalid on the base calls — i.e. the
+> remedy is **NOT** a re-auth and **NOT** a cursor recovery. The worker's `RuntimeError` therefore lies in its fuller
+> multi-request pass (a 2-GET probe cannot reproduce it): most plausibly a per-message `messages.metadata`/`messages.get`
+> non-200 (e.g. 429 over the 35h backlog, or a 404/403 on one message) or a non-200 on a later paginated `history.list`
+> page; a >20-page backlog is ruled out (it raises `MessageCaptureError`, not `RuntimeError`). See
+> `docs/WITHDRAWAL_V1_GMAIL_PROBE_REPORT.md`. The probe made zero writes and left the cursor/last_successful_sync/status
+> unchanged.
+
 ## 4. What remains uncertain without a live diagnostic probe
 
 - The exact HTTP status (401 vs 403 vs 404-cursor-invalid).
@@ -131,9 +143,11 @@ health bookkeeping is fail-open and never touches `cursor_state` / `last_success
 | `DATABASE_COMMIT_FAILED` | DB / evidence-store write failed | Cursor not advanced (unchanged); idempotent retry preserves guarantees. |
 | `UNKNOWN_FAILURE` | unrecognized | Operator review; never claim healthy; never auto-recover. |
 
-**Most-likely current condition:** `GMAIL_HTTP_401` (consent/token revoked → `SPONSOR_REAUTH`), with
-`GMAIL_HISTORY_CURSOR_INVALID` the alternative that changes the response (escalate, do not re-anchor). Confirm by
-deploying R1 (the next pass self-labels) **before** any operator action.
+**Most-likely current condition (REVISED by the 2026-10-16 probe):** NOT `GMAIL_HTTP_401` and NOT
+`GMAIL_HISTORY_CURSOR_INVALID` — the probe showed the token valid and the base cursor accepted (200/200). The live
+failure is in the worker's multi-request pass — a per-message `messages.metadata`/`messages.get` non-200 (e.g. `429`
+over the 35h backlog) or a non-200 on a later paginated `history.list` page. Confirm by deploying R1 (the next pass
+self-labels the exact operation + status) **before** any operator action; a re-auth / cursor-reset is NOT indicated.
 
 ## 9. Test results
 
@@ -173,10 +187,13 @@ Prepared for a separate Programme Director/Sponsor decision; **not implemented a
 ## 12. Exact Sponsor decision required
 
 1. **Approve deploying R1** (apply migration 0011 + recreate backend) so the next ingestion pass self-labels the exact
-   failure code/status — turning the unconfirmed cause (§3) into a one-glance fact. (No re-auth / cursor change.)
-2. **Then, based on the revealed code:** if `GMAIL_HTTP_401`/`OAUTH_PERMISSION_DENIED` → authorize a read-only Gmail
-   **re-auth** (Sponsor/ops); if `GMAIL_HISTORY_CURSOR_INVALID` → authorize a separate cursor-recovery review (no
-   auto-anchor).
+   failing `operation` + HTTP status. After the 2026-10-16 probe this is the single fastest path to the precise cause,
+   since the probe already eliminated the re-auth and cursor-recovery causes. (No re-auth / cursor change.) *Alternative:*
+   authorize an expanded read-only Gmail probe (> 2 GETs) replicating the per-message metadata/get path.
+2. **Then, based on the revealed `operation` + status:** likely a per-message `messages.metadata`/`messages.get` or a
+   paginated `history.list` non-200. If `429` → it is a rate/quota condition handled by bounded cadence (possibly needs
+   a request-rate reduction), **not** a re-auth. A re-auth or cursor-reset should be undertaken **only** if later
+   evidence actually shows `401/403` or `GMAIL_HISTORY_CURSOR_INVALID` — which this probe did not.
 3. **Decide the Amber escalation** (§11) separately.
 
 ## 13. TradersWay pilot readiness
