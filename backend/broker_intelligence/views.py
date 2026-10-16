@@ -166,7 +166,20 @@ class MailboxConnectView(APIView):
                              "message": "Mailbox connection is not configured yet."},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
         from . import gmail_oauth
-        state = signing.dumps({"uid": request.user.id, "n": secrets.token_urlsafe(8)}, salt=_STATE_SALT)
+        from .models import ConnectedMailbox
+        # WRONG-ACCOUNT SAFEGUARD (OAUTH_RECOVERY_R2 §3): a TARGETED reconnect. If this member already has a CONNECTED
+        # Gmail mailbox, bind its canonical identity into the signed, time-limited state. The callback then rejects a
+        # consent that returns a DIFFERENT Google account — so an accidental wrong-account re-consent can never create
+        # a duplicate mailbox or bypass the targeted update. First-time connections (no existing CONNECTED mailbox)
+        # carry no target and behave exactly as before.
+        state_payload = {"uid": request.user.id, "n": secrets.token_urlsafe(8)}
+        existing = (ConnectedMailbox.objects
+                    .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL,
+                            status=ConnectedMailbox.Status.CONNECTED)
+                    .exclude(provider_mailbox_id="").first())
+        if existing is not None:
+            state_payload["expect"] = existing.provider_mailbox_id
+        state = signing.dumps(state_payload, salt=_STATE_SALT)
         url = gmail_oauth.build_authorization_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
         return Response({"authorization_url": url})
 
@@ -231,6 +244,12 @@ class MailboxCallbackView(APIView):
         granted_scopes = set(str(token.get("scope", "")).split())
         if not email:
             return Response({"ok": False, "error": "oauth_no_mailbox_identity"}, status=status.HTTP_400_BAD_REQUEST)
+        # WRONG-ACCOUNT SAFEGUARD (R2 §3): on a TARGETED reconnect the signed state carries the expected canonical
+        # mailbox identity. A consent that returns a DIFFERENT Google account is REJECTED before any credential is
+        # stored — so it can never create a duplicate mailbox or overwrite the targeted row with a foreign account.
+        expected_identity = payload.get("expect")
+        if expected_identity and mailbox_id != expected_identity:
+            return Response({"ok": False, "error": "oauth_account_mismatch"}, status=status.HTTP_400_BAD_REQUEST)
         if not token.get("refresh_token"):
             return Response({"ok": False, "error": "oauth_no_refresh_token"}, status=status.HTTP_400_BAD_REQUEST)
         if GMAIL_READONLY_SCOPE not in granted_scopes or (granted_scopes & set(_FORBIDDEN_SCOPES)):
