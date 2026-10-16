@@ -333,6 +333,20 @@ def _max_history_pages() -> int:
         return GmailApiClient.MAX_PAGES
 
 
+class GmailApiError(Exception):
+    """A Gmail REST call returned a non-2xx status (migration-independent hotfix: deployed baseline a474f79 raised a
+    bare RuntimeError on any non-200, which made a single per-message 404 — a message deleted from the mailbox between
+    history.list and fetch — deadlock the whole cursor). Carries the STRUCTURED, secret-free ``status`` (int) and
+    ``operation`` (one of 'history.list' / 'messages.get' / 'messages.metadata' / 'messages.list' / 'profile') so the
+    per-message acquisition can tolerate a 404 by field, never by parsing this message. The message carries ONLY
+    status + operation (never the URL / a message id)."""
+
+    def __init__(self, status: int, operation: str = ""):
+        self.status = status
+        self.operation = operation or ""
+        super().__init__(f"gmail api http {status} on {self.operation or 'unknown-op'}")
+
+
 class GmailApiClient:
     """Resolves the encrypted token for ``mailbox.credential_ref`` (refreshing read-only when expired), then lists +
     fetches raw messages via the Gmail REST API. ``http_get`` is injected (default: urllib) so tests drive it with
@@ -353,6 +367,8 @@ class GmailApiClient:
         self._http_get = http_get or _default_http_get
         self._max = max_messages
         self._max_raw_bytes = _max_raw_bytes()
+        # Hotfix: count of history ids skipped because the message was unavailable (Gmail 404) at fetch time.
+        self.messages_gone = 0
 
     def _access_token(self) -> str:
         from .credential_store import load_token, store_token
@@ -373,10 +389,12 @@ class GmailApiClient:
             store_token(tok, credential_ref=self._mailbox.credential_ref)   # overwrite in place (same ref)
         return tok["access_token"]
 
-    def _get_json(self, url: str) -> dict:
+    def _get_json(self, url: str, *, operation: str) -> dict:
+        """One authenticated GET returning parsed JSON. ``operation`` is a stable, secret-free endpoint-class label so
+        a non-2xx raises a typed ``GmailApiError`` carrying the status, letting the per-message path tolerate a 404."""
         status, body = self._http_get(url, {"Authorization": "Bearer " + self._access_token()})
         if status != 200:
-            raise RuntimeError(f"gmail api http {status}")
+            raise GmailApiError(status, operation)
         return json.loads(body)
 
     def _fetch_message(self, mid: str) -> dict:
@@ -384,7 +402,8 @@ class GmailApiClient:
         payload, or raw exceeding the capture ceiling — RAISES ``MessageCaptureError`` so the batch fails WITHOUT
         advancing the cursor (durable-preservation contract). The pre-decode check on the base64 length bounds memory
         (a huge message is rejected before it is decoded), so an oversized message is never buffered whole."""
-        full = self._get_json(f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=raw")
+        full = self._get_json(f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=raw",
+                              operation="messages.get")
         raw_b64 = full.get("raw", "")
         if not raw_b64:
             raise MessageCaptureError(f"message {mid}: empty raw payload — cannot capture (not advancing cursor)")
@@ -415,7 +434,7 @@ class GmailApiClient:
         page = f"{_GMAIL_API}/history?startHistoryId={urllib.parse.quote(cursor)}&historyTypes=messageAdded"
         drained = False
         for _ in range(max_pages):
-            hist = self._get_json(page)
+            hist = self._get_json(page, operation="history.list")
             new_cursor = str(hist.get("historyId", new_cursor) or new_cursor)
             for h in (hist.get("history") or []):
                 for added in (h.get("messagesAdded") or []):
@@ -437,20 +456,40 @@ class GmailApiClient:
         return ids, new_cursor
 
     def _profile_cursor(self, fallback: str) -> str:
-        return str(self._get_json(f"{_GMAIL_API}/profile").get("historyId", fallback) or fallback)
+        return str(self._get_json(f"{_GMAIL_API}/profile", operation="profile").get("historyId", fallback)
+                   or fallback)
 
     def _sender_allowed(self, mid: str) -> bool:
         """Metadata-only From pre-check (``format=metadata&metadataHeaders=From``) so a NON-broker message is never
         pulled in full raw. True iff the From domain is on the broker-sender allowlist (fail-closed: empty → False)."""
         from .broker_senders import is_allowlisted_broker_sender
         meta = self._get_json(
-            f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=metadata&metadataHeaders=From")
+            f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}?format=metadata&metadataHeaders=From",
+            operation="messages.metadata")
         frm = ""
         for h in ((meta.get("payload") or {}).get("headers") or []):
             if (h.get("name") or "").lower() == "from":
                 frm = h.get("value", "") or ""
                 break
         return is_allowlisted_broker_sender(frm)
+
+    def _acquire_if_broker(self, mid: str) -> Optional[dict]:
+        """Metadata sender-gate + (if allowlisted) raw fetch for ONE history id; returns the fetched dict or None to
+        SKIP. Migration-independent hotfix for the 2026-10-14 deadlock: a message that history.list reported but that
+        is now UNAVAILABLE (Gmail 404 on the metadata/raw fetch — deterministic + irrecoverable) is skipped (and
+        counted), so one vanished message cannot fail the whole batch and freeze the cursor on every pass. EVERY other
+        non-200 (401/403/429/5xx) still RAISES -> batch fails closed, cursor NOT advanced; a ``MessageCaptureError``
+        (empty / oversize / page-ceiling) also still raises. A message that still exists does not 404, so this never
+        skips a capturable message."""
+        try:
+            if self._sender_allowed(mid):
+                return self._fetch_message(mid)
+            return None
+        except GmailApiError as e:
+            if getattr(e, "status", None) == 404:
+                self.messages_gone += 1
+                return None
+            raise
 
     def list_new_messages(self, cursor_state: str) -> "Tuple[List[dict], str]":
         """INCREMENTAL when a cursor (historyId) is present — ``history.list`` collects the messages added since the
@@ -471,18 +510,22 @@ class GmailApiClient:
         out: List[dict] = []
         if cursor:
             ids, new_cursor = self._collect_added_ids(cursor)   # always walk (advance cursor) — ids only, no raw
-            for mid in ids:
-                if allow and self._sender_allowed(mid):         # metadata gate BEFORE pulling full raw; empty → none
-                    out.append(self._fetch_message(mid))
+            if allow:                                           # empty allowlist → acquire nothing
+                for mid in ids:
+                    m = self._acquire_if_broker(mid)            # metadata gate + raw fetch; a 404 (gone) skips, else raises
+                    if m is not None:
+                        out.append(m)
             return out, new_cursor
         # INITIAL sync (forward-only). Empty allowlist → acquire nothing, just anchor the cursor (fail-closed).
         if not allow:
             return [], self._profile_cursor(cursor)
         q = "from:(" + " OR ".join(allow) + ")"
-        listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}&q={urllib.parse.quote(q)}")
-        for m0 in (listing.get("messages") or []):
-            if self._sender_allowed(m0["id"]):                  # defense-in-depth beyond the server-side q= filter
-                out.append(self._fetch_message(m0["id"]))
+        listing = self._get_json(f"{_GMAIL_API}/messages?maxResults={self._max}&q={urllib.parse.quote(q)}",
+                                 operation="messages.list")
+        for m0 in (listing.get("messages") or []):              # defense-in-depth beyond the server-side q= filter
+            m = self._acquire_if_broker(m0["id"])               # a 404 (gone) skips, any other non-200 raises
+            if m is not None:
+                out.append(m)
         return out, self._profile_cursor(cursor)
 
 
