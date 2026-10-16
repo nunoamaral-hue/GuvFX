@@ -82,6 +82,12 @@ after: cursor_unchanged=true, last_successful_sync_unchanged=true, status_unchan
 |---|---|---|
 | `GMAIL_DIAGNOSTIC_R2_COMPLETED` | **PASS** | Probe executed within budget (3/12 GETs), zero writes, secret-free |
 | `GMAIL_FAILURE_OPERATION_IDENTIFIED` | **PASS** | `messages.metadata` HTTP 404 (message unavailable at request time); deterministic poison-message deadlock |
+| `GMAIL_CURSOR_PRESERVED` | **PASS** | `cursor_unchanged = true` before/after the probe |
+| `GMAIL_CREDENTIAL_UNCHANGED` | **PASS** | `refresh_invoked = false`; read-only load only; no credential write |
+| `WITHDRAWAL_INGESTION_PRODUCTION_HEALTHY` | **BLOCKED** | Fix is DARK/not deployed; prod still failing every pass. (Not claimed healthy — no successful end-to-end pass observed.) |
+| `TRADERSWAY_WITHDRAWAL_PILOT_READY` | **BLOCKED** | Gated on deployed ingestion health + a genuine external withdrawal |
+
+*No probe result is represented as proof that ingestion is healthy or that the backlog has been recovered.*
 
 ## Closeout qualifications (R2 CLOSEOUT §2)
 
@@ -99,9 +105,3 @@ after: cursor_unchanged=true, last_successful_sync_unchanged=true, status_unchan
 - **(D) No claim of complete financial-evidence recovery.** Whether the recovered backlog contains any genuine broker
   withdrawal, and whether all retrievable broker mail was captured, is established only by post-deploy reconciliation
   of persisted `EvidenceBlob`/`BrokerEvent` — not asserted here.
-| `GMAIL_CURSOR_PRESERVED` | **PASS** | `cursor_unchanged = true` before/after the probe |
-| `GMAIL_CREDENTIAL_UNCHANGED` | **PASS** | `refresh_invoked = false`; read-only load only; no credential write |
-| `WITHDRAWAL_INGESTION_PRODUCTION_HEALTHY` | **BLOCKED** | Fix is DARK/not deployed; prod still failing every pass. (Not claimed healthy — no successful end-to-end pass observed.) |
-| `TRADERSWAY_WITHDRAWAL_PILOT_READY` | **BLOCKED** | Gated on deployed ingestion health + a genuine external withdrawal |
-
-*No probe result is represented as proof that ingestion is healthy or that the backlog has been recovered.*
