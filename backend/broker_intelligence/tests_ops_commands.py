@@ -305,7 +305,8 @@ class CertifyGenuineEvidenceChain(TestCase):
 
     def _certify(self, *, make_event=True, owner_present=True, account=True, same_owner=True,
                  broker_on_event="TradersWay", category=TransactionCategory.EXTERNAL_WITHDRAWAL, good_hash=True,
-                 identity_status="VERIFIED", attest=True, request_broker="TradersWay"):
+                 identity_status="VERIFIED", attest=True, request_broker="TradersWay", external_live=True):
+        import contextlib
         _SEQ[0] += 1
         n = _SEQ[0]
         with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
@@ -331,7 +332,18 @@ class CertifyGenuineEvidenceChain(TestCase):
             if attest:
                 args += ["--attest-authenticity-signoff", "REVIEWER:test-signoff"]
             out = StringIO()
-            with mock.patch.object(_ewc, "CERTIFIED_BROKERS", frozenset({"TradersWay"})):
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(_ewc, "CERTIFIED_BROKERS", frozenset({"TradersWay"})))
+                if external_live:
+                    # Simulate the FUTURE certified per-broker extractor: make the deployed parser live-classify
+                    # these bytes EXTERNAL, so genuine cert can be reached and each chain negative isolates its link
+                    # (today's real parsers never emit EXTERNAL, so this must be mocked — clearly test-only).
+                    from broker_intelligence.parsers import ParsedBrokerEvent
+                    from broker_intelligence.parsers_tradersway import TradersWayParser
+                    ext = ParsedBrokerEvent(event_type="WITHDRAWAL_COMPLETED",
+                                            transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL,
+                                            broker="TradersWay", currency="USD")
+                    stack.enter_context(mock.patch.object(TradersWayParser, "parse", return_value=ext))
                 try:
                     call_command(*args, stdout=out, stderr=StringIO())
                 except CommandError:
@@ -347,6 +359,14 @@ class CertifyGenuineEvidenceChain(TestCase):
         text = self._certify(attest=False)
         self.assertIn("EVIDENCE_CHAIN_PRECHECK=PASS", text)       # preliminary check passed
         self.assertIn("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=POSITIVE_CERTIFICATION_BLOCKED", text)  # but NOT certified
+
+    def test_stored_external_event_but_deployed_parser_not_external_is_blocked(self):
+        # The DEPLOYED parser (not just the stored category) must live-classify EXTERNAL. A stored REAL EXTERNAL event
+        # with the full chain + certified + attestation must still NOT certify if the current parser disagrees.
+        text = self._certify(external_live=False)
+        self.assertIn("EVIDENCE_CHAIN_PRECHECK=PASS", text)       # the stored evidence chain is intact
+        self.assertIn("deployed_parser_external=False", text)
+        self.assertIn("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=POSITIVE_CERTIFICATION_BLOCKED", text)
 
     def _assert_blocked(self, text):
         self.assertIn("EVIDENCE_CHAIN_PRECHECK=BLOCKED", text)

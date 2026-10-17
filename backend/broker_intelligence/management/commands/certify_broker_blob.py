@@ -15,7 +15,8 @@ THREE DISTINCT, NEVER-CONFLATED RESULTS (R1-CLOSEOUT Blocker C — a preliminary
     (owner+account+broker), plus an authenticated (auth_verdict==pass) allowlisted sender. ``.exists()`` alone is
     insufficient — each nullable link is checked, so a REAL event with NULL owner/account, the wrong broker/category,
     or a mismatched hash can never pass. A PRECHECK PASS is still NOT a genuine certification.
-  * GENUINE_POSITIVE_CLASSIFIER_CERTIFIED — requires, ON TOP of the precheck, the broker in ``CERTIFIED_BROKERS`` AND
+  * GENUINE_POSITIVE_CLASSIFIER_CERTIFIED — requires, ON TOP of the precheck: the DEPLOYED parser live-classifying
+    THESE bytes as EXTERNAL_WITHDRAWAL (not merely the stored category), the broker in ``CERTIFIED_BROKERS``, AND
     an explicit INDEPENDENT HUMAN attestation (``--attest-authenticity-signoff``) of positive-external movement +
     authenticity — the part the approved schema cannot fully represent. Absent any of these it is authoritatively
     POSITIVE_CERTIFICATION_BLOCKED. The command can NEVER add a broker to CERTIFIED_BROKERS or fabricate provenance.
@@ -148,6 +149,10 @@ class Command(BaseCommand):
         # The machine-verifiable chain. A PASS here is a PRELIMINARY check, NOT genuine certification.
         evidence_chain_precheck = all([ev_present, ev_hash_match, ev_broker_match, ev_owner_ok,
                                        ev_account_belongs_owner, ev_verified_identity, auth_pass, allowlisted])
+        # The DEPLOYED parser (the artifact being certified) must ALSO live-classify THESE bytes as EXTERNAL — a
+        # stored category alone (possibly written by an older parser version) must not certify the current parser.
+        is_external_live = bool(parsed is not None
+                                and parsed.transaction_category == TransactionCategory.EXTERNAL_WITHDRAWAL)
 
         # ---- expectations (parser inspection) ----
         checks = []
@@ -181,7 +186,8 @@ class Command(BaseCommand):
         # attestation of positive-external movement + authenticity — the part the approved schema cannot fully
         # represent (per the authenticity spec). Without it, a passed precheck stays POSITIVE_CERTIFICATION_BLOCKED.
         attestation = (o.get("attest_authenticity_signoff") or "").strip()
-        genuine_certified = bool(parser_inspection_ok and evidence_chain_precheck and is_certified and attestation)
+        genuine_certified = bool(parser_inspection_ok and evidence_chain_precheck and is_external_live
+                                 and is_certified and attestation)
 
         # ---- OUTPUT (secret-free: identifiers masked everywhere) ----
         w = self.stdout.write
@@ -206,7 +212,8 @@ class Command(BaseCommand):
           "owner_present=%s account_belongs_to_owner=%s verified_identity=%s auth_pass=%s allowlisted_sender=%s"
           % (ev_present, ev_hash_match, ev_broker_match, ev_owner_ok, ev_account_belongs_owner,
              ev_verified_identity, auth_pass, allowlisted))
-        w("broker_certified=%s  human_attestation_present=%s" % (is_certified, bool(attestation)))
+        w("broker_certified=%s  deployed_parser_external=%s  human_attestation_present=%s"
+          % (is_certified, is_external_live, bool(attestation)))
         w("MUTATION GUARD: before=%s after=%s cursors_unchanged=%s blob_sha_unchanged=%s -> NO_MUTATION=%s"
           % (before, after, cursors_before == cursors_after, sha_before == sha_after, no_mutation))
         if checks:
@@ -226,5 +233,5 @@ class Command(BaseCommand):
                                % (hash_ok, no_mutation, failclosed_ok, parser_inspected, all(ok for _, ok in checks)))
         if o["require_genuine_certified"] and not genuine_certified:
             raise CommandError("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED required but POSITIVE_CERTIFICATION_BLOCKED "
-                               "(evidence_chain_precheck=%s broker_certified=%s human_attestation=%s)"
-                               % (evidence_chain_precheck, is_certified, bool(attestation)))
+                               "(evidence_chain_precheck=%s deployed_parser_external=%s broker_certified=%s human_attestation=%s)"
+                               % (evidence_chain_precheck, is_external_live, is_certified, bool(attestation)))
