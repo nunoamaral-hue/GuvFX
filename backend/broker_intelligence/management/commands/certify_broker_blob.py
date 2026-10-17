@@ -5,25 +5,30 @@ A generalization of ``certify_is6_blob`` (which stays IS6/DEPOSIT-specific): it 
 field, and asserts NO mutation (BrokerEvent/EvidenceBlob/Withdrawal counts, every mailbox cursor, and the blob hash
 are snapshotted before and after). It NEVER ingests, NEVER writes, and creates nothing.
 
-TWO DISTINCT RESULTS (never conflated — R1-CLOSEOUT Blocker C):
+THREE DISTINCT, NEVER-CONFLATED RESULTS (R1-CLOSEOUT Blocker C — a preliminary check is NOT final certification):
   * PARSER_INSPECTION_PASS — the deployed parser, run read-only on these stored bytes, produced the expected fields
     and nothing mutated. A hash check only proves the STORED BYTES are intact; it establishes NOTHING about
     provenance, sender authenticity, mailbox ownership, account attribution, or external money movement.
-  * GENUINE_POSITIVE_CLASSIFIER_CERTIFIED — requires, ON TOP of a parser-inspection pass, the full independently
-    verified evidence chain: broker in ``CERTIFIED_BROKERS``, authenticated sender (auth_verdict==pass), an
-    allowlisted broker sender, a REAL-provenance BrokerEvent for this blob, and an EXTERNAL_WITHDRAWAL category.
-    Until a genuine external-withdrawal sample exists and a broker is certified, this is authoritatively
-    POSITIVE_CERTIFICATION_BLOCKED. The command can NEVER add a broker to CERTIFIED_BROKERS.
+  * EVIDENCE_CHAIN_PRECHECK — a PRELIMINARY, machine-verifiable check that a matching REAL EXTERNAL_WITHDRAWAL
+    BrokerEvent exists for THIS blob with its whole chain verified: evidence-hash match, broker == requested broker,
+    non-null owner, non-null trading_account that BELONGS to that owner, a VERIFIED BrokerEmailIdentity binding
+    (owner+account+broker), plus an authenticated (auth_verdict==pass) allowlisted sender. ``.exists()`` alone is
+    insufficient — each nullable link is checked, so a REAL event with NULL owner/account, the wrong broker/category,
+    or a mismatched hash can never pass. A PRECHECK PASS is still NOT a genuine certification.
+  * GENUINE_POSITIVE_CLASSIFIER_CERTIFIED — requires, ON TOP of the precheck, the broker in ``CERTIFIED_BROKERS`` AND
+    an explicit INDEPENDENT HUMAN attestation (``--attest-authenticity-signoff``) of positive-external movement +
+    authenticity — the part the approved schema cannot fully represent. Absent any of these it is authoritatively
+    POSITIVE_CERTIFICATION_BLOCKED. The command can NEVER add a broker to CERTIFIED_BROKERS or fabricate provenance.
 
 SECRET-FREE OUTPUT (R1-CLOSEOUT Blocker A): sender, account and broker-reference identifiers are masked in all
-stdout/stderr and in every error/assertion message; pass only the LAST 4 digits of an expected account (compared on
-last-4) so a full identifier never appears in shell arguments/history.
+stdout/stderr and in every error/assertion message; amount/fee/exact-time are shown only as presence; pass only the
+LAST 4 digits of an expected account (compared on last-4) so a full identifier never appears in shell arguments.
 
 Usage (read-only):
     python manage.py certify_broker_blob --blob-id 1 --broker TradersWay --expect-category INTERNAL_TRANSFER
-    python manage.py certify_broker_blob --blob-id N --broker TradersWay \
-        --expect-category EXTERNAL_WITHDRAWAL --require-genuine-certified   # the future positive cert
-Exit 0 iff the parser inspection passed and, when --require-genuine-certified is set, the full evidence chain held.
+    python manage.py certify_broker_blob --blob-id N --broker TradersWay --expect-category EXTERNAL_WITHDRAWAL \
+        --attest-authenticity-signoff "REVIEWER:<ref>" --require-genuine-certified   # the future positive cert
+Exit 0 iff the parser inspection passed and, when --require-genuine-certified is set, full genuine certification held.
 """
 from __future__ import annotations
 
@@ -64,12 +69,17 @@ class Command(BaseCommand):
         parser.add_argument("--expect-fee-currency", default=None)
         parser.add_argument("--expect-account-last4", default=None,
                             help="Expected account LAST 4 digits only (compared on last-4; never pass a full account).")
+        parser.add_argument("--attest-authenticity-signoff", default=None,
+                            help="Reference to an INDEPENDENT HUMAN sign-off of positive-external-movement + "
+                                 "authenticity (per the authenticity spec). The machine EVIDENCE_CHAIN_PRECHECK is "
+                                 "only a preliminary check; GENUINE certification additionally requires this attestation.")
         parser.add_argument("--require-genuine-certified", action="store_true",
-                            help="Exit non-zero unless the FULL genuine-positive evidence chain holds (use only once "
-                                 "a broker is genuinely certified).")
+                            help="Exit non-zero unless FULL genuine-positive certification holds (evidence-chain "
+                                 "precheck + certified broker + human attestation). Use only once genuinely certified.")
 
     def handle(self, *args, **o):
-        from broker_intelligence.models import BrokerEvent, EvidenceBlob, Withdrawal, ConnectedMailbox, Provenance, TransactionCategory
+        from broker_intelligence.models import (BrokerEvent, EvidenceBlob, Withdrawal, ConnectedMailbox, Provenance,
+                                                TransactionCategory, BrokerEmailIdentity)
         from broker_intelligence.evidence import EvidenceStore, EvidenceStoreError
         from broker_intelligence.gmail_source import parse_rfc822
         from broker_intelligence.parsers import select_parser
@@ -113,11 +123,31 @@ class Command(BaseCommand):
         strong = ewc.ExternalWithdrawalSignals(external_destination=True, explicit_external_type=True)
         failclosed_ok = (not ewc.is_external_withdrawal(strong, broker=broker)) if not is_certified else True
 
-        # ---- EVIDENCE CHAIN (Blocker C): a hash pass proves bytes only; a GENUINE positive cert needs ALL of these ----
+        # ---- EVIDENCE CHAIN (Blocker C): a valid hash proves STORED BYTES only — not provenance, owner, broker, or
+        #      account. A GENUINE positive classification needs a matching REAL EXTERNAL_WITHDRAWAL BrokerEvent for
+        #      THIS blob whose whole owner<->broker<->account<->identity chain is verified. .exists() alone (the old
+        #      check) would pass on a REAL event with NULL owner/account, the wrong broker/category, or a mismatched
+        #      evidence hash — all representable in the schema — so each link is checked explicitly. ----
         auth_pass = (f.get("auth_verdict") == "pass")
         allowlisted = is_allowlisted_broker_sender(f.get("from_address", "")) if f else False
-        real_event = BrokerEvent.objects.filter(evidence=blob, provenance=Provenance.REAL).exists()
-        is_external = bool(parsed is not None and parsed.transaction_category == TransactionCategory.EXTERNAL_WITHDRAWAL)
+        ev = (BrokerEvent.objects
+              .filter(evidence=blob, provenance=Provenance.REAL,
+                      transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
+              .select_related("trading_account").first())
+        ev_present = ev is not None
+        ev_hash_match = bool(ev and ev.evidence_hash and ev.evidence_hash == blob.sha256)
+        ev_broker_match = bool(ev and broker and (ev.broker or "").strip() == broker)
+        ev_owner_ok = bool(ev and ev.owner_id is not None)
+        ev_account_belongs_owner = bool(ev and ev.trading_account_id is not None and ev.trading_account is not None
+                                        and ev.owner_id is not None and ev.trading_account.user_id == ev.owner_id)
+        ev_verified_identity = bool(
+            ev and ev.owner_id and ev.trading_account_id and broker
+            and BrokerEmailIdentity.objects.filter(
+                user_id=ev.owner_id, trading_account_id=ev.trading_account_id,
+                status=BrokerEmailIdentity.Status.VERIFIED, broker_name__iexact=broker).exists())
+        # The machine-verifiable chain. A PASS here is a PRELIMINARY check, NOT genuine certification.
+        evidence_chain_precheck = all([ev_present, ev_hash_match, ev_broker_match, ev_owner_ok,
+                                       ev_account_belongs_owner, ev_verified_identity, auth_pass, allowlisted])
 
         # ---- expectations (parser inspection) ----
         checks = []
@@ -147,8 +177,11 @@ class Command(BaseCommand):
         parser_inspected = (parser is not None) or bool(checks)
         parser_inspection_ok = (hash_ok and no_mutation and failclosed_ok and parser_inspected
                                 and all(ok for _, ok in checks))
-        genuine_certified = bool(parser_inspection_ok and is_certified and auth_pass and allowlisted
-                                 and real_event and is_external)
+        # FINAL genuine certification additionally requires the broker certified AND an explicit INDEPENDENT HUMAN
+        # attestation of positive-external movement + authenticity — the part the approved schema cannot fully
+        # represent (per the authenticity spec). Without it, a passed precheck stays POSITIVE_CERTIFICATION_BLOCKED.
+        attestation = (o.get("attest_authenticity_signoff") or "").strip()
+        genuine_certified = bool(parser_inspection_ok and evidence_chain_precheck and is_certified and attestation)
 
         # ---- OUTPUT (secret-free: identifiers masked everywhere) ----
         w = self.stdout.write
@@ -169,8 +202,11 @@ class Command(BaseCommand):
                  _mask_tail(parsed.broker_reference_id, keep=0), parsed.occurred_at is not None))
         w("CERTIFICATION POSTURE: broker=%r in CERTIFIED_BROKERS=%s  fail_closed_when_uncertified=%s"
           % (broker, is_certified, failclosed_ok))
-        w("EVIDENCE CHAIN: auth_pass=%s allowlisted_sender=%s real_provenance_event=%s external_category=%s broker_certified=%s"
-          % (auth_pass, allowlisted, real_event, is_external, is_certified))
+        w("EVIDENCE CHAIN (machine-verifiable, this blob): real_external_event=%s hash_match=%s broker_match=%s "
+          "owner_present=%s account_belongs_to_owner=%s verified_identity=%s auth_pass=%s allowlisted_sender=%s"
+          % (ev_present, ev_hash_match, ev_broker_match, ev_owner_ok, ev_account_belongs_owner,
+             ev_verified_identity, auth_pass, allowlisted))
+        w("broker_certified=%s  human_attestation_present=%s" % (is_certified, bool(attestation)))
         w("MUTATION GUARD: before=%s after=%s cursors_unchanged=%s blob_sha_unchanged=%s -> NO_MUTATION=%s"
           % (before, after, cursors_before == cursors_after, sha_before == sha_after, no_mutation))
         if checks:
@@ -178,8 +214,11 @@ class Command(BaseCommand):
             for name, ok in checks:
                 w("  %-28s %s" % (name, "PASS" if ok else "FAIL"))
 
+        # Preliminary machine check vs final certification are reported DISTINCTLY: a passed precheck is NOT a
+        # genuine certification. Final cert needs the independent human attestation (and a certified broker).
         w("PARSER_INSPECTION_PASS=%s" % parser_inspection_ok)
-        w("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=%s" % (genuine_certified or "POSITIVE_CERTIFICATION_BLOCKED"))
+        w("EVIDENCE_CHAIN_PRECHECK=%s" % ("PASS" if evidence_chain_precheck else "BLOCKED"))
+        w("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=%s" % ("PASS" if genuine_certified else "POSITIVE_CERTIFICATION_BLOCKED"))
 
         # ---- exit semantics (no raw identifiers in the error) ----
         if not parser_inspection_ok:
@@ -187,5 +226,5 @@ class Command(BaseCommand):
                                % (hash_ok, no_mutation, failclosed_ok, parser_inspected, all(ok for _, ok in checks)))
         if o["require_genuine_certified"] and not genuine_certified:
             raise CommandError("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED required but POSITIVE_CERTIFICATION_BLOCKED "
-                               "(auth_pass=%s allowlisted=%s real_event=%s external=%s broker_certified=%s)"
-                               % (auth_pass, allowlisted, real_event, is_external, is_certified))
+                               "(evidence_chain_precheck=%s broker_certified=%s human_attestation=%s)"
+                               % (evidence_chain_precheck, is_certified, bool(attestation)))

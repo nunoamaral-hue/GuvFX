@@ -9,6 +9,7 @@ import os
 import tempfile
 from datetime import timedelta
 from io import StringIO
+from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -17,11 +18,27 @@ from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from broker_intelligence import external_withdrawal_classifier as _ewc
 from broker_intelligence.evidence import EvidenceStore
-from broker_intelligence.models import ConnectedMailbox, EvidenceBlob, BrokerEvent, Withdrawal, Provenance
+from broker_intelligence.models import (ConnectedMailbox, EvidenceBlob, BrokerEvent, Withdrawal, Provenance,
+                                        BrokerEmailIdentity, TransactionCategory)
+from trading.models import TradingAccount
 
 User = get_user_model()
 _SEQ = [0]
+
+# A TradersWay message WITH an Authentication-Results header that yields auth_verdict==pass (From-aligned DKIM from a
+# trusted authserv-id), for exercising the genuine-evidence-chain gate.
+_TRADERSWAY_AUTHED_RAW = (
+    b"From: payments@tradersway.com\r\n"
+    b"To: member@gmail.com\r\n"
+    b"Subject: Please confirm your withdrawal request\r\n"
+    b"Authentication-Results: mx.google.com; dkim=pass header.i=@tradersway.com header.d=tradersway.com; "
+    b"spf=pass smtp.mailfrom=bounce.icpbounce.com; dmarc=fail (p=NONE) header.from=tradersway.com\r\n"
+    b"Date: Sun, 12 Oct 2026 06:36:00 +0000\r\n"
+    b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+    b"54548 in amount of 24.12 USD transferring to your trading account 647390. "
+    b"Your withdrawal request number is: 4113188.\r\n")
 
 _TRADERSWAY_RAW = (
     b"From: noreply@tradersway.com\r\n"
@@ -219,6 +236,7 @@ class CertifyBrokerBlobCommand(TestCase):
             text = out.getvalue()
         self.assertIn("NO_MUTATION=True", text)
         self.assertIn("PARSER_INSPECTION_PASS=True", text)
+        self.assertIn("EVIDENCE_CHAIN_PRECHECK=BLOCKED", text)     # no REAL external event for this blob
         self.assertIn("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=POSITIVE_CERTIFICATION_BLOCKED", text)
         self.assertIn("broker_certified=False", text)
         self.assertIn("fail_closed_when_uncertified=True", text)
@@ -274,3 +292,87 @@ class SanitisedProvenanceExemption(TestCase):
             # SANITISED (a controlled, PII-stripped fixture) is EXEMPT from the allowlist -> evidence IS stored.
             ingest_message(msg, provenance=Provenance.SANITISED)
             self.assertEqual(EvidenceBlob.objects.count(), before + 1)
+
+
+@override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.com",
+                   BROKER_INTELLIGENCE_TRUSTED_AUTHSERV_IDS="mx.google.com")
+class CertifyGenuineEvidenceChain(TestCase):
+    """R1-CLOSEOUT Blocker C (final): GENUINE_POSITIVE_CLASSIFIER_CERTIFIED must require the WHOLE verified
+    owner<->broker<->account<->identity chain on a matching REAL EXTERNAL_WITHDRAWAL event for THIS blob — a REAL
+    BrokerEvent merely existing (nullable owner/account, wrong broker/category, mismatched hash) must NOT pass. And
+    the machine EVIDENCE_CHAIN_PRECHECK, even when it passes, is NOT genuine certification without a certified broker
+    AND an independent human attestation. All data here is SYNTHETIC (test DB)."""
+
+    def _certify(self, *, make_event=True, owner_present=True, account=True, same_owner=True,
+                 broker_on_event="TradersWay", category=TransactionCategory.EXTERNAL_WITHDRAWAL, good_hash=True,
+                 identity_status="VERIFIED", attest=True, request_broker="TradersWay"):
+        _SEQ[0] += 1
+        n = _SEQ[0]
+        with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
+            blob, _ = EvidenceStore().put(_TRADERSWAY_AUTHED_RAW)
+            owner = User.objects.create_user(username="chain%d" % n, email="chain%d@x.invalid" % n, password="x")
+            acct = None
+            if account:
+                acct_user = owner if same_owner else User.objects.create_user(
+                    username="other%d" % n, email="other%d@x.invalid" % n, password="x")
+                acct = TradingAccount.objects.create(user=acct_user, name="A", broker_name="TradersWay",
+                                                     account_number="990%05d" % n, is_demo=True, is_active=True)
+            if make_event:
+                BrokerEvent.objects.create(
+                    trading_account=acct, broker=broker_on_event, owner=(owner if owner_present else None),
+                    event_type="WITHDRAWAL_COMPLETED", transaction_category=category, received_at=timezone.now(),
+                    evidence=blob, evidence_hash=(blob.sha256 if good_hash else "0" * 64),
+                    provenance=Provenance.REAL, correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED)
+                if identity_status and acct is not None and owner_present:
+                    BrokerEmailIdentity.objects.create(
+                        email="member@gmail.com", user=owner, broker_name="TradersWay", trading_account=acct,
+                        status=getattr(BrokerEmailIdentity.Status, identity_status))
+            args = ["certify_broker_blob", "--blob-id", str(blob.id), "--broker", request_broker]
+            if attest:
+                args += ["--attest-authenticity-signoff", "REVIEWER:test-signoff"]
+            out = StringIO()
+            with mock.patch.object(_ewc, "CERTIFIED_BROKERS", frozenset({"TradersWay"})):
+                try:
+                    call_command(*args, stdout=out, stderr=StringIO())
+                except CommandError:
+                    pass
+            return out.getvalue()
+
+    def test_full_chain_certified_broker_and_attestation_is_genuine_pass(self):
+        text = self._certify()                                    # positive control (RULE-11)
+        self.assertIn("EVIDENCE_CHAIN_PRECHECK=PASS", text)
+        self.assertIn("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=PASS", text)
+
+    def test_precheck_passes_but_without_attestation_genuine_is_blocked(self):
+        text = self._certify(attest=False)
+        self.assertIn("EVIDENCE_CHAIN_PRECHECK=PASS", text)       # preliminary check passed
+        self.assertIn("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=POSITIVE_CERTIFICATION_BLOCKED", text)  # but NOT certified
+
+    def _assert_blocked(self, text):
+        self.assertIn("EVIDENCE_CHAIN_PRECHECK=BLOCKED", text)
+        self.assertIn("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED=POSITIVE_CERTIFICATION_BLOCKED", text)
+
+    def test_real_event_with_null_owner_is_blocked(self):
+        self._assert_blocked(self._certify(owner_present=False))
+
+    def test_real_event_with_no_account_is_blocked(self):
+        self._assert_blocked(self._certify(account=False))
+
+    def test_account_not_belonging_to_owner_is_blocked(self):
+        self._assert_blocked(self._certify(same_owner=False))
+
+    def test_wrong_broker_on_event_is_blocked(self):
+        self._assert_blocked(self._certify(broker_on_event="OtherBroker"))
+
+    def test_wrong_category_is_blocked(self):
+        self._assert_blocked(self._certify(category=TransactionCategory.INTERNAL_TRANSFER))
+
+    def test_mismatched_evidence_hash_is_blocked(self):
+        self._assert_blocked(self._certify(good_hash=False))
+
+    def test_unverified_identity_is_blocked(self):
+        self._assert_blocked(self._certify(identity_status="PENDING"))
+
+    def test_certified_broker_alone_without_chain_is_blocked(self):
+        # Avoid circular proof: a certified broker + attestation but NO matching REAL event cannot certify.
+        self._assert_blocked(self._certify(make_event=False))
