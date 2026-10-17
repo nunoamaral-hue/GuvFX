@@ -175,9 +175,12 @@ def _find_by_reference(event: BrokerEvent):
 def _correlate_by_reference(event: BrokerEvent, target_status: str) -> CorrelationResult:
     """Deterministic: the Withdrawal keyed by (account, reference-id). If none exists yet, ADOPT a single matching
     ref-less heuristic withdrawal (promote it to this ref) so a ref-less REQUESTED followed by a ref-carrying
-    COMPLETED resolves to ONE record — never two. Idempotent under concurrency: the create runs in its OWN savepoint
-    so a lost (account, ref) uniqueness race rolls back ONLY that savepoint and the recovery re-reads the winner on a
-    still-usable transaction (the WP1 tombstone-poison lesson: never run recovery queries inside an aborted block)."""
+    COMPLETED resolves to ONE record in the normal (single-worker) path. Idempotent under concurrency: BOTH the adopt
+    (promote-save) and the create run in their OWN savepoint, so a lost (account, ref) uniqueness race rolls back ONLY
+    that savepoint and the recovery re-reads the winner on a still-usable transaction (the WP1 tombstone-poison
+    lesson: never run recovery queries inside an aborted block). NOTE: under that rare race the adopted heuristic row
+    stays orphaned (ref-less, its prior status) while the winner is advanced — never double-counted as COMPLETED; a
+    later reconciliation of such orphans is out of scope here."""
     withdrawal = _find_by_reference(event)
     if withdrawal is not None:
         _apply_event(withdrawal, event, target_status, method=Withdrawal.CorrelationMethod.REFERENCE_ID,
@@ -190,8 +193,21 @@ def _correlate_by_reference(event: BrokerEvent, target_status: str) -> Correlati
     if len(cands) == 1:
         adopted = cands[0]
         adopted.broker_reference_id = event.broker_reference_id   # promote the heuristic row to the authoritative ref
-        _apply_event(adopted, event, target_status, method=Withdrawal.CorrelationMethod.REFERENCE_ID, created=True)
-        return CorrelationResult(event.id, OUT_REFERENCE, adopted.id)
+        try:
+            # OWN savepoint (parity with the create path below): promoting the ref-less row to carry this ref can
+            # race a concurrent (account, ref) create; isolate that IntegrityError so it aborts ONLY this savepoint
+            # and leaves the outer transaction usable for recovery (the WP1 tombstone-poison lesson).
+            with transaction.atomic():
+                _apply_event(adopted, event, target_status,
+                             method=Withdrawal.CorrelationMethod.REFERENCE_ID, created=True)
+            return CorrelationResult(event.id, OUT_REFERENCE, adopted.id)
+        except IntegrityError:
+            withdrawal = _find_by_reference(event)   # a concurrent ref row won the promotion -> advance against it
+            if withdrawal is None:
+                raise
+            _apply_event(withdrawal, event, target_status,
+                         method=Withdrawal.CorrelationMethod.REFERENCE_ID, created=False)
+            return CorrelationResult(event.id, OUT_REFERENCE, withdrawal.id)
 
     try:
         with transaction.atomic():   # OWN savepoint: a uniqueness race aborts only this, leaving the outer txn usable
