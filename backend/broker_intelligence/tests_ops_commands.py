@@ -154,6 +154,51 @@ class ExtractSanitisedFixturePrivateArtifact(TestCase):
                 call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--out", in_evidence, stdout=StringIO())
             self.assertFalse(os.path.exists(in_evidence))
 
+    def test_default_summary_shows_residual_count_but_not_literal(self):
+        # A decimal-glued identifier survives the masker and is surfaced ONLY as a residual COUNT in default output —
+        # never as a literal (non-trivial Blocker-B default-output safety).
+        import re
+        raw = (b"From: noreply@tradersway.com\r\nTo: member@gmail.com\r\nSubject: statement\r\n"
+               b"Content-Type: text/plain; charset=utf-8\r\n\r\nReference 20261014.998877 recorded.\r\n")
+        with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
+            blob, _ = EvidenceStore().put(raw)
+            out = StringIO()
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=out)
+            text = out.getvalue()
+        self.assertNotIn("20261014", text)                       # literal withheld from default output
+        self.assertNotIn("998877", text)
+        m = re.search(r"residual_numeric_runs=(\d+)", text)
+        self.assertTrue(m and int(m.group(1)) >= 1)              # but its presence IS surfaced as a count
+
+    def test_out_via_symlinked_parent_into_protected_root_is_rejected(self):
+        # Proves the inode-based containment: a symlinked PARENT dir resolving into the evidence root is rejected
+        # (a plain string startswith would miss this — and misses the case-insensitive variant below).
+        with tempfile.TemporaryDirectory() as evroot, tempfile.TemporaryDirectory() as outbase, \
+                override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=evroot):
+            blob, _ = EvidenceStore().put(_TRADERSWAY_RAW)
+            link_dir = os.path.join(outbase, "link")
+            os.symlink(evroot, link_dir)
+            with self.assertRaises(CommandError):
+                call_command("extract_sanitised_fixture", "--blob-id", str(blob.id),
+                             "--out", os.path.join(link_dir, "leak.json"), stdout=StringIO())
+            self.assertFalse(os.path.exists(os.path.join(evroot, "leak.json")))
+
+    def test_wrong_case_repo_path_rejected_on_case_insensitive_fs(self):
+        # The CONFIRMED finding: on a case-insensitive FS (the operator's macOS host) a wrong-case path to the repo
+        # is the SAME physical dir; inode containment rejects it where string startswith did not. Skips on a
+        # case-sensitive FS, where the wrong-case path is simply a different (nonexistent) directory.
+        repo = os.path.dirname(str(settings.BASE_DIR))
+        swapped = os.path.join(os.path.dirname(repo), os.path.basename(repo).swapcase())
+        in_repo_wrongcase = os.path.join(swapped, "backend", "broker_intelligence", "_wrongcase.json")
+        if not os.path.isdir(os.path.dirname(in_repo_wrongcase)):
+            self.skipTest("case-sensitive filesystem: wrong-case repo path is a different directory")
+        with tempfile.TemporaryDirectory() as evroot, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=evroot):
+            blob, _ = EvidenceStore().put(_TRADERSWAY_RAW)
+            with self.assertRaises(CommandError):
+                call_command("extract_sanitised_fixture", "--blob-id", str(blob.id),
+                             "--out", in_repo_wrongcase, stdout=StringIO())
+        self.assertFalse(os.path.exists(in_repo_wrongcase))
+
     def test_tampered_blob_fails_integrity_cleanly(self):
         with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
             store = EvidenceStore()

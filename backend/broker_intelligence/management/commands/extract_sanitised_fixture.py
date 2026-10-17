@@ -61,17 +61,37 @@ class Command(BaseCommand):
                 roots.append(str(extra))
         return [os.path.realpath(r) for r in roots if r]
 
+    def _within_protected_root(self, parent_realpath):
+        """True if the (realpath'd) parent dir IS, or is nested under, any protected root. Compared by device+inode
+        (os.path.samestat) walking up the parent chain — robust to a CASE-INSENSITIVE filesystem (where a wrong-case
+        path is the same physical dir but a string startswith misses) and to symlinks, which a string compare is not."""
+        root_stats = []
+        for r in self._unsafe_roots():
+            try:
+                root_stats.append(os.stat(r))
+            except OSError:
+                pass
+        cur = parent_realpath
+        while True:
+            try:
+                st = os.stat(cur)
+            except OSError:
+                return False
+            if any(os.path.samestat(st, rs) for rs in root_stats):
+                return True
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                return False
+            cur = parent
+
     def _validate_out(self, out_path):
         parent = os.path.dirname(os.path.abspath(out_path)) or "."
         if not os.path.isdir(parent):
             raise CommandError("--out parent directory does not exist (refusing to create one)")
-        # realpath resolves symlinks in the (existing) parent chain, so a symlinked parent cannot smuggle the file
-        # into an unsafe root.
-        resolved = os.path.join(os.path.realpath(parent), os.path.basename(out_path))
-        for root in self._unsafe_roots():
-            if resolved == root or resolved.startswith(root + os.sep):
-                raise CommandError("--out must be OUTSIDE the repo/credential/evidence/static roots (resolved under a protected root)")
-        return resolved
+        parent_real = os.path.realpath(parent)                 # resolves symlinks in the whole existing parent chain
+        if self._within_protected_root(parent_real):
+            raise CommandError("--out must be OUTSIDE the repo/credential/evidence/static roots (resolved under a protected root)")
+        return os.path.join(parent_real, os.path.basename(out_path))
 
     def _write_private(self, out_path, artifact):
         # Secure, direct write: owner-only, no overwrite (O_EXCL), no symlink (O_NOFOLLOW), no temp plaintext file.
@@ -132,10 +152,13 @@ class Command(BaseCommand):
         header = fixture["header"] if fixture else {}
 
         # ---- SAFE SUMMARY (default stdout / --json): domains + counts + guards ONLY; never body/residual literals ----
+        # The recipient (member) mailbox domain is deliberately NOT in the default summary — on a vanity/corporate
+        # domain it would identify the member in ordinary logs. Only the broker's from_domain (safe) is shown; the
+        # full header (incl. to_domains) lives only in the private --out artifact.
         summary = {
             "blob_id": blob.id, "evidence_hash_verified": hash_ok, "no_mutation": no_mutation,
             "provenance_tier": "SANITISED",
-            "from_domain": header.get("from_domain", ""), "to_domains": header.get("to_domains", []),
+            "from_domain": header.get("from_domain", ""),
             "auth_verdict": header.get("auth_verdict", ""),
             "residual_numeric_run_count": n_numeric, "residual_token_candidate_count": n_token,
         }
@@ -146,8 +169,7 @@ class Command(BaseCommand):
             w("=== SANITISED FIXTURE SUMMARY (READ-ONLY, blob id=%s sha=%s) ===" % (blob.id, sha_before[:16]))
             w("evidence_hash_verified=%s  provenance_tier=SANITISED" % hash_ok)
             if fixture is not None:
-                w("from_domain=%s  to_domains=%s  auth_verdict=%s"
-                  % (summary["from_domain"], summary["to_domains"], summary["auth_verdict"]))
+                w("from_domain=%s  auth_verdict=%s" % (summary["from_domain"], summary["auth_verdict"]))
                 w("residual_numeric_runs=%d  residual_token_candidates=%d  (DETAIL only via --out private artifact)"
                   % (n_numeric, n_token))
             else:

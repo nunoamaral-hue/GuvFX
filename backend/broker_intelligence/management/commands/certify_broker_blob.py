@@ -34,17 +34,19 @@ from django.core.management.base import BaseCommand, CommandError
 
 
 def _mask_tail(value: str, keep: int = 4) -> str:
-    """Mask all but the last ``keep`` chars (account/reference identifiers). Short values are fully masked."""
+    """Mask all but the last ``keep`` chars (account/reference identifiers). ``keep<=0`` masks fully; a value no
+    longer than ``keep`` is also fully masked. (Note ``s[-0:]`` is the whole string, so keep must be guarded.)"""
     s = "" if value is None else str(value)
-    if len(s) <= keep:
+    if keep <= 0 or len(s) <= keep:
         return "*" * len(s)
     return "*" * (len(s) - keep) + s[-keep:]
 
 
 def _mask_sender(addr: str) -> str:
-    """Reduce a sender to its domain only (never the local-part)."""
-    s = "" if addr is None else str(addr).strip()
-    return ("<masked>@" + s.split("@", 1)[1]) if "@" in s else ("<masked>" if s else "")
+    """Reduce a sender to its domain only (never the local-part). rsplit on the LAST '@' + strip any angle brackets
+    so a pathological multi-'@' or display-wrapped value still reveals only the final domain label."""
+    s = ("" if addr is None else str(addr)).strip().strip("<>").strip()
+    return ("<masked>@" + s.rsplit("@", 1)[-1]) if "@" in s else ("<masked>" if s else "")
 
 
 class Command(BaseCommand):
@@ -140,7 +142,11 @@ class Command(BaseCommand):
                                 "expect_fee", "expect_fee_currency", "expect_account_last4")):
             checks.append(("parse", False))
 
-        parser_inspection_ok = hash_ok and no_mutation and failclosed_ok and all(ok for _, ok in checks)
+        # A vacuous run (no parser matched AND no --expect-* checks) inspected nothing: it must NOT report a pass, so
+        # a script grepping PARSER_INSPECTION_PASS=True can never treat a no-op as a certification.
+        parser_inspected = (parser is not None) or bool(checks)
+        parser_inspection_ok = (hash_ok and no_mutation and failclosed_ok and parser_inspected
+                                and all(ok for _, ok in checks))
         genuine_certified = bool(parser_inspection_ok and is_certified and auth_pass and allowlisted
                                  and real_event and is_external)
 
@@ -152,11 +158,15 @@ class Command(BaseCommand):
         if parsed is None:
             w("PARSE RESULT: None (no event).")
         else:
-            w("PARSE RESULT (deployed parser): event_type=%s category=%s broker=%s amount=%s %s fee=%s %s "
-              "account(masked)=%s ref(masked)=%s occurred_at=%s"
-              % (parsed.event_type, parsed.transaction_category, parsed.broker, parsed.amount, parsed.currency,
-                 parsed.fee, parsed.fee_currency, _mask_tail(acct), _mask_tail(parsed.broker_reference_id),
-                 parsed.occurred_at))
+            # Financial values (amount/fee) and the exact transaction time are a member's private withdrawal detail:
+            # show only their PRESENCE + the (non-identifying) currency, never the raw sum/timing, so routine stdout /
+            # CI logs stay secret-free. The precise value is still certified via --expect-amount (PASS/FAIL only).
+            # The broker reference is masked FULLY (keep=0) — it has no last-4 use-case here.
+            w("PARSE RESULT (deployed parser): event_type=%s category=%s broker=%s has_amount=%s currency=%s "
+              "has_fee=%s fee_currency=%s account(masked)=%s ref(masked)=%s occurred_at_present=%s"
+              % (parsed.event_type, parsed.transaction_category, parsed.broker, parsed.amount is not None,
+                 parsed.currency, parsed.fee is not None, parsed.fee_currency, _mask_tail(acct),
+                 _mask_tail(parsed.broker_reference_id, keep=0), parsed.occurred_at is not None))
         w("CERTIFICATION POSTURE: broker=%r in CERTIFIED_BROKERS=%s  fail_closed_when_uncertified=%s"
           % (broker, is_certified, failclosed_ok))
         w("EVIDENCE CHAIN: auth_pass=%s allowlisted_sender=%s real_provenance_event=%s external_category=%s broker_certified=%s"
@@ -173,8 +183,8 @@ class Command(BaseCommand):
 
         # ---- exit semantics (no raw identifiers in the error) ----
         if not parser_inspection_ok:
-            raise CommandError("PARSER_INSPECTION FAILED (hash_ok=%s no_mutation=%s fail_closed=%s checks_ok=%s)"
-                               % (hash_ok, no_mutation, failclosed_ok, all(ok for _, ok in checks)))
+            raise CommandError("PARSER_INSPECTION FAILED (hash_ok=%s no_mutation=%s fail_closed=%s inspected=%s checks_ok=%s)"
+                               % (hash_ok, no_mutation, failclosed_ok, parser_inspected, all(ok for _, ok in checks)))
         if o["require_genuine_certified"] and not genuine_certified:
             raise CommandError("GENUINE_POSITIVE_CLASSIFIER_CERTIFIED required but POSITIVE_CERTIFICATION_BLOCKED "
                                "(auth_pass=%s allowlisted=%s real_event=%s external=%s broker_certified=%s)"
