@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .flags import (broker_identity_verification_enabled, broker_mailbox_connect_enabled,
-                    broker_withdrawal_ux_enabled)
+                    broker_mailbox_status_enabled, broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_history, withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
@@ -166,7 +166,24 @@ class MailboxConnectView(APIView):
                              "message": "Mailbox connection is not configured yet."},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
         from . import gmail_oauth
-        state = signing.dumps({"uid": request.user.id, "n": secrets.token_urlsafe(8)}, salt=_STATE_SALT)
+        from .models import ConnectedMailbox
+        from .resolver import canonical_address
+        # WRONG-ACCOUNT SAFEGUARD (OAUTH_RECOVERY_R2 §3): a TARGETED reconnect. If this member already has a CONNECTED
+        # Gmail mailbox, bind its canonical identity into the signed, time-limited state. The callback then rejects a
+        # consent that returns a DIFFERENT Google account — so an accidental wrong-account re-consent can never create
+        # a duplicate mailbox or bypass the targeted update. First-time connections (no existing CONNECTED mailbox)
+        # carry no target and behave exactly as before.
+        state_payload = {"uid": request.user.id, "n": secrets.token_urlsafe(8)}
+        existing = (ConnectedMailbox.objects
+                    .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL,
+                            status=ConnectedMailbox.Status.CONNECTED)
+                    .exclude(provider_mailbox_id="").first())
+        if existing is not None:
+            # Re-canonicalize defensively: the stored provider_mailbox_id is already canonical for mailboxes connected
+            # on current builds, but re-canonicalizing makes the bound target self-idempotent and immune to any
+            # legacy/non-canonical row, so a legitimate same-account reconnect can never be false-rejected.
+            state_payload["expect"] = canonical_address(existing.provider_mailbox_id)
+        state = signing.dumps(state_payload, salt=_STATE_SALT)
         url = gmail_oauth.build_authorization_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
         return Response({"authorization_url": url})
 
@@ -220,6 +237,27 @@ class MailboxCallbackView(APIView):
                  .exclude(user=request.user).first())
         if clash is not None:
             return Response({"ok": False, "error": "mailbox_already_connected"}, status=status.HTTP_409_CONFLICT)
+        # CREDENTIAL-LIFECYCLE SAFETY (OAUTH_RECOVERY §6): an unattended CONNECTED mailbox needs a USABLE replacement
+        # credential. Validate BEFORE store_token/update_or_create so a bad grant can never overwrite the existing
+        # working credential/cursor/identity bindings, and no orphaned credential file is written on rejection:
+        #   * a mailbox identity (emailAddress) must be present — else the dedup id would be random and a DUPLICATE
+        #     mailbox would be created instead of updating the existing row;
+        #   * a NON-EMPTY refresh_token — without it the next access-token expiry silently re-breaks ingestion;
+        #   * gmail.readonly present and NO write-capable scope (defence-in-depth beyond exchange_code's scope assert).
+        from .gmail_oauth import GMAIL_READONLY_SCOPE, _FORBIDDEN_SCOPES
+        granted_scopes = set(str(token.get("scope", "")).split())
+        if not email:
+            return Response({"ok": False, "error": "oauth_no_mailbox_identity"}, status=status.HTTP_400_BAD_REQUEST)
+        # WRONG-ACCOUNT SAFEGUARD (R2 §3): on a TARGETED reconnect the signed state carries the expected canonical
+        # mailbox identity. A consent that returns a DIFFERENT Google account is REJECTED before any credential is
+        # stored — so it can never create a duplicate mailbox or overwrite the targeted row with a foreign account.
+        expected_identity = payload.get("expect")
+        if expected_identity and mailbox_id != expected_identity:
+            return Response({"ok": False, "error": "oauth_account_mismatch"}, status=status.HTTP_400_BAD_REQUEST)
+        if not token.get("refresh_token"):
+            return Response({"ok": False, "error": "oauth_no_refresh_token"}, status=status.HTTP_400_BAD_REQUEST)
+        if GMAIL_READONLY_SCOPE not in granted_scopes or (granted_scopes & set(_FORBIDDEN_SCOPES)):
+            return Response({"ok": False, "error": "oauth_scope_insufficient"}, status=status.HTTP_400_BAD_REQUEST)
         credential_ref = store_token(token)   # encrypted; the DB stores only the ref
         common = dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
                       status=ConnectedMailbox.Status.CONNECTED)
@@ -252,3 +290,35 @@ class MailboxRevokeView(APIView):
         mb.status = ConnectedMailbox.Status.REVOKED
         mb.save(update_fields=["credential_ref", "status", "updated_at"])
         return Response({"ok": True, "status": "revoked", "mailbox_id": mb.id})
+
+
+class MailboxStatusView(APIView):
+    """GET /api/broker-intelligence/mailboxes/status/ — owner-scoped, customer-safe status of THIS member's connected
+    mailbox(es), for the Connected-Email-Accounts UI. DARK (``broker_mailbox_status_enabled`` -> 404 while off) and
+    independent of the identity-verification flag. Returns ONLY customer-safe fields (conceptual state, provider,
+    masked email, last successful sync, reconnect-required, whether verified broker bindings exist) — NEVER a token,
+    credential ref, raw cursor, email body, diagnostic code, or another member's mailbox."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_mailbox_status_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .models import ConnectedMailbox, BrokerEmailIdentity
+        from .health import customer_mailbox_status
+        from .resolver import canonical_address
+        mboxes = list(ConnectedMailbox.objects.filter(user=request.user).order_by("id"))   # owner-scoped
+        verified = list(BrokerEmailIdentity.objects.filter(
+            user=request.user, status=BrokerEmailIdentity.Status.VERIFIED))
+
+        def _bound(mb) -> bool:
+            # A VERIFIED broker identity is bound to this mailbox either by the connected_mailbox FK or by its
+            # canonical email matching the mailbox's canonical provider_mailbox_id (gmail/googlemail unified).
+            for i in verified:
+                if i.connected_mailbox_id == mb.id:
+                    return True
+                if i.email and mb.provider_mailbox_id and canonical_address(i.email) == mb.provider_mailbox_id:
+                    return True
+            return False
+
+        items = [customer_mailbox_status(mb, has_verified_bindings=_bound(mb)) for mb in mboxes]
+        return Response({"connected": bool(items), "mailboxes": items})

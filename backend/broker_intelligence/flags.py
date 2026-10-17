@@ -51,6 +51,14 @@ def broker_mailbox_connect_enabled() -> bool:
     return _flag("BROKER_MAILBOX_CONNECT_ENABLED")
 
 
+def broker_mailbox_status_enabled() -> bool:
+    """Member-facing gate for the owner-scoped mailbox STATUS API (the customer Connected-Email-Accounts UI reads it).
+    DEFAULT OFF → the endpoint 404s so the new customer onboarding UX stays DARK until its release gate, independently
+    of the connect flow (which may already be armed) and of the identity-verification flag. Read-only member data
+    only — never a token/credential/cursor/email body; NO execution/strategy/MT5 authority."""
+    return _flag("BROKER_MAILBOX_STATUS_ENABLED")
+
+
 def broker_withdrawal_ux_enabled() -> bool:
     """Member-facing gate for the Withdrawals UX + its metrics API. DEFAULT OFF. While OFF the metrics endpoint
     responds 404 (feature absent) so the half-built member feature never surfaces; the projection

@@ -161,6 +161,45 @@ def mailbox_health(mailbox, *, now=None, stale_seconds: Optional[int] = None,
     }
 
 
+# Customer-facing conceptual mailbox states (§6). Mapped from the operator health model + the mailbox status — NO new
+# DB enum. HEALTHY requires ACTUAL last-success evidence (never merely status==CONNECTED).
+CUSTOMER_NOT_CONNECTED = "NOT_CONNECTED"
+CUSTOMER_CONNECTED = "CONNECTED"
+CUSTOMER_HEALTHY = "HEALTHY"
+CUSTOMER_DEGRADED = "DEGRADED"
+CUSTOMER_RECONNECT_REQUIRED = "RECONNECT_REQUIRED"
+CUSTOMER_REVOKED = "REVOKED"
+
+
+def customer_mailbox_status(mailbox, *, now=None, has_verified_bindings: bool = False) -> dict:
+    """A CUSTOMER-SAFE status for ONE mailbox: a conceptual state (mapped from the operator health model + actual
+    last-success evidence) plus the minimal fields a member UI needs. It NEVER includes a token, credential ref, raw
+    cursor, email body, or operator diagnostic code. Owner-scoping is the caller's responsibility. Unmigrated-safe
+    (delegates to mailbox_health with the error columns excluded)."""
+    h = mailbox_health(mailbox, now=now, include_error_fields=False)
+    raw_status = getattr(mailbox, "status", "") or ""
+    if raw_status == "REVOKED":
+        state = CUSTOMER_REVOKED
+    elif h["recovery_required"] or raw_status == "ERROR":
+        state = CUSTOMER_RECONNECT_REQUIRED
+    elif h["healthy"]:
+        state = CUSTOMER_HEALTHY
+    elif h["last_successful_sync"] is None:
+        state = CUSTOMER_CONNECTED          # connected but no successful sync yet — NOT 'healthy' on zero evidence
+    else:
+        state = CUSTOMER_DEGRADED
+    return {
+        "mailbox_id": h["mailbox_id"],
+        "provider": h["provider"],
+        "masked_email": h["masked_email"],
+        "state": state,
+        "connection_status": raw_status,
+        "last_successful_sync": h["last_successful_sync"],
+        "reconnect_required": state in (CUSTOMER_RECONNECT_REQUIRED, CUSTOMER_REVOKED),
+        "has_verified_broker_bindings": bool(has_verified_bindings),
+    }
+
+
 def service_health(*, now=None, include_all_statuses: bool = False) -> dict:
     """Aggregate health across connected mailboxes (read-only). The ``service_running_note`` is explicit that a
     successful systemd unit exit does NOT imply mailbox health — the mailbox states are authoritative."""

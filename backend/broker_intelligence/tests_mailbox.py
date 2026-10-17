@@ -21,7 +21,8 @@ from rest_framework.test import APIClient
 
 from broker_intelligence import gmail_oauth as OAUTH
 from broker_intelligence import gmail_source as GS
-from broker_intelligence.models import (BrokerEvent, ConnectedMailbox, EvidenceBlob, Provenance, TransactionCategory, Withdrawal)
+from broker_intelligence.models import (BrokerEmailIdentity, BrokerEvent, ConnectedMailbox, EvidenceBlob, Provenance,
+                                        TransactionCategory, Withdrawal)
 from broker_intelligence.services import mint_alias_for_account
 from trading.models import TradingAccount
 
@@ -279,6 +280,153 @@ class MailboxConnectApi(TestCase):
         finally:
             O.exchange_code, S.fetch_profile = orig_exc, orig_prof
 
+    def _first_connect(self, O, S, email="owner@gmail.com"):
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        O.exchange_code = lambda **k: {"access_token": "AT1", "refresh_token": "RT1", "expiry": "",
+                                       "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+        S.fetch_profile = lambda at, **k: {"emailAddress": email, "historyId": "100"}
+        st = signing.dumps({"uid": self.u.id, "n": "a"}, salt=_STATE_SALT)
+        self.assertEqual(self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C0&state={st}").status_code, 200)
+        mb = ConnectedMailbox.objects.get(user=self.u)
+        return mb.id, mb.credential_ref
+
+    def test_reconnect_rejects_token_without_refresh_token_preserving_existing(self):
+        """OAUTH_RECOVERY §6 / §5(3): a replacement grant lacking a refresh_token is REJECTED (400) and the existing
+        usable credential + cursor are NOT overwritten (unattended ingestion needs a refresh_token)."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        from broker_intelligence.credential_store import load_token
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            oid, oref = self._first_connect(O, S)
+            ConnectedMailbox.objects.filter(pk=oid).update(cursor_state="777")
+            O.exchange_code = lambda **k: {"access_token": "AT2", "refresh_token": "", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "owner@gmail.com", "historyId": "999"}
+            st = signing.dumps({"uid": self.u.id, "n": "b"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C2&state={st}")
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(r.json()["error"], "oauth_no_refresh_token")
+            mb = ConnectedMailbox.objects.get(pk=oid)
+            self.assertEqual(mb.credential_ref, oref)                                      # NOT overwritten
+            self.assertEqual(mb.cursor_state, "777")                                       # cursor preserved
+            self.assertEqual(load_token(oref)["access_token"], "AT1")                      # old credential still usable
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_reconnect_rejects_insufficient_scope_preserving_existing(self):
+        """OAUTH_RECOVERY §6 / §5(4,5): a replacement grant missing gmail.readonly is REJECTED (400); existing
+        credential preserved."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            oid, oref = self._first_connect(O, S)
+            O.exchange_code = lambda **k: {"access_token": "AT2", "refresh_token": "RT2", "expiry": "",
+                                           "scope": "openid email", "token_type": "Bearer"}   # no gmail.readonly
+            S.fetch_profile = lambda at, **k: {"emailAddress": "owner@gmail.com", "historyId": "999"}
+            st = signing.dumps({"uid": self.u.id, "n": "c"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C2&state={st}")
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(r.json()["error"], "oauth_scope_insufficient")
+            self.assertEqual(ConnectedMailbox.objects.get(pk=oid).credential_ref, oref)    # preserved
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_connect_rejects_token_without_mailbox_identity(self):
+        """OAUTH_RECOVERY §5(I): a profile with no emailAddress is REJECTED (400) — never creates a random-id duplicate."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            O.exchange_code = lambda **k: {"access_token": "AT", "refresh_token": "RT", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "", "historyId": "100"}       # no identity
+            st = signing.dumps({"uid": self.u.id, "n": "d"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(r.json()["error"], "oauth_no_mailbox_identity")
+            self.assertEqual(ConnectedMailbox.objects.filter(user=self.u).count(), 0)       # no duplicate/random mailbox
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_connect_binds_expected_identity_on_reconnect_only(self):
+        """R2 §3: the connect state binds the EXISTING CONNECTED mailbox's canonical identity as `expect` (targeted
+        reconnect); a first-time connect (no existing mailbox) binds no target."""
+        import urllib.parse as U
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT, _STATE_MAX_AGE
+        r1 = self.c.get("/api/broker-intelligence/mailboxes/connect/")
+        self.assertEqual(r1.status_code, 200, r1.content)
+        st1 = U.parse_qs(U.urlparse(r1.json()["authorization_url"]).query)["state"][0]
+        self.assertNotIn("expect", signing.loads(st1, salt=_STATE_SALT, max_age=_STATE_MAX_AGE))   # first connect
+        ConnectedMailbox.objects.create(user=self.u, provider=ConnectedMailbox.Provider.GMAIL,
+                                        provider_mailbox_id="owner@gmail.com", primary_email="owner@gmail.com",
+                                        credential_ref="cr" + "0" * 32, status=ConnectedMailbox.Status.CONNECTED)
+        r2 = self.c.get("/api/broker-intelligence/mailboxes/connect/")
+        st2 = U.parse_qs(U.urlparse(r2.json()["authorization_url"]).query)["state"][0]
+        self.assertEqual(signing.loads(st2, salt=_STATE_SALT, max_age=_STATE_MAX_AGE).get("expect"), "owner@gmail.com")
+
+    def test_reconnect_wrong_account_rejected_preserving_existing(self):
+        """R2 §3 / §4(A): a reconnect whose consent returns a DIFFERENT Google account is rejected (400
+        oauth_account_mismatch) — no duplicate mailbox, existing credential + cursor preserved."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        from broker_intelligence.credential_store import load_token
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            oid, oref = self._first_connect(O, S, email="owner@gmail.com")
+            ConnectedMailbox.objects.filter(pk=oid).update(cursor_state="3204241")
+            # state targets owner@gmail.com (as the connect view would bind), but consent returns a DIFFERENT account
+            O.exchange_code = lambda **k: {"access_token": "ATX", "refresh_token": "RTX", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "intruder@gmail.com", "historyId": "999"}
+            st = signing.dumps({"uid": self.u.id, "n": "w", "expect": "owner@gmail.com"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=CX&state={st}")
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(r.json()["error"], "oauth_account_mismatch")
+            self.assertEqual(ConnectedMailbox.objects.filter(user=self.u).count(), 1)    # no duplicate created
+            mb = ConnectedMailbox.objects.get(pk=oid)
+            self.assertEqual(mb.credential_ref, oref)                                     # existing credential preserved
+            self.assertEqual(mb.cursor_state, "3204241")                                  # cursor preserved
+            self.assertEqual(load_token(oref)["access_token"], "AT1")
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_reconnect_matching_account_with_expect_updates_in_place(self):
+        """R2 §3 positive: a reconnect whose consent returns the EXPECTED account (even via the googlemail alias)
+        passes the targeted-identity check and updates in place (cursor preserved)."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            oid, oref = self._first_connect(O, S, email="owner@gmail.com")
+            ConnectedMailbox.objects.filter(pk=oid).update(cursor_state="3204241")
+            O.exchange_code = lambda **k: {"access_token": "AT2", "refresh_token": "RT2", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "owner@googlemail.com", "historyId": "999"}  # same account
+            st = signing.dumps({"uid": self.u.id, "n": "m", "expect": "owner@gmail.com"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=CM&state={st}")
+            self.assertEqual(r.status_code, 200, r.content)
+            self.assertEqual(ConnectedMailbox.objects.filter(user=self.u).count(), 1)
+            mb = ConnectedMailbox.objects.get(pk=oid)
+            self.assertEqual(mb.id, oid)
+            self.assertEqual(mb.cursor_state, "3204241")                                  # preserved
+            self.assertTrue(mb.credential_ref and mb.credential_ref != oref)              # rotated
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
     def test_callback_rejects_foreign_or_bad_state(self):
         from django.core import signing
         from broker_intelligence.views import _STATE_SALT
@@ -359,3 +507,76 @@ class MailboxConnectDark(TestCase):
         self.assertEqual(c.get("/api/broker-intelligence/mailboxes/connect/").status_code, 404)
         self.assertEqual(c.get("/api/broker-intelligence/mailboxes/callback/?code=C&state=S").status_code, 404)
         self.assertEqual(c.post(f"/api/broker-intelligence/mailboxes/{mb.id}/revoke/").status_code, 404)
+
+
+@override_settings(BROKER_MAILBOX_STATUS_ENABLED="1")
+class MailboxStatusApi(TestCase):
+    """Owner-scoped, customer-safe mailbox status API (§6). DARK by its own flag; HEALTHY only on real last-success
+    evidence; never leaks a token/credential/cursor/email body or another member's mailbox."""
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="su", email="su@x.invalid", password="x")
+        self.c = APIClient()
+        self.c.force_authenticate(self.u)
+
+    def _mb(self, user, pmid="owner@gmail.com", **kw):
+        d = dict(user=user, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=pmid,
+                 primary_email=pmid, credential_ref="cr" + "0" * 32, cursor_state="100",
+                 status=ConnectedMailbox.Status.CONNECTED)
+        d.update(kw)
+        return ConnectedMailbox.objects.create(**d)
+
+    def test_status_404_while_flag_off(self):
+        self._mb(self.u)
+        with override_settings(BROKER_MAILBOX_STATUS_ENABLED="0"):
+            self.assertEqual(self.c.get("/api/broker-intelligence/mailboxes/status/").status_code, 404)
+
+    def test_connected_no_sync_is_connected_not_healthy(self):
+        self._mb(self.u, last_successful_sync=None)
+        r = self.c.get("/api/broker-intelligence/mailboxes/status/")
+        self.assertEqual(r.status_code, 200)
+        item = r.json()["mailboxes"][0]
+        self.assertEqual(item["state"], "CONNECTED")      # NOT 'HEALTHY' on zero success evidence
+        self.assertEqual(item["connection_status"], "CONNECTED")
+
+    def test_recent_sync_is_healthy(self):
+        self._mb(self.u, last_successful_sync=timezone.now())
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "HEALTHY")
+
+    def test_stale_sync_is_reconnect_required(self):
+        self._mb(self.u, last_successful_sync=timezone.now() - datetime.timedelta(days=100))
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "RECONNECT_REQUIRED")
+        self.assertTrue(item["reconnect_required"])
+
+    def test_revoked_status_is_revoked(self):
+        self._mb(self.u, status=ConnectedMailbox.Status.REVOKED, credential_ref="")
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "REVOKED")
+        self.assertTrue(item["reconnect_required"])
+
+    def test_owner_scoped_excludes_other_member(self):
+        self._mb(self.u, pmid="owner@gmail.com")
+        other = User.objects.create_user(username="other", email="other@x.invalid", password="x")
+        self._mb(other, pmid="other@gmail.com")
+        data = self.c.get("/api/broker-intelligence/mailboxes/status/").json()
+        self.assertEqual(len(data["mailboxes"]), 1)       # only the member's own mailbox
+        self.assertNotIn("other@gmail.com", self.c.get("/api/broker-intelligence/mailboxes/status/").content.decode())
+
+    def test_response_has_no_secrets(self):
+        self._mb(self.u, last_successful_sync=timezone.now())
+        body = self.c.get("/api/broker-intelligence/mailboxes/status/").content.decode()
+        for forbidden in ("credential_ref", "cr00000000", "cursor", "access_token", "refresh_token"):
+            self.assertNotIn(forbidden, body, forbidden)
+        self.assertIn("masked_email", body)
+        self.assertNotIn("owner@gmail.com", body)         # full mailbox address never returned
+
+    def test_verified_broker_binding_reflected(self):
+        mb = self._mb(self.u, last_successful_sync=timezone.now())
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertFalse(item["has_verified_broker_bindings"])
+        BrokerEmailIdentity.objects.create(email="owner@googlemail.com", broker_name="TradersWay", user=self.u,
+                                           trading_account=None, status=BrokerEmailIdentity.Status.VERIFIED)
+        item2 = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertTrue(item2["has_verified_broker_bindings"])   # canonical googlemail->gmail match
