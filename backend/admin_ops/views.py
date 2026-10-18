@@ -727,6 +727,7 @@ class AdminBetaEstateView(APIView):
     def get(self, request):
         from django.contrib.auth import get_user_model
         from trading.models import TradingAccount
+        from trading.account_entitlement import owned_account_ceiling
         from terminal_provisioning.models import AccountRuntime, RuntimeEvent
         from billing.entitlements import resolve_entitlements
         from billing.models import UserSubscriptionState
@@ -749,7 +750,8 @@ class AdminBetaEstateView(APIView):
                 runtime__trading_account__user=u, event_type="FAILURE").order_by("-id")[:5])
             out.append({
                 "user_id": u.id, "email": u.email, "is_beta": ent.is_beta,
-                "account_count": len(accounts), "max_accounts": min(10, ent.max_trading_accounts),
+                "account_count": len(accounts),
+                "max_accounts": min(owned_account_ceiling(), ent.max_trading_accounts),
                 "accounts": accounts,
                 "recent_failures": [{
                     "account_id": f.runtime.trading_account_id, "reason": f.reason_code,

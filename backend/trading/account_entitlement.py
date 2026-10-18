@@ -194,6 +194,29 @@ def active_account_count(user, *, exclude_account_id=None) -> int:
 
 # ---- effective limits ----------------------------------------------------------------------------
 
+def owned_account_ceiling() -> int:
+    """Product maximum for OWNED broker accounts on the LEGACY (un-enforced) add-account path.
+
+    The legacy path clamps the entitlement to this ceiling. It is CONFIGURABLE (``GUVFX_MAX_OWNED_ACCOUNTS_CEILING``,
+    settings-then-env) and defaults to the Sponsor-approved product maximum of **20**, so a per-user
+    ``max_trading_accounts`` override (e.g. 20) is honoured on the legacy path WITHOUT requiring the
+    ``concurrent_accounts_enforcement`` grant (which would entangle hosted-workspace / concurrent-active semantics).
+
+    This changes NO user whose entitlement is at or below the ceiling: every plan caps ``max_trading_accounts`` at 10,
+    so the clamp only ever bites an explicit per-user override above the ceiling (an intentional admin action). It
+    grants NO trading/live-execution authority (the owned cap is decoupled from ``can_deploy_automation`` and leaves
+    ``account_mode`` STANDARD). Reversible: lower the setting (e.g. back to 10)."""
+    from django.conf import settings
+    v = getattr(settings, "GUVFX_MAX_OWNED_ACCOUNTS_CEILING", None)
+    if v is None:
+        v = os.getenv("GUVFX_MAX_OWNED_ACCOUNTS_CEILING", "")
+    try:
+        n = int(v) if str(v).strip() else 20
+    except (TypeError, ValueError):
+        n = 20
+    return n if n > 0 else 20
+
+
 def effective_owned_limit(ent) -> int:
     return int(getattr(ent, "max_trading_accounts", 0) or 0)
 

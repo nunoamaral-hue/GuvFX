@@ -67,6 +67,46 @@ class BrokerAccountCapTests(TestCase):
         self.assertIn("maximum 10", str(resp.content))
         self.assertEqual(TradingAccount.objects.filter(user=user).count(), 10)
 
+    def test_legacy_path_honours_20_override_without_concurrency_grant(self):
+        # Sponsor 20-account requirement: a per-user max_trading_accounts override of 20 is honoured on the LEGACY
+        # (un-enforced) add path — the ceiling is the configurable product maximum (default 20), not a hard 10 — and
+        # it needs NO concurrent_accounts_enforcement grant.
+        from admin_ops.models import EntitlementOverride
+        from django.utils import timezone
+        from datetime import timedelta
+        user = self._make_user("twenty@x.invalid", plan="advanced")   # plan cap 10
+        EntitlementOverride.objects.create(
+            user=user, capability="max_trading_accounts", override_value={"value": 20}, is_active=True,
+            expires_at=timezone.now() + timedelta(days=30), reason="Sponsor 20-account pilot")
+        for i in range(11):   # 11 > the old hard ceiling of 10
+            TradingAccount.objects.create(
+                user=user, name=f"A{i}", account_number=str(300 + i), broker_name="B", is_demo=True)
+        self.client.force_authenticate(user)
+        resp = self.client.post(LIST_URL, {"name": "A11", "account_number": "981", "broker_name": "B",
+                                           "account_type": "demo"}, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)           # 12th account allowed (was blocked at 10)
+        self.assertEqual(TradingAccount.objects.filter(user=user).count(), 12)
+
+    def test_configurable_ceiling_still_clamps_when_lowered(self):
+        # Reversibility / "do not change unrelated customers": lowering the ceiling to 10 clamps even a 20-override.
+        from admin_ops.models import EntitlementOverride
+        from django.test import override_settings
+        from django.utils import timezone
+        from datetime import timedelta
+        user = self._make_user("clamp@x.invalid", plan="advanced")
+        EntitlementOverride.objects.create(
+            user=user, capability="max_trading_accounts", override_value={"value": 20}, is_active=True,
+            expires_at=timezone.now() + timedelta(days=30), reason="pilot")
+        for i in range(10):
+            TradingAccount.objects.create(
+                user=user, name=f"C{i}", account_number=str(400 + i), broker_name="B", is_demo=True)
+        self.client.force_authenticate(user)
+        with override_settings(GUVFX_MAX_OWNED_ACCOUNTS_CEILING=10):
+            resp = self.client.post(LIST_URL, {"name": "C10", "account_number": "970", "broker_name": "B",
+                                               "account_type": "demo"}, format="json")
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("maximum 10", str(resp.content))
+
     def test_staff_user_is_exempt_from_cap(self):
         # Nuno's production account is staff — it must remain untouched by the cap.
         staff = self._make_user("staff@x.invalid", staff=True)
