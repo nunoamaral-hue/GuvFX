@@ -17,11 +17,20 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .flags import (broker_identity_verification_enabled, broker_mailbox_connect_enabled,
-                    broker_withdrawal_ux_enabled)
+                    broker_mailbox_status_enabled, broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_history, withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
 _STATE_MAX_AGE = 600   # seconds the signed CSRF state is valid for the connect->callback round trip
+
+# Mailbox connect OPERATIONS (§6) — the EXPLICIT intent of a connect flow, bound into the signed state so the callback
+# enforces exactly what the member asked for and can never silently target a different mailbox. V1 is single-mailbox:
+# CONNECT_FIRST/ADD_NEW are refused while the member already has a live (non-revoked) mailbox; a reconnect is always a
+# TARGETED update of one named, owned mailbox whose canonical identity is bound into the state.
+_OP_CONNECT_FIRST = "CONNECT_FIRST_MAILBOX"
+_OP_RECONNECT_EXISTING = "RECONNECT_EXISTING_MAILBOX"
+_OP_ADD_NEW = "ADD_NEW_MAILBOX"
+_VALID_OPS = frozenset({_OP_CONNECT_FIRST, _OP_RECONNECT_EXISTING, _OP_ADD_NEW})
 
 
 def _conf(name: str) -> str:
@@ -30,6 +39,41 @@ def _conf(name: str) -> str:
     if v is None:
         v = os.getenv(name, "")
     return str(v or "")
+
+
+def _connect_return_url() -> str:
+    """The FIXED, server-known destination the browser lands on after the Google callback. It MUST be the GuvFX
+    FRONTEND origin (guvfx.com) — NEVER the API origin (api.guvfx.com) that serves this callback: a relative path
+    would resolve against the API host and strand the member on the API. Resolution order: an explicit absolute
+    ``BROKER_MAILBOX_CONNECT_RETURN_URL``; otherwise ``FRONTEND_BASE_URL`` + ``/profile`` (default
+    ``https://guvfx.com/profile``). NEVER derived from the request — so the redirect can never be an open redirect."""
+    explicit = _conf("BROKER_MAILBOX_CONNECT_RETURN_URL")
+    if explicit:
+        return explicit
+    base = _conf("FRONTEND_BASE_URL") or "https://guvfx.com"
+    return base.rstrip("/") + "/profile"
+
+
+# Non-sensitive outcome markers the callback may hand the frontend (never a token/code/state). The frontend maps the
+# few it recognises to a customer-safe banner and treats everything else as a generic error; the owner-scoped status
+# API remains the AUTHORITATIVE source — the marker is only a one-time hint.
+_OUTCOME_CONNECTED = "connected"
+
+
+def _callback_result(rt: bool, *, ok: bool, code: str, http_status, json_body):
+    """Render a callback outcome (§7). For the BROWSER return-journey (``rt`` — a flag set only inside the member's own
+    signed connect state), a 302 to the FIXED GuvFX FRONTEND destination carrying a SHORT, NON-sensitive outcome marker
+    — NEVER the Google ``code``/token/``state`` and never an email body. The frontend uses the marker only for a
+    customer-safe message and re-reads the authoritative owner-scoped status API. For API/operator callers (no
+    ``rt``), the JSON contract is unchanged."""
+    if rt:
+        from urllib.parse import urlencode
+        from django.http import HttpResponseRedirect
+        outcome = _OUTCOME_CONNECTED if ok else (code or "error")
+        dest = _connect_return_url()
+        sep = "&" if "?" in dest else "?"
+        return HttpResponseRedirect(f"{dest}{sep}{urlencode({'mailbox_connect': outcome})}")
+    return Response(json_body, status=http_status)
 
 
 def _oauth_client():
@@ -153,8 +197,20 @@ class IdentityVerifyView(APIView):
 
 
 class MailboxConnectView(APIView):
-    """GET /api/broker-intelligence/mailboxes/connect/ — the Google consent URL for the authenticated member. The
-    CSRF ``state`` is a signed, time-limited token binding the flow to THIS user, verified in the callback."""
+    """GET /api/broker-intelligence/mailboxes/connect/?op=&mailbox_id=&journey= — the Google consent URL for the
+    authenticated member. The CSRF ``state`` is a signed, time-limited token binding the flow to THIS user AND to one
+    explicit operation (§6), verified/enforced in the callback.
+
+    OPERATIONS (bound into the signed state, never inferred from the account Google returns):
+      * RECONNECT_EXISTING_MAILBOX — requires ``mailbox_id`` of one of the member's OWN mailboxes (owner-scoped lookup;
+        a foreign/absent id is a 404). The targeted mailbox's canonical identity is bound as ``expect`` so the callback
+        rejects a consent that returns a DIFFERENT Google account — a wrong-account re-consent can never retarget or
+        duplicate. (A REVOKED mailbox may be reconnected by id.)
+      * CONNECT_FIRST_MAILBOX — the member has NO live mailbox yet; any account is accepted as the first.
+      * ADD_NEW_MAILBOX — V1 does not support a second mailbox; REFUSED while a live mailbox exists.
+    When no explicit op is given the view infers conservatively: a single live mailbox ⇒ a targeted reconnect of it;
+    otherwise a first connect. ``journey=web`` binds a signed return-journey flag so the callback redirects the browser
+    back to the fixed GuvFX destination (§7); API/operator callers omit it and get JSON."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -166,9 +222,74 @@ class MailboxConnectView(APIView):
                              "message": "Mailbox connection is not configured yet."},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
         from . import gmail_oauth
-        state = signing.dumps({"uid": request.user.id, "n": secrets.token_urlsafe(8)}, salt=_STATE_SALT)
+        from .models import ConnectedMailbox
+        from .resolver import canonical_address
+
+        requested_op = str(request.query_params.get("op", "") or "").strip()
+        if requested_op and requested_op not in _VALID_OPS:
+            return Response({"ok": False, "error": "invalid_op",
+                             "message": "Unknown mailbox operation."}, status=status.HTTP_400_BAD_REQUEST)
+        raw_mid = request.query_params.get("mailbox_id")
+        web_journey = str(request.query_params.get("journey", "") or "").strip().lower() == "web"
+
+        # The member's LIVE (non-revoked) Gmail mailboxes — V1 permits at most one.
+        live = list(ConnectedMailbox.objects
+                    .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
+                    .exclude(status=ConnectedMailbox.Status.REVOKED).order_by("id"))
+
+        # --- resolve the operation + (for reconnect) the OWNED target mailbox ---
+        target = None
+        if raw_mid not in (None, ""):
+            # A specific mailbox was named ⇒ a TARGETED reconnect. Owner-scope the lookup: a foreign/absent id is a 404
+            # (indistinguishable from 'does not exist'), so a member can never target another member's mailbox.
+            try:
+                mid = int(raw_mid)
+            except (TypeError, ValueError):
+                return Response({"ok": False, "error": "invalid_mailbox_id"}, status=status.HTTP_400_BAD_REQUEST)
+            target = ConnectedMailbox.objects.filter(id=mid, user=request.user,
+                                                     provider=ConnectedMailbox.Provider.GMAIL).first()
+            if target is None:
+                return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+            op = _OP_RECONNECT_EXISTING
+        elif requested_op == _OP_RECONNECT_EXISTING:
+            return Response({"ok": False, "error": "reconnect_requires_mailbox",
+                             "message": "Select which connected mailbox to reconnect."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        elif requested_op in (_OP_CONNECT_FIRST, _OP_ADD_NEW):
+            op = requested_op
+        elif len(live) == 1:
+            # No explicit op: a single live mailbox is reconnected (targeted) rather than silently adding a second.
+            target, op = live[0], _OP_RECONNECT_EXISTING
+        else:
+            op = _OP_CONNECT_FIRST
+
+        # --- V1 single-mailbox enforcement at AUTHORIZATION (mirrors the callback mutation guard) ---
+        # A first/add connect cannot create a SECOND live mailbox...
+        if op in (_OP_CONNECT_FIRST, _OP_ADD_NEW) and live:
+            return Response({"ok": False, "error": "single_mailbox_only",
+                             "message": "A mailbox is already connected. Disconnect it before connecting another."},
+                            status=status.HTTP_409_CONFLICT)
+        # ...and a RECONNECT of a (possibly revoked) mailbox cannot either: if a DIFFERENT live mailbox already exists,
+        # reactivating this target would leave two live mailboxes. Only the member's CURRENT live mailbox (or their
+        # sole mailbox) may be reconnected. (Revoke-A, connect-B, reconnect-A is refused here and at the callback.)
+        if op == _OP_RECONNECT_EXISTING and target is not None and any(m.id != target.id for m in live):
+            return Response({"ok": False, "error": "single_mailbox_only",
+                             "message": "A different mailbox is already connected. Disconnect it first."},
+                            status=status.HTTP_409_CONFLICT)
+
+        state_payload = {"uid": request.user.id, "n": secrets.token_urlsafe(8), "op": op}
+        if web_journey:
+            state_payload["rt"] = True   # signed return-journey indication (§7) — the callback redirects the browser
+        if op == _OP_RECONNECT_EXISTING and target is not None:
+            # Bind the targeted mailbox + its canonical identity. Re-canonicalize defensively so a legitimate
+            # same-account reconnect is never false-rejected by a legacy/non-canonical stored id.
+            state_payload["mailbox_pk"] = target.id
+            if target.provider_mailbox_id:
+                state_payload["expect"] = canonical_address(target.provider_mailbox_id)
+        state = signing.dumps(state_payload, salt=_STATE_SALT)
         url = gmail_oauth.build_authorization_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
-        return Response({"authorization_url": url})
+        return Response({"authorization_url": url, "op": op,
+                         "mailbox_id": target.id if target is not None else None})
 
 
 class MailboxCallbackView(APIView):
@@ -182,28 +303,62 @@ class MailboxCallbackView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         code = request.query_params.get("code", "")
         state = request.query_params.get("state", "")
+        oauth_error = request.query_params.get("error", "")
+        # GOOGLE CONSENT DENIAL (§505.1): when the member declines on Google's consent screen, Google redirects here
+        # with an ``error`` (e.g. access_denied) and NO ``code``. That is NOT a server fault and NOT a missing/forged
+        # state — surface a customer-safe 'consent_denied' outcome. Recover the return-journey flag from the signed
+        # state when present (so a web journey still lands back on the FRONTEND); never echo Google's raw error string.
+        if oauth_error:
+            try:
+                rt = bool(signing.loads(state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE).get("rt")) if state else False
+            except signing.BadSignature:
+                rt = False
+            return _callback_result(rt, ok=False, code="consent_denied",
+                                    http_status=status.HTTP_400_BAD_REQUEST,
+                                    json_body={"ok": False, "error": "consent_denied"})
+        # Pre-state failures stay JSON: with no trusted, validly-signed state we cannot know whether this is a web
+        # return-journey, and must never redirect on an unverified signal.
         if not code or not state:
             return Response({"ok": False, "error": "missing_code_or_state"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             payload = signing.loads(state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE)
         except signing.BadSignature:
             return Response({"ok": False, "error": "invalid_state"}, status=status.HTTP_400_BAD_REQUEST)
+        # The return-journey flag is read ONLY from the validly-signed state (tamper-evident).
+        rt = bool(payload.get("rt"))
         if payload.get("uid") != request.user.id:   # CSRF: state must have been issued to THIS user
-            return Response({"ok": False, "error": "state_user_mismatch"}, status=status.HTTP_400_BAD_REQUEST)
+            return _callback_result(rt, ok=False, code="state_user_mismatch",
+                                    http_status=status.HTTP_400_BAD_REQUEST,
+                                    json_body={"ok": False, "error": "state_user_mismatch"})
 
         client_id, client_secret, redirect_uri = _oauth_client()
         if not client_id or not client_secret or not redirect_uri:
-            return Response({"ok": False, "error": "oauth_not_configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return _callback_result(rt, ok=False, code="oauth_not_configured",
+                                    http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    json_body={"ok": False, "error": "oauth_not_configured"})
         from . import gmail_oauth
         from .gmail_source import fetch_profile
         from .credential_store import store_token
         from .models import ConnectedMailbox
+        # RECONNECTION OWNERSHIP INVARIANT at the callback (§6/§505.3, mirrors the connect view's owner-scoped target
+        # lookup): a reconnect names a target mailbox in the signed state; that mailbox MUST still exist AND belong to
+        # THIS member. If it was deleted or is not owned, refuse BEFORE exchanging the code — never silently fall
+        # through and create a NEW mailbox under a reconnect intent.
+        op = payload.get("op") or _OP_CONNECT_FIRST
+        mailbox_pk = payload.get("mailbox_pk")
+        if op == _OP_RECONNECT_EXISTING and mailbox_pk is not None and not (
+                ConnectedMailbox.objects.filter(id=mailbox_pk, user=request.user).exists()):
+            return _callback_result(rt, ok=False, code="reconnect_target_missing",
+                                    http_status=status.HTTP_404_NOT_FOUND,
+                                    json_body={"ok": False, "error": "reconnect_target_missing"})
         try:
             token = gmail_oauth.exchange_code(code=code, client_id=client_id, client_secret=client_secret,
                                               redirect_uri=redirect_uri)
             profile = fetch_profile(token["access_token"])
         except Exception:   # noqa: BLE001 — never leak the code/token; a failure is a generic connect error
-            return Response({"ok": False, "error": "oauth_exchange_failed"}, status=status.HTTP_502_BAD_GATEWAY)
+            return _callback_result(rt, ok=False, code="oauth_exchange_failed",
+                                    http_status=status.HTTP_502_BAD_GATEWAY,
+                                    json_body={"ok": False, "error": "oauth_exchange_failed"})
         from .resolver import canonical_address
         email = str(profile.get("emailAddress", "") or "")
         # Dedup anchor: the gmail-CANONICAL form (gmail.com/googlemail.com + dots/+tag unified), so the SAME Google
@@ -219,7 +374,51 @@ class MailboxCallbackView(APIView):
                  .filter(provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=mailbox_id)
                  .exclude(user=request.user).first())
         if clash is not None:
-            return Response({"ok": False, "error": "mailbox_already_connected"}, status=status.HTTP_409_CONFLICT)
+            return _callback_result(rt, ok=False, code="mailbox_already_connected",
+                                    http_status=status.HTTP_409_CONFLICT,
+                                    json_body={"ok": False, "error": "mailbox_already_connected"})
+        # CREDENTIAL-LIFECYCLE SAFETY (OAUTH_RECOVERY §6): an unattended CONNECTED mailbox needs a USABLE replacement
+        # credential. Validate BEFORE store_token/update_or_create so a bad grant can never overwrite the existing
+        # working credential/cursor/identity bindings, and no orphaned credential file is written on rejection:
+        #   * a mailbox identity (emailAddress) must be present — else the dedup id would be random and a DUPLICATE
+        #     mailbox would be created instead of updating the existing row;
+        #   * a NON-EMPTY refresh_token — without it the next access-token expiry silently re-breaks ingestion;
+        #   * gmail.readonly present and NO write-capable scope (defence-in-depth beyond exchange_code's scope assert).
+        from .gmail_oauth import GMAIL_READONLY_SCOPE, _FORBIDDEN_SCOPES
+        granted_scopes = set(str(token.get("scope", "")).split())
+        if not email:
+            return _callback_result(rt, ok=False, code="oauth_no_mailbox_identity",
+                                    http_status=status.HTTP_400_BAD_REQUEST,
+                                    json_body={"ok": False, "error": "oauth_no_mailbox_identity"})
+        # WRONG-ACCOUNT SAFEGUARD (R2 §3/§6): on a TARGETED reconnect the signed state carries the expected canonical
+        # mailbox identity. A consent that returns a DIFFERENT Google account is REJECTED before any credential is
+        # stored — so it can never create a duplicate mailbox or overwrite the targeted row with a foreign account.
+        expected_identity = payload.get("expect")
+        if expected_identity and mailbox_id != expected_identity:
+            return _callback_result(rt, ok=False, code="oauth_account_mismatch",
+                                    http_status=status.HTTP_400_BAD_REQUEST,
+                                    json_body={"ok": False, "error": "oauth_account_mismatch"})
+        if not token.get("refresh_token"):
+            return _callback_result(rt, ok=False, code="oauth_no_refresh_token",
+                                    http_status=status.HTTP_400_BAD_REQUEST,
+                                    json_body={"ok": False, "error": "oauth_no_refresh_token"})
+        if GMAIL_READONLY_SCOPE not in granted_scopes or (granted_scopes & set(_FORBIDDEN_SCOPES)):
+            return _callback_result(rt, ok=False, code="oauth_scope_insufficient",
+                                    http_status=status.HTTP_400_BAD_REQUEST,
+                                    json_body={"ok": False, "error": "oauth_scope_insufficient"})
+        # V1 SINGLE-MAILBOX enforcement at the MUTATION point (§6), applied UNCONDITIONALLY — including on a reconnect.
+        # The write about to happen sets THIS mailbox_id to CONNECTED; if the member already has ANY OTHER live
+        # (non-revoked) mailbox, that write would leave two live mailboxes. The `.exclude(provider_mailbox_id=...)`
+        # clause means a legitimate IN-PLACE reconnect of the member's own mailbox (same id) is never blocked — only a
+        # write that would create a SECOND live mailbox is. This closes the revoke-A / connect-B / reconnect-A hole:
+        # reconnecting a revoked mailbox while a different one is live is refused here as well as at authorization.
+        if (ConnectedMailbox.objects
+                .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
+                .exclude(status=ConnectedMailbox.Status.REVOKED)
+                .exclude(provider_mailbox_id=mailbox_id).exists()):
+            return _callback_result(rt, ok=False, code="single_mailbox_only",
+                                    http_status=status.HTTP_409_CONFLICT,
+                                    json_body={"ok": False, "error": "single_mailbox_only"})
         credential_ref = store_token(token)   # encrypted; the DB stores only the ref
         common = dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
                       status=ConnectedMailbox.Status.CONNECTED)
@@ -230,7 +429,11 @@ class MailboxCallbackView(APIView):
             # last sync that the worker has not yet consumed (a lost-mail path). (Django 5.0+ create_defaults.)
             create_defaults={**common, "cursor_state": str(profile.get("historyId", "") or "")},
             defaults=common)
-        return Response({"ok": True, "status": "connected", "mailbox_id": mb.id, "email": email})
+        # Web journey: a NON-sensitive 'connected' marker only (never the email/token/code). The JSON contract
+        # (API/operator) is unchanged and still reports the connected address.
+        return _callback_result(rt, ok=True, code="connected",
+                                http_status=status.HTTP_200_OK,
+                                json_body={"ok": True, "status": "connected", "mailbox_id": mb.id, "email": email})
 
 
 class MailboxRevokeView(APIView):
@@ -252,3 +455,59 @@ class MailboxRevokeView(APIView):
         mb.status = ConnectedMailbox.Status.REVOKED
         mb.save(update_fields=["credential_ref", "status", "updated_at"])
         return Response({"ok": True, "status": "revoked", "mailbox_id": mb.id})
+
+
+class MailboxStatusView(APIView):
+    """GET /api/broker-intelligence/mailboxes/status/ — owner-scoped, customer-safe status of THIS member's connected
+    mailbox(es), for the Connected-Email-Accounts UI. DARK (``broker_mailbox_status_enabled`` -> 404 while off) and
+    independent of the identity-verification flag. Returns ONLY customer-safe fields (conceptual state, provider,
+    masked email, last successful sync, reconnect-required, whether verified broker bindings exist) — NEVER a token,
+    credential ref, raw cursor, email body, diagnostic code, or another member's mailbox."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_mailbox_status_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .models import ConnectedMailbox, BrokerEmailIdentity
+        from .health import customer_mailbox_status, r1_columns_present, STATUS_STABLE_ONLY
+        from .resolver import canonical_address
+        from trading.models import TradingAccount
+
+        # SCHEMA-0010 SAFETY (§3): production runs broker_intelligence migration 0010 — the migration-0011 health
+        # columns do NOT exist yet. A default ``SELECT *`` over ConnectedMailbox would reference those columns and
+        # raise ProgrammingError. So when the R1 columns are absent, select ONLY the pre-existing (0010) columns via
+        # an explicit projection, and tell customer_mailbox_status not to read an R1 attribute (a deferred-column load
+        # would hit the same missing column). When the columns DO exist, load everything so the status can reflect an
+        # explicit re-auth diagnostic. This is introspection-driven, never a try/except-around-a-failed-query.
+        r1 = r1_columns_present()
+        qs = ConnectedMailbox.objects.filter(user=request.user).order_by("id")   # owner-scoped
+        if not r1:
+            qs = qs.only(*STATUS_STABLE_ONLY)
+        mboxes = list(qs)
+        verified = list(BrokerEmailIdentity.objects.filter(
+            user=request.user, status=BrokerEmailIdentity.Status.VERIFIED))
+        # The member's OWN trading accounts — a verified binding requires a trading account that is actually theirs,
+        # never an identity whose account is NULL or (defensively) not owned by this member.
+        owned_account_ids = set(TradingAccount.objects.filter(user=request.user).values_list("id", flat=True))
+
+        def _bound(mb) -> bool:
+            # A VERIFIED broker identity counts as a verified broker BINDING for this mailbox ONLY when it has a
+            # NON-NULL trading account owned by this member AND is associated with THIS mailbox — by the
+            # connected_mailbox FK, or by its canonical email matching the mailbox's canonical provider_mailbox_id
+            # (gmail/googlemail unified). Email ownership ALONE is insufficient (§5): a verified-but-unbound address, or
+            # one bound to no / another account, must not read as "verified broker account".
+            for i in verified:
+                if i.trading_account_id is None or i.trading_account_id not in owned_account_ids:
+                    continue
+                if i.connected_mailbox_id == mb.id:
+                    return True
+                if i.email and mb.provider_mailbox_id and canonical_address(i.email) == mb.provider_mailbox_id:
+                    return True
+            return False
+
+        items = [customer_mailbox_status(mb, has_verified_bindings=_bound(mb), include_error_fields=r1)
+                 for mb in mboxes]
+        # CONNECTED means at least one mailbox is actually CONNECTED (§5). A member whose only mailbox is REVOKED is
+        # NOT connected — the UI must offer a fresh connect, not present a dead mailbox as active.
+        connected = any(getattr(mb, "status", "") == ConnectedMailbox.Status.CONNECTED for mb in mboxes)
+        return Response({"connected": connected, "mailboxes": items})

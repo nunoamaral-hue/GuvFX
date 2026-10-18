@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from .ingest_diagnostics import BLOCKING_CODES
+from .ingest_diagnostics import BLOCKING_CODES, Code
 
 # Mailbox health states (§5).
 SERVICE_RUNNING = "SERVICE_RUNNING"                 # service/unit ran (reported at the service level, not per mailbox)
@@ -63,6 +63,9 @@ def _iso(dt) -> Optional[str]:
 
 # Pre-existing ConnectedMailbox columns the health read-model needs — all present since well before migration 0011.
 _STABLE_ONLY = ("id", "provider", "status", "primary_email", "cursor_state", "last_successful_sync")
+# The customer status view additionally needs the provider-stable id (for the verified-binding canonical match). Still
+# ALL pre-existing 0010 columns — never an R1 column — so it is a safe projection on the unmigrated production schema.
+STATUS_STABLE_ONLY = _STABLE_ONLY + ("provider_mailbox_id",)
 # One R1 column whose presence proves migration 0011 is applied.
 _R1_PROBE_COLUMN = "consecutive_failures"
 
@@ -158,6 +161,71 @@ def mailbox_health(mailbox, *, now=None, stale_seconds: Optional[int] = None,
         "last_pass_cursor_advanced": last_pass_cursor_advanced,
         "stale_seconds": stale_seconds,
         "recovery_seconds": recovery_seconds,
+    }
+
+
+# Customer-facing conceptual mailbox states (§6). Mapped from the operator health model + the mailbox status — NO new
+# DB enum. HEALTHY requires ACTUAL last-success evidence (never merely status==CONNECTED).
+CUSTOMER_NOT_CONNECTED = "NOT_CONNECTED"
+CUSTOMER_CONNECTED = "CONNECTED"
+CUSTOMER_HEALTHY = "HEALTHY"
+CUSTOMER_DEGRADED = "DEGRADED"
+CUSTOMER_RECONNECT_REQUIRED = "RECONNECT_REQUIRED"
+CUSTOMER_REVOKED = "REVOKED"
+
+# Failure codes whose recovery is a Google RE-AUTHORIZATION by the mailbox owner (Recovery.SPONSOR_REAUTH) — the ONLY
+# codes that map to the customer-facing RECONNECT_REQUIRED, because reconnecting Gmail is the action that actually
+# fixes them. Deliberately a STRICT SUBSET of BLOCKING_CODES: other blocking codes are NOT the member's to fix by
+# reconnecting and must never trigger a false "re-authorize your Gmail" —
+#   * GMAIL_HISTORY_CURSOR_INVALID → an operator cursor escalation (ESCALATE_CURSOR), not a consent problem;
+#   * OAUTH_CLIENT_NOT_CONFIGURED / CREDENTIAL_MISSING / CREDENTIAL_STORE_ERROR → server-side configuration / store
+#     faults (OPERATOR_REVIEW) a member cannot resolve by re-consenting.
+# Those surface as DEGRADED (something is wrong, we are looking at it) rather than an incorrect reconnect instruction.
+REAUTH_CODES = frozenset({Code.OAUTH_PERMISSION_DENIED, Code.GMAIL_HTTP_401, Code.GMAIL_HTTP_403})
+
+
+def customer_mailbox_status(mailbox, *, now=None, has_verified_bindings: bool = False,
+                            include_error_fields=None) -> dict:
+    """A CUSTOMER-SAFE status for ONE mailbox: a conceptual state (mapped from the operator health model + actual
+    last-success evidence) plus the minimal fields a member UI needs. It NEVER includes a token, credential ref, raw
+    cursor, email body, or operator diagnostic code. Owner-scoping is the caller's responsibility.
+
+    RECONNECT_REQUIRED (§4) is reported ONLY on EXPLICIT Google-authorization evidence — the mailbox ``status`` is
+    ERROR, or the last recorded failure is a re-auth code (``REAUTH_CODES``). A mailbox that is merely STALE (a
+    late/slow ingestion pass) is DEGRADED, never RECONNECT_REQUIRED: a member must not be told to re-authorize Gmail
+    because a pass ran late. Unmigrated-safe: on schema 0010 the detailed failure code is unavailable
+    (``include_error_fields`` resolves to False), so a non-ERROR mailbox can reach at most DEGRADED — an OAuth-specific
+    diagnosis is never invented from staleness alone. ``include_error_fields`` defaults to auto-detecting whether the
+    migration-0011 columns exist; the view passes the same value it used to build its ``.only(...)`` projection so an
+    absent/deferred R1 column is never read."""
+    if include_error_fields is None:
+        include_error_fields = r1_columns_present()
+    h = mailbox_health(mailbox, now=now, include_error_fields=include_error_fields)
+    raw_status = getattr(mailbox, "status", "") or ""
+    err_code = h["last_error_code"]          # "" when include_error_fields is False (schema 0010 / deferred column)
+    # EXPLICIT re-auth evidence only — status ERROR (an operator/worker marked it so) or a recorded re-auth code.
+    needs_reauth = (raw_status == "ERROR") or (err_code in REAUTH_CODES)
+    if raw_status == "REVOKED":
+        state = CUSTOMER_REVOKED
+    elif needs_reauth:
+        state = CUSTOMER_RECONNECT_REQUIRED
+    elif h["healthy"]:
+        state = CUSTOMER_HEALTHY
+    elif h["last_successful_sync"] is None and not (err_code or h["consecutive_failures"]):
+        # Connected, nothing proven yet, no failure recorded — NOT 'healthy' on zero evidence, but not degraded.
+        state = CUSTOMER_CONNECTED
+    else:
+        # Stale, or failing WITHOUT re-auth evidence: something is wrong but reconnecting Gmail is not the known fix.
+        state = CUSTOMER_DEGRADED
+    return {
+        "mailbox_id": h["mailbox_id"],
+        "provider": h["provider"],
+        "masked_email": h["masked_email"],
+        "state": state,
+        "connection_status": raw_status,
+        "last_successful_sync": h["last_successful_sync"],
+        "reconnect_required": state in (CUSTOMER_RECONNECT_REQUIRED, CUSTOMER_REVOKED),
+        "has_verified_broker_bindings": bool(has_verified_bindings),
     }
 
 
