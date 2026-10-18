@@ -67,6 +67,32 @@ const STR = {
     ja: "Google 接続を開始できませんでした。もう一度お試しください。",
   },
   disconnectFailed: { en: "Could not disconnect. Please try again.", ja: "切断できませんでした。もう一度お試しください。" },
+  // Return-journey banners (after the Google callback redirects back with a non-sensitive ?mailbox_connect marker).
+  returnConnected: {
+    en: "Mailbox connected. Monitoring will begin shortly.",
+    ja: "メールボックスを接続しました。まもなく監視を開始します。",
+  },
+  returnDenied: {
+    en: "You declined the Google permission, so no mailbox was connected.",
+    ja: "Google の許可が拒否されたため、メールボックスは接続されませんでした。",
+  },
+  returnMismatch: {
+    en: "That was a different Google account. Please reconnect with the same account.",
+    ja: "別の Google アカウントでした。同じアカウントで再接続してください。",
+  },
+  returnError: {
+    en: "We couldn’t complete the Google connection. Please try again.",
+    ja: "Google 接続を完了できませんでした。もう一度お試しください。",
+  },
+};
+
+// Map a backend outcome marker to a customer-safe banner message. Anything not listed (every other error code) maps
+// to the generic returnError — a member never sees a raw diagnostic. The marker is ONLY a hint; the mailbox list is
+// driven by the authoritative owner-scoped status API, never by this query parameter.
+const OUTCOME_MSG: Record<string, "returnConnected" | "returnDenied" | "returnMismatch" | "returnError"> = {
+  connected: "returnConnected",
+  consent_denied: "returnDenied",
+  oauth_account_mismatch: "returnMismatch",
 };
 
 const STATE_LABEL: Record<MailboxState, { en: string; ja: string }> = {
@@ -104,6 +130,7 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<string | null>(null);   // ?mailbox_connect marker from the callback return
 
   const load = useCallback(() => {
     apiFetch<StatusResponse>(STATUS, {})
@@ -117,6 +144,25 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Return journey: after the Google callback the backend redirects back here with a NON-sensitive
+  // ?mailbox_connect=<outcome> marker (never a token/code/state). Record it once for a customer-safe banner, then
+  // strip it from the URL so a refresh doesn't repeat it. The AUTHORITATIVE mailbox state still comes from load() —
+  // a forged marker can show a banner but can never fabricate a connected mailbox in the list.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      const oc = params.get("mailbox_connect");
+      if (oc) {
+        setOutcome(oc);
+        try {
+          params.delete("mailbox_connect");
+          const qs = params.toString();
+          window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+        } catch { /* history unavailable (SSR/tests) — harmless */ }
+      }
+    } catch { /* no window.location — harmless */ }
+  }, []);
 
   const startConnect = useCallback(async (op: ConnectOp, mailboxId?: number) => {
     setBusy(true);
@@ -160,6 +206,8 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
 
   const mailboxes = data.mailboxes;
   const hasLive = !!data.connected;   // >=1 CONNECTED mailbox (a revoked-only member is NOT live)
+  const outcomeOk = outcome === "connected";
+  const outcomeMsg = outcome ? STR[OUTCOME_MSG[outcome] ?? "returnError"][L] : null;
 
   return (
     <div style={box} data-testid="connected-email-panel">
@@ -167,6 +215,19 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
         <i className="ti ti-mail" aria-hidden="true" style={{ marginRight: 6 }} />{STR.title[L]}
       </div>
       <div style={{ ...meta, marginBottom: 12 }}>{STR.intro[L]}</div>
+
+      {/* Return-journey banner (customer-safe; a hint only — the list below is the authoritative status). */}
+      {outcomeMsg && (
+        <div data-testid="connected-email-notice"
+          style={{
+            fontSize: "0.8rem", borderRadius: 8, padding: "0.5rem 0.7rem", marginBottom: 12,
+            color: outcomeOk ? "#5ad19a" : "#e8a0a0",
+            background: outcomeOk ? "rgba(90,209,154,0.08)" : "rgba(232,160,160,0.08)",
+            border: `1px solid ${outcomeOk ? "rgba(90,209,154,0.3)" : "rgba(232,160,160,0.3)"}`,
+          }}>
+          {outcomeMsg}
+        </div>
+      )}
 
       {mailboxes.length === 0 ? (
         <div style={{ ...meta, color: "#6c7a90", marginBottom: 12 }} data-testid="connected-email-empty">

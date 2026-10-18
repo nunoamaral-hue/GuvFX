@@ -20,8 +20,20 @@ function statusOf(mailboxes: unknown[]) {
   });
 }
 
-beforeEach(() => { api.apiFetch.mockReset(); });
+beforeEach(() => {
+  api.apiFetch.mockReset();
+  // Clean URL by default so a prior test's ?mailbox_connect marker never leaks into another test.
+  Object.defineProperty(window, "location", {
+    value: { search: "", pathname: "/profile", assign: vi.fn(), href: "" }, writable: true, configurable: true,
+  });
+});
 afterEach(() => { cleanup(); });
+
+function atReturn(search: string) {
+  Object.defineProperty(window, "location", {
+    value: { search, pathname: "/profile", assign: vi.fn(), href: "" }, writable: true, configurable: true,
+  });
+}
 
 describe("ConnectedEmailAccounts", () => {
   it("self-hides on the DARK 404 (renders nothing)", async () => {
@@ -155,5 +167,62 @@ describe("ConnectedEmailAccounts", () => {
     await waitFor(() => expect(assign).toHaveBeenCalled());
     expect(connectCalls[0]).toContain("mailbox_id=22");       // acted on the right row
     expect(connectCalls[0]).not.toContain("mailbox_id=11");
+  });
+
+  // --- return journey from the Google callback (§506: align with the final callback contract) -------------------
+  it("shows a success banner on a successful-consent return and still shows authoritative status", async () => {
+    statusOf([{ mailbox_id: 1, provider: "GMAIL", masked_email: "nr…@gmail.com", state: "HEALTHY",
+      connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+      reconnect_required: false, has_verified_broker_bindings: true }]);
+    atReturn("?mailbox_connect=connected");
+    render(<ConnectedEmailAccounts />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/connected/i);
+    expect(screen.getByTestId("connected-email-state").textContent).toMatch(/monitoring/i);  // status authoritative
+  });
+
+  it("shows a customer-safe denial banner when consent was denied (no mailbox fabricated)", async () => {
+    statusOf([]);
+    atReturn("?mailbox_connect=consent_denied");
+    render(<ConnectedEmailAccounts />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/declined/i);
+    expect(screen.queryAllByTestId("connected-email-row")).toHaveLength(0);   // marker can't fabricate a mailbox
+  });
+
+  it("shows a reconnect-with-same-account banner on an account mismatch", async () => {
+    statusOf([{ mailbox_id: 3, provider: "GMAIL", masked_email: "nr…@gmail.com", state: "RECONNECT_REQUIRED",
+      connection_status: "CONNECTED", last_successful_sync: null,
+      reconnect_required: true, has_verified_broker_bindings: false }]);
+    atReturn("?mailbox_connect=oauth_account_mismatch");
+    render(<ConnectedEmailAccounts />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/same account/i);
+  });
+
+  it("maps an unknown/other error code to a generic customer-safe banner (no raw diagnostic)", async () => {
+    statusOf([]);
+    atReturn("?mailbox_connect=oauth_no_refresh_token");
+    render(<ConnectedEmailAccounts />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/couldn.t complete/i);
+    expect(notice.textContent).not.toMatch(/refresh_token/);   // never leaks the raw code to the member
+  });
+
+  it("localizes the return banner in Japanese", async () => {
+    statusOf([]);
+    atReturn("?mailbox_connect=consent_denied");
+    render(<ConnectedEmailAccounts lang="ja" />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/拒否/);   // 'denied' (ja)
+  });
+
+  it("shows no banner on a normal visit (no return marker)", async () => {
+    statusOf([{ mailbox_id: 1, provider: "GMAIL", masked_email: "nr…@gmail.com", state: "HEALTHY",
+      connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+      reconnect_required: false, has_verified_broker_bindings: false }]);
+    render(<ConnectedEmailAccounts />);
+    await screen.findByTestId("connected-email-panel");
+    expect(screen.queryByTestId("connected-email-notice")).toBeNull();
   });
 });
