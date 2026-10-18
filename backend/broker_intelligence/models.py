@@ -646,3 +646,100 @@ class BrokerProfileAudit(models.Model):
 
     def __str__(self) -> str:
         return f"BrokerProfileAudit({self.broker_profile_id}, {self.action}, {self.created_at:%Y-%m-%d})"
+
+
+# ======================================================================================================
+# Multi-account association (MULTI_ACCOUNT_PUBLIC_METRICS §A/§C) — DARK; additive + non-destructive.
+# The explicit many-to-many between a GuvFX trading account and a broker-registered notification email, so ONE
+# (email, broker) can serve MANY accounts WITHOUT duplicating mailbox credentials. The credential stays on the one
+# ConnectedMailbox; the legacy single-FK bindings on BrokerEmailIdentity are left UNTOUCHED (this table is additive).
+# No writer is wired under this packet; the association is populated by a later governed flow / DARK backfill.
+# ======================================================================================================
+
+class TradingAccountBrokerContact(models.Model):
+    """Associates ONE GuvFX trading account with ONE broker-registered email identity (``BrokerEmailIdentity`` = a
+    ``(email, broker)`` registry row). Many accounts may attach to the SAME identity (``EMAIL 1 -> MANY ACCOUNTS`` /
+    ``BROKER 1 -> MANY ACCOUNTS``), and many bindings may point at one ``ConnectedMailbox`` (``ONE INBOX -> MANY
+    ACCOUNTS/BROKERS``), with the OAuth credential held only once on that mailbox — never duplicated per account.
+
+    Verification is PER BINDING: mailbox control alone is NOT proof that a specific account's withdrawals route here
+    (that requires explicit broker/account identifiers), so a binding stays PENDING/UNRESOLVED until proven VERIFIED;
+    ambiguous attribution is never guessed. A disconnected account/mailbox RETIREs the binding — the row and all
+    withdrawal evidence are retained (history is never destroyed)."""
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Associated; ownership/routing not yet verified"
+        VERIFIED = "VERIFIED", "Ownership + routing verified for THIS account"
+        UNRESOLVED = "UNRESOLVED", "Cannot be attributed to this account from available evidence"
+        RETIRED = "RETIRED", "No longer in use (account/mailbox disconnected)"
+
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE,
+                                        related_name="broker_contacts")
+    # The (email, broker) registry row. PROTECT: an identity that still has account bindings is never deleted.
+    broker_email_identity = models.ForeignKey(BrokerEmailIdentity, on_delete=models.PROTECT,
+                                              related_name="account_contacts")
+    # The inbox that receives this account's broker mail, if known/verified. SET_NULL so revoking/deleting a mailbox
+    # never destroys the binding (it is RETIRED separately). The credential lives on the mailbox, not here.
+    connected_mailbox = models.ForeignKey(ConnectedMailbox, on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name="account_contacts")
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # One binding per (account, email@broker). The SAME identity may still bind to MANY other accounts, and an
+            # account may bind to MANY identities — only the exact (account, identity) pair is unique.
+            models.UniqueConstraint(fields=["trading_account", "broker_email_identity"],
+                                    name="uniq_tabc_account_identity"),
+        ]
+        indexes = [
+            models.Index(fields=["trading_account", "status"]),
+            models.Index(fields=["broker_email_identity"]),
+            models.Index(fields=["connected_mailbox"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"TradingAccountBrokerContact(acct={self.trading_account_id}, idn={self.broker_email_identity_id}, {self.status})"
+
+
+class TradingAccountBrokerContactAudit(models.Model):
+    """Append-only history of binding actions (BIND / VERIFY / RETIRE / REJECT) — who acted, for which claimed
+    account/identity/mailbox, the proofs relied on, the outcome, and the before/after status. Never updated or
+    deleted; the ``contact`` FK is PROTECT so a bound contact carrying history is not destroyed. Holds NO credential
+    and NO raw email body — only ids, statuses, a masked address, and a structured proof summary."""
+
+    class Action(models.TextChoices):
+        BIND = "BIND", "Associated an account with a broker email identity"
+        VERIFY = "VERIFY", "Verified ownership + routing for the account"
+        RETIRE = "RETIRE", "Binding retired (account/mailbox disconnected)"
+        REJECT = "REJECT", "Binding refused (proof failed / ambiguous / cross-user)"
+
+    contact = models.ForeignKey(TradingAccountBrokerContact, on_delete=models.PROTECT, null=True, blank=True,
+                                related_name="audit")
+    action = models.CharField(max_length=16, choices=Action.choices)
+    subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="+")
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.SET_NULL, null=True, blank=True,
+                                        related_name="+")
+    broker_email_identity = models.ForeignKey(BrokerEmailIdentity, on_delete=models.SET_NULL, null=True, blank=True,
+                                              related_name="+")
+    connected_mailbox = models.ForeignKey(ConnectedMailbox, on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name="+")
+    outcome = models.CharField(max_length=24, blank=True, default="")     # OK, or a reason code on reject
+    reason = models.CharField(max_length=255, blank=True, default="")     # human-readable, sanitised
+    status_before = models.CharField(max_length=12, blank=True, default="")
+    status_after = models.CharField(max_length=12, blank=True, default="")
+    proofs = models.JSONField(default=dict)                               # structured proof summary; no secrets/body
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [models.Index(fields=["contact", "id"]), models.Index(fields=["subject_user"])]
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("TradingAccountBrokerContactAudit is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"TradingAccountBrokerContactAudit({self.action}, contact={self.contact_id}, {self.outcome})"
