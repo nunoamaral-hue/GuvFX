@@ -46,8 +46,7 @@ def create_customer_account(request, serializer):
     from django.db import IntegrityError, transaction
     from rest_framework.exceptions import ValidationError
 
-    from billing.entitlements import resolve_entitlements
-    from billing.models import UserSubscriptionState
+    from billing.entitlements import resolve_effective_entitlements
     from trading.models import TradingAccount
     from trading.views import _find_existing_account, _maybe_enqueue_beta_provisioning
     from broker_intelligence.services import ensure_broker_email_alias   # DARK no-op unless the flag is on
@@ -98,12 +97,18 @@ def create_customer_account(request, serializer):
                 # Phase C: config-driven owned-account cap (override-aware, active/tombstone-correct) once
                 # armed. DARK by default — while the flag is OFF the legacy cap below runs UNCHANGED, so
                 # production behaviour is byte-identical until Phase C enforcement is explicitly enabled.
-                from trading.account_entitlement import check_can_add_account, enforcement_enabled
+                from trading.account_entitlement import (check_can_add_account, enforcement_enabled,
+                                                          owned_account_ceiling)
                 if enforcement_enabled(user):
                     check_can_add_account(user)
                 else:
-                    ent = resolve_entitlements(UserSubscriptionState.objects.filter(user=user).first())
-                    limit = min(10, ent.max_trading_accounts)
+                    # Honour per-user EntitlementOverrides on the legacy path too (resolve_EFFECTIVE), so a
+                    # max_trading_accounts override of 20 reaches 20 without the concurrent-accounts-enforcement
+                    # grant. For a user with NO override this is byte-identical to the plan-only resolution, so no
+                    # unrelated customer changes. Then clamp to the configurable product ceiling (default 20) instead
+                    # of a hard-coded 10 (every plan caps at 10, so users at/below the ceiling are unaffected).
+                    ent = resolve_effective_entitlements(user)
+                    limit = min(owned_account_ceiling(), ent.max_trading_accounts)
                     # Count only LIVE (non-tombstoned) accounts so a removed/decommissioned account
                     # (disconnected_at set) releases its owned slot immediately — matching the tombstone-aware
                     # armed path (owned_account_count) and the active counts. Without this filter a removed
