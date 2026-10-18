@@ -21,7 +21,8 @@ export type WithdrawalMetrics = {
   completed_amount_by_currency: Record<string, string>;   // decimal strings, per currency (never mixed)
   completed_amount_known_count: number;
   processing_duration: WithdrawalDuration | null;          // null => "N/A" (never fabricated 0)
-  genuine_count?: number;             // REAL-provenance withdrawals (synthetic fixtures excluded)
+  genuine_count?: number;             // REAL-provenance withdrawals counted (== total; synthetic/sanitised excluded)
+  excluded_non_genuine_count?: number; // synthetic/sanitised records set aside (in NO statistic) — transparency only
   sample_caveat?: boolean;            // true => a headline aggregate rests on a single sample (not representative)
 };
 

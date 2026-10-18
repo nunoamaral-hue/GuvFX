@@ -50,11 +50,15 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None) -> dict:
     failure), amount+currency AS OBSERVED (never summed, never fabricated), the processing ``duration_seconds``
     (None when both anchors are not present) and whether the broker reference id resolved the correlation."""
     ids = [getattr(a, "id", a) for a in accounts]
-    base = (Withdrawal.objects.filter(trading_account_id__in=ids)
+    # GENUINE-ONLY member view (§507): a member's history shows ONLY real broker observations (provenance REAL).
+    # Synthetic/sanitised fixture or test records are NEVER surfaced to a member — they could neither be mistaken for
+    # a real withdrawal nor appear in the broker/account selectors. (In production the member surface carries only
+    # REAL rows anyway; this is a defence-in-depth guarantee at the projection boundary.)
+    base = (Withdrawal.objects.filter(trading_account_id__in=ids, provenance=Provenance.REAL)
             .select_related("trading_account").order_by("-requested_at", "-id"))
 
-    # Selector lists from the member's FULL withdrawal set — NEVER narrowed by the active filters — so the broker/
-    # account dropdowns stay complete and stable while filtering.
+    # Selector lists from the member's FULL (genuine) withdrawal set — NEVER narrowed by the active filters — so the
+    # broker/account dropdowns stay complete and stable while filtering.
     brokers, accts = set(), {}
     for w in base:
         acct = w.trading_account
@@ -93,9 +97,17 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None) -> dict:
 
 
 def withdrawal_metrics(accounts) -> dict:
-    """Withdrawal statistics for ``accounts`` (an iterable of TradingAccount or ids). Read-only; never fabricates."""
+    """Withdrawal statistics for ``accounts`` (an iterable of TradingAccount or ids). Read-only; never fabricates.
+
+    GENUINE-ONLY (§507): EVERY member-facing figure — total, counts, per-currency amounts, processing duration — is
+    computed over REAL broker observations ONLY. Synthetic/sanitised fixture or test records are EXCLUDED so they can
+    neither inflate a total/amount/duration nor make a statistic misleading. They are never silently swallowed: the
+    number excluded is reported as ``excluded_non_genuine_count`` (for operator transparency), but they contribute to
+    NO statistic."""
     ids = [getattr(a, "id", a) for a in accounts]
-    rows = list(Withdrawal.objects.filter(trading_account_id__in=ids))
+    all_rows = list(Withdrawal.objects.filter(trading_account_id__in=ids))
+    rows = [w for w in all_rows if w.provenance == Provenance.REAL]   # genuine broker observations only
+    excluded_non_genuine = len(all_rows) - len(rows)
 
     by_status = dict(Counter(w.status for w in rows))
     pending = [w for w in rows if w.status in _PENDING]
@@ -125,14 +137,13 @@ def withdrawal_metrics(accounts) -> dict:
             "max_seconds": max(durs),
         }
 
-    # GENUINE sample size (§10): how many of these withdrawals are REAL broker observations (provenance REAL) versus
-    # synthetic/sanitised fixtures. The member UI uses this to frame the figures honestly — and `sample_caveat` warns
-    # when a headline aggregate (the typical-processing-time) rests on a SINGLE completed sample, so one observation is
-    # never presented as statistically representative. Never fabricates: with no genuine data both are 0 / False.
-    genuine_count = sum(1 for w in rows if w.provenance == Provenance.REAL)
-
+    # Every figure above is already GENUINE-only (``rows`` is REAL-provenance), so ``genuine_count`` equals ``total``;
+    # it is kept as an explicit field the member UI frames the statistics with, and ``sample_caveat`` warns when a
+    # headline aggregate (the typical-processing-time) rests on a SINGLE completed sample so one observation is never
+    # presented as representative. ``excluded_non_genuine_count`` records how many non-genuine (synthetic/sanitised)
+    # records were set aside — never silently dropped, but contributing to NO statistic.
     return {
-        "total": len(rows),
+        "total": len(rows),                       # genuine withdrawals only
         "by_status": by_status,
         "pending_count": len(pending),            # in flight (requested/processing/pending) — NOT failed
         "completed_count": len(completed),
@@ -141,6 +152,7 @@ def withdrawal_metrics(accounts) -> dict:
         "completed_amount_by_currency": {k: str(v) for k, v in sorted(amt.items())},
         "completed_amount_known_count": completed_amount_known,
         "processing_duration": duration,          # None when no completed-with-both-anchors (never fabricated)
-        "genuine_count": genuine_count,           # REAL-provenance withdrawals (synthetic fixtures excluded)
+        "genuine_count": len(rows),               # REAL-provenance withdrawals (== total; synthetic excluded)
+        "excluded_non_genuine_count": excluded_non_genuine,   # synthetic/sanitised set aside; in NO statistic
         "sample_caveat": bool(duration) and duration["count"] <= 1,   # a stat resting on a single sample
     }

@@ -38,7 +38,9 @@ def _acct(user=None, **kw):
 
 
 def _wd(account, status, *, amount="100.00", currency="USD", requested_at=None, completed_at=None, ref="",
-        provenance=Provenance.SYNTHETIC):
+        provenance=Provenance.REAL):
+    # Default REAL: the member-facing metrics are GENUINE-only (§507), so the projection tests exercise genuine
+    # records; synthetic/sanitised exclusion is asserted explicitly where it matters.
     return Withdrawal.objects.create(
         trading_account=account, broker_reference_id=ref,
         amount=(Decimal(amount) if amount is not None else None), currency=currency,
@@ -99,18 +101,26 @@ class WithdrawalMetricsProjection(TestCase):
         self.assertEqual(m["pending_count"], 0)
         self.assertIsNone(m["processing_duration"])
         self.assertEqual(m["genuine_count"], 0)       # §10: no genuine samples, never fabricated
+        self.assertEqual(m["excluded_non_genuine_count"], 0)
         self.assertFalse(m["sample_caveat"])
 
-    def test_genuine_count_counts_real_provenance_only(self):
-        # §10: genuine_count counts REAL broker observations only — synthetic fixtures never inflate it.
+    def test_synthetic_and_sanitised_excluded_from_all_statistics(self):
+        # §507: synthetic AND sanitised records can NEVER inflate or mislead a member-facing statistic. They are set
+        # aside (counted in excluded_non_genuine_count) and contribute to NO total/count/amount/duration.
         a = _acct()
         t0 = timezone.now() - timedelta(seconds=1800)
-        _wd(a, Withdrawal.Status.COMPLETED, ref="g1", requested_at=t0, completed_at=timezone.now(),
+        _wd(a, Withdrawal.Status.COMPLETED, amount="200.00", ref="g1", requested_at=t0, completed_at=timezone.now(),
             provenance=Provenance.REAL)
-        _wd(a, Withdrawal.Status.COMPLETED, ref="s1", requested_at=t0, completed_at=timezone.now())  # synthetic
+        _wd(a, Withdrawal.Status.COMPLETED, amount="999.00", ref="s1", requested_at=t0, completed_at=timezone.now(),
+            provenance=Provenance.SYNTHETIC)
+        _wd(a, Withdrawal.Status.COMPLETED, amount="888.00", ref="x1", requested_at=t0, completed_at=timezone.now(),
+            provenance=Provenance.SANITISED)
         m = withdrawal_metrics([a])
+        self.assertEqual(m["total"], 1)                                        # only the genuine one
         self.assertEqual(m["genuine_count"], 1)
-        self.assertFalse(m["sample_caveat"])          # two completed-with-anchors -> not a single sample
+        self.assertEqual(m["completed_count"], 1)                              # synthetic/sanitised NOT counted
+        self.assertEqual(m["excluded_non_genuine_count"], 2)                   # but accounted for, not silently gone
+        self.assertEqual(m["completed_amount_by_currency"], {"USD": "200.00"})  # 999/888 never summed in
 
     def test_single_sample_caveat_true_on_one_completed_with_anchors(self):
         # §10: a typical-processing-time resting on ONE completed sample is flagged (not representative).

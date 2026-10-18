@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from broker_intelligence.metrics import withdrawal_history
-from broker_intelligence.models import Withdrawal
+from broker_intelligence.models import Provenance, Withdrawal
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -35,14 +35,16 @@ def _acct(user, broker="TradersWay", number=None):
 
 
 def _wd(acct, *, status=Withdrawal.Status.COMPLETED, amount="100.00", currency="USD",
-        requested=True, completed=True, ref="", method=""):
+        requested=True, completed=True, ref="", method="", provenance=Provenance.REAL):
+    # Default REAL: the member-facing history is GENUINE-only (§507); synthetic/sanitised exclusion is asserted
+    # explicitly below.
     now = timezone.now()
     return Withdrawal.objects.create(
         trading_account=acct, status=status,
         amount=Decimal(amount) if amount is not None else None, currency=currency,
         requested_at=now - timedelta(hours=2) if requested else None,
         completed_at=now if completed else None,
-        broker_reference_id=ref, correlation_method=method)
+        broker_reference_id=ref, correlation_method=method, provenance=provenance)
 
 
 class WithdrawalHistoryProjectionTests(TestCase):
@@ -74,6 +76,20 @@ class WithdrawalHistoryProjectionTests(TestCase):
         out = withdrawal_history(TradingAccount.objects.filter(user=u))
         self.assertEqual(out["withdrawals"][0]["account_masked"], "••••0123")
         self.assertNotIn("51760123", str(out))                      # full number never leaks
+
+    def test_synthetic_and_sanitised_rows_excluded_from_member_history(self):
+        # §507: a member's history shows ONLY genuine (REAL) withdrawals; synthetic/sanitised test records never
+        # appear (and never reach the broker/account selector lists).
+        u = _user()
+        a = _acct(u, "TradersWay")
+        _wd(a, amount="200.00", ref="genuine")
+        _wd(a, amount="999.00", ref="synthetic", provenance=Provenance.SYNTHETIC)
+        _wd(a, amount="888.00", ref="sanitised", provenance=Provenance.SANITISED)
+        out = withdrawal_history(TradingAccount.objects.filter(user=u))
+        self.assertEqual(len(out["withdrawals"]), 1)                 # only the genuine row
+        self.assertEqual(out["withdrawals"][0]["broker_reference_id"], "genuine")
+        self.assertNotIn("999.00", str(out))
+        self.assertNotIn("888.00", str(out))
 
     def test_broker_and_account_filters(self):
         u = _user()
