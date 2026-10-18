@@ -23,11 +23,14 @@ import logging
 from typing import Optional
 
 from django.db import IntegrityError, transaction
+from django.db.models import F
+from django.utils import timezone
 
 from .broker_senders import is_allowlisted_broker_sender
 from .evidence import EvidenceStore
+from .flags import broker_cross_inbox_dedup_enabled
 from .mail_source import MailMessage
-from .models import BrokerEvent, Provenance
+from .models import BrokerEvent, BrokerMessageObservation, Provenance
 from .parsers import select_parser
 from .resolver import resolve_account, resolve_owner_identity, resolve_transaction_account
 
@@ -35,14 +38,20 @@ logger = logging.getLogger("guvfx.broker_intelligence.ingestion")
 
 
 def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = None,
-                   provenance: str = Provenance.SYNTHETIC, owner_user=None) -> Optional[BrokerEvent]:
+                   provenance: str = Provenance.SYNTHETIC, owner_user=None,
+                   connected_mailbox=None) -> Optional[BrokerEvent]:
     """Ingest ONE message. Returns the created (or pre-existing, on re-ingest) BrokerEvent, or None when the message
     is unparseable (evidence is still stored). Idempotent by evidence content-hash.
 
     ``owner_user`` (SECURITY — cross-user attribution firewall): when a message comes from a known mailbox, pass that
     mailbox's owner so recipient-header resolution is scoped to that member. The live mail worker MUST pass it (a
     mailbox always has an owner) — attacker-controllable To/Delivered-To/X-Original-To headers then cannot attribute
-    a message to a different member's account. Default None keeps the global lookup for non-mailbox/legacy callers."""
+    a message to a different member's account. Default None keeps the global lookup for non-mailbox/legacy callers.
+
+    ``connected_mailbox`` + cross-inbox de-dup (§D): when ``broker_cross_inbox_dedup_enabled()`` is ON, the same
+    logical broker email (same RFC822 Message-ID) observed through TWO connected inboxes is recognised as ONE logical
+    observation and does NOT create a second event. While OFF this is byte-identical to today and the
+    ``BrokerMessageObservation`` table is never touched (unmigrated-safe)."""
     store = store or EvidenceStore()
 
     # R1 RETENTION GATE (privacy — before ANY storage): for REAL mail (the live worker path over a member's PERSONAL
@@ -75,6 +84,27 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
         logger.info("broker_intelligence ingest: unauthenticated broker sender (evidence %s retained, no event)",
                     blob.sha256[:12])
         return None
+
+    # 3b) CROSS-INBOX DE-DUP (§D, DARK): only AUTHENTICATED broker observations reach here, so a BrokerMessageObservation
+    #     is only ever created for genuine broker mail (a forged copy is dropped above and can never pre-empt/suppress a
+    #     genuine one). The RFC822 Message-ID is stable across inboxes, so the SAME logical email arriving via a second
+    #     connected inbox (a DIFFERENT raw blob, hence a different sha256 that content-hashing can't collapse) is
+    #     recognised here and suppressed — never a second event/withdrawal. The (owner, message_id) UNIQUE arbitrates
+    #     even a concurrent two-inbox race: the loser gets created=False and returns the winner's event (no 2nd event;
+    #     BrokerEvent is append-only so we must decide BEFORE creating, never delete after). OFF ⇒ this block is skipped
+    #     entirely and the table is never touched (unmigrated-safe).
+    dedup_obs = None
+    mid = (getattr(message, "rfc822_message_id", "") or "").strip() if broker_cross_inbox_dedup_enabled() else ""
+    if mid:
+        dedup_obs, _created = BrokerMessageObservation.objects.get_or_create(
+            owner=resolved_owner, rfc822_message_id=mid,
+            defaults={"connected_mailbox": connected_mailbox, "evidence": blob})
+        if not _created:
+            BrokerMessageObservation.objects.filter(pk=dedup_obs.pk).update(
+                duplicate_count=F("duplicate_count") + 1, updated_at=timezone.now())
+            logger.info("broker_intelligence ingest: cross-inbox duplicate suppressed (message-id seen before)")
+            return dedup_obs.event   # the first observation's event (or None if it produced none); NEVER a 2nd event
+        # else: `dedup_obs` is the first-observation row we just created; its event is linked after creation below.
 
     # 4) deterministic parser selection; no match -> unparseable -> retain evidence, emit NO event
     parser = select_parser(subject=message.subject, body=message.body, from_address=message.from_address)
@@ -112,7 +142,9 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
     # is isolated from any enclosing worker transaction and recovered idempotently (one blob -> one event).
     try:
         with transaction.atomic():
-            return BrokerEvent.objects.create(
+            # NOTE: the BrokerEvent.create kwargs are UNCHANGED (no new column) — the cross-inbox dedup metadata lives
+            # in the separate BrokerMessageObservation table, so this write is byte-identical and unmigrated-safe.
+            event = BrokerEvent.objects.create(
                 alias=alias, trading_account=trading_account, owner=resolved_owner, broker=parsed.broker,
                 source=BrokerEvent._meta.get_field("source").default, event_type=parsed.event_type,
                 transaction_category=parsed.transaction_category,
@@ -130,3 +162,8 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
         if dup is not None:
             return dup
         raise
+    # Link the first observation's row to the event it produced (§D). Only set when dedup is ON and this call owns the
+    # first observation for this (owner, message_id); a duplicate copy already returned above without creating an event.
+    if dedup_obs is not None:
+        BrokerMessageObservation.objects.filter(pk=dedup_obs.pk).update(event=event)
+    return event

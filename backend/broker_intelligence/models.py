@@ -743,3 +743,47 @@ class TradingAccountBrokerContactAudit(models.Model):
 
     def __str__(self) -> str:
         return f"TradingAccountBrokerContactAudit({self.action}, contact={self.contact_id}, {self.outcome})"
+
+
+class BrokerMessageObservation(models.Model):
+    """DARK cross-inbox de-duplication (MULTI_ACCOUNT_PUBLIC_METRICS §D).
+
+    The same logical broker email delivered to TWO connected inboxes carries different per-inbox headers (Received /
+    Delivered-To / ARC / X-GM-MSGID), so its raw bytes — and therefore its content-addressed ``EvidenceBlob.sha256``
+    — DIFFER; content hashing alone cannot collapse the two copies, so each would produce its own ``BrokerEvent`` and
+    double-count the withdrawal. The RFC822 ``Message-ID`` header is the ONE identifier that is STABLE across inboxes
+    for the same logical message. This table records, per owner, that a given Message-ID was observed — with a
+    ``UNIQUE(owner, rfc822_message_id)`` so the second inbox's copy is recognised as the SAME logical observation and
+    does NOT create a second event.
+
+    SEPARATE from ``BrokerEvent`` on purpose: existing ``BrokerEvent`` writes stay byte-identical, so an unmigrated
+    production DB (migration 0013 unapplied) is unaffected while the feature is OFF — this table is only ever
+    read/written when ``broker_cross_inbox_dedup_enabled()``. Records NO credential and NO email body; the raw copies
+    remain in the immutable evidence store, and each per-inbox copy's evidence is retained (never destroyed)."""
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="broker_message_observations")
+    rfc822_message_id = models.CharField(max_length=255, db_index=True)   # stable across inboxes for one logical email
+    # The inbox this particular copy arrived through, and the event/evidence the FIRST observation produced.
+    connected_mailbox = models.ForeignKey(ConnectedMailbox, on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name="message_observations")
+    event = models.ForeignKey(BrokerEvent, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="message_observations")
+    evidence = models.ForeignKey(EvidenceBlob, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name="message_observations")
+    duplicate_count = models.PositiveIntegerField(default=0)   # how many ADDITIONAL inbox copies were suppressed
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # One logical observation per (owner, Message-ID). A blank Message-ID is NOT uniqueness-bearing (some
+            # brokers/emails omit it) — those fall back to the existing content-hash + reference-id behaviour.
+            models.UniqueConstraint(fields=["owner", "rfc822_message_id"],
+                                    condition=models.Q(rfc822_message_id__gt=""),
+                                    name="uniq_bmo_owner_messageid"),
+        ]
+        indexes = [models.Index(fields=["rfc822_message_id"]), models.Index(fields=["owner", "rfc822_message_id"])]
+
+    def __str__(self) -> str:
+        return f"BrokerMessageObservation(owner={self.owner_id}, mid={self.rfc822_message_id[:24]}…, dups={self.duplicate_count})"

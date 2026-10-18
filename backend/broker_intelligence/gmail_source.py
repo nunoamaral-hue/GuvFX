@@ -109,8 +109,14 @@ def parse_rfc822(raw_bytes: bytes) -> dict:
         received_at = datetime.datetime.now(datetime.timezone.utc)
     if received_at.tzinfo is None:
         received_at = received_at.replace(tzinfo=datetime.timezone.utc)
+    # RFC822 Message-ID — stable across inboxes for the same logical email (cross-inbox dedup key, §D). Normalise to
+    # the bare addr-spec inside the angle brackets so trivial header reformatting across inboxes does not defeat it.
+    message_id = _hdr("Message-ID").strip()
+    if message_id.startswith("<") and message_id.endswith(">"):
+        message_id = message_id[1:-1].strip()
     return {"to_addresses": to_addresses, "from_address": from_address, "subject": subject,
-            "body": body, "received_at": received_at, "auth_verdict": _auth_verdict(msg)}
+            "body": body, "received_at": received_at, "auth_verdict": _auth_verdict(msg),
+            "rfc822_message_id": message_id}
 
 
 def _trusted_authserv_ids() -> "frozenset":
@@ -276,6 +282,7 @@ class GmailMailSource(MailSource):
                 body=m.get("body", "") or "",
                 received_at=m["received_at"],
                 provider_message_id=str(m.get("provider_message_id", "") or ""),
+                rfc822_message_id=str(m.get("rfc822_message_id", "") or ""),
                 auth_verdict=m.get("auth_verdict"),
             )
 
