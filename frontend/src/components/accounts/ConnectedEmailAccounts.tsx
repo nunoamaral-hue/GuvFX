@@ -30,6 +30,10 @@ type Mailbox = {
 
 type StatusResponse = { connected: boolean; mailboxes: Mailbox[] };
 
+// Explicit connect operations — MUST match the backend contract (views.py). A reconnect ALWAYS names the mailbox so
+// the backend binds its canonical identity and can never retarget another account; a first connect names no target.
+type ConnectOp = "CONNECT_FIRST_MAILBOX" | "RECONNECT_EXISTING_MAILBOX";
+
 const STATUS = "/api/broker-intelligence/mailboxes/status/";
 const CONNECT = "/api/broker-intelligence/mailboxes/connect/";
 const REVOKE = (id: number) => `/api/broker-intelligence/mailboxes/${id}/revoke/`;
@@ -51,8 +55,8 @@ const STR = {
   confirm: { en: "Confirm disconnect", ja: "切断を確認" },
   cancel: { en: "Cancel", ja: "キャンセル" },
   disconnectWarn: {
-    en: "Disconnecting stops future broker-notification capture. Your existing withdrawal history is kept.",
-    ja: "切断すると今後の通知取得が停止します。これまでの出金履歴は保持されます。",
+    en: "Disconnecting stops future monitoring — GuvFX will no longer read this mailbox. Your existing withdrawal history is kept.",
+    ja: "切断すると今後の監視が停止し、GuvFX はこのメールボックスを今後読み取りません。これまでの出金履歴は保持されます。",
   },
   working: { en: "Working…", ja: "処理中…" },
   lastSync: { en: "Last sync", ja: "最終同期" },
@@ -114,14 +118,18 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
     load();
   }, [load]);
 
-  const onConnect = useCallback(async () => {
+  const startConnect = useCallback(async (op: ConnectOp, mailboxId?: number) => {
     setBusy(true);
     setError(null);
     try {
-      // The backend returns a signed Google consent URL (for a reconnect it binds this member's existing mailbox as
-      // the expected account). We never see or handle the authorization code — Google redirects to the backend
-      // callback, and we re-read the authoritative status on return.
-      const r = await apiFetch<{ authorization_url?: string }>(CONNECT, {});
+      // The backend returns a signed Google consent URL. For a RECONNECT we pass the explicit op + the selected
+      // mailbox id, so the backend binds THAT mailbox's canonical identity as the expected account (it can never
+      // retarget another). journey=web asks the backend to redirect the browser back to the fixed Profile page on
+      // return. We never see or handle the authorization code/token — Google redirects to the backend callback, and
+      // this panel re-reads the AUTHORITATIVE status on return (never inferring success from a URL).
+      const qs = new URLSearchParams({ journey: "web", op });
+      if (mailboxId != null) qs.set("mailbox_id", String(mailboxId));
+      const r = await apiFetch<{ authorization_url?: string }>(`${CONNECT}?${qs.toString()}`, {});
       if (r?.authorization_url) {
         window.location.assign(r.authorization_url);
       } else {
@@ -151,6 +159,7 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
   if (hidden || !data) return null;   // DARK / unavailable / not loaded -> render nothing
 
   const mailboxes = data.mailboxes;
+  const hasLive = !!data.connected;   // >=1 CONNECTED mailbox (a revoked-only member is NOT live)
 
   return (
     <div style={box} data-testid="connected-email-panel">
@@ -181,21 +190,31 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
                 )}
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button style={btn} disabled={busy} data-testid="reconnect-btn" onClick={onConnect}>
+                {/* Reconnect ALWAYS targets THIS mailbox (op + id) — never a generic connect. Prominent when the
+                    mailbox actually needs re-authorization, secondary otherwise, so it is clearly distinct from the
+                    first-time "Connect Gmail" action. */}
+                <button
+                  style={m.state === "RECONNECT_REQUIRED" || m.state === "REVOKED" ? primaryBtn : btn}
+                  disabled={busy} data-testid="reconnect-btn"
+                  onClick={() => startConnect("RECONNECT_EXISTING_MAILBOX", m.mailbox_id)}>
                   {STR.reconnect[L]}
                 </button>
-                {confirmId === m.mailbox_id ? (
-                  <>
-                    <button style={{ ...btn, color: "#e8a0a0", border: "1px solid rgba(232,160,160,0.3)" }}
-                      disabled={busy} data-testid="disconnect-confirm-btn" onClick={() => onDisconnect(m.mailbox_id)}>
-                      {busy ? STR.working[L] : STR.confirm[L]}
-                    </button>
-                    <button style={btn} disabled={busy} data-testid="disconnect-cancel-btn"
-                      onClick={() => setConfirmId(null)}>{STR.cancel[L]}</button>
-                  </>
-                ) : (
-                  <button style={btn} disabled={busy} data-testid="disconnect-btn"
-                    onClick={() => { setConfirmId(m.mailbox_id); setError(null); }}>{STR.disconnect[L]}</button>
+                {/* Disconnect is only offered for a LIVE mailbox — never an inapplicable "disconnect" on one that is
+                    already revoked/disconnected. */}
+                {m.state !== "REVOKED" && m.connection_status !== "REVOKED" && (
+                  confirmId === m.mailbox_id ? (
+                    <>
+                      <button style={{ ...btn, color: "#e8a0a0", border: "1px solid rgba(232,160,160,0.3)" }}
+                        disabled={busy} data-testid="disconnect-confirm-btn" onClick={() => onDisconnect(m.mailbox_id)}>
+                        {busy ? STR.working[L] : STR.confirm[L]}
+                      </button>
+                      <button style={btn} disabled={busy} data-testid="disconnect-cancel-btn"
+                        onClick={() => setConfirmId(null)}>{STR.cancel[L]}</button>
+                    </>
+                  ) : (
+                    <button style={btn} disabled={busy} data-testid="disconnect-btn"
+                      onClick={() => { setConfirmId(m.mailbox_id); setError(null); }}>{STR.disconnect[L]}</button>
+                  )
                 )}
               </div>
               {confirmId === m.mailbox_id && (
@@ -206,8 +225,11 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
         </ul>
       )}
 
-      {mailboxes.length === 0 && (
-        <button style={primaryBtn} disabled={busy} data-testid="connect-btn" onClick={onConnect}>
+      {/* First-time connect — offered whenever NO mailbox is live (empty, or every mailbox is revoked). Visibly a
+          DIFFERENT action from a per-row reconnect. */}
+      {!hasLive && (
+        <button style={primaryBtn} disabled={busy} data-testid="connect-btn"
+          onClick={() => startConnect("CONNECT_FIRST_MAILBOX")}>
           {busy ? STR.working[L] : STR.connect[L]}
         </button>
       )}
