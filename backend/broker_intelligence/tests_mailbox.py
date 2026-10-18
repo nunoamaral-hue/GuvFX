@@ -427,6 +427,45 @@ class MailboxConnectApi(TestCase):
         finally:
             O.exchange_code, S.fetch_profile = orig
 
+    def test_reconnect_revoked_while_another_mailbox_is_live_refused(self):
+        """Adversarial (§505.3): revoke A, connect B, then reconnect A must NOT reactivate A into a SECOND live
+        mailbox. The single-mailbox guard runs on reconnect too (callback mutation point). Exactly one CONNECTED
+        mailbox survives, and A stays REVOKED."""
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        from broker_intelligence.resolver import canonical_address
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            aid, _oref = self._first_connect(O, S, email="owner@gmail.com")        # A connected
+            a = ConnectedMailbox.objects.get(pk=aid)
+            a.status = ConnectedMailbox.Status.REVOKED
+            a.credential_ref = ""
+            a.save(update_fields=["status", "credential_ref"])                      # A revoked
+            # B connected (allowed — no live mailbox while A is revoked)
+            O.exchange_code = lambda **k: {"access_token": "ATB", "refresh_token": "RTB", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "second@gmail.com", "historyId": "200"}
+            stb = signing.dumps({"uid": self.u.id, "n": "b", "op": "CONNECT_FIRST_MAILBOX"}, salt=_STATE_SALT)
+            self.assertEqual(
+                self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=CB&state={stb}").status_code, 200)
+            # reconnect A (its revoked mailbox) while B is live -> MUST be refused (would be a 2nd live mailbox)
+            O.exchange_code = lambda **k: {"access_token": "ATA2", "refresh_token": "RTA2", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "owner@gmail.com", "historyId": "300"}
+            sta = signing.dumps({"uid": self.u.id, "n": "a2", "op": "RECONNECT_EXISTING_MAILBOX",
+                                 "mailbox_pk": aid, "expect": canonical_address("owner@gmail.com")}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=CA2&state={sta}")
+            self.assertEqual(r.status_code, 409, r.content)
+            self.assertEqual(r.json()["error"], "single_mailbox_only")
+            self.assertEqual(ConnectedMailbox.objects.filter(
+                user=self.u, status=ConnectedMailbox.Status.CONNECTED).count(), 1)       # only B
+            self.assertEqual(ConnectedMailbox.objects.get(pk=aid).status,
+                             ConnectedMailbox.Status.REVOKED)                             # A NOT reactivated
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
     def test_callback_rejects_foreign_or_bad_state(self):
         from django.core import signing
         from broker_intelligence.views import _STATE_SALT
@@ -661,8 +700,17 @@ class MailboxConnectOps(TestCase):
     def test_reconnect_revoked_mailbox_allowed(self):
         mb = self._mb(status=ConnectedMailbox.Status.REVOKED, credential_ref="")
         r = self.c.get(f"/api/broker-intelligence/mailboxes/connect/?mailbox_id={mb.id}")
-        self.assertEqual(r.status_code, 200, r.content)   # a revoked mailbox may be reconnected by id
+        self.assertEqual(r.status_code, 200, r.content)   # a revoked mailbox may be reconnected by id (none live)
         self.assertEqual(self._state_of(r)["op"], "RECONNECT_EXISTING_MAILBOX")
+
+    def test_reconnect_refused_at_authorization_when_a_different_mailbox_is_live(self):
+        # §505.3 at authorization: revoke A, B live -> a reconnect of A is refused BEFORE any Google round-trip,
+        # because reactivating A would leave two live mailboxes.
+        a = self._mb(pmid="a@gmail.com", status=ConnectedMailbox.Status.REVOKED, credential_ref="")
+        self._mb(pmid="b@gmail.com")   # B CONNECTED (live)
+        r = self.c.get(f"/api/broker-intelligence/mailboxes/connect/?mailbox_id={a.id}")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "single_mailbox_only")
 
     def test_first_connect_refused_when_live_mailbox_exists(self):
         self._mb()

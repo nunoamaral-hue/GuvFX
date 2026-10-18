@@ -263,10 +263,18 @@ class MailboxConnectView(APIView):
         else:
             op = _OP_CONNECT_FIRST
 
-        # --- V1 single-mailbox enforcement: a first/add connect cannot create a SECOND live mailbox ---
+        # --- V1 single-mailbox enforcement at AUTHORIZATION (mirrors the callback mutation guard) ---
+        # A first/add connect cannot create a SECOND live mailbox...
         if op in (_OP_CONNECT_FIRST, _OP_ADD_NEW) and live:
             return Response({"ok": False, "error": "single_mailbox_only",
                              "message": "A mailbox is already connected. Disconnect it before connecting another."},
+                            status=status.HTTP_409_CONFLICT)
+        # ...and a RECONNECT of a (possibly revoked) mailbox cannot either: if a DIFFERENT live mailbox already exists,
+        # reactivating this target would leave two live mailboxes. Only the member's CURRENT live mailbox (or their
+        # sole mailbox) may be reconnected. (Revoke-A, connect-B, reconnect-A is refused here and at the callback.)
+        if op == _OP_RECONNECT_EXISTING and target is not None and any(m.id != target.id for m in live):
+            return Response({"ok": False, "error": "single_mailbox_only",
+                             "message": "A different mailbox is already connected. Disconnect it first."},
                             status=status.HTTP_409_CONFLICT)
 
         state_payload = {"uid": request.user.id, "n": secrets.token_urlsafe(8), "op": op}
@@ -398,15 +406,16 @@ class MailboxCallbackView(APIView):
             return _callback_result(rt, ok=False, code="oauth_scope_insufficient",
                                     http_status=status.HTTP_400_BAD_REQUEST,
                                     json_body={"ok": False, "error": "oauth_scope_insufficient"})
-        # V1 SINGLE-MAILBOX enforcement at the MUTATION point (§6, defence-in-depth beyond the connect view): a flow
-        # that is NOT a targeted reconnect must never create a SECOND live mailbox for this member — e.g. a replayed
-        # first-connect state that returns a DIFFERENT Google account. A reconnect (explicit op, or a bound `expect`)
-        # updating the member's SAME mailbox is unaffected (the existing row shares this mailbox_id and is excluded).
-        is_reconnect = (op == _OP_RECONNECT_EXISTING) or bool(expected_identity)
-        if not is_reconnect and (ConnectedMailbox.objects
-                                 .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
-                                 .exclude(status=ConnectedMailbox.Status.REVOKED)
-                                 .exclude(provider_mailbox_id=mailbox_id).exists()):
+        # V1 SINGLE-MAILBOX enforcement at the MUTATION point (§6), applied UNCONDITIONALLY — including on a reconnect.
+        # The write about to happen sets THIS mailbox_id to CONNECTED; if the member already has ANY OTHER live
+        # (non-revoked) mailbox, that write would leave two live mailboxes. The `.exclude(provider_mailbox_id=...)`
+        # clause means a legitimate IN-PLACE reconnect of the member's own mailbox (same id) is never blocked — only a
+        # write that would create a SECOND live mailbox is. This closes the revoke-A / connect-B / reconnect-A hole:
+        # reconnecting a revoked mailbox while a different one is live is refused here as well as at authorization.
+        if (ConnectedMailbox.objects
+                .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
+                .exclude(status=ConnectedMailbox.Status.REVOKED)
+                .exclude(provider_mailbox_id=mailbox_id).exists()):
             return _callback_result(rt, ok=False, code="single_mailbox_only",
                                     http_status=status.HTTP_409_CONFLICT,
                                     json_body={"ok": False, "error": "single_mailbox_only"})
