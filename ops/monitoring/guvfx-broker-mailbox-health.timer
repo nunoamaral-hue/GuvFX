@@ -1,0 +1,17 @@
+# GuvFX broker mailbox health alert timer -- DARK TEMPLATE, NOT INSTALLED.
+# Pairs with guvfx-broker-mailbox-health.service. Runs the health check every 5 minutes (matching the ingestion
+# cadence), so a stalled/degraded mailbox is detected within one or two passes. Enable ONLY when armed by the
+# Programme Director (see docs/WITHDRAWAL_V1_OPERATIONAL_READINESS_ACTIVATION.md). Do NOT `systemctl enable` this in
+# any environment under the current packet.
+
+[Unit]
+Description=Run the GuvFX broker mailbox health check every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
