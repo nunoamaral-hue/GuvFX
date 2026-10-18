@@ -1,0 +1,31 @@
+# GuvFX broker mailbox health alert -- DARK TEMPLATE, NOT INSTALLED.
+#
+# This unit is a repository artifact prepared for the operational-readiness ACTIVATION of mailbox alerting. It is NOT
+# deployed by this packet and must NOT be enabled until the Programme Director arms it (see
+# docs/WITHDRAWAL_V1_OPERATIONAL_READINESS_ACTIVATION.md). It only runs the EXISTING, read-only, secret-free health
+# command (broker_intelligence/management/commands/broker_mailbox_health.py); it never contacts a broker, decrypts a
+# credential, or writes.
+#
+# Activation contract (security RULE 1): a long-running production service is NEVER started from an interactive SSH
+# session -- it is installed as this systemd unit + its .timer and started via systemctl. The health check itself is a
+# short oneshot.
+#
+# The ALERT signal is the process EXIT CODE: `--exit-nonzero-on-degraded` makes the command exit non-zero when any
+# mailbox is STALE or RECOVERY_REQUIRED (the JSON report always prints first). The operator wires delivery via
+# OnFailure= (below) or by having their existing monitor watch this unit's result. De-duplication is inherent: the
+# command reports current state, so repeated runs do not multiply alerts.
+
+[Unit]
+Description=GuvFX broker mailbox health check (alert on degraded/recovery-required)
+# Operator-supplied notifier (email/pager/webhook). Left commented in the template -- wire to your estate's notifier:
+# OnFailure=guvfx-alert-notify@%n.service
+
+[Service]
+Type=oneshot
+# The production app stack directory (where docker-compose.yml lives). Adjust to the host (e.g. /home/ubuntu/guvfx-prod).
+WorkingDirectory=/home/ubuntu/guvfx-prod
+# Single-flight so overlapping runs never pile up; ephemeral backend container (no competing worker); read-only.
+# `--exit-nonzero-on-degraded` turns a dead/stale mailbox into a non-zero exit AFTER the JSON report is printed.
+ExecStart=/usr/bin/flock -n /tmp/guvfx-broker-mailbox-health.lock \
+  /usr/bin/docker compose run --rm --no-deps guvfx-backend \
+  python manage.py broker_mailbox_health --json --exit-nonzero-on-degraded
