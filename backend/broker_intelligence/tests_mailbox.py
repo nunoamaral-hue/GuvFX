@@ -1058,3 +1058,117 @@ class MailboxStatusPhysicalSchema0010(TransactionTestCase):
         item = r.json()["mailboxes"][0]
         self.assertEqual(item["state"], "DEGRADED")       # staleness classifies; no invented OAuth diagnosis on 0010
         self.assertFalse(item["reconnect_required"])
+
+
+@override_settings(**ENV)
+class MailboxConnectConcurrency(TransactionTestCase):
+    """SECURITY_HARDENING_2026-10-18 — prove that two SIMULTANEOUS OAuth callbacks for one owner can never create two
+    live mailboxes. Needs a TransactionTestCase (real per-thread connections + real commits) because the fix is a
+    per-owner Postgres TRANSACTION advisory lock. Also proves the fix preserves the existing single-mailbox behaviour
+    (exactly one CONNECTED survives) and does not corrupt cursor/credential/ownership (the survivor is a clean
+    connect)."""
+
+    # Account-derivable fakes (pure functions of the code/token) so two threads get DIFFERENT Google accounts safely.
+    _ACCT = {"CA": "a@gmail.com", "CB": "b@gmail.com"}
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="cc", email="cc@x.invalid", password="x")
+
+    def _install_fakes(self, O, S):
+        O.exchange_code = lambda code=None, **k: {"access_token": "AT-" + str(code), "refresh_token": "RT-" + str(code),
+                                                  "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer",
+                                                  "expiry": ""}
+        S.fetch_profile = lambda at, **k: {"emailAddress": self._ACCT[at[3:]], "historyId": "1"}
+
+    def _state(self, n):
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        return signing.dumps({"uid": self.u.id, "n": n, "op": "CONNECT_FIRST_MAILBOX"}, salt=_STATE_SALT)
+
+    def test_blocked_callback_is_rejected_after_lock_release(self):
+        """Deterministic serialization proof: hold the per-owner advisory lock, show a concurrent callback BLOCKS on
+        it, then after the lock holder commits a live mailbox the blocked callback's guard rejects the 2nd account."""
+        import threading
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.db import connection, connections, transaction
+        from broker_intelligence.views import _mailbox_lock_key
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._install_fakes(O, S)
+            stb = self._state("B")
+            result = {}
+
+            def worker():
+                try:
+                    c = APIClient(); c.force_authenticate(self.u)
+                    result["resp"] = c.get(f"/api/broker-intelligence/mailboxes/callback/?code=CB&state={stb}")
+                except Exception as e:   # noqa: BLE001
+                    result["err"] = e
+                finally:
+                    connection.close()
+
+            with transaction.atomic():
+                with connection.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", [_mailbox_lock_key(self.u.id)])   # HOLD it
+                t = threading.Thread(target=worker)
+                t.start()
+                t.join(timeout=1.5)
+                self.assertTrue(t.is_alive(), "the concurrent callback must BLOCK on the per-owner advisory lock")
+                # simulate the first callback's committed result (a live mailbox A for this owner)
+                ConnectedMailbox.objects.create(
+                    user=self.u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id="a@gmail.com",
+                    primary_email="a@gmail.com", credential_ref="crA", status=ConnectedMailbox.Status.CONNECTED)
+            # atomic exits -> commit -> advisory lock released -> A visible to the blocked worker
+            t.join(timeout=15)
+            self.assertFalse(t.is_alive(), "the callback should finish once the lock is released")
+            self.assertNotIn("err", result, f"worker error: {result.get('err')!r}")
+            self.assertEqual(result["resp"].status_code, 409)
+            self.assertEqual(result["resp"].json()["error"], "single_mailbox_only")
+            self.assertEqual(ConnectedMailbox.objects.filter(
+                user=self.u, status=ConnectedMailbox.Status.CONNECTED).count(), 1)   # exactly one live mailbox
+            connections.close_all()
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_two_simultaneous_callbacks_yield_exactly_one_live_mailbox(self):
+        """True two-thread race: two callbacks for the SAME owner returning DIFFERENT Google accounts, started
+        together. With the per-owner lock the result is deterministic — exactly ONE CONNECTED mailbox and one 409.
+        (Without the lock this could intermittently create two live mailboxes.)"""
+        import threading
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.db import connection, connections
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._install_fakes(O, S)
+            codes = ["CA", "CB"]
+            states = {c: self._state(c) for c in codes}
+            out = {}
+            barrier = threading.Barrier(len(codes))
+
+            def worker(code):
+                try:
+                    c = APIClient(); c.force_authenticate(self.u)
+                    barrier.wait(timeout=5)   # maximise overlap
+                    out[code] = c.get(f"/api/broker-intelligence/mailboxes/callback/?code={code}&state={states[code]}")
+                except Exception as e:   # noqa: BLE001
+                    out[code] = e
+                finally:
+                    connection.close()
+
+            threads = [threading.Thread(target=worker, args=(c,)) for c in codes]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=20)
+            for c in codes:
+                self.assertFalse(isinstance(out.get(c), Exception), f"{c} errored: {out.get(c)!r}")
+            statuses = sorted(r.status_code for r in out.values())
+            self.assertEqual(statuses, [200, 409])                                   # exactly one won
+            live = ConnectedMailbox.objects.filter(user=self.u, status=ConnectedMailbox.Status.CONNECTED)
+            self.assertEqual(live.count(), 1)                                        # NEVER two live mailboxes
+            self.assertIn(live.first().provider_mailbox_id, ("a@gmail.com", "b@gmail.com"))
+            connections.close_all()
+        finally:
+            O.exchange_code, S.fetch_profile = orig

@@ -65,8 +65,9 @@ withdrawal, and nothing here contacts a broker or decrypts a credential.
 Detailed in `docs/WITHDRAWAL_V1_OAUTH_SUSTAINABILITY_RECOMMENDATION.md`. Each is additive and reversible; none is
 applied here.
 
-1. **Refresh-credential-age proximity signal.** Warn *before* a refresh token expires (the External/Testing-mode
-   7-day expiry, observed twice). Needs a nullable `credential_obtained_at` column (**migration 0012** — additive,
+1. **Refresh-credential-age proximity signal.** Warn *before* a refresh token expires (the inferred External/Testing-
+   mode 7-day expiry — one observed expiry, 2026-10-09 consent → ~2026-10-16 failure). Needs a nullable
+   `credential_obtained_at` column (**migration 0012** — additive,
    reversible, unmigrated-safe read). **Gate:** PD approval to add migration 0012 + the standard DARK→arm sequence.
    **Not applied** (no migration in this packet).
 2. **`ConnectedMailbox.Status = ERROR` transition on a blocking re-auth.** Lets a dead mailbox leave the
