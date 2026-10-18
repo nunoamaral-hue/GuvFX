@@ -544,11 +544,13 @@ class MailboxStatusApi(TestCase):
         item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
         self.assertEqual(item["state"], "HEALTHY")
 
-    def test_stale_sync_is_reconnect_required(self):
+    def test_stale_sync_is_degraded_not_reconnect(self):
+        # §4: a merely-STALE mailbox (a late/slow ingestion pass) is DEGRADED, NEVER RECONNECT_REQUIRED — a member
+        # must not be told to re-authorize Gmail just because a pass ran late. Reconnect needs explicit OAuth evidence.
         self._mb(self.u, last_successful_sync=timezone.now() - datetime.timedelta(days=100))
         item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
-        self.assertEqual(item["state"], "RECONNECT_REQUIRED")
-        self.assertTrue(item["reconnect_required"])
+        self.assertEqual(item["state"], "DEGRADED")
+        self.assertFalse(item["reconnect_required"])
 
     def test_revoked_status_is_revoked(self):
         self._mb(self.u, status=ConnectedMailbox.Status.REVOKED, credential_ref="")
@@ -572,11 +574,338 @@ class MailboxStatusApi(TestCase):
         self.assertIn("masked_email", body)
         self.assertNotIn("owner@gmail.com", body)         # full mailbox address never returned
 
-    def test_verified_broker_binding_reflected(self):
-        mb = self._mb(self.u, last_successful_sync=timezone.now())
+    def test_verified_broker_binding_requires_owned_account_not_email_alone(self):
+        # §5: a verified broker BINDING requires a VERIFIED identity with a NON-NULL trading account owned by THIS
+        # member AND associated with this mailbox. Canonical email ownership ALONE is insufficient.
+        self._mb(self.u, last_successful_sync=timezone.now())
+        url = "/api/broker-intelligence/mailboxes/status/"
+        self.assertFalse(self.c.get(url).json()["mailboxes"][0]["has_verified_broker_bindings"])
+        # VERIFIED identity, canonical googlemail->gmail match to the mailbox, but NO trading account -> still False.
+        idn = BrokerEmailIdentity.objects.create(email="owner@googlemail.com", broker_name="TradersWay", user=self.u,
+                                                 trading_account=None, status=BrokerEmailIdentity.Status.VERIFIED)
+        self.assertFalse(self.c.get(url).json()["mailboxes"][0]["has_verified_broker_bindings"])
+        # Bind it to one of THIS member's OWN trading accounts -> now a genuine verified broker binding.
+        idn.trading_account = _acct(user=self.u)
+        idn.save()
+        self.assertTrue(self.c.get(url).json()["mailboxes"][0]["has_verified_broker_bindings"])
+
+
+@override_settings(**ENV)
+class MailboxConnectOps(TestCase):
+    """§6 — explicit, signed-state-bound connect OPERATIONS (first/reconnect/add) + V1 single-mailbox enforcement,
+    and §7 — the browser return-journey. Reconnection is always a TARGETED update of one named, OWNED mailbox; a
+    first/add connect can never create a second live mailbox; the callback redirect lands on the FIXED destination
+    and never forwards the Google code/token/state."""
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="co", email="co@x.invalid", password="x")
+        self.c = APIClient(); self.c.force_authenticate(self.u)
+
+    # --- helpers --------------------------------------------------------------------------------------------------
+    def _state_of(self, resp):
+        import urllib.parse as U
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT, _STATE_MAX_AGE
+        st = U.parse_qs(U.urlparse(resp.json()["authorization_url"]).query)["state"][0]
+        return signing.loads(st, salt=_STATE_SALT, max_age=_STATE_MAX_AGE)
+
+    def _mb(self, pmid="owner@gmail.com", **kw):
+        d = dict(user=self.u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=pmid,
+                 primary_email=pmid, credential_ref="cr" + "0" * 32, status=ConnectedMailbox.Status.CONNECTED)
+        d.update(kw)
+        return ConnectedMailbox.objects.create(**d)
+
+    # --- §6 connect operations ------------------------------------------------------------------------------------
+    def test_first_connect_binds_op_and_no_target(self):
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["op"], "CONNECT_FIRST_MAILBOX")
+        self.assertIsNone(r.json()["mailbox_id"])
+        p = self._state_of(r)
+        self.assertEqual(p["op"], "CONNECT_FIRST_MAILBOX")
+        self.assertNotIn("expect", p)
+        self.assertNotIn("mailbox_pk", p)
+
+    def test_inferred_reconnect_of_single_live_mailbox_binds_expect(self):
+        mb = self._mb()
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/")
+        self.assertEqual(r.json()["op"], "RECONNECT_EXISTING_MAILBOX")
+        self.assertEqual(r.json()["mailbox_id"], mb.id)
+        p = self._state_of(r)
+        self.assertEqual(p["op"], "RECONNECT_EXISTING_MAILBOX")
+        self.assertEqual(p["mailbox_pk"], mb.id)
+        self.assertEqual(p["expect"], "owner@gmail.com")
+
+    def test_explicit_reconnect_targets_named_owned_mailbox(self):
+        mb = self._mb()
+        r = self.c.get(f"/api/broker-intelligence/mailboxes/connect/?op=RECONNECT_EXISTING_MAILBOX&mailbox_id={mb.id}")
+        self.assertEqual(r.status_code, 200, r.content)
+        p = self._state_of(r)
+        self.assertEqual(p["op"], "RECONNECT_EXISTING_MAILBOX")
+        self.assertEqual(p["mailbox_pk"], mb.id)
+        self.assertEqual(p["expect"], "owner@gmail.com")
+
+    def test_reconnect_requires_mailbox_id(self):
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/?op=RECONNECT_EXISTING_MAILBOX")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "reconnect_requires_mailbox")
+
+    def test_reconnect_foreign_mailbox_is_404(self):
+        other = User.objects.create_user(username="co2", email="co2@x.invalid", password="x")
+        foreign = ConnectedMailbox.objects.create(user=other, provider=ConnectedMailbox.Provider.GMAIL,
+                                                  provider_mailbox_id="foreign@gmail.com",
+                                                  status=ConnectedMailbox.Status.CONNECTED)
+        r = self.c.get(f"/api/broker-intelligence/mailboxes/connect/?mailbox_id={foreign.id}")
+        self.assertEqual(r.status_code, 404)   # owner-scoped: indistinguishable from 'does not exist'
+
+    def test_reconnect_revoked_mailbox_allowed(self):
+        mb = self._mb(status=ConnectedMailbox.Status.REVOKED, credential_ref="")
+        r = self.c.get(f"/api/broker-intelligence/mailboxes/connect/?mailbox_id={mb.id}")
+        self.assertEqual(r.status_code, 200, r.content)   # a revoked mailbox may be reconnected by id
+        self.assertEqual(self._state_of(r)["op"], "RECONNECT_EXISTING_MAILBOX")
+
+    def test_first_connect_refused_when_live_mailbox_exists(self):
+        self._mb()
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/?op=CONNECT_FIRST_MAILBOX")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "single_mailbox_only")
+
+    def test_add_new_refused_when_live_mailbox_exists(self):
+        self._mb()
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/?op=ADD_NEW_MAILBOX")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "single_mailbox_only")
+
+    def test_invalid_op_rejected(self):
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/?op=DELETE_EVERYTHING")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "invalid_op")
+
+    def test_invalid_mailbox_id_rejected(self):
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/?mailbox_id=notanumber")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "invalid_mailbox_id")
+
+    def test_callback_single_mailbox_guard_blocks_second_account(self):
+        # A non-reconnect (first-connect) state whose consent returns a DIFFERENT account, while a live mailbox already
+        # exists, is refused at the mutation point — no second mailbox is ever created (V1 single-mailbox).
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        self._mb(pmid="owner@gmail.com")
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            O.exchange_code = lambda **k: {"access_token": "AT", "refresh_token": "RT", "expiry": "",
+                                           "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+            S.fetch_profile = lambda at, **k: {"emailAddress": "second@gmail.com", "historyId": "9"}
+            st = signing.dumps({"uid": self.u.id, "n": "x", "op": "CONNECT_FIRST_MAILBOX"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
+            self.assertEqual(r.status_code, 409)
+            self.assertEqual(r.json()["error"], "single_mailbox_only")
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+        self.assertEqual(ConnectedMailbox.objects.filter(user=self.u).count(), 1)   # no second mailbox
+
+    # --- §7 browser return journey --------------------------------------------------------------------------------
+    def _fake_ok(self, O, S, email="owner@gmail.com"):
+        O.exchange_code = lambda **k: {"access_token": "AT", "refresh_token": "RT", "expiry": "",
+                                       "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
+        S.fetch_profile = lambda at, **k: {"emailAddress": email, "historyId": "100"}
+
+    def test_web_journey_success_redirects_to_fixed_destination(self):
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT, _RETURN_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._fake_ok(O, S)
+            st = signing.dumps({"uid": self.u.id, "n": "x", "op": "CONNECT_FIRST_MAILBOX", "rt": True}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=SECRETCODE&state={st}")
+            self.assertEqual(r.status_code, 302)
+            loc = r["Location"]
+            self.assertTrue(loc.startswith("/profile"), loc)        # FIXED destination, not from the request
+            self.assertIn("mailbox_connect=", loc)
+            # the Google code/token/state are NEVER forwarded in the redirect
+            for leak in ("SECRETCODE", "access_token", "refresh_token", "state=", "AT", "RT"):
+                self.assertNotIn(leak, loc, leak)
+            token = loc.split("mailbox_connect=", 1)[1]
+            payload = signing.loads(token, salt=_RETURN_SALT)       # server-signed outcome, tamper-evident
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["uid"], self.u.id)
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_web_journey_error_redirects_with_signed_error_outcome(self):
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT, _RETURN_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._fake_ok(O, S, email="intruder@gmail.com")
+            # a reconnect targeting owner@gmail.com, but consent returns a different account -> error, web journey
+            st = signing.dumps({"uid": self.u.id, "n": "w", "op": "RECONNECT_EXISTING_MAILBOX",
+                                "expect": "owner@gmail.com", "rt": True}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
+            self.assertEqual(r.status_code, 302)
+            self.assertTrue(r["Location"].startswith("/profile"))
+            payload = signing.loads(r["Location"].split("mailbox_connect=", 1)[1], salt=_RETURN_SALT)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["code"], "oauth_account_mismatch")
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_api_journey_without_rt_returns_json(self):
+        # Back-compat: a callback WITHOUT the signed return-journey flag keeps the JSON contract (operator/API).
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._fake_ok(O, S)
+            st = signing.dumps({"uid": self.u.id, "n": "x", "op": "CONNECT_FIRST_MAILBOX"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.json()["ok"])
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_return_destination_is_configured_not_request_controlled(self):
+        # Open-redirect guard: a configured destination is honoured; a ?next= in the request is IGNORED.
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._fake_ok(O, S)
+            st = signing.dumps({"uid": self.u.id, "n": "x", "op": "CONNECT_FIRST_MAILBOX", "rt": True}, salt=_STATE_SALT)
+            with override_settings(BROKER_MAILBOX_CONNECT_RETURN_URL="https://guvfx.com/profile"):
+                r = self.c.get("/api/broker-intelligence/mailboxes/callback/"
+                               f"?code=C&state={st}&next=https://evil.example/steal")
+            self.assertEqual(r.status_code, 302)
+            self.assertTrue(r["Location"].startswith("https://guvfx.com/profile"), r["Location"])
+            self.assertNotIn("evil.example", r["Location"])
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+
+@override_settings(BROKER_MAILBOX_STATUS_ENABLED="1")
+class MailboxStatusApiR2(TestCase):
+    """§3 schema-0010 safety, §4 health-state mapping (explicit OAuth evidence only), §5 verified-binding + connected
+    semantics, plus adversarial checks (cross-member, false states, flag bypass)."""
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="sr", email="sr@x.invalid", password="x")
+        self.c = APIClient(); self.c.force_authenticate(self.u)
+
+    def _mb(self, user=None, pmid="owner@gmail.com", **kw):
+        d = dict(user=user or self.u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=pmid,
+                 primary_email=pmid, credential_ref="cr" + "0" * 32, cursor_state="100",
+                 status=ConnectedMailbox.Status.CONNECTED)
+        d.update(kw)
+        return ConnectedMailbox.objects.create(**d)
+
+    # --- §3 schema-0010 safety ------------------------------------------------------------------------------------
+    def test_schema_0010_projection_omits_r1_columns(self):
+        from unittest.mock import patch
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        self._mb(last_successful_sync=timezone.now() - datetime.timedelta(days=100))
+        # Simulate the UNMIGRATED (0010) production schema: the R1 health columns are reported absent. The status
+        # query MUST then select only the stable 0010 columns and never reference an R1 column.
+        with patch("broker_intelligence.health.r1_columns_present", return_value=False):
+            with CaptureQueriesContext(connection) as cap:
+                r = self.c.get("/api/broker-intelligence/mailboxes/status/")
+            self.assertEqual(r.status_code, 200, r.content)
+        mbox_selects = [q["sql"] for q in cap.captured_queries
+                        if "broker_intelligence_connectedmailbox" in q["sql"] and q["sql"].lstrip().upper().startswith("SELECT")]
+        self.assertTrue(mbox_selects)
+        for sql in mbox_selects:
+            for col in ("consecutive_failures", "last_error_code", "last_error_http_status", "last_error_at",
+                        "last_attempted_sync", "last_pass_cursor_advanced"):
+                self.assertNotIn(col, sql, f"{col} must not be selected on schema 0010")
+        # staleness still classifies -> DEGRADED (never an invented OAuth diagnosis on 0010)
+        self.assertEqual(r.json()["mailboxes"][0]["state"], "DEGRADED")
+
+    def test_schema_0010_never_reconnect_required_without_error_status(self):
+        from unittest.mock import patch
+        self._mb(last_successful_sync=timezone.now() - datetime.timedelta(days=100),
+                 last_error_code="GMAIL_HTTP_401")   # the column VALUE exists in-row but must be ignored on 0010
+        with patch("broker_intelligence.health.r1_columns_present", return_value=False):
+            item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "DEGRADED")      # the 0011 error code is NOT read on 0010
+        self.assertFalse(item["reconnect_required"])
+
+    # --- §4 health-state mapping (0011 present) -------------------------------------------------------------------
+    def test_blocking_oauth_code_is_reconnect_required(self):
+        self._mb(last_successful_sync=timezone.now() - datetime.timedelta(minutes=30),
+                 last_error_code="GMAIL_HTTP_401", consecutive_failures=3)
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "RECONNECT_REQUIRED")
+        self.assertTrue(item["reconnect_required"])
+
+    def test_non_oauth_blocking_code_is_degraded_not_reconnect(self):
+        # GMAIL_HISTORY_CURSOR_INVALID is an operator cursor escalation, NOT a member re-auth -> DEGRADED.
+        self._mb(last_successful_sync=timezone.now() - datetime.timedelta(minutes=30),
+                 last_error_code="GMAIL_HISTORY_CURSOR_INVALID", consecutive_failures=3)
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "DEGRADED")
+        self.assertFalse(item["reconnect_required"])
+
+    def test_error_status_is_reconnect_required(self):
+        self._mb(status=ConnectedMailbox.Status.ERROR, last_successful_sync=timezone.now())
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "RECONNECT_REQUIRED")
+
+    def test_transient_failure_without_reauth_is_degraded(self):
+        self._mb(last_successful_sync=timezone.now() - datetime.timedelta(minutes=30),
+                 last_error_code="GMAIL_HTTP_5XX", consecutive_failures=2)
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertEqual(item["state"], "DEGRADED")
+        self.assertFalse(item["reconnect_required"])
+
+    # --- §5 connected / verified-binding semantics ----------------------------------------------------------------
+    def test_connected_false_when_only_revoked(self):
+        self._mb(status=ConnectedMailbox.Status.REVOKED, credential_ref="")
+        data = self.c.get("/api/broker-intelligence/mailboxes/status/").json()
+        self.assertFalse(data["connected"])            # a revoked-only member is NOT connected...
+        self.assertEqual(len(data["mailboxes"]), 1)    # ...though the dead mailbox is still listed truthfully
+
+    def test_connected_true_with_one_connected(self):
+        self._mb()
+        self.assertTrue(self.c.get("/api/broker-intelligence/mailboxes/status/").json()["connected"])
+
+    def test_binding_to_another_members_account_not_counted(self):
+        mb = self._mb(last_successful_sync=timezone.now())
+        other = User.objects.create_user(username="sr2", email="sr2@x.invalid", password="x")
+        foreign_acct = _acct(user=other)
+        # a VERIFIED identity (owned by THIS member) but bound to ANOTHER member's trading account must NOT count
+        BrokerEmailIdentity.objects.create(email="owner@googlemail.com", broker_name="TradersWay", user=self.u,
+                                           trading_account=foreign_acct, status=BrokerEmailIdentity.Status.VERIFIED)
         item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
         self.assertFalse(item["has_verified_broker_bindings"])
+
+    def test_pending_identity_does_not_count_as_verified_binding(self):
+        mb = self._mb(last_successful_sync=timezone.now())
         BrokerEmailIdentity.objects.create(email="owner@googlemail.com", broker_name="TradersWay", user=self.u,
-                                           trading_account=None, status=BrokerEmailIdentity.Status.VERIFIED)
-        item2 = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
-        self.assertTrue(item2["has_verified_broker_bindings"])   # canonical googlemail->gmail match
+                                           trading_account=_acct(user=self.u),
+                                           status=BrokerEmailIdentity.Status.PENDING)   # not VERIFIED
+        item = self.c.get("/api/broker-intelligence/mailboxes/status/").json()["mailboxes"][0]
+        self.assertFalse(item["has_verified_broker_bindings"])
+
+    # --- adversarial ----------------------------------------------------------------------------------------------
+    def test_status_dark_by_own_flag(self):
+        self._mb()
+        with override_settings(BROKER_MAILBOX_STATUS_ENABLED="0"):
+            self.assertEqual(self.c.get("/api/broker-intelligence/mailboxes/status/").status_code, 404)
+
+    def test_cross_member_mailbox_never_leaks(self):
+        self._mb(pmid="mine@gmail.com")
+        other = User.objects.create_user(username="sr3", email="sr3@x.invalid", password="x")
+        self._mb(user=other, pmid="theirs@gmail.com")
+        body = self.c.get("/api/broker-intelligence/mailboxes/status/").content.decode()
+        self.assertNotIn("theirs", body)
