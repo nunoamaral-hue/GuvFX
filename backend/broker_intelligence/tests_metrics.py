@@ -37,11 +37,12 @@ def _acct(user=None, **kw):
     return TradingAccount.objects.create(**d)
 
 
-def _wd(account, status, *, amount="100.00", currency="USD", requested_at=None, completed_at=None, ref=""):
+def _wd(account, status, *, amount="100.00", currency="USD", requested_at=None, completed_at=None, ref="",
+        provenance=Provenance.SYNTHETIC):
     return Withdrawal.objects.create(
         trading_account=account, broker_reference_id=ref,
         amount=(Decimal(amount) if amount is not None else None), currency=currency,
-        requested_at=requested_at, completed_at=completed_at, status=status, provenance=Provenance.SYNTHETIC)
+        requested_at=requested_at, completed_at=completed_at, status=status, provenance=provenance)
 
 
 class WithdrawalMetricsProjection(TestCase):
@@ -97,6 +98,37 @@ class WithdrawalMetricsProjection(TestCase):
         self.assertEqual(m["total"], 0)
         self.assertEqual(m["pending_count"], 0)
         self.assertIsNone(m["processing_duration"])
+        self.assertEqual(m["genuine_count"], 0)       # §10: no genuine samples, never fabricated
+        self.assertFalse(m["sample_caveat"])
+
+    def test_genuine_count_counts_real_provenance_only(self):
+        # §10: genuine_count counts REAL broker observations only — synthetic fixtures never inflate it.
+        a = _acct()
+        t0 = timezone.now() - timedelta(seconds=1800)
+        _wd(a, Withdrawal.Status.COMPLETED, ref="g1", requested_at=t0, completed_at=timezone.now(),
+            provenance=Provenance.REAL)
+        _wd(a, Withdrawal.Status.COMPLETED, ref="s1", requested_at=t0, completed_at=timezone.now())  # synthetic
+        m = withdrawal_metrics([a])
+        self.assertEqual(m["genuine_count"], 1)
+        self.assertFalse(m["sample_caveat"])          # two completed-with-anchors -> not a single sample
+
+    def test_single_sample_caveat_true_on_one_completed_with_anchors(self):
+        # §10: a typical-processing-time resting on ONE completed sample is flagged (not representative).
+        a = _acct()
+        t0 = timezone.now() - timedelta(seconds=3600)
+        _wd(a, Withdrawal.Status.COMPLETED, ref="g1", requested_at=t0, completed_at=timezone.now(),
+            provenance=Provenance.REAL)
+        m = withdrawal_metrics([a])
+        self.assertTrue(m["sample_caveat"])
+        self.assertEqual(m["genuine_count"], 1)
+
+    def test_no_caveat_when_no_duration_sample(self):
+        # §10: with no completed-with-both-anchors there is no aggregate to caveat.
+        a = _acct()
+        _wd(a, Withdrawal.Status.REQUESTED, ref="p1", provenance=Provenance.REAL)
+        m = withdrawal_metrics([a])
+        self.assertFalse(m["sample_caveat"])
+        self.assertEqual(m["genuine_count"], 1)       # genuine, but no duration sample yet
 
 
 @override_settings(BROKER_WITHDRAWAL_UX_ENABLED="1")

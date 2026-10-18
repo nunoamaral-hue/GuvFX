@@ -25,6 +25,11 @@ const STR = {
   typical: { en: "Typical processing time", ja: "通常の処理時間" },
   unresolved: { en: "Unresolved", ja: "未解決" },
   na: { en: "N/A", ja: "該当なし" },
+  sampleCaveat: {
+    en: "Based on a single observed withdrawal — not yet statistically representative.",
+    ja: "観測された出金が1件のみ — まだ統計的に代表的ではありません。",
+  },
+  genuine: { en: "Genuine samples", ja: "実サンプル数" },
 };
 
 const card: React.CSSProperties = {
@@ -119,6 +124,19 @@ export const WithdrawalsPanel: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => 
               {dur ? humanDuration(dur.median_seconds, L) : STR.na[L]}
             </div>
           </div>
+
+          {/* One-sample caveat (§10): never present a figure resting on a single observation as representative. */}
+          {data.sample_caveat && (
+            <div style={{ ...meta, color: "#c9b56b", marginTop: 8 }} data-testid="withdrawals-sample-caveat">
+              {STR.sampleCaveat[L]}
+            </div>
+          )}
+
+          {typeof data.genuine_count === "number" && (
+            <div style={{ ...meta, marginTop: 8 }} data-testid="withdrawals-genuine-count">
+              {STR.genuine[L]}: {data.genuine_count}
+            </div>
+          )}
 
           {data.unresolved_count > 0 && (
             <div style={{ marginTop: 8 }} data-testid="withdrawals-unresolved">

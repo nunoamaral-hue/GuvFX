@@ -19,7 +19,7 @@ import statistics
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from .models import Withdrawal
+from .models import Provenance, Withdrawal
 
 # In-flight (requested, completion not yet observed) — explicitly NOT failed.
 _PENDING = (Withdrawal.Status.REQUESTED, Withdrawal.Status.PROCESSING, Withdrawal.Status.PENDING)
@@ -125,6 +125,12 @@ def withdrawal_metrics(accounts) -> dict:
             "max_seconds": max(durs),
         }
 
+    # GENUINE sample size (§10): how many of these withdrawals are REAL broker observations (provenance REAL) versus
+    # synthetic/sanitised fixtures. The member UI uses this to frame the figures honestly — and `sample_caveat` warns
+    # when a headline aggregate (the typical-processing-time) rests on a SINGLE completed sample, so one observation is
+    # never presented as statistically representative. Never fabricates: with no genuine data both are 0 / False.
+    genuine_count = sum(1 for w in rows if w.provenance == Provenance.REAL)
+
     return {
         "total": len(rows),
         "by_status": by_status,
@@ -135,4 +141,6 @@ def withdrawal_metrics(accounts) -> dict:
         "completed_amount_by_currency": {k: str(v) for k, v in sorted(amt.items())},
         "completed_amount_known_count": completed_amount_known,
         "processing_duration": duration,          # None when no completed-with-both-anchors (never fabricated)
+        "genuine_count": genuine_count,           # REAL-provenance withdrawals (synthetic fixtures excluded)
+        "sample_caveat": bool(duration) and duration["count"] <= 1,   # a stat resting on a single sample
     }

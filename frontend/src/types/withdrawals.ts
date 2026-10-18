@@ -21,6 +21,8 @@ export type WithdrawalMetrics = {
   completed_amount_by_currency: Record<string, string>;   // decimal strings, per currency (never mixed)
   completed_amount_known_count: number;
   processing_duration: WithdrawalDuration | null;          // null => "N/A" (never fabricated 0)
+  genuine_count?: number;             // REAL-provenance withdrawals (synthetic fixtures excluded)
+  sample_caveat?: boolean;            // true => a headline aggregate rests on a single sample (not representative)
 };
 
 /** Shape of GET /api/broker-intelligence/withdrawals/history/ (PR2). Per-withdrawal rows + the broker/account
