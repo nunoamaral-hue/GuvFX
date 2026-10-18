@@ -126,3 +126,36 @@ class CrossInboxDedup(_Base):
         e2 = self._ingest(self._msg("", b"no-mid-raw-BBBB"))
         self.assertNotEqual(e1.pk, e2.pk)
         self.assertEqual(BrokerMessageObservation.objects.count(), 0)   # blank id is never uniqueness-bearing
+
+    @override_settings(BROKER_CROSS_INBOX_DEDUP_ENABLED="1")
+    def test_no_event_first_copy_leaves_no_tombstone(self):
+        # DEFECT-2 regression: a first copy that produces NO event (unparseable) must NOT suppress a later genuine copy
+        # of the same Message-ID. Because the observation is written ONLY after a successful event, there is no
+        # NULL-event tombstone, so the second (parseable) copy is processed normally — the withdrawal is NOT lost.
+        unparseable = MailMessage(raw_bytes=b"first-copy-unparseable", to_addresses=(self.alias.address(),),
+                                  from_address="noreply@tradersway.invalid", subject="Account statement",  # no parser
+                                  body="nothing to parse", received_at=timezone.now(),
+                                  provider_message_id="p-u1", rfc822_message_id="MID-SAME@tw")
+        e_first = self._ingest(unparseable)
+        self.assertIsNone(e_first)                                     # unparseable -> no event
+        self.assertEqual(BrokerMessageObservation.objects.count(), 0)  # and NO tombstone row
+        e_second = self._ingest(self._msg("MID-SAME@tw", b"second-copy-parseable"))
+        self.assertIsNotNone(e_second)                                 # the genuine copy is NOT suppressed
+        self.assertEqual(BrokerEvent.objects.count(), 1)
+        self.assertEqual(BrokerMessageObservation.objects.get().event_id, e_second.pk)
+
+    @override_settings(BROKER_CROSS_INBOX_DEDUP_ENABLED="1")
+    def test_unresolved_owner_skips_dedup_no_null_owner_rows(self):
+        # DEFECT-1 regression: when no owner can be keyed (owner_user None AND the recipient does not resolve to a
+        # member), the dedup is SKIPPED rather than writing ambiguous NULL-owner rows — no NULL-owner race, and
+        # behaviour falls back to content-hash (distinct blobs -> distinct events).
+        def _ingest_no_owner(raw):
+            m = MailMessage(raw_bytes=raw, to_addresses=("stranger@nowhere.invalid",),
+                            from_address="noreply@tradersway.invalid", subject="Withdrawal request received",
+                            body="Ref ABC123 100.50 USD", received_at=timezone.now(),
+                            provider_message_id="p-" + raw.decode()[-3:], rfc822_message_id="MID-NOBODY@tw")
+            return ingestion.ingest_message(m, store=self.store, provenance=Provenance.SYNTHETIC)  # no owner_user
+        e1 = _ingest_no_owner(b"raw-AAAA")
+        e2 = _ingest_no_owner(b"raw-BBBB")
+        self.assertNotEqual(e1.pk, e2.pk)                              # no dedup without an owner key
+        self.assertEqual(BrokerMessageObservation.objects.count(), 0)  # NEVER a NULL-owner observation row

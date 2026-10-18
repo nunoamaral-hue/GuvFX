@@ -37,6 +37,21 @@ from .resolver import resolve_account, resolve_owner_identity, resolve_transacti
 logger = logging.getLogger("guvfx.broker_intelligence.ingestion")
 
 
+def _acquire_message_dedup_lock(owner_id, message_id: str) -> None:
+    """Per ``(owner, Message-ID)`` Postgres TRANSACTION advisory lock, so the cross-inbox de-dup decide-and-create is
+    atomic even under concurrent ingestion of the same logical email: a second copy blocks here until the first
+    commits its event, then observes it and suppresses. Must be called INSIDE ``transaction.atomic()`` (released on
+    commit/rollback). No-op on a non-Postgres backend (prod is Postgres)."""
+    from django.db import connection
+    if connection.vendor != "postgresql":
+        return
+    import hashlib
+    digest = hashlib.blake2b(f"bi-msgdedup:{owner_id}:{message_id}".encode("utf-8"), digest_size=8).digest()
+    key = int.from_bytes(digest, "big", signed=True)   # stable signed 64-bit bigint advisory key
+    with connection.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+
+
 def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = None,
                    provenance: str = Provenance.SYNTHETIC, owner_user=None,
                    connected_mailbox=None) -> Optional[BrokerEvent]:
@@ -85,85 +100,87 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
                     blob.sha256[:12])
         return None
 
-    # 3b) CROSS-INBOX DE-DUP (§D, DARK): only AUTHENTICATED broker observations reach here, so a BrokerMessageObservation
-    #     is only ever created for genuine broker mail (a forged copy is dropped above and can never pre-empt/suppress a
-    #     genuine one). The RFC822 Message-ID is stable across inboxes, so the SAME logical email arriving via a second
-    #     connected inbox (a DIFFERENT raw blob, hence a different sha256 that content-hashing can't collapse) is
-    #     recognised here and suppressed — never a second event/withdrawal. The (owner, message_id) UNIQUE arbitrates
-    #     even a concurrent two-inbox race: the loser gets created=False and returns the winner's event (no 2nd event;
-    #     BrokerEvent is append-only so we must decide BEFORE creating, never delete after). OFF ⇒ this block is skipped
-    #     entirely and the table is never touched (unmigrated-safe).
-    dedup_obs = None
+    def _parse_and_create():
+        """Steps 4-9: select the parser, parse, resolve the transaction account, and create ONE append-only
+        BrokerEvent — or return None (unparseable / declined / raising parser), evidence retained. Extracted so the
+        cross-inbox de-dup can run it under a per-message lock WITHOUT duplicating the pipeline. BrokerEvent.create
+        kwargs are UNCHANGED (no new column) — the dedup metadata lives in a SEPARATE table — so this write stays
+        byte-identical and unmigrated-safe."""
+        # 4) deterministic parser selection; no match -> unparseable -> retain evidence, emit NO event
+        parser = select_parser(subject=message.subject, body=message.body, from_address=message.from_address)
+        if parser is None:
+            logger.info("broker_intelligence ingest: unparseable message (evidence %s retained, no event)",
+                        blob.sha256[:12])
+            return None
+        # 5) parse (a RAISING parser is treated as 'declined'; evidence retained, no event, never crash ingestion)
+        try:
+            parsed = parser.parse(subject=message.subject, body=message.body, from_address=message.from_address)
+        except Exception:  # noqa: BLE001 — a raising parser must never crash ingestion (contract); treat as declined
+            logger.warning("broker_intelligence ingest: parser %s raised (evidence %s retained, no event)",
+                           getattr(parser, "name", "?"), blob.sha256[:12])
+            return None
+        if parsed is None:
+            logger.info("broker_intelligence ingest: parser %s declined (evidence %s retained, no event)",
+                        getattr(parser, "name", "?"), blob.sha256[:12])
+            return None
+        # Resolve the TRANSACTION trading-account (distinct from the recipient owner). Alias -> its one account;
+        # otherwise match the broker-STATED source/destination accounts to the OWNER's own accounts (never the
+        # recipient email alone). No unambiguous single match ⇒ trading_account stays None (attribution UNRESOLVED).
+        if alias is not None:
+            trading_account = resolve_account(alias)
+        else:
+            trading_account = resolve_transaction_account(
+                resolved_owner, parsed.broker, [parsed.source_account, parsed.destination_account])
+        # Create in its OWN savepoint so a concurrent-ingest IntegrityError (the uniq_brokerevent_evidence backstop)
+        # is isolated and recovered idempotently (one blob -> one event).
+        try:
+            with transaction.atomic():
+                return BrokerEvent.objects.create(
+                    alias=alias, trading_account=trading_account, owner=resolved_owner, broker=parsed.broker,
+                    source=BrokerEvent._meta.get_field("source").default, event_type=parsed.event_type,
+                    transaction_category=parsed.transaction_category,
+                    occurred_at=parsed.occurred_at, received_at=message.received_at,
+                    broker_reference_id=parsed.broker_reference_id or "", amount=parsed.amount,
+                    currency=parsed.currency or "",
+                    source_account=parsed.source_account or "", destination_account=parsed.destination_account or "",
+                    fee=parsed.fee, fee_currency=parsed.fee_currency or "",
+                    evidence=blob, evidence_hash=blob.sha256,
+                    parser_name=getattr(parser, "name", ""), parser_version=getattr(parser, "version", ""),
+                    confidence=parsed.confidence,
+                    correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED, provenance=provenance)
+        except IntegrityError:
+            dup = BrokerEvent.objects.filter(evidence=blob).first()   # lost the race -> the event already exists
+            if dup is not None:
+                return dup
+            raise
+
+    # 3b) CROSS-INBOX DE-DUP (§D, DARK). The same logical email arriving via a SECOND connected inbox is a DIFFERENT
+    #     raw blob (different sha256 — content-hashing can't collapse it), so it would otherwise create a second
+    #     BrokerEvent/Withdrawal. Keyed on the MAILBOX OWNER (always non-null on the live worker path) — never the
+    #     possibly-NULL resolved transaction owner, so there is no NULL-key race. A per-(owner, Message-ID) advisory
+    #     lock serialises the decide-and-create, so even two concurrent copies can never both create an event. The
+    #     observation is recorded ONLY AFTER a successful event (never a NULL-event tombstone), and suppression fires
+    #     ONLY when a prior observation already carries an event — so a crash / parser-decline before the event is
+    #     created never permanently suppresses a later genuine copy (the content-hash retry idempotency is preserved).
+    #     Only AUTHENTICATED broker observations reach here, so a forged copy can never occupy the slot. OFF (or no
+    #     Message-ID, or no owner) ⇒ skipped entirely; the table is never touched (unmigrated-safe).
+    owner_key = owner_user if owner_user is not None else resolved_owner
     mid = (getattr(message, "rfc822_message_id", "") or "").strip() if broker_cross_inbox_dedup_enabled() else ""
-    if mid:
-        dedup_obs, _created = BrokerMessageObservation.objects.get_or_create(
-            owner=resolved_owner, rfc822_message_id=mid,
-            defaults={"connected_mailbox": connected_mailbox, "evidence": blob})
-        if not _created:
-            BrokerMessageObservation.objects.filter(pk=dedup_obs.pk).update(
-                duplicate_count=F("duplicate_count") + 1, updated_at=timezone.now())
-            logger.info("broker_intelligence ingest: cross-inbox duplicate suppressed (message-id seen before)")
-            return dedup_obs.event   # the first observation's event (or None if it produced none); NEVER a 2nd event
-        # else: `dedup_obs` is the first-observation row we just created; its event is linked after creation below.
-
-    # 4) deterministic parser selection; no match -> unparseable -> retain evidence, emit NO event
-    parser = select_parser(subject=message.subject, body=message.body, from_address=message.from_address)
-    if parser is None:
-        logger.info("broker_intelligence ingest: unparseable message (evidence %s retained, no event)",
-                    blob.sha256[:12])
-        return None
-
-    # 5) parse -> create ONE append-only BrokerEvent (never fabricate absent fields). A parser that RAISES is
-    # treated as 'declined' (symmetry with select_parser's can_parse sandbox): evidence is retained, no event,
-    # never crash ingestion.
-    try:
-        parsed = parser.parse(subject=message.subject, body=message.body, from_address=message.from_address)
-    except Exception:  # noqa: BLE001 — a raising parser must never crash ingestion (contract); treat as declined
-        logger.warning("broker_intelligence ingest: parser %s raised (evidence %s retained, no event)",
-                       getattr(parser, "name", "?"), blob.sha256[:12])
-        return None
-    if parsed is None:
-        logger.info("broker_intelligence ingest: parser %s declined (evidence %s retained, no event)",
-                    getattr(parser, "name", "?"), blob.sha256[:12])
-        return None
-
-    # Resolve the TRANSACTION trading-account (distinct from the recipient owner). A GuvFX alias binds to exactly one
-    # account (direct). Otherwise match the broker-STATED source/destination accounts to the OWNER's own accounts —
-    # NEVER the recipient email alone. No unambiguous single match ⇒ trading_account stays None (attribution
-    # UNRESOLVED): a transaction for an account GuvFX does not track never binds to an unrelated account and never
-    # enters withdrawal statistics. The owner + the raw source/destination accounts are still recorded.
-    if alias is not None:
-        trading_account = resolve_account(alias)
-    else:
-        trading_account = resolve_transaction_account(
-            resolved_owner, parsed.broker, [parsed.source_account, parsed.destination_account])
-
-    # Create in its OWN savepoint so a concurrent-ingest IntegrityError (the DB uniq_brokerevent_evidence backstop)
-    # is isolated from any enclosing worker transaction and recovered idempotently (one blob -> one event).
-    try:
+    if mid and owner_key is not None:
         with transaction.atomic():
-            # NOTE: the BrokerEvent.create kwargs are UNCHANGED (no new column) — the cross-inbox dedup metadata lives
-            # in the separate BrokerMessageObservation table, so this write is byte-identical and unmigrated-safe.
-            event = BrokerEvent.objects.create(
-                alias=alias, trading_account=trading_account, owner=resolved_owner, broker=parsed.broker,
-                source=BrokerEvent._meta.get_field("source").default, event_type=parsed.event_type,
-                transaction_category=parsed.transaction_category,
-                occurred_at=parsed.occurred_at, received_at=message.received_at,
-                broker_reference_id=parsed.broker_reference_id or "", amount=parsed.amount,
-                currency=parsed.currency or "",
-                source_account=parsed.source_account or "", destination_account=parsed.destination_account or "",
-                fee=parsed.fee, fee_currency=parsed.fee_currency or "",
-                evidence=blob, evidence_hash=blob.sha256,
-                parser_name=getattr(parser, "name", ""), parser_version=getattr(parser, "version", ""),
-                confidence=parsed.confidence,
-                correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED, provenance=provenance)
-    except IntegrityError:
-        dup = BrokerEvent.objects.filter(evidence=blob).first()   # lost the race -> the event already exists
-        if dup is not None:
-            return dup
-        raise
-    # Link the first observation's row to the event it produced (§D). Only set when dedup is ON and this call owns the
-    # first observation for this (owner, message_id); a duplicate copy already returned above without creating an event.
-    if dedup_obs is not None:
-        BrokerMessageObservation.objects.filter(pk=dedup_obs.pk).update(event=event)
-    return event
+            _acquire_message_dedup_lock(owner_key.id, mid)
+            prior = BrokerMessageObservation.objects.filter(owner=owner_key, rfc822_message_id=mid).first()
+            if prior is not None and prior.event_id is not None:
+                BrokerMessageObservation.objects.filter(pk=prior.pk).update(
+                    duplicate_count=F("duplicate_count") + 1, updated_at=timezone.now())
+                logger.info("broker_intelligence ingest: cross-inbox duplicate suppressed (message-id seen before)")
+                return prior.event   # genuine duplicate of an ALREADY-ingested message; NEVER a second event
+            event = _parse_and_create()
+            if event is not None:
+                # Record/refresh the observation only now that a real event exists (no tombstone). update_or_create
+                # recovers a prior crash/decline row (event was NULL) by linking it to the event just created.
+                BrokerMessageObservation.objects.update_or_create(
+                    owner=owner_key, rfc822_message_id=mid,
+                    defaults={"event": event, "connected_mailbox": connected_mailbox, "evidence": blob})
+            return event
+    return _parse_and_create()
