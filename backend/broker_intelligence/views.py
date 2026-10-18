@@ -82,6 +82,32 @@ def _oauth_client():
     return _conf("GMAIL_OAUTH_CLIENT_ID"), _conf("GMAIL_OAUTH_CLIENT_SECRET"), _conf("GMAIL_OAUTH_REDIRECT_URI")
 
 
+# Per-owner serialization for the mailbox-connect MUTATION (SECURITY_HARDENING_2026-10-18). A fixed 32-bit namespace
+# combined with the owner's user id into one 63-bit (positive) key for a Postgres TRANSACTION advisory lock. Schema-
+# independent (no migration, no table change). See _acquire_owner_mailbox_lock.
+_MAILBOX_LOCK_NS = 0x6D_62_78_31   # "mbx1"; stable, arbitrary, distinct from any other advisory-lock namespace
+
+
+def _mailbox_lock_key(user_id: int) -> int:
+    """The 63-bit bigint advisory-lock key for one owner. Pure; the test computes the same key to prove serialization."""
+    return (_MAILBOX_LOCK_NS << 32) | (int(user_id) & 0xFFFFFFFF)
+
+
+def _acquire_owner_mailbox_lock(user_id: int) -> None:
+    """Take a per-owner Postgres TRANSACTION advisory lock (``pg_advisory_xact_lock``) so the single-mailbox guard and
+    the mailbox write become ATOMIC per owner. Must be called INSIDE ``transaction.atomic()``: the lock is held for
+    that transaction and auto-released on commit/rollback. A second concurrent callback for the SAME owner blocks here
+    until the first commits, then its guard sees the now-live mailbox and is rejected — closing the two-live TOCTOU.
+    It is NEVER held across the Gmail network calls (those happen before the atomic block), so the critical section is
+    a short DB-only span. No-op on a non-Postgres backend (advisory locks are a Postgres feature); the app runs only
+    on Postgres in every environment, so this degrades safely in e.g. a sqlite unit context without changing logic."""
+    from django.db import connection
+    if connection.vendor != "postgresql":
+        return
+    with connection.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", [_mailbox_lock_key(user_id)])
+
+
 class WithdrawalMetricsView(APIView):
     """GET /api/broker-intelligence/withdrawals/metrics/ — the member's own withdrawal statistics."""
     permission_classes = [permissions.IsAuthenticated]
@@ -406,29 +432,51 @@ class MailboxCallbackView(APIView):
             return _callback_result(rt, ok=False, code="oauth_scope_insufficient",
                                     http_status=status.HTTP_400_BAD_REQUEST,
                                     json_body={"ok": False, "error": "oauth_scope_insufficient"})
-        # V1 SINGLE-MAILBOX enforcement at the MUTATION point (§6), applied UNCONDITIONALLY — including on a reconnect.
-        # The write about to happen sets THIS mailbox_id to CONNECTED; if the member already has ANY OTHER live
-        # (non-revoked) mailbox, that write would leave two live mailboxes. The `.exclude(provider_mailbox_id=...)`
-        # clause means a legitimate IN-PLACE reconnect of the member's own mailbox (same id) is never blocked — only a
-        # write that would create a SECOND live mailbox is. This closes the revoke-A / connect-B / reconnect-A hole:
-        # reconnecting a revoked mailbox while a different one is live is refused here as well as at authorization.
-        if (ConnectedMailbox.objects
-                .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
-                .exclude(status=ConnectedMailbox.Status.REVOKED)
-                .exclude(provider_mailbox_id=mailbox_id).exists()):
-            return _callback_result(rt, ok=False, code="single_mailbox_only",
+        # CRITICAL SECTION — serialized per owner (SECURITY_HARDENING_2026-10-18). The single-mailbox GUARD and the
+        # mailbox WRITE must be atomic, or two concurrent callbacks returning DIFFERENT Google accounts could both pass
+        # the guard before either writes (TOCTOU) and create two live mailboxes. A per-owner Postgres transaction
+        # advisory lock makes them atomic: the second concurrent callback blocks at the lock until the first commits,
+        # then its guard sees the now-live mailbox and is rejected. The Gmail network calls already happened ABOVE, so
+        # this span is DB-only and short. (Schema-independent — no migration.)
+        from django.db import IntegrityError, transaction
+        credential_ref = None
+        try:
+            with transaction.atomic():
+                _acquire_owner_mailbox_lock(request.user.id)
+                # V1 SINGLE-MAILBOX guard, UNCONDITIONAL (incl. reconnect). The write sets THIS mailbox_id to
+                # CONNECTED; if the member already has ANY OTHER live (non-revoked) mailbox, that would be a second
+                # live mailbox. `.exclude(provider_mailbox_id=...)` lets a legitimate in-place reconnect of the
+                # member's OWN mailbox through; only a write that would create a SECOND live mailbox is refused.
+                if (ConnectedMailbox.objects
+                        .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
+                        .exclude(status=ConnectedMailbox.Status.REVOKED)
+                        .exclude(provider_mailbox_id=mailbox_id).exists()):
+                    return _callback_result(rt, ok=False, code="single_mailbox_only",
+                                            http_status=status.HTTP_409_CONFLICT,
+                                            json_body={"ok": False, "error": "single_mailbox_only"})
+                credential_ref = store_token(token)   # encrypted; the DB stores only the ref
+                common = dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
+                              status=ConnectedMailbox.Status.CONNECTED)
+                mb, _created = ConnectedMailbox.objects.update_or_create(
+                    user=request.user, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=mailbox_id,
+                    # cursor_state is anchored to the current historyId ONLY on initial create. On a RE-connect an
+                    # in-progress cursor MUST be preserved: overwriting it to 'now' would permanently skip every
+                    # message added since the last sync not yet consumed (a lost-mail path). (Django 5.0+ create_defaults.)
+                    create_defaults={**common, "cursor_state": str(profile.get("historyId", "") or "")},
+                    defaults=common)
+        except IntegrityError:
+            # Cross-user race: a different member connected the SAME underlying mailbox between the pre-lock clash
+            # check and this write, so the global (provider, provider_mailbox_id) unique constraint rejected the
+            # INSERT. Clean up the just-written credential so no orphan remains, and report a clean 409 (never a 500).
+            if credential_ref:
+                from .credential_store import delete_token as _del
+                try:
+                    _del(credential_ref)
+                except Exception:   # noqa: BLE001 — best-effort cleanup; never mask the 409
+                    pass
+            return _callback_result(rt, ok=False, code="mailbox_already_connected",
                                     http_status=status.HTTP_409_CONFLICT,
-                                    json_body={"ok": False, "error": "single_mailbox_only"})
-        credential_ref = store_token(token)   # encrypted; the DB stores only the ref
-        common = dict(primary_email=email, credential_ref=credential_ref, scopes=token.get("scope", ""),
-                      status=ConnectedMailbox.Status.CONNECTED)
-        mb, _created = ConnectedMailbox.objects.update_or_create(
-            user=request.user, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=mailbox_id,
-            # cursor_state is anchored to the current historyId ONLY on initial create. On a RE-connect an in-progress
-            # cursor MUST be preserved: overwriting it to 'now' would permanently skip every message added since the
-            # last sync that the worker has not yet consumed (a lost-mail path). (Django 5.0+ create_defaults.)
-            create_defaults={**common, "cursor_state": str(profile.get("historyId", "") or "")},
-            defaults=common)
+                                    json_body={"ok": False, "error": "mailbox_already_connected"})
         # Web journey: a NON-sensitive 'connected' marker only (never the email/token/code). The JSON contract
         # (API/operator) is unchanged and still reports the connected address.
         return _callback_result(rt, ok=True, code="connected",

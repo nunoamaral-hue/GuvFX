@@ -12,11 +12,15 @@ connection uses **`gmail.readonly` only**; the forbidden-scope guard (`_FORBIDDE
 
 ## 1. Root cause this checklist exists to close
 
-The ingestion outage recurred because the Google Cloud project is in **External / "Testing"** publishing mode, where
-a refresh token expires after **7 days**. Two consecutive expiries (2026-10-09 → 2026-10-16) each required a human
-Google re-consent. The durable fix is to **publish the app to Production** and complete Google's **restricted-scope
-verification** for `gmail.readonly`. Publishing status is **not host-determinable from the repo** — it is read and
-changed only in the Google Cloud Console by the project owner.
+The ingestion outage is attributed to the Google Cloud project being in **External / "Testing"** publishing mode,
+where a refresh token expires after **7 days**. The supporting evidence is a **single observed token expiry**: the
+mailbox was consented on **2026-10-09** and refresh began failing (`invalid_grant`) around **2026-10-16** — about
+seven days later — after which a human Google re-consent (2026-10-17) restored ingestion. The 7-day mechanism is
+therefore **inferred** from that one observation plus Google's documented Testing-mode behaviour; this is **one
+observed expiry, not two** (2026-10-09 is the consent date, not a second expiry), and the project's publishing status
+has not been confirmed in the Google Cloud Console. The durable fix is to **publish the app to Production** and
+complete Google's **restricted-scope verification** for `gmail.readonly`. Publishing status is **not host-determinable
+from the repo** — it is read and changed only in the Google Cloud Console by the project owner.
 
 ---
 
