@@ -91,7 +91,9 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
     try:
         for message in source.fetch():
             # SECURITY: owner-scoped resolution — never cross-attribute via a spoofed recipient header.
-            ev = ingest_message(message, owner_user=mailbox.user, provenance=Provenance.REAL)
+            # connected_mailbox threads the source inbox for cross-inbox de-dup (§D, DARK; no-op while OFF).
+            ev = ingest_message(message, owner_user=mailbox.user, provenance=Provenance.REAL,
+                                connected_mailbox=mailbox)
             ingested += 1
             if ev is not None:
                 events += 1

@@ -25,6 +25,9 @@ class MailMessage:
     body: str
     received_at: datetime.datetime
     provider_message_id: str = ""   # the mailbox's own id (for ack/dedup at the source), NOT a GuvFX id
+    # The RFC822 ``Message-ID`` header — STABLE across inboxes for the same logical email (unlike provider_message_id
+    # or the raw-byte sha256), so it is the cross-inbox de-duplication key (MULTI_ACCOUNT §D). Empty when absent.
+    rfc822_message_id: str = ""
     # R3b sender-authenticity verdict derived from the provider's Authentication-Results header: "pass" (DMARC pass,
     # or SPF+DKIM both pass), "fail" (present but not passing), or None (no verdict available). The From header is
     # never trusted on its own — the ingestion gate requires "pass" before an event is created from a broker sender.

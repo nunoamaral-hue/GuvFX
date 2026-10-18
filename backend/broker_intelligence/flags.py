@@ -86,3 +86,14 @@ def broker_withdrawal_correlation_enabled() -> bool:
     writes ONLY broker_intelligence withdrawal projections — NO execution/strategy/credential authority, never a
     financial action."""
     return _flag("BROKER_WITHDRAWAL_CORRELATION_ENABLED")
+
+
+def broker_cross_inbox_dedup_enabled() -> bool:
+    """Gate for cross-inbox withdrawal de-duplication (MULTI_ACCOUNT_PUBLIC_METRICS §D). DEFAULT OFF. While OFF the
+    ingestion pipeline is byte-identical to today and NEVER touches the additive ``BrokerMessageObservation`` table,
+    so the feature is fully DARK and unmigrated-safe (migration 0013 need not be applied for the OFF path). While ON
+    (and after 0013 is applied), the same logical broker message — identified by its RFC822 Message-ID, which is
+    STABLE across inboxes — observed through TWO connected inboxes is recognised as ONE logical observation and does
+    NOT create a second BrokerEvent/Withdrawal. Read-only observation plane; NO execution/strategy/credential
+    authority."""
+    return _flag("BROKER_CROSS_INBOX_DEDUP_ENABLED")
