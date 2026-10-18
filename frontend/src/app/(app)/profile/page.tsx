@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { apiFetch } from "@/lib/api";
 import { TelegramNotificationsCard } from "@/components/settings/TelegramNotificationsCard";
 import { BrokerIdentityVerification } from "@/components/accounts/BrokerIdentityVerification";
+import { ConnectedEmailAccounts } from "@/components/accounts/ConnectedEmailAccounts";
 import { useLang } from "@/components/AppShell";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
@@ -186,6 +187,10 @@ export default function ProfilePage() {
         {/* Billing UI → /account/billing · Hosting UI → /account/hosting (hidden from nav) */}
 
         <TelegramNotificationsCard />
+
+        {/* Connected email accounts (customer Gmail connect/status/reconnect/disconnect) — DARK-safe: self-hides
+            until armed. Placed before identity verification so the journey flows connect -> verify. */}
+        <ConnectedEmailAccounts lang={lang} />
 
         {/* Broker email identity verification (WP7) — DARK-safe: self-hides until armed. */}
         <BrokerIdentityVerification lang={lang} />
