@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -713,11 +713,13 @@ class MailboxConnectOps(TestCase):
                                        "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer"}
         S.fetch_profile = lambda at, **k: {"emailAddress": email, "historyId": "100"}
 
-    def test_web_journey_success_redirects_to_fixed_destination(self):
+    def test_web_journey_success_redirects_to_frontend_origin(self):
+        # §505.2: a browser success lands on the GuvFX FRONTEND origin (guvfx.com) with a NON-sensitive outcome marker
+        # — never a relative path (which would resolve to the API origin that serves this callback), never a token.
         import broker_intelligence.gmail_oauth as O
         import broker_intelligence.gmail_source as S
         from django.core import signing
-        from broker_intelligence.views import _STATE_SALT, _RETURN_SALT
+        from broker_intelligence.views import _STATE_SALT
         orig = (O.exchange_code, S.fetch_profile)
         try:
             self._fake_ok(O, S)
@@ -725,23 +727,19 @@ class MailboxConnectOps(TestCase):
             r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=SECRETCODE&state={st}")
             self.assertEqual(r.status_code, 302)
             loc = r["Location"]
-            self.assertTrue(loc.startswith("/profile"), loc)        # FIXED destination, not from the request
-            self.assertIn("mailbox_connect=", loc)
-            # the Google code/token/state are NEVER forwarded in the redirect
-            for leak in ("SECRETCODE", "access_token", "refresh_token", "state=", "AT", "RT"):
-                self.assertNotIn(leak, loc, leak)
-            token = loc.split("mailbox_connect=", 1)[1]
-            payload = signing.loads(token, salt=_RETURN_SALT)       # server-signed outcome, tamper-evident
-            self.assertTrue(payload["ok"])
-            self.assertEqual(payload["uid"], self.u.id)
+            self.assertTrue(loc.startswith("https://guvfx.com/profile"), loc)   # FRONTEND origin, not relative/API
+            self.assertFalse(loc.startswith("/profile"))                        # never a bare relative path
+            self.assertIn("mailbox_connect=connected", loc)
+            for leak in ("SECRETCODE", "access_token", "refresh_token", "state=", "RT"):
+                self.assertNotIn(leak, loc, leak)                               # code/token/state never forwarded
         finally:
             O.exchange_code, S.fetch_profile = orig
 
-    def test_web_journey_error_redirects_with_signed_error_outcome(self):
+    def test_web_journey_error_redirects_with_outcome_marker(self):
         import broker_intelligence.gmail_oauth as O
         import broker_intelligence.gmail_source as S
         from django.core import signing
-        from broker_intelligence.views import _STATE_SALT, _RETURN_SALT
+        from broker_intelligence.views import _STATE_SALT
         orig = (O.exchange_code, S.fetch_profile)
         try:
             self._fake_ok(O, S, email="intruder@gmail.com")
@@ -750,15 +748,48 @@ class MailboxConnectOps(TestCase):
                                 "expect": "owner@gmail.com", "rt": True}, salt=_STATE_SALT)
             r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
             self.assertEqual(r.status_code, 302)
-            self.assertTrue(r["Location"].startswith("/profile"))
-            payload = signing.loads(r["Location"].split("mailbox_connect=", 1)[1], salt=_RETURN_SALT)
-            self.assertFalse(payload["ok"])
-            self.assertEqual(payload["code"], "oauth_account_mismatch")
+            self.assertTrue(r["Location"].startswith("https://guvfx.com/profile"))
+            self.assertIn("mailbox_connect=oauth_account_mismatch", r["Location"])
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_consent_denied_web_journey_redirects(self):
+        # §505.1: the member declining Google consent (error=access_denied, no code) -> customer-safe denied outcome
+        # on the frontend; Google's raw error string is NEVER echoed.
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        st = signing.dumps({"uid": self.u.id, "n": "d", "op": "CONNECT_FIRST_MAILBOX", "rt": True}, salt=_STATE_SALT)
+        r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?error=access_denied&state={st}")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r["Location"].startswith("https://guvfx.com/profile"))
+        self.assertIn("mailbox_connect=consent_denied", r["Location"])
+        self.assertNotIn("access_denied", r["Location"])
+
+    def test_consent_denied_api_returns_json(self):
+        r = self.c.get("/api/broker-intelligence/mailboxes/callback/?error=access_denied")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "consent_denied")
+
+    def test_reconnect_target_missing_rejected_before_exchange(self):
+        # §505.3: a reconnect whose targeted mailbox no longer exists / is not owned is refused at the callback BEFORE
+        # any code exchange — never silently creating a new mailbox under a reconnect intent.
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._fake_ok(O, S)
+            st = signing.dumps({"uid": self.u.id, "n": "m", "op": "RECONNECT_EXISTING_MAILBOX",
+                                "mailbox_pk": 999999, "expect": "owner@gmail.com"}, salt=_STATE_SALT)
+            r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
+            self.assertEqual(r.status_code, 404)
+            self.assertEqual(r.json()["error"], "reconnect_target_missing")
         finally:
             O.exchange_code, S.fetch_profile = orig
 
     def test_api_journey_without_rt_returns_json(self):
-        # Back-compat: a callback WITHOUT the signed return-journey flag keeps the JSON contract (operator/API).
+        # Back-compat: a callback WITHOUT the return-journey flag keeps the JSON contract (operator/API).
         import broker_intelligence.gmail_oauth as O
         import broker_intelligence.gmail_source as S
         from django.core import signing
@@ -770,6 +801,25 @@ class MailboxConnectOps(TestCase):
             r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
             self.assertEqual(r.status_code, 200)
             self.assertTrue(r.json()["ok"])
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def test_default_return_url_is_frontend_origin_not_api(self):
+        # §505.2: with NO explicit BROKER_MAILBOX_CONNECT_RETURN_URL, the destination is FRONTEND_BASE_URL + /profile
+        # (the frontend origin), never the relative /profile that would resolve against the API host.
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._fake_ok(O, S)
+            st = signing.dumps({"uid": self.u.id, "n": "x", "op": "CONNECT_FIRST_MAILBOX", "rt": True}, salt=_STATE_SALT)
+            with override_settings(BROKER_MAILBOX_CONNECT_RETURN_URL="", FRONTEND_BASE_URL="https://guvfx.com"):
+                r = self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code=C&state={st}")
+            self.assertEqual(r.status_code, 302)
+            self.assertTrue(r["Location"].startswith("https://guvfx.com/profile"), r["Location"])
+            self.assertFalse(r["Location"].startswith("/profile"))
         finally:
             O.exchange_code, S.fetch_profile = orig
 
@@ -909,3 +959,49 @@ class MailboxStatusApiR2(TestCase):
         self._mb(user=other, pmid="theirs@gmail.com")
         body = self.c.get("/api/broker-intelligence/mailboxes/status/").content.decode()
         self.assertNotIn("theirs", body)
+
+
+@override_settings(BROKER_MAILBOX_STATUS_ENABLED="1")
+class MailboxStatusPhysicalSchema0010(TransactionTestCase):
+    """§505.4 — PHYSICAL schema-0010 certification (NOT mocked introspection). Migrate broker_intelligence DOWN to
+    migration 0010 (the production schema) so the migration-0011 health columns genuinely DO NOT EXIST, prove
+    r1_columns_present() reports False from REAL DB introspection, and the owner-scoped status endpoint still returns
+    200 without referencing a non-existent column. Restores the schema to 0011 afterwards regardless of outcome.
+
+    A TransactionTestCase is required (schema DDL cannot run inside the single outer transaction of a TestCase). The
+    down→up is done via the real migration (not an ad-hoc schema_editor DROP), so the schema is fully restored for
+    subsequent tests — avoiding the shared-DB corruption that an un-restored DDL drop caused in the R1 incident."""
+    _APP = "broker_intelligence"
+    _V0010 = "0010_brokerprofile_supported_categories_provenance"
+    _V0011 = "0011_connectedmailbox_consecutive_failures_and_more"
+
+    def _migrate(self, target):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        MigrationExecutor(connection).migrate([(self._APP, target)])
+
+    def setUp(self):
+        self._migrate(self._V0010)                 # physically drop the 0011 health columns (prod schema 0010)
+        self.addCleanup(self._migrate, self._V0011)  # always restore, even if the test fails
+
+    def test_status_endpoint_certified_on_physical_schema_0010(self):
+        from django.db import connection
+        from broker_intelligence.health import r1_columns_present
+        self.assertFalse(r1_columns_present())     # REAL introspection: the 0011 columns are physically absent
+        u = User.objects.create_user(username="phys", email="phys@x.invalid", password="x")
+        c = APIClient(); c.force_authenticate(u)
+        # Insert the mailbox via RAW SQL using ONLY the 0010 columns — an ORM .create() would reference the absent
+        # 0011 columns and fail, which is exactly the production hazard the endpoint's projection guards against.
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO broker_intelligence_connectedmailbox "
+                "(user_id, provider, provider_mailbox_id, primary_email, status, credential_ref, scopes, "
+                " cursor_state, last_successful_sync, created_at, updated_at) "
+                "VALUES (%s,'GMAIL','owner@gmail.com','owner@gmail.com','CONNECTED','cr','', '100', "
+                " NOW() - INTERVAL '100 days', NOW(), NOW())",
+                [u.id])
+        r = c.get("/api/broker-intelligence/mailboxes/status/")
+        self.assertEqual(r.status_code, 200, r.content)   # no ProgrammingError over a missing column
+        item = r.json()["mailboxes"][0]
+        self.assertEqual(item["state"], "DEGRADED")       # staleness classifies; no invented OAuth diagnosis on 0010
+        self.assertFalse(item["reconnect_required"])
