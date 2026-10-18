@@ -57,6 +57,9 @@ class BrokerMetricCategory(models.Model):
     # Documented publication minimums — below EITHER, an aggregate is INSUFFICIENT_DATA (tiny-sample privacy guard).
     min_contributors = models.PositiveIntegerField(default=5)       # distinct members contributing
     min_samples = models.PositiveIntegerField(default=20)           # observations after de-dup + per-contributor cap
+    # A DISTRIBUTION statistic (e.g. processing-time median/quantiles) needs its own floor of completed observations,
+    # independent of the overall sample, so a single completed withdrawal can never BE the published median.
+    min_completed_samples = models.PositiveIntegerField(default=5)
     # Max share of the sample any single contributor may provide (winsorisation), so one user/duplicate can't
     # dominate a public statistic. Expressed as a percentage 1..100.
     max_contributor_share_pct = models.PositiveSmallIntegerField(default=40)

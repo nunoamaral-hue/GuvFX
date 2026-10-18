@@ -35,8 +35,10 @@ def _aggregate_json(agg: BrokerMetricAggregate) -> dict:
         "observation_window": {"start": agg.window_start.isoformat() if agg.window_start else None,
                                "end": agg.window_end.isoformat() if agg.window_end else None},
         "last_update": agg.computed_at.isoformat() if agg.computed_at else None,
-        "data_freshness": agg.data_freshness_at.isoformat() if agg.data_freshness_at else None,
-        # stats only when PUBLISHED; INSUFFICIENT_DATA shows no numbers (tiny-sample privacy guard).
+        # data_freshness (already coarsened to the date) AND stats are emitted ONLY when PUBLISHED — INSUFFICIENT_DATA
+        # shows no numbers and no per-record-derived timestamp (tiny-sample privacy guard, defence-in-depth).
+        "data_freshness": (agg.data_freshness_at.isoformat() if (agg.data_freshness_at
+                           and agg.state == BrokerMetricAggregate.State.PUBLISHED) else None),
         "stats": agg.stats if agg.state == BrokerMetricAggregate.State.PUBLISHED else {},
     }
 
