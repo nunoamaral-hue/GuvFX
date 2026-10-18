@@ -69,4 +69,21 @@ describe("WithdrawalsPanel", () => {
     await waitFor(() => expect(screen.getByTestId("withdrawals-panel")).toBeTruthy());
     expect(screen.getByTestId("withdrawals-panel").textContent).toMatch(/No withdrawals observed yet/);
   });
+
+  it("surfaces the single-sample caveat and the genuine-sample count (§10)", async () => {
+    api.apiFetch.mockResolvedValue(metrics({ sample_caveat: true, genuine_count: 1 }));
+    render(<WithdrawalsPanel />);
+    await waitFor(() => expect(screen.getByTestId("withdrawals-panel")).toBeTruthy());
+    expect(screen.getByTestId("withdrawals-sample-caveat").textContent).toMatch(/single observed withdrawal/i);
+    expect(screen.getByTestId("withdrawals-genuine-count").textContent).toMatch(/Genuine samples: 1/);
+  });
+
+  it("omits the caveat when a figure does not rest on a single sample", async () => {
+    api.apiFetch.mockResolvedValue(metrics({ sample_caveat: false, genuine_count: 4,
+      processing_duration: { count: 4, avg_seconds: 3600, median_seconds: 3600, min_seconds: 60, max_seconds: 7200 } }));
+    render(<WithdrawalsPanel />);
+    await waitFor(() => expect(screen.getByTestId("withdrawals-panel")).toBeTruthy());
+    expect(screen.queryByTestId("withdrawals-sample-caveat")).toBeNull();
+    expect(screen.getByTestId("withdrawals-genuine-count").textContent).toMatch(/Genuine samples: 4/);
+  });
 });

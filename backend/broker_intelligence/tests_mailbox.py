@@ -185,10 +185,15 @@ class MailboxIngestE2E(TestCase):
             received_at=timezone.now(), provenance=Provenance.SYNTHETIC,
             correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED)
         run_correlation()
+        # The pipeline still PROJECTS the withdrawal (correlation works)...
         self.assertEqual(Withdrawal.objects.filter(trading_account=self.acct).count(), 1)
+        # ...but it is SYNTHETIC, so the member-facing statistics EXCLUDE it (§507): a synthetic test record can never
+        # inflate a member's genuine withdrawal statistics. It is accounted for via excluded_non_genuine_count.
         m = withdrawal_metrics([self.acct])
-        self.assertEqual(m["completed_count"], 1)
-        self.assertEqual(m["completed_amount_by_currency"], {"USD": "200.00"})
+        self.assertEqual(m["completed_count"], 0)
+        self.assertEqual(m["genuine_count"], 0)
+        self.assertEqual(m["excluded_non_genuine_count"], 1)
+        self.assertEqual(m["completed_amount_by_currency"], {})
 
 
 @override_settings(**ENV)
