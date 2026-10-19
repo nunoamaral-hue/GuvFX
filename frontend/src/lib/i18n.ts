@@ -128,6 +128,50 @@ type Dictionary = {
 
 const dictionary: Dictionary = {
   // -----------------------------------------------------------------------------
+  // Public broker performance directory (MULTI_ACCOUNT §E/§G — DARK; consumes /api/public/brokers)
+  // -----------------------------------------------------------------------------
+  "brokerDir.title": { en: "Broker performance directory", ja: "ブローカーパフォーマンス一覧" },
+  "brokerDir.subtitle": {
+    en: "Independent, aggregate withdrawal-processing metrics from verified, consenting GuvFX members. Aggregate-only — never an individual account, transaction, or amount.",
+    ja: "検証済みで同意したGuvFXメンバーからの、独立した集計ベースの出金処理指標です。常に集計のみ — 個別の口座・取引・金額は一切含みません。",
+  },
+  "brokerDir.loading": { en: "Loading…", ja: "読み込み中…" },
+  "brokerDir.unavailableTitle": { en: "Not yet available", ja: "現在ご利用いただけません" },
+  "brokerDir.unavailableBody": {
+    en: "The public broker directory is not published yet. Please check back later.",
+    ja: "公開ブローカー一覧はまだ公開されていません。後ほどご確認ください。",
+  },
+  "brokerDir.emptyTitle": { en: "No brokers published yet", ja: "公開されているブローカーはまだありません" },
+  "brokerDir.emptyBody": {
+    en: "Broker metrics appear here once enough verified, consented data has been certified.",
+    ja: "十分な検証済み・同意済みデータが認証されると、ここにブローカー指標が表示されます。",
+  },
+  "brokerDir.viewMetrics": { en: "View metrics", ja: "指標を見る" },
+  "brokerDir.back": { en: "← All brokers", ja: "← すべてのブローカー" },
+  "brokerDir.visitWebsite": { en: "Visit website", ja: "ウェブサイトを見る" },
+  "brokerDir.notFoundTitle": { en: "Broker not found", ja: "ブローカーが見つかりません" },
+  "brokerDir.notFoundBody": {
+    en: "This broker is not in the published directory.",
+    ja: "このブローカーは公開一覧にありません。",
+  },
+  "brokerDir.disclaimer": {
+    en: "GuvFX never initiates, confirms, or cancels withdrawals. These figures describe what GuvFX observed from brokers' own notifications — not a guarantee that funds were received.",
+    ja: "GuvFXは出金の開始・確認・取消を一切行いません。これらの数値はブローカー自身の通知からGuvFXが観測した内容を示すもので、資金の受領を保証するものではありません。",
+  },
+  "brokerMetrics.withdrawalProcessing": { en: "Withdrawal processing", ja: "出金処理" },
+  "brokerMetrics.noneTitle": { en: "No metrics yet", ja: "指標はまだありません" },
+  "brokerMetrics.insufficientTitle": { en: "Not enough data yet", ja: "データが不足しています" },
+  "brokerMetrics.insufficientBody": {
+    en: "A metric is published only once it reflects enough independent, consenting contributors that no single member can be identified. This broker has not met that threshold yet.",
+    ja: "指標は、単一のメンバーを特定できないほど十分な独立した同意済み貢献者が揃った場合にのみ公開されます。このブローカーはまだその基準に達していません。",
+  },
+  "brokerMetrics.sampleSize": { en: "Sample size", ja: "サンプル数" },
+  "brokerMetrics.contributors": { en: "Contributors", ja: "貢献者数" },
+  "brokerMetrics.window": { en: "Observation window", ja: "観測期間" },
+  "brokerMetrics.lastUpdate": { en: "Last updated", ja: "最終更新" },
+  "brokerMetrics.methodology": { en: "Methodology version", ja: "方法論バージョン" },
+
+  // -----------------------------------------------------------------------------
   // Auth Gate — session verification / error states
   // -----------------------------------------------------------------------------
   "auth.sessionError": {
