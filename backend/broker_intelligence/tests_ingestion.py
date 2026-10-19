@@ -187,19 +187,22 @@ class IngestPipelineTests(_TmpEvidence):
         self.assertEqual(EvidenceBlob.objects.count(), 1)                     # raw evidence retained
 
     def test_evidence_unique_is_db_enforced(self):
-        # Structural idempotency backstop: a second BrokerEvent for the same evidence blob is refused at the DB
-        # (uniq_brokerevent_evidence), not just by the app-layer pre-check — so a concurrent race cannot duplicate.
+        # Structural idempotency backstop: a second BrokerEvent for the same (owner, evidence) is refused at the DB
+        # (uniq_brokerevent_evidence_owner), not just by the app-layer pre-check — so a concurrent race by the SAME
+        # owner cannot duplicate. Owner-scoped per the PD review of #511: a DIFFERENT owner legitimately keeps its own
+        # event over the shared immutable blob (proved in tests_cross_inbox_dedup), so the collision is same-owner.
         from django.db import IntegrityError, transaction
         parsers.register_parser(_FakeParser())
         a = _acct()
         al = mint_alias_for_account(a)
         ev = ingestion.ingest_message(_msg(al.address()), store=self.store)
         self.assertIsNotNone(ev)
+        self.assertIsNotNone(ev.owner_id)                       # the alias resolves a non-null owner
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 BrokerEvent.objects.create(
-                    trading_account=a, event_type="WITHDRAWAL_COMPLETED", received_at=timezone.now(),
-                    evidence=ev.evidence, evidence_hash=ev.evidence.sha256)
+                    owner_id=ev.owner_id, trading_account=a, event_type="WITHDRAWAL_COMPLETED",
+                    received_at=timezone.now(), evidence=ev.evidence, evidence_hash=ev.evidence.sha256)
 
     @override_settings(BROKER_INTELLIGENCE_SENDER_ALLOWLIST="tradersway.invalid")
     def test_explicit_real_provenance_is_honoured(self):

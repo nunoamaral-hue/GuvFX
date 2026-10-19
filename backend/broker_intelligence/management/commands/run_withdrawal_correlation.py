@@ -20,12 +20,24 @@ class Command(BaseCommand):
 
     def handle(self, *args, **o):
         from broker_intelligence.correlation import run_correlation
-        from broker_intelligence.flags import broker_withdrawal_correlation_enabled
+        from broker_intelligence.flags import (broker_cross_inbox_dedup_enabled,
+                                               broker_withdrawal_correlation_enabled)
 
         if not broker_withdrawal_correlation_enabled() and not o["force"]:
             self.stdout.write(self.style.WARNING(
                 "withdrawal correlation is DARK (BROKER_WITHDRAWAL_CORRELATION_ENABLED off); pass --force to run. "
                 "No events processed."))
+            return
+
+        # Arming coupling (fail-closed): the ref-less cross-inbox collapse that stops a withdrawal delivered to TWO
+        # inboxes from double-counting relies on the per-inbox delivery rows that exist ONLY when cross-inbox dedup is
+        # ON. Refuse the LIVE pass without it, so arming correlation alone can never inflate public statistics.
+        # --force (operator/test escape hatch) bypasses both gates.
+        if not broker_cross_inbox_dedup_enabled() and not o["force"]:
+            self.stdout.write(self.style.ERROR(
+                "refusing: BROKER_WITHDRAWAL_CORRELATION_ENABLED is on but BROKER_CROSS_INBOX_DEDUP_ENABLED is off. "
+                "The ref-less cross-inbox withdrawal collapse needs per-inbox delivery records; arm cross-inbox dedup "
+                "first (or pass --force for an operator/test run). No events processed."))
             return
 
         summary = run_correlation(limit=o["limit"])

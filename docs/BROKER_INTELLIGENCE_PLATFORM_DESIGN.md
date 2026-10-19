@@ -107,26 +107,42 @@ layers, de-duplicated independently:
    SAME logical email arriving in TWO inboxes is TWO distinct authenticated deliveries, each preserved with its own
    per-mailbox provenance. (Message-ID may be stored as non-authoritative metadata only, versioned-canonicalised, but
    is never a suppression key.)
-2. **Broker event** (a parsed observation from a delivery's immutable evidence). One per delivery; evidence is
-   content-addressed and immutable. **Cross-owner safety:** the existing global `EvidenceBlob.sha256` +
-   `BrokerEvent(evidence)` uniqueness + the early existing-event return means byte-identical bytes reaching two
-   users/mailboxes would hand the SECOND user the FIRST user's event — a cross-owner provenance leak / silent drop.
-   The idempotency return is therefore made **owner-aware** (an existing event is reused only for the SAME owner);
-   delivery provenance is modelled per mailbox/user so no second customer ever inherits another's event, while the
-   immutable evidence blob is still shared/de-duplicated. Account for `BrokerEvent` immutability (app + DB trigger).
-3. **Financial withdrawal** (the correlated transaction). De-duplicated at the TRANSACTION layer by
-   `owner + canonical broker + trading account + broker reference/lifecycle` — the existing
-   `(trading_account, broker_reference_id)` partial-unique + the monotonic AMBIGUOUS/UNRESOLVED correlation state
-   machine. Duplicate deliveries of the same withdrawal collapse here (same owner+account+reference → one
-   withdrawal); anything ambiguous → `UNRESOLVED`, never guessed. This preserves the distinction delivered-email ≠
-   broker-event ≠ withdrawal: duplicate deliveries do not inflate statistics, and unrelated authentic evidence is
-   never discarded.
+2. **Broker event** (a parsed observation from a delivery's immutable evidence). One per `(owner, delivery)`;
+   evidence is content-addressed, immutable and globally de-duplicated (one blob per distinct raw bytes).
+   **Cross-owner safety — the reconciliation of global evidence uniqueness with owner-scoped attribution:** the
+   former global `BrokerEvent(evidence)` unique + the early existing-event return meant byte-identical bytes reaching
+   two users (one shared blob) would hand the SECOND user the FIRST user's event — a cross-owner leak / silent drop.
+   Fix: the event is keyed on **`owner_key`** = the TRUSTED mailbox owner (`owner_user`), falling back to the
+   recipient-resolved owner only when no mailbox owner is passed — NOT on the fail-closed recipient resolution, which
+   is NULL on the common unverified path and would collapse the key to `WHERE owner IS NULL`. The `BrokerEvent`
+   uniqueness is relaxed from global to owner-scoped `(owner, evidence)` (partial, both non-null); the early
+   idempotency filter and the `IntegrityError` recovery use the identical `owner_key`. A hard per-blob **owner-null**
+   unique is deliberately omitted (it hits Postgres NULLS-DISTINCT and, because `owner` is SET_NULL on user deletion,
+   would collide a to-be-nulled sibling for a shared blob and deadlock the operator purge); the live path always
+   writes a non-null owner, so the null bucket is synthetic/legacy only and relies on the app-layer filter. The
+   immutable blob stays shared; `BrokerEvent` immutability (app + DB trigger) is untouched.
+3. **Financial withdrawal** (the correlated transaction, a rebuildable derivative). Two collapse paths, by whether the
+   broker supplies a reference id:
+   - **Ref-carrying:** de-duplicated deterministically at the TRANSACTION layer by `(trading_account,
+     broker_reference_id)` (partial-unique) + the monotonic AMBIGUOUS/UNRESOLVED machine — same account+reference →
+     one withdrawal.
+   - **Ref-LESS** (e.g. the certified IS6 template, which carries no reference — so the transaction-layer unique does
+     NOT fire and two preserved inbox copies would otherwise open two withdrawals and inflate the public stat): the
+     ref-less OPENING collapse runs at the **correlation layer**, adopting an already-projected withdrawal of the
+     SAME logical email for the SAME `(owner, trading_account)`, using the per-delivery RFC822 Message-ID as a
+     **non-authoritative cross-inbox HINT** (never a suppression/trust key). A forged/reused Message-ID can at worst
+     conservatively MERGE two of ONE owner's own events (an under-count, never inflation, never cross-owner). This
+     collapse is inert unless the per-delivery table is populated, and the live correlation pass is **gated so it
+     never arms without cross-inbox dedup**.
+   Either way the distinction delivered-email ≠ broker-event ≠ withdrawal holds: duplicate deliveries do not inflate
+   statistics, and both authentic events are preserved (never discarded).
 
-Required tests (negative): same Message-ID with different content/account/broker/owner (must NOT collapse); distinct
-Message-IDs for the same withdrawal (must collapse at the transaction layer); missing Message-ID (falls back to
-delivery id + reference correlation); shared raw bytes across two owners (each keeps its own event). **The
-Message-ID-based event suppression merged in #514 is superseded by this model and is corrected in a follow-up PR; it
-is DARK (flag OFF) and was never active.**
+Required tests (negative): same `(mailbox, provider_message_id)` re-fetch with differing bytes (ONE event); same
+logical email via TWO inboxes (TWO preserved events, ONE withdrawal); shared raw bytes across two owners (each keeps
+its own event; user-deletion of both does not deadlock); missing `provider_message_id` (delivery write skipped, never
+a dropped event); distinct Message-IDs for genuinely distinct ref-less requests (stay two); correlation arming
+refused without cross-inbox dedup. **The Message-ID-based event suppression merged in #514 is superseded by this model
+and corrected by the C2 re-architecture; it was DARK (flag OFF) and never active.**
 
 **Broker canonical identity + public metrics (E/F).** A new **public** layer, separate from internal config:
 ```

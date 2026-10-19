@@ -24,9 +24,13 @@ class MailMessage:
     subject: str
     body: str
     received_at: datetime.datetime
-    provider_message_id: str = ""   # the mailbox's own id (for ack/dedup at the source), NOT a GuvFX id
-    # The RFC822 ``Message-ID`` header — STABLE across inboxes for the same logical email (unlike provider_message_id
-    # or the raw-byte sha256), so it is the cross-inbox de-duplication key (MULTI_ACCOUNT §D). Empty when absent.
+    # The mailbox's OWN stable id for this message (Gmail message id / IMAP UIDVALIDITY+UID), NOT a GuvFX id. With
+    # ``connected_mailbox`` it is the TRUSTED per-delivery identity ``(connected_mailbox, provider_message_id)`` used
+    # to recognise a same-inbox RE-FETCH (MULTI_ACCOUNT §D). Empty when the source cannot supply it.
+    provider_message_id: str = ""
+    # The RFC822 ``Message-ID`` header. NON-AUTHORITATIVE metadata only — sender-controlled and possibly absent,
+    # reused or forged, so it is NEVER a de-duplication/suppression key (corrected per the PD review of #511). It is
+    # kept solely as a cross-inbox CORRELATION HINT at the withdrawal layer. Empty when absent.
     rfc822_message_id: str = ""
     # R3b sender-authenticity verdict derived from the provider's Authentication-Results header: "pass" (DMARC pass,
     # or SPF+DKIM both pass), "fail" (present but not passing), or None (no verdict available). The From header is

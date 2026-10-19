@@ -89,11 +89,14 @@ def broker_withdrawal_correlation_enabled() -> bool:
 
 
 def broker_cross_inbox_dedup_enabled() -> bool:
-    """Gate for cross-inbox withdrawal de-duplication (MULTI_ACCOUNT_PUBLIC_METRICS §D). DEFAULT OFF. While OFF the
-    ingestion pipeline is byte-identical to today and NEVER touches the additive ``BrokerMessageObservation`` table,
-    so the feature is fully DARK and unmigrated-safe (migration 0013 need not be applied for the OFF path). While ON
-    (and after 0013 is applied), the same logical broker message — identified by its RFC822 Message-ID, which is
-    STABLE across inboxes — observed through TWO connected inboxes is recognised as ONE logical observation and does
-    NOT create a second BrokerEvent/Withdrawal. Read-only observation plane; NO execution/strategy/credential
-    authority."""
+    """Gate for per-delivery de-duplication (MULTI_ACCOUNT_PUBLIC_METRICS §D, corrected per the PD review of #511).
+    DEFAULT OFF. While OFF the ingestion pipeline NEVER touches the additive ``BrokerMessageObservation`` delivery
+    table, so the feature is fully DARK and unmigrated-safe. While ON (and after the migration is applied), a genuine
+    RE-FETCH of the SAME message from the SAME inbox — identified by the TRUSTED mailbox-native
+    ``(connected_mailbox, provider_message_id)`` — reuses the existing event instead of creating a second, and each
+    delivery records its RFC822 Message-ID as a NON-AUTHORITATIVE cross-inbox correlation hint (never a suppression
+    key). The SAME logical email arriving through TWO different inboxes is TWO preserved owner-scoped events (never
+    discarded); they collapse to ONE Withdrawal only at the correlation layer. (NB: the owner-scoped BrokerEvent
+    idempotency itself is UNCONDITIONAL — not gated by this flag — once the migration is applied.) Read-only
+    observation plane; NO execution/strategy/credential authority."""
     return _flag("BROKER_CROSS_INBOX_DEDUP_ENABLED")
