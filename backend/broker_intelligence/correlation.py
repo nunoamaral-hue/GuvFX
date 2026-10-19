@@ -11,6 +11,12 @@ The single, deterministic path from parsed broker events to a member-visible wit
   account + amount + currency within a bounded time window. **Exactly one** candidate ⇒ correlate; **two or more**
   ⇒ AMBIGUOUS (never guessed); **zero** ⇒ a requested-class event starts a new record, a completion-class event is
   left UNRESOLVED (a completion is never fabricated into a request).
+* **Cross-inbox collapse (ref-less openings; DARK).** Before a ref-less OPENING starts a new record, if a SIBLING
+  inbox copy of the SAME logical email (same owner + same non-authoritative RFC822 Message-ID hint on the per-inbox
+  delivery rows) already opened a Withdrawal for the SAME ``(owner, trading_account)``, the opening ADOPTS it rather
+  than creating a second — so one real withdrawal delivered to two inboxes is ONE Withdrawal (duplicate deliveries
+  must not inflate statistics), while BOTH authentic events are preserved. Inert unless the delivery table is
+  populated (cross-inbox dedup ON); the live pass is gated so it never arms without it.
 * **Monotonic status, positive evidence only.** ``Withdrawal.status`` only ever ADVANCES
   (REQUESTED→PROCESSING→terminal); it never regresses, and a lower-rank event never downgrades a higher state. A
   requested/completion anchor is backfilled when first observed, enriching provenance without regressing status.
@@ -35,7 +41,7 @@ from typing import Optional
 
 from django.db import IntegrityError, transaction
 
-from .models import BrokerEvent, TransactionCategory, Withdrawal
+from .models import BrokerEvent, BrokerMessageObservation, TransactionCategory, Withdrawal
 
 logger = logging.getLogger("guvfx.broker_intelligence.correlation")
 
@@ -79,6 +85,7 @@ class CorrelationResult:
 # Stable outcome codes (secret-free).
 OUT_REFERENCE = "correlated_reference"
 OUT_HEURISTIC = "correlated_heuristic"
+OUT_CROSS_INBOX = "correlated_cross_inbox"   # a duplicate inbox copy of one logical email adopted the sibling withdrawal
 OUT_CREATED = "created"                 # a new withdrawal was started from a requested-class event
 OUT_AMBIGUOUS = "ambiguous"             # >=2 heuristic candidates — never guessed
 OUT_UNRESOLVED = "unresolved"           # a completion with no ref and no match — never fabricated
@@ -265,11 +272,53 @@ def _create_heuristic(event: BrokerEvent, target_status: str) -> CorrelationResu
     return CorrelationResult(event.id, OUT_CREATED, withdrawal.id)
 
 
+def _refless_sibling_withdrawal(event: BrokerEvent) -> Optional[Withdrawal]:
+    """Cross-inbox collapse for a ref-less OPENING event (§D, corrected per the PD review of #511). The SAME logical
+    broker email delivered to TWO inboxes is preserved as two owner-scoped ``BrokerEvent``s (neither discarded —
+    data.md); without this, each would open its OWN ref-less ``Withdrawal`` and double-count the SINGLE real
+    withdrawal (IS6, the certified broker feeding public metrics, is always ref-less). The per-inbox delivery rows
+    (``BrokerMessageObservation``) carry the RFC822 Message-ID as a NON-AUTHORITATIVE cross-inbox HINT: if a SIBLING
+    delivery of the same logical message (same owner + same non-empty Message-ID, a DIFFERENT delivery row) already
+    projected a ``Withdrawal`` for the SAME ``(owner, trading_account)``, this opening ADOPTS it instead of creating a
+    second. The hint only ever MERGES two of ONE owner's OWN deliveries of one email — a conservative under-count on a
+    forged/reused Message-ID (never inflation, never cross-owner). Returns the Withdrawal to adopt, or None.
+
+    Inert unless the delivery table is populated (cross-inbox dedup OFF ⇒ no rows ⇒ None ⇒ today's behaviour), and the
+    live correlation pass is gated so it never arms without cross-inbox dedup (see the management command). Assumes the
+    sequential, single-worker correlation loop (``run_correlation``); it is not a cross-event concurrency primitive."""
+    # Message-IDs recorded on THIS event's own delivery row(s) — the owner is taken from the delivery row, not trusted
+    # from elsewhere. Blank Message-IDs carry no cross-inbox identity and are skipped.
+    own = list(BrokerMessageObservation.objects
+               .filter(event=event, rfc822_message_id__gt="")
+               .values_list("owner_id", "rfc822_message_id"))
+    for owner_id, mid in own:
+        if owner_id is None:
+            continue
+        sibling_event_ids = [e for e in (BrokerMessageObservation.objects
+                                         .filter(owner_id=owner_id, rfc822_message_id=mid)
+                                         .exclude(event=event)
+                                         .values_list("event_id", flat=True)) if e is not None]
+        if not sibling_event_ids:
+            continue
+        w = (Withdrawal.objects
+             .filter(requested_event_id__in=sibling_event_ids, trading_account_id=event.trading_account_id)
+             .order_by("id").first())
+        if w is not None:
+            return w
+    return None
+
+
 def _correlate_by_heuristic(event: BrokerEvent, target_status: str) -> CorrelationResult:
     # An OPENING request STARTS a new record — never heuristically merged into an existing one (two distinct ref-less
     # requests are two withdrawals; a later advancing event then sees >=2 candidates and is AMBIGUOUS, never guessed).
     # Amount may be absent on an opening request (nullable) — a request legitimately starts a record regardless.
     if (event.event_type or "").strip() in _OPENING_EVENTS:
+        # Cross-inbox collapse FIRST (DARK; inert unless delivery rows carry Message-ID hints): a duplicate inbox copy
+        # of the SAME logical email adopts the sibling's withdrawal so duplicate deliveries do not inflate statistics.
+        sibling = _refless_sibling_withdrawal(event)
+        if sibling is not None:
+            _mark_event(event, BrokerEvent.CorrelationStatus.CORRELATED)
+            return CorrelationResult(event.id, OUT_CROSS_INBOX, sibling.id)
         return _create_heuristic(event, target_status)
     # ADVANCING event (confirmation/confirmed/processing/approved/completed/rejected/cancelled): attach to an EXISTING
     # ref-less withdrawal. Without amount+currency it cannot be matched and is never fabricated into a new record.

@@ -254,11 +254,20 @@ class BrokerEvent(models.Model):
     class Meta:
         ordering = ["id"]   # chronological, append-only
         constraints = [
-            # Idempotency backstop: one message (one EvidenceBlob) -> at most one BrokerEvent. Structural guarantee
-            # (not just the app-layer filter-then-create), so a concurrent/redelivered re-ingest cannot persist a
-            # duplicate event. Partial (evidence present) — events without a blob are not constrained.
-            models.UniqueConstraint(fields=["evidence"], condition=models.Q(evidence__isnull=False),
-                                    name="uniq_brokerevent_evidence"),
+            # Per-OWNER content-addressed idempotency backstop: one (owner, EvidenceBlob) -> at most one BrokerEvent.
+            # Structural guarantee (not just the app-layer filter-then-create), so a concurrent/redelivered re-ingest
+            # by the SAME owner cannot persist a duplicate event. Owner-scoped (NOT global) so two DIFFERENT mailbox
+            # owners who receive BYTE-IDENTICAL raw bytes share the ONE content-addressed EvidenceBlob yet each keep
+            # their OWN owner-attributed event — closing the cross-owner inheritance leak without discarding either
+            # authentic delivery (MULTI_ACCOUNT §D; security.md no-cross-user-leak; data.md never-drop-evidence).
+            # The live mailbox path ALWAYS writes a non-null owner (the mailbox owner), so every real event is covered.
+            # The owner-null bucket (synthetic/legacy callers only) relies on the app-layer idempotency filter; a hard
+            # per-blob unique there is deliberately OMITTED — it would hit Postgres NULLS-DISTINCT, and because owner is
+            # SET_NULL on user deletion it would collide a to-be-nulled sibling for a shared blob and deadlock the
+            # operator purge (see migration 0014).
+            models.UniqueConstraint(fields=["owner", "evidence"],
+                                    condition=models.Q(evidence__isnull=False, owner__isnull=False),
+                                    name="uniq_brokerevent_evidence_owner"),
         ]
         indexes = [
             models.Index(fields=["trading_account", "id"]),
@@ -746,44 +755,64 @@ class TradingAccountBrokerContactAudit(models.Model):
 
 
 class BrokerMessageObservation(models.Model):
-    """DARK cross-inbox de-duplication (MULTI_ACCOUNT_PUBLIC_METRICS §D).
+    """DARK per-inbox DELIVERY record (MULTI_ACCOUNT_PUBLIC_METRICS §D, corrected per the PD review of #511).
 
-    The same logical broker email delivered to TWO connected inboxes carries different per-inbox headers (Received /
-    Delivered-To / ARC / X-GM-MSGID), so its raw bytes — and therefore its content-addressed ``EvidenceBlob.sha256``
-    — DIFFER; content hashing alone cannot collapse the two copies, so each would produce its own ``BrokerEvent`` and
-    double-count the withdrawal. The RFC822 ``Message-ID`` header is the ONE identifier that is STABLE across inboxes
-    for the same logical message. This table records, per owner, that a given Message-ID was observed — with a
-    ``UNIQUE(owner, rfc822_message_id)`` so the second inbox's copy is recognised as the SAME logical observation and
-    does NOT create a second event.
+    One row = one authenticated DELIVERY of a broker message into one connected inbox. Its identity is the TRUSTED,
+    mailbox-native ``(connected_mailbox, provider_message_id)`` — the provider's own stable id for a message in that
+    inbox (Gmail message id / IMAP UIDVALIDITY+UID). A genuine RE-FETCH of the SAME message from the SAME inbox is the
+    same delivery and must NOT create a second ``BrokerEvent``; the ``UNIQUE(connected_mailbox, provider_message_id)``
+    below enforces that.
+
+    The RFC822 ``Message-ID`` is recorded here as NON-AUTHORITATIVE metadata ONLY — it is sender-controlled and may be
+    absent, reused, or forged, so it is NEVER a suppression/trust key and raw eligible evidence is NEVER dropped on it.
+    It is used solely as a cross-inbox CORRELATION HINT at the withdrawal layer (see ``correlation.py``): when the SAME
+    logical email arrives through TWO different inboxes (two connected_mailboxes, two preserved owner-scoped events —
+    neither discarded, data.md), the ref-less withdrawal projection may MERGE the two into ONE Withdrawal scoped to the
+    same ``(owner, trading_account)`` so a duplicate delivery does not inflate statistics. A forged/reused Message-ID
+    can at worst conservatively MERGE two of one owner's own events (an under-count, never inflation, never
+    cross-owner).
 
     SEPARATE from ``BrokerEvent`` on purpose: existing ``BrokerEvent`` writes stay byte-identical, so an unmigrated
-    production DB (migration 0013 unapplied) is unaffected while the feature is OFF — this table is only ever
-    read/written when ``broker_cross_inbox_dedup_enabled()``. Records NO credential and NO email body; the raw copies
-    remain in the immutable evidence store, and each per-inbox copy's evidence is retained (never destroyed)."""
+    production DB is unaffected while the feature is OFF — this table is only ever read/written when
+    ``broker_cross_inbox_dedup_enabled()``. Records NO credential and NO email body; the raw copies remain in the
+    immutable evidence store, and each per-inbox copy's evidence is retained (never destroyed)."""
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                               related_name="broker_message_observations")
-    rfc822_message_id = models.CharField(max_length=255, db_index=True)   # stable across inboxes for one logical email
-    # The inbox this particular copy arrived through, and the event/evidence the FIRST observation produced.
+    # The inbox this delivery arrived through + the provider's own stable id for the message in that inbox: the
+    # TRUSTED delivery identity. (``provider`` is derived from ``connected_mailbox.provider`` at write time and stored
+    # for clarity.)
     connected_mailbox = models.ForeignKey(ConnectedMailbox, on_delete=models.SET_NULL, null=True, blank=True,
                                          related_name="message_observations")
+    provider = models.CharField(max_length=16, blank=True, default="")
+    provider_message_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    # RFC822 Message-ID — NON-authoritative metadata / cross-inbox correlation hint ONLY; never a suppression key.
+    rfc822_message_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    # The event/evidence this delivery produced.
     event = models.ForeignKey(BrokerEvent, on_delete=models.SET_NULL, null=True, blank=True,
                               related_name="message_observations")
     evidence = models.ForeignKey(EvidenceBlob, on_delete=models.PROTECT, null=True, blank=True,
                                  related_name="message_observations")
-    duplicate_count = models.PositiveIntegerField(default=0)   # how many ADDITIONAL inbox copies were suppressed
+    duplicate_count = models.PositiveIntegerField(default=0)   # how many same-inbox RE-FETCHES of this delivery were suppressed
     first_seen_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
-            # One logical observation per (owner, Message-ID). A blank Message-ID is NOT uniqueness-bearing (some
-            # brokers/emails omit it) — those fall back to the existing content-hash + reference-id behaviour.
-            models.UniqueConstraint(fields=["owner", "rfc822_message_id"],
-                                    condition=models.Q(rfc822_message_id__gt=""),
-                                    name="uniq_bmo_owner_messageid"),
+            # One delivery per (inbox, provider-native message id). A blank provider_message_id or a null mailbox is
+            # NOT a delivery identity (no suppression) — such a fetch falls back to the owner-scoped content-hash
+            # idempotency on BrokerEvent. Two DIFFERENT inboxes are two DIFFERENT connected_mailboxes -> two preserved
+            # deliveries (collapsed only at the withdrawal layer), never suppressed here.
+            models.UniqueConstraint(fields=["connected_mailbox", "provider_message_id"],
+                                    condition=models.Q(provider_message_id__gt="", connected_mailbox__isnull=False),
+                                    name="uniq_bmo_delivery"),
         ]
-        indexes = [models.Index(fields=["rfc822_message_id"]), models.Index(fields=["owner", "rfc822_message_id"])]
+        indexes = [
+            models.Index(fields=["connected_mailbox", "provider_message_id"]),
+            # Supports the withdrawal-layer cross-inbox correlation hint lookup (siblings of one logical message).
+            models.Index(fields=["owner", "rfc822_message_id"]),
+        ]
 
     def __str__(self) -> str:
-        return f"BrokerMessageObservation(owner={self.owner_id}, mid={self.rfc822_message_id[:24]}…, dups={self.duplicate_count})"
+        return (f"BrokerMessageObservation(owner={self.owner_id}, mbx={self.connected_mailbox_id}, "
+                f"pmid={self.provider_message_id[:24]}…, refetches={self.duplicate_count})")

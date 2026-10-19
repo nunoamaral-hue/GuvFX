@@ -733,14 +733,17 @@ class IS6IngestionPipelineTests(TestCase):
         self.assertEqual(EvidenceBlob.objects.count(), 0)
 
     def test_cross_user_recipient_is_not_attributed(self):
-        # The SAME authenticated IS6 mail ingested under a DIFFERENT owner: the recipient identity is bound to self.u,
-        # so an owner-scoped ingest for `other` yields NO owner attribution and NO account (no cross-user leak).
+        # The SAME authenticated IS6 mail ingested through a DIFFERENT member's mailbox (owner_user=other). The event
+        # is correctly attributed to the MAILBOX owner who actually received it (other) — that is faithful, not a leak:
+        # the bytes are in other's own inbox. The cross-user FIREWALL is preserved where it matters: the resolution is
+        # scoped to `other` (never self.u, the identity's real owner), so NO trading account is cross-attributed and
+        # the event never enters self.u's withdrawal projection (correlation skips a null trading_account).
         other = User.objects.create_user(username="other%s" % _uniq(), email="other@x.invalid", password="x")
         ev = ingestion.ingest_message(self._mailmessage(self._raw()), store=self.store,
                                       provenance=Provenance.REAL, owner_user=other)
         self.assertIsNotNone(ev)                            # authenticated + parseable ⇒ event created (evidence)
-        self.assertIsNone(ev.owner_id)                      # but NOT attributed to a mismatched owner
-        self.assertIsNone(ev.trading_account_id)
+        self.assertEqual(ev.owner_id, other.id)             # attributed to the MAILBOX owner (owner_key), per #511
+        self.assertIsNone(ev.trading_account_id)            # the firewall: NO cross-user account attribution
 
     def test_ambiguous_credited_account_is_unresolved(self):
         # Owner holds TWO is6-broker accounts sharing the credited number ⇒ ambiguous ⇒ fail closed (no binding),
