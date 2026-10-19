@@ -3,8 +3,14 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ["main", "master", "develop", "feat/**", "fix/**", "chore/**"]
+    branches: ["main", "master", "develop"]
   workflow_dispatch:
+
+# Cancel superseded PR runs when a new commit is pushed to the same PR.
+# Push runs on protected branches (main/master/develop) are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
@@ -72,7 +78,7 @@ jobs:
           DJANGO_SSL_REDIRECT: "False"
         run: |
           cd "${{ steps.detect.outputs.path }}"
-          python manage.py test
+          python manage.py test --parallel 4
 
   frontend:
     runs-on: ubuntu-latest
