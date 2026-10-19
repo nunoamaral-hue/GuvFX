@@ -53,13 +53,80 @@ TradingAccountBrokerContact
 - **Disconnect retains history:** a disconnected account/mailbox sets a binding to `RETIRED` (never deletes evidence
   or the binding); withdrawals remain owner-scoped history.
 
-**Attribution/dedup foundation (D).** Additive fields, never destructive:
-- `BrokerEvent.message_id` (RFC822 Message-ID, captured in `parse_rfc822`) — the identifier that is **stable across
-  inboxes** for the same logical email → the cross-inbox dedup key.
-- `BrokerEvent.connected_mailbox` FK (null) — per-mailbox provenance (which inbox observed it).
-- Dedup rule: the same `message_id` observed via two inboxes resolves to **one** logical observation; a withdrawal
-  reference seen under **two different accounts/owners** → `UNRESOLVED` (never guessed). Reuse the existing
-  `(trading_account, broker_reference_id)` primitive and the monotonic AMBIGUOUS/UNRESOLVED state machine.
+**Association safeguards — ownership, consistency, deletion, audit integrity (A/C) [added per PD review of #513].**
+Mailbox control is *evidence*, not *proof* of ownership; the binding must never let one customer's inbox claim
+another customer's account or broker identity. The following are invariants of the association layer, enforced in a
+fail-closed verified-state service and documented where the schema alone cannot carry them:
+
+- **Authoritative ownership is the trading account's owner — never the email address.** A binding's owner is
+  `trading_account.user`. The broker email address is *attribute data on an identity*, shared by design across many
+  accounts and even many customers (the same `jane@example.com` may be the registered contact at a broker for two
+  unrelated GuvFX users), so possession of mail at an address NEVER establishes who owns a GuvFX account. A verified
+  binding therefore proves "this account's owner controls this inbox and this inbox receives this (email, broker)
+  identity's mail" — it never infers account ownership from the address.
+- **Owner/mailbox consistency invariant (fail-closed before VERIFIED).** A binding may transition to `VERIFIED` only
+  when `connected_mailbox` is non-null AND `connected_mailbox.user_id == trading_account.user_id`. A mailbox owned by
+  a different user, a null mailbox, or a mailbox whose ownership later diverges forces the binding back out of
+  `VERIFIED` (to `UNRESOLVED`) rather than silently trusting it. This is the structural block on cross-user email
+  claims: user B connecting an inbox that happens to receive user A's broker mail can never verify a binding on user
+  A's account, because the owners do not match.
+- **Identity/broker consistency invariant.** The binding's `broker_email_identity` carries the canonical broker; a
+  binding whose identity disagrees with the trading account's broker context is `UNRESOLVED`, not `VERIFIED`. Broker
+  identity is taken from the authoritative catalogue slug (as in §4 aggregation), never from display text or a
+  free-form address domain.
+- **Verification is revocable and non-latching.** `verified_at` records when consistency last held; it is not a
+  permanent grant. Re-evaluation on mailbox disconnect, re-consent revocation, or ownership change can demote a
+  binding. A stale/revoked mailbox credential demotes every binding that depended on it. (No binding state is ever a
+  trading or execution authority.)
+- **Deletion policy parity — no silent history loss.** The binding's `trading_account` FK is **history-safe**: a
+  trading account is not hard-deleted out from under withdrawal/event history, so the FK is `PROTECT` (or an
+  equivalent soft-retire that preserves the binding and its evidence), matching `broker_email_identity` (`PROTECT`).
+  `connected_mailbox` is `SET_NULL` (an inbox may be disconnected while the binding is retained as `RETIRED` with its
+  history). Destroying a customer's withdrawal history as a side-effect of an account row deletion is forbidden; the
+  raw-evidence-is-immutable and quarantine-not-destroy data rules bind here.
+- **Audit integrity is DB-enforced, not just application-asserted.** `TradingAccountBrokerContactAudit` is append-only
+  and immutable at the database layer (an `UPDATE`/`DELETE` trigger refusing mutation, the same mechanism already used
+  for `EvidenceBlob`/`BrokerEvent`), so a documentation claim of "append-only audit" is backed by an enforced
+  guarantee rather than an application-layer convention a bulk operation could bypass. Any application-layer-only
+  guard that remains (e.g. a bulk/raw-SQL path that the ORM cannot intercept) is documented explicitly as a known
+  bypass limit — never described as if the trigger covered it.
+- **Bulk / raw bypass is stated, never implied away.** `bulk_create`/`update()`/raw SQL do not run model `save()` or
+  signal hooks; any invariant enforced only there is explicitly labelled as not covering those paths, and the
+  DB-trigger immutability (above) is what actually holds for the audit trail. (Evidence rule: silence is not
+  coverage.)
+
+**Attribution/dedup — corrected three-layer model (D) [revised per PD review of #511].** The RFC822 Message-ID is
+**NOT** a trusted cross-inbox transaction or universal delivery key: it is sender-controlled, may be absent, reused
+or forged; one real withdrawal can carry MANY distinct Message-IDs, and one reused Message-ID must never suppress
+separate genuine observations. **Raw eligible broker evidence is NEVER dropped on a Message-ID.** Three distinct
+layers, de-duplicated independently:
+
+1. **Delivery** (an email received in an inbox). De-duplicated by the TRUSTED mailbox-native identity
+   `(provider, connected_mailbox, provider_message_id)` — the provider's own stable id for a message in that inbox,
+   not the sender-controlled RFC822 header. Re-fetching the same message from the same inbox is one delivery; the
+   SAME logical email arriving in TWO inboxes is TWO distinct authenticated deliveries, each preserved with its own
+   per-mailbox provenance. (Message-ID may be stored as non-authoritative metadata only, versioned-canonicalised, but
+   is never a suppression key.)
+2. **Broker event** (a parsed observation from a delivery's immutable evidence). One per delivery; evidence is
+   content-addressed and immutable. **Cross-owner safety:** the existing global `EvidenceBlob.sha256` +
+   `BrokerEvent(evidence)` uniqueness + the early existing-event return means byte-identical bytes reaching two
+   users/mailboxes would hand the SECOND user the FIRST user's event — a cross-owner provenance leak / silent drop.
+   The idempotency return is therefore made **owner-aware** (an existing event is reused only for the SAME owner);
+   delivery provenance is modelled per mailbox/user so no second customer ever inherits another's event, while the
+   immutable evidence blob is still shared/de-duplicated. Account for `BrokerEvent` immutability (app + DB trigger).
+3. **Financial withdrawal** (the correlated transaction). De-duplicated at the TRANSACTION layer by
+   `owner + canonical broker + trading account + broker reference/lifecycle` — the existing
+   `(trading_account, broker_reference_id)` partial-unique + the monotonic AMBIGUOUS/UNRESOLVED correlation state
+   machine. Duplicate deliveries of the same withdrawal collapse here (same owner+account+reference → one
+   withdrawal); anything ambiguous → `UNRESOLVED`, never guessed. This preserves the distinction delivered-email ≠
+   broker-event ≠ withdrawal: duplicate deliveries do not inflate statistics, and unrelated authentic evidence is
+   never discarded.
+
+Required tests (negative): same Message-ID with different content/account/broker/owner (must NOT collapse); distinct
+Message-IDs for the same withdrawal (must collapse at the transaction layer); missing Message-ID (falls back to
+delivery id + reference correlation); shared raw bytes across two owners (each keeps its own event). **The
+Message-ID-based event suppression merged in #514 is superseded by this model and is corrected in a follow-up PR; it
+is DARK (flag OFF) and was never active.**
 
 **Broker canonical identity + public metrics (E/F).** A new **public** layer, separate from internal config:
 ```
@@ -101,9 +168,22 @@ policy ships DARK behind its flag.
 - **Windows + freshness + methodology version** accompany every aggregate; aggregates refresh on eligible evidence
   change. **No individual withdrawal is ever published as a public event. No broker rating** without an approved
   scoring methodology (out of scope here).
-- **Consent/participation:** private financial evidence is **not** automatically public. A documented, approved
-  consent/participation policy is a **prerequisite** to using any customer observation in public metrics — a
-  governance dependency, flagged, not satisfied here.
+- **k-anonymity-like suppression + dominance + differencing [added per PD review of #511 §4].** Beyond the
+  MIN_CONTRIBUTORS / MIN_SAMPLES floors: a published cell is suppressed unless it reflects at least *k* independent
+  contributors (k-anonymity), each contributor's weight is bounded against the FINAL sample (water-filling
+  winsorisation — no one member or duplicate dominates), and **differencing across rolling windows is prevented**
+  (two near-identical windows must not let an observer subtract them to isolate one contributor — windows change
+  only when the contributor set changes enough that a difference cannot single anyone out, and small deltas are
+  suppressed). **Revocation:** a contributor who withdraws consent is removed and the affected aggregates recomputed.
+  Empty `CERTIFIED_BROKERS` ⇒ **never publish an observed speed** (production default).
+- **Three-way completion distinction [per PD].** Public metrics must distinguish (a) **total GuvFX-observed
+  completion** (what GuvFX saw across inboxes), (b) **broker-reported completion** (the broker said "completed" — the
+  only thing a processing notification evidences), and (c) **actual funds receipt** (confirmed money arrival — no
+  signal exists today, so always 0 / "if ever available"). The public surface never conflates (b) with (c).
+- **Consent/participation [emphasised per PD].** Private financial evidence is **not** automatically public. A
+  documented, approved **participation/consent policy** (opt-in, revocable) is a hard **prerequisite** to using ANY
+  customer observation in public metrics — a governance gate, not satisfied here. Pages ship DARK; no public
+  financial samples are shown before the consent + methodology + threshold gates are all met.
 
 ## 5. Entitlement (I) — 20 owned accounts via the existing engine
 
@@ -119,26 +199,50 @@ setting). Amber (touches the trading add-account path) — authorised by this Sp
 ## 6. Migration plan (additive, reversible, DARK — NOT applied to prod)
 
 Prod `broker_intelligence` schema is **0010** (0011 health columns unapplied). All new tables/columns are additive
-and reversible; **none is applied to production under this packet**. Planned DARK migrations:
-1. `TradingAccountBrokerContact` + its audit (new tables).
-2. `BrokerEvent.message_id`, `BrokerEvent.connected_mailbox` (nullable columns).
-3. Public layer: `PublicBroker`, `BrokerMetricCategory`, `BrokerMetricAggregate` (new tables) + nullable canonical
-   broker linkage on `Withdrawal`/`BrokerEvent`.
+and reversible; **none is applied to production under this packet**. Migrations landed by the foundation programme
+(DARK, unapplied to prod):
+1. `broker_intelligence` **0012** — `TradingAccountBrokerContact` + `TradingAccountBrokerContactAudit` (new tables).
+2. `broker_intelligence` **0013** — `BrokerMessageObservation` (new **separate** table, so `BrokerEvent` writes stay
+   byte-identical and unmigrated-safe) + captured RFC822 `Message-ID`. *(Note: Message-ID is retained as
+   non-authoritative metadata only — see §Attribution; it is NOT a suppression key.)*
+3. `broker_public` **0001** — `PublicBroker`, `BrokerMetricCategory`, `BrokerMetricAggregate` (new app, own sequence).
+
+Correction-packet migrations (additive, DARK, numbered above the current head, **not applied to prod**):
+4. **C3** — `TradingAccountBrokerContact.trading_account` FK `CASCADE→PROTECT` (history-safe) + DB-trigger append-only
+   immutability on `TradingAccountBrokerContactAudit` (same trigger mechanism as `EvidenceBlob`/`BrokerEvent`).
+5. **C2** — delivery-identity fields supporting dedup keyed on `(provider, connected_mailbox, provider_message_id)`
+   (on the observation/delivery layer, never altering `BrokerEvent`'s immutable append-only shape), as required by the
+   corrected three-layer model.
+
 Backfills (legacy `BrokerEmailIdentity` binding → `TradingAccountBrokerContact`) are **DARK management commands**,
 never auto-run. Each migration is independently reversible; the existing prod-0010/main-0011 gap is respected (new
-migrations are numbered above the current head and stay unapplied).
+migrations are numbered above the current head and stay unapplied; the gap is resolved migration-first in a later
+gated deployment, not here).
 
 ## 7. PR decomposition & status
 
-| PR | Scope | This session |
+**Foundation programme (merged DARK, baseline `4fcfaa5` → `54647ca`):**
+
+| PR | Scope | Status |
+|----|-------|--------|
+| #511 | This design doc (ADR) + programme report | merged `838cc87` |
+| #512 | Entitlement: configurable owned-account ceiling → 20 (I) | merged `80b6170` (tested DARK) |
+| #513 | `TradingAccountBrokerContact` association + audit (A/C) | merged `32d2787` (tested DARK) |
+| #514 | Cross-inbox dedup: `BrokerMessageObservation` + Message-ID capture (D) | merged `025557a` (tested DARK) |
+| #515 | `broker_public` app: directory + versioned metrics + leak-proof aggregation (E/F) | merged `54647ca` (tested DARK) |
+
+**PD foundation review — correction packet (this session).** The PD review of #511/#513 revised the attribution
+architecture and tightened the association safeguards. The correction sequence is ordered so the **design is accepted
+before the corrected implementation lands** — the Message-ID-based *suppression* is not implemented until this
+corrected design (the three-layer model in §Attribution and the §A/C safeguards above) is accepted:
+
+| PR | Scope | Order / gate |
 |----|-------|--------------|
-| **P1** | This design doc (ADR) + programme report | **built** |
-| **P2** | Entitlement: configurable owned-account ceiling → 20 (I) | **built + tested DARK** |
-| **P3** | `TradingAccountBrokerContact` association + `BrokerEvent.message_id`/`connected_mailbox` + DARK migration + Message-ID capture (A/C/D foundation) | **built + tested DARK** |
-| **P4** | Many-mailbox policy replacing single-live (B) | designed; next |
-| **P5** | Public layer models + leak-proof aggregation + DARK `/api/public/brokers` (E/F) | designed; next |
-| **P6** | Customer UI (account-level email mgmt) + public directory UI (C/G) | designed |
-| **P7** | Governance/consent policy + scoring-methodology gate (H) | designed |
+| **C1** | This design correction (three-layer delivery/event/withdrawal model; §A/C ownership-consistency-deletion-audit safeguards; public-aggregation differencing/dominance/consent additions) | **first — design must be accepted before C2** |
+| **C2** | #514 re-architecture: delivery-dedup keyed on `(provider, connected_mailbox, provider_message_id)`; **owner-aware** existing-event idempotency (no cross-owner inheritance); Message-ID demoted to non-authoritative metadata (never a suppression key); never drop raw eligible evidence; reference-id transaction correlation; negative tests | after C1 accepted |
+| **C3** | #513 safeguards: `trading_account` FK CASCADE→PROTECT/history-safe; DB-trigger audit immutability; fail-closed owner/broker/mailbox consistency service before `VERIFIED`; corrected docs; tests | after/with C2 (new additive DARK migration) |
+| **C4** | Frontend DARK scaffolding: public directory UI + customer account-level broker-email management (C/G), en/ja, parity-registered, where dependencies permit | independent of C2/C3; built where deps allow |
+| **P-next** | Many-mailbox policy (B); governance/consent policy + scoring-methodology gate (H) | designed; gated on genuine data + governance |
 
 ## 8. Dependencies & forecast
 
