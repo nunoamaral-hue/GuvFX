@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     "approvals",  # A5 — generic human-gated artefact-SHA approval primitive (DARK; no auto-promote)
     "broker_catalogue",  # Broker Catalogue V1 — immutable versioned broker-bootstrap store (DARK; approval-gated)
     "broker_intelligence",  # Withdrawal Intelligence V1 — broker-email identity + evidence (DARK; isolated ingestion)
+    "broker_public",  # Public broker directory + privacy-safe metric aggregates (DARK; unauthenticated read surface)
     "customer_notifications.apps.CustomerNotificationsConfig",  # Customer Telegram plane; DARK
 ]
 
