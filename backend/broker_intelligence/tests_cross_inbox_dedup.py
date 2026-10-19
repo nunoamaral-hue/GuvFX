@@ -262,6 +262,32 @@ class CrossInboxWithdrawalCollapse(_Base):
         run_correlation()
         self.assertEqual(Withdrawal.objects.count(), 2)
 
+    @override_settings(BROKER_CROSS_INBOX_DEDUP_ENABLED="1")
+    def test_shared_message_id_never_merges_across_owners(self):
+        # A FORGED/reused Message-ID shared by TWO owners must NEVER collapse across owners. The collapse is doubly
+        # owner-scoped: the sibling-observation lookup filters owner_id, AND the adoption Withdrawal filter is
+        # trading_account-scoped (user-scoped accounts). Pins the "never cross-owner" invariant named in the spec.
+        login = _uniq()
+        other = User.objects.create_user(username="x%s" % login, email="%s@x.invalid" % login, password="x")
+        acct_o = TradingAccount.objects.create(user=other, name="B", broker_name="TradersWay",
+                                               account_number=login, is_demo=True, is_active=True)
+        alias_o = mint_alias_for_account(acct_o)
+        mb_o = ConnectedMailbox.objects.create(user=other, provider=ConnectedMailbox.Provider.GMAIL,
+                                               provider_mailbox_id="x%s@gmail.com" % login,
+                                               primary_email="x%s@gmail.com" % login,
+                                               status=ConnectedMailbox.Status.CONNECTED)
+        self._ingest(self._msg(mid="FORGED-SHARED@tw", raw=b"owner-u-AAAA", pmid="pm-u"),
+                     mailbox=self.mb, owner_user=self.u)
+        other_msg = MailMessage(raw_bytes=b"owner-o-BBBB", to_addresses=(alias_o.address(),),
+                                from_address="noreply@tradersway.invalid", subject="Withdrawal request received",
+                                body="withdraw 100.50 USD", received_at=timezone.now(),
+                                provider_message_id="pm-o", rfc822_message_id="FORGED-SHARED@tw")
+        ingestion.ingest_message(other_msg, store=self.store, provenance=Provenance.SYNTHETIC,
+                                 owner_user=other, connected_mailbox=mb_o)
+        summary = run_correlation()
+        self.assertEqual(Withdrawal.objects.count(), 2)          # NEVER merged across owners
+        self.assertFalse(summary.get(OUT_CROSS_INBOX))           # neither adopted a foreign sibling
+
 
 class CorrelationArmingGuard(_Base):
     def test_correlation_refuses_without_cross_inbox_dedup(self):
