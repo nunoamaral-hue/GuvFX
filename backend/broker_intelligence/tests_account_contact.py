@@ -265,6 +265,39 @@ class AccountBrokerContactVerification(TestCase):
                     trading_account=a, broker_email_identity=idn, connected_mailbox=mb,
                     status=TradingAccountBrokerContact.Status.VERIFIED)
 
+    def test_db_trigger_blocks_bulk_verified_cross_user_identity(self):
+        # The DB floor's SECOND clause: a SAME-owner mailbox but a CROSS-USER identity must still be refused via bulk/
+        # raw (the first clause passes, so this exercises the identity-ownership clause independently).
+        other = User.objects.create_user(username="ci%s" % _uniq(), email="ci@x.invalid", password="x")
+        c = self._contact(idn_user=other)                       # mailbox owned by self.u; identity owned by other
+        with self.assertRaises((InternalError, ProgrammingError)):
+            with transaction.atomic():
+                TradingAccountBrokerContact.objects.filter(pk=c.pk).update(
+                    status=TradingAccountBrokerContact.Status.VERIFIED)
+
+    def test_db_trigger_blocks_bulk_verified_null_mailbox(self):
+        # The DB floor's completeness clause: a transition to VERIFIED with NO mailbox is refused via bulk/raw too.
+        a = _acct(self.u)
+        idn = _identity("nm%s@gmail.com" % _uniq(), user=self.u)
+        c = TradingAccountBrokerContact.objects.create(trading_account=a, broker_email_identity=idn)   # no mailbox
+        with self.assertRaises((InternalError, ProgrammingError)):
+            with transaction.atomic():
+                TradingAccountBrokerContact.objects.filter(pk=c.pk).update(
+                    status=TradingAccountBrokerContact.Status.VERIFIED)
+
+    def test_verified_binding_survives_mailbox_delete(self):
+        # Cascade-safety: deleting a VERIFIED binding's mailbox must NOT be aborted by the VERIFIED trigger — the
+        # SET_NULL decays the reference (verification goes stale), it never blocks the delete.
+        c = self._contact()
+        contact_verification.verify_contact(c, actor=self.u)
+        c.refresh_from_db()
+        self.assertEqual(c.status, TradingAccountBrokerContact.Status.VERIFIED)
+        mb = c.connected_mailbox
+        mb.delete()                                             # must NOT raise (SET_NULL cascade on a VERIFIED row)
+        c.refresh_from_db()
+        self.assertIsNone(c.connected_mailbox_id)               # mailbox reference decayed to NULL
+        self.assertEqual(c.status, TradingAccountBrokerContact.Status.VERIFIED)   # stale, to be re-evaluated
+
     def test_twenty_accounts_one_shared_email_each_verified(self):
         # §I/§A: one (email, broker) identity bound to 20 of the owner's accounts, each VERIFIED independently.
         mb = _mailbox(self.u, "shared%s@gmail.com" % _uniq())

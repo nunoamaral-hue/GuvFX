@@ -71,11 +71,18 @@ DECLARE
     idn_acct_owner integer;
 BEGIN
     IF NEW.status <> 'VERIFIED' THEN
-        RETURN NEW;   -- only the VERIFIED transition is constrained; every other status is unconstrained here
+        RETURN NEW;   -- only the VERIFIED status is constrained; every other status is unconstrained here
     END IF;
-    -- (1) a VERIFIED binding needs a mailbox whose owner is the account owner (mailbox control alone is not proof).
+    -- (1) a NEW verification (INSERT, or a transition INTO VERIFIED) needs a mailbox whose owner is the account owner
+    -- (mailbox control alone is not proof). But a ConnectedMailbox is SET_NULL on the binding, so deleting a mailbox
+    -- issues a cascade "UPDATE ... SET connected_mailbox_id = NULL": that must NOT be blocked (mirrors the audit
+    -- trigger's X->NULL tolerance, refutation-11 lesson). So on an ALREADY-VERIFIED row whose mailbox decays to NULL,
+    -- allow it (the verification goes stale, to be re-evaluated/retired by the app) rather than aborting the delete.
     IF NEW.connected_mailbox_id IS NULL THEN
-        RAISE EXCEPTION 'TradingAccountBrokerContact cannot be VERIFIED without a connected mailbox';
+        IF TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'VERIFIED' THEN
+            RAISE EXCEPTION 'TradingAccountBrokerContact cannot be VERIFIED without a connected mailbox';
+        END IF;
+        RETURN NEW;   -- mailbox SET_NULL cascade on an already-VERIFIED row — allowed (stale, not cross-user)
     END IF;
     SELECT user_id INTO acct_owner FROM trading_tradingaccount WHERE id = NEW.trading_account_id;
     SELECT user_id INTO mbx_owner FROM broker_intelligence_connectedmailbox WHERE id = NEW.connected_mailbox_id;

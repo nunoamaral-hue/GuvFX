@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+from django.db import transaction
 from django.utils import timezone
 
 from .identity_verification import _broker_matches
@@ -57,19 +58,22 @@ def verify_contact(contact: Contact, *, actor=None, proofs: Optional[dict] = Non
     the mutated ``contact``."""
     before = contact.status
     ok, reason = check_consistency(contact)
-    if ok:
-        contact.status = Contact.Status.VERIFIED
-        contact.verified_at = timezone.now()
-        contact.save(update_fields=["status", "verified_at", "updated_at"])
-        action, outcome, note = Audit.Action.VERIFY, "OK", "ownership + broker consistency proven"
-    else:
-        contact.status = Contact.Status.UNRESOLVED
-        contact.verified_at = None
-        contact.save(update_fields=["status", "verified_at", "updated_at"])
-        action, outcome, note = Audit.Action.REJECT, reason, "verification refused (fail-closed)"
-    Audit.objects.create(
-        contact=contact, action=action, subject_user=actor,
-        trading_account=contact.trading_account, broker_email_identity=contact.broker_email_identity,
-        connected_mailbox=contact.connected_mailbox, outcome=outcome, reason=note,
-        status_before=before, status_after=contact.status, proofs=proofs or {})
+    # Atomic: the status change and its audit row commit together or not at all — a status transition must never
+    # persist without the audit record that justifies it (and vice versa).
+    with transaction.atomic():
+        if ok:
+            contact.status = Contact.Status.VERIFIED
+            contact.verified_at = timezone.now()
+            contact.save(update_fields=["status", "verified_at", "updated_at"])
+            action, outcome, note = Audit.Action.VERIFY, "OK", "ownership + broker consistency proven"
+        else:
+            contact.status = Contact.Status.UNRESOLVED
+            contact.verified_at = None
+            contact.save(update_fields=["status", "verified_at", "updated_at"])
+            action, outcome, note = Audit.Action.REJECT, reason, "verification refused (fail-closed)"
+        Audit.objects.create(
+            contact=contact, action=action, subject_user=actor,
+            trading_account=contact.trading_account, broker_email_identity=contact.broker_email_identity,
+            connected_mailbox=contact.connected_mailbox, outcome=outcome, reason=note,
+            status_before=before, status_after=contact.status, proofs=proofs or {})
     return contact
