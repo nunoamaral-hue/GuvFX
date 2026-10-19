@@ -674,7 +674,20 @@ class TradingAccountBrokerContact(models.Model):
     Verification is PER BINDING: mailbox control alone is NOT proof that a specific account's withdrawals route here
     (that requires explicit broker/account identifiers), so a binding stays PENDING/UNRESOLVED until proven VERIFIED;
     ambiguous attribution is never guessed. A disconnected account/mailbox RETIREs the binding — the row and all
-    withdrawal evidence are retained (history is never destroyed)."""
+    withdrawal evidence are retained (history is never destroyed).
+
+    FAIL-CLOSED VERIFIED invariant (DB-ENFORCED, per the PD review of #511 — not merely an app convention a bulk/raw
+    write could bypass): a ``BEFORE INSERT OR UPDATE`` trigger (migration 0015) refuses ``status='VERIFIED'`` unless
+    ALL hold — (1) ``connected_mailbox`` is non-null and ``connected_mailbox.user == trading_account.user`` (mailbox
+    owner == account owner), and (2) ``broker_email_identity`` belongs to ``trading_account.user`` (directly or via
+    its own account). Ownership is the account's owner, NEVER the shared email address. ``verified_at`` is revocable,
+    not a latch; broker-name consistency is checked by the app-layer ``contact_verification`` service (canonical-slug
+    matching is a documented deferred TODO — no name→slug resolver exists yet).
+
+    DELETION / PURGE: ``trading_account`` is PROTECT (history-safe). The operator ``User.delete()`` purge CASCADEs to
+    ``TradingAccount``; a PROTECTed binding would abort it, so the purge MUST RETIRE/delete this user's bindings
+    FIRST (the binding table is deletable — only the AUDIT is append-only), mirroring the existing "delete
+    AccountProvisioning first" runbook step."""
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Associated; ownership/routing not yet verified"
@@ -682,7 +695,12 @@ class TradingAccountBrokerContact(models.Model):
         UNRESOLVED = "UNRESOLVED", "Cannot be attributed to this account from available evidence"
         RETIRED = "RETIRED", "No longer in use (account/mailbox disconnected)"
 
-    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE,
+    # PROTECT (history-safe): a trading account is never hard-deleted out from under its binding + the withdrawal/
+    # event history it anchors. Normal offboarding is tombstone-only (``account_removal.remove_account``) and the API
+    # ``destroy`` is refused for everyone, so PROTECT only ever guards the operator ``User.delete()`` purge and a
+    # direct row delete — and the purge MUST RETIRE/delete bindings first (see the class docstring). Was CASCADE in
+    # #513; corrected per the PD review of #511 (deletion-policy parity with ``broker_email_identity``).
+    trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.PROTECT,
                                         related_name="broker_contacts")
     # The (email, broker) registry row. PROTECT: an identity that still has account bindings is never deleted.
     broker_email_identity = models.ForeignKey(BrokerEmailIdentity, on_delete=models.PROTECT,
@@ -715,9 +733,15 @@ class TradingAccountBrokerContact(models.Model):
 
 class TradingAccountBrokerContactAudit(models.Model):
     """Append-only history of binding actions (BIND / VERIFY / RETIRE / REJECT) — who acted, for which claimed
-    account/identity/mailbox, the proofs relied on, the outcome, and the before/after status. Never updated or
-    deleted; the ``contact`` FK is PROTECT so a bound contact carrying history is not destroyed. Holds NO credential
-    and NO raw email body — only ids, statuses, a masked address, and a structured proof summary."""
+    account/identity/mailbox, the proofs relied on, the outcome, and the before/after status. Append-only is now
+    DB-ENFORCED (migration 0015: a BEFORE UPDATE trigger that rejects any change to the evidential columns, and a
+    BEFORE DELETE trigger) as well as by the app ``delete()`` guard below — so a bulk/raw write cannot rewrite
+    history (per the PD review of #511). The UPDATE trigger is SELECTIVE: it deliberately ALLOWS the four SET_NULL FK
+    cascade updates (``subject_user``/``trading_account``/``broker_email_identity``/``connected_mailbox``), so
+    deleting a referenced user/account/identity/mailbox still succeeds and simply nulls the reference. ALL five
+    back-reference FKs (incl. ``contact``) are SET_NULL so this history SURVIVES a purge as orphaned rows rather than
+    blocking it; the trigger permits a FK to decay to NULL but never to be re-pointed to a different value. Holds NO
+    credential and NO raw email body — only ids, statuses, a masked address, and a structured proof summary."""
 
     class Action(models.TextChoices):
         BIND = "BIND", "Associated an account with a broker email identity"
@@ -725,7 +749,11 @@ class TradingAccountBrokerContactAudit(models.Model):
         RETIRE = "RETIRE", "Binding retired (account/mailbox disconnected)"
         REJECT = "REJECT", "Binding refused (proof failed / ambiguous / cross-user)"
 
-    contact = models.ForeignKey(TradingAccountBrokerContact, on_delete=models.PROTECT, null=True, blank=True,
+    # SET_NULL (not PROTECT): the audit is append-only HISTORY that must SURVIVE a binding's deletion (e.g. the
+    # operator purge deletes a user's bindings before User.delete()). Deleting a contact nulls this back-reference and
+    # the audit row persists as orphaned history — the recorded FACTS stay immutable (the migration-0015 trigger lets
+    # a back-reference FK decay to NULL on cascade but never be re-pointed or un-nulled). Was PROTECT in #513.
+    contact = models.ForeignKey(TradingAccountBrokerContact, on_delete=models.SET_NULL, null=True, blank=True,
                                 related_name="audit")
     action = models.CharField(max_length=16, choices=Action.choices)
     subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
