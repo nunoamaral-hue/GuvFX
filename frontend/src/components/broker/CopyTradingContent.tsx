@@ -88,17 +88,21 @@ const Pill: React.FC<{ color: BadgeColor; children: React.ReactNode }> = ({ colo
 );
 
 function statusColor(status: string): BadgeColor {
-  // GREEN is reserved for BROKER-VERIFIED execution only. A recorded intent (SHADOW_RECORDED) must
-  // never read as a successful order (ADR-0051 PR C UX truthfulness correction).
+  // GREEN is reserved for BROKER-VERIFIED execution only. A recorded intent (SHADOW_RECORDED) and a
+  // suppressed SHADOW JOB (SHADOW_JOB_RECORDED) must never read as a successful order (ADR-0051 UX).
   if (status === "EXECUTION_VERIFIED") return "green";
   if (status === "REJECTED" || status === "EXECUTION_FAILED") return "red";
   if (status === "SKIPPED") return "gray";
-  if (status === "SHADOW_RECORDED") return "yellow";       // intent only — NO order sent
-  return "blue";                                           // e.g. EXECUTION_REQUESTED (in flight)
+  if (status === "SHADOW_RECORDED" || status === "SHADOW_JOB_RECORDED") return "yellow";   // no order sent
+  return "blue";                                           // e.g. EXECUTION_REQUESTED (in flight, not filled)
 }
 
 export function statusLabel(status: string, lang: Lang): string {
   if (status === "SHADOW_RECORDED") return lang === "ja" ? "シャドー — 発注なし" : "SHADOW — NO ORDER SENT";
+  if (status === "SHADOW_JOB_RECORDED") {
+    return lang === "ja" ? "シャドージョブ記録 — 発注なし" : "SHADOW JOB RECORDED — NO ORDER SENT";
+  }
+  if (status === "EXECUTION_REQUESTED") return lang === "ja" ? "実行要求（未確認）" : "EXECUTION REQUESTED";
   if (status === "EXECUTION_VERIFIED") return lang === "ja" ? "ブローカー確認済み" : "BROKER-VERIFIED";
   return status;
 }

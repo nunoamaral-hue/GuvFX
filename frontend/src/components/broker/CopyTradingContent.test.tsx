@@ -55,6 +55,13 @@ describe("CopyTradingContent", () => {
     expect(screen.queryByText("SHADOW_RECORDED")).toBeNull();
   });
 
+  it("labels SHADOW_JOB_RECORDED as a shadow job with no order sent (not execution/success)", async () => {
+    getCopyTradingOverview.mockResolvedValue(overview({ master: MASTER, recent_replications: [replication("SHADOW_JOB_RECORDED")] }));
+    render(<CopyTradingContent accountId={100} />);
+    expect((await screen.findAllByText(/SHADOW JOB RECORDED .* NO ORDER SENT/i)).length).toBeGreaterThan(0);
+    expect(screen.queryByText("SHADOW_JOB_RECORDED")).toBeNull();   // raw enum never shown as-is
+  });
+
   it("shows a calm not-enabled state when the API reports enabled:false (DARK)", async () => {
     getCopyTradingOverview.mockResolvedValue(overview({ enabled: false }));
     render(<CopyTradingContent accountId={100} />);
