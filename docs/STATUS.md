@@ -14,6 +14,22 @@
 
 ## Execution workstream log
 
+- **2026-10-20 - WV1 BOARD-DEMO CRITICAL PATH — DELIVERED (P0, all DARK; main `2d6c3f1a`).** Withdrawal Intelligence
+  is now a FUNCTIONING, VISIBLE demonstration (verified live on an isolated demo DB; screenshots in
+  `docs/wv1_demo_evidence/`). Four DARK PRs: **#530** certified TradersWay external-withdrawal parser (`0f2b4730`);
+  **#531** owner-attributed, account-optional Withdrawal schema + correlation (ADR-0050, migration **0016**;
+  `983561ab`); **#532** owner-scoped member API + "Account unresolved" UI + public-aggregation guard (`ece05793`);
+  **#533** board-demo env — labelled synthetic seed + demo-visible flag + additive env CORS/CSRF + JWT-cookie config
+  + runbook + report (`2d6c3f1a`). §2 genuine evidence certified read-only (authenticated pilot pair, 33m01s,
+  **owner-29 / account-UNRESOLVED**; nothing exfiltrated). The genuine owner-attributed/account-UNRESOLVED withdrawal
+  flows parser→correlation→owner-scoped API→UI and renders under a DEMONSTRATION banner. 672/672 backend; FE build
+  green; each PR adversarially reviewed (confirmed defects fixed incl. a HIGH correlation double-count). **Production
+  unchanged** (schema 0010; all flags OFF; member API 404; settings.py byte-identical with env unset). Report:
+  `docs/GUVFX_WV1_FRIDAY_BOARD_DEMO_REPORT.md`; runbook: `docs/WV1_BOARD_DEMO_RUNBOOK.md`. Human gates (unchanged):
+  prod migration NO-GO (off-host DB-recovery), production certification needs a genuine Sponsor-initiated withdrawal
+  (GuvFX never initiates/confirms/cancels). NOTE: this supersedes the customer-pilot "blocked on raw RFC822" line —
+  the genuine evidence WAS present in the prod evidence store and the parser is certified against it (RULE-11).
+
 - **2026-10-20 - BROKER INTELLIGENCE CUSTOMER PILOT COMPLETION (P0, DARK; main `8125770f`).** Seven coherent DARK
   squash-merges on baseline `6554290`: #522 public INSUFFICIENT_DATA leak fix + anon throttle (§6a, `dc6e43f`); #523
   minority k-anon + participation-consent (§6b, `1883e76`); #524 multi-mailbox OAuth + PG concurrency proof (§3,
