@@ -20,8 +20,15 @@ User = get_user_model()
 
 
 class SeedBoardDemoGuardTests(TestCase):
-    def test_refuses_non_demo_db_without_debug_or_flag(self):
-        # Test DB name is "test_<...>" (no "demo"), DEBUG off, demo flag off -> must refuse (prod-safety).
+    def test_refuses_non_demo_db_without_debug(self):
+        # Test DB name is "test_<...>" (no "demo"), DEBUG off -> must refuse (prod-safety).
+        with self.assertRaises(CommandError) as ctx:
+            call_command("seed_wv1_board_demo", "--confirm-demo-db", stdout=StringIO())
+        self.assertIn("does not look like a demo database", str(ctx.exception))
+
+    @override_settings(BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC="1")   # data-surfacing flag armed, DEBUG off, no "demo"
+    def test_surfacing_flag_alone_does_not_unlock_seeding(self):
+        # Hardening: arming the data-surfacing flag must NOT make a prod-shaped DB look disposable.
         with self.assertRaises(CommandError) as ctx:
             call_command("seed_wv1_board_demo", "--confirm-demo-db", stdout=StringIO())
         self.assertIn("does not look like a demo database", str(ctx.exception))

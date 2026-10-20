@@ -23,7 +23,6 @@ from django.db import connection
 from django.utils import timezone
 
 from broker_intelligence import correlation
-from broker_intelligence.flags import broker_withdrawal_demo_include_synthetic
 from broker_intelligence.models import BrokerEvent, Provenance, TransactionCategory, Withdrawal
 from trading.models import TradingAccount
 
@@ -68,12 +67,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         db_name = str(connection.settings_dict.get("NAME", ""))
-        looks_demo = ("demo" in db_name.lower()) or bool(settings.DEBUG) or broker_withdrawal_demo_include_synthetic()
+        # Gate ONLY on durable DB-disposability signals — the database NAME marker (operator-controlled) or DEBUG.
+        # Deliberately NOT the data-surfacing flag BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC: that flag governs whether
+        # synthetic rows are SHOWN, not whether a database is safe to MUTATE; conflating them would let arming a
+        # surfacing flag unlock writes against production. A hosted demo DB must therefore be named with "demo".
+        looks_demo = ("demo" in db_name.lower()) or bool(settings.DEBUG)
         if not looks_demo:
             raise CommandError(
-                f"Refusing to seed: target database {db_name!r} does not look like a demo database (no 'demo' in the "
-                "name, DEBUG is off, and BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC is off). This command writes "
-                "SYNTHETIC data and must NEVER run against production.")
+                f"Refusing to seed: target database {db_name!r} does not look like a demo database (its name does "
+                "not contain 'demo' and DEBUG is off). This command writes SYNTHETIC data and must NEVER run against "
+                "production; name the isolated demo database with 'demo'.")
         if not opts["confirm_demo_db"]:
             raise CommandError(f"Pass --confirm-demo-db to seed synthetic demo data into {db_name!r}.")
 
