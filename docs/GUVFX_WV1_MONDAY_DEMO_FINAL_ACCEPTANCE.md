@@ -10,6 +10,46 @@ the architecture. One coherent bounded delivery on top of the merged WV1 foundat
 
 ---
 
+## 0. Final state — post-merge (2026-10-20)
+
+| State label | Value | Basis |
+|---|---|---|
+| `ENGINEERING_COMPLETE` | **YES** | all six presentation-critical items delivered (§1) + every objective gate green |
+| `DARK_MERGED` | **YES** | PR #536 governed squash-merged to `main` as `e6117aab`; both new flags default OFF |
+| `DEMO_READY` | **YES** | isolated demo rehearsed end-to-end on merged `main` (§8) |
+| `PRODUCTION_DEPLOYED` | **NO** | no prod deploy / migration / flag-flip performed or authorised |
+| `CUSTOMER_VISIBLE` | **NO** | DARK; public endpoints 404 in prod; no customer exposure |
+
+**Git / CI evidence (exact):**
+- Baseline canonical `main`: `48ecd20a` · PR #536 final head: `bf29ee93`
+- Governed squash-merge SHA (= new canonical `main`): **`e6117aab`** — a single commit on `48ecd20a`; no extra
+  commits or files entered `main`. Merged by `nunoamaral-hue` at 2026-10-20T14:59:17Z; PR #536 state = **MERGED**;
+  **auto-merge never enabled**.
+- Exact-head CI run **39427191377** — all **5 jobs `success`**: `backend`, `frontend`, `governance`,
+  `market-data-foundation`, `research-foundation`. No outstanding review threads/comments; mergeable `CLEAN`.
+- **Collision check:** zero copier files in the diff; PR #528 / #535 / #537 (copier observer / ux / exec) untouched
+  and still OPEN; `main` unchanged since baseline apart from this one squash.
+
+**Local validation (exact commands + results, this session):**
+- `manage.py test broker_public broker_intelligence` → **675 OK**, 0 skipped
+- `manage.py test broker_public.tests_public_metrics broker_intelligence.tests_seed_board_demo` → **32 OK**
+- `npx vitest run` (case-study + wtm + AccountWithdrawalMonitoring) → **5 OK**, 0 skipped
+- **Negative control** (unmount guard): reverted component to `main:…/AccountWithdrawalMonitoring.tsx` → test
+  **FAILED ×2** (`setState-after-unmount`); restored guarded head → **PASS**; working tree restored clean.
+- `npm run build` → parity **OK (52 routes)**, tsc + next compiled; `/brokers/case-study` + `/brokers/wtm` present.
+
+**DARK endpoint behaviour (verified live on the isolated demo):**
+- Flags **armed**: `GET /api/public/case-study/` → **200** (`real:true`; facts $24.12 / Ethereum / 33m01s;
+  PII-leak scan **NONE**); `GET /api/public/wtm-preview/` → **200** (SIMULATED scorecard).
+- Flags **unset** (prod-equivalent): both → **404**.
+
+**Privacy / factuality review:** no credentials / tokens / account numbers / private evidence in committed artifacts;
+the genuine case-study facts are served only from the DARK-gated endpoint, never an always-public bundle; synthetic
+rows are labelled `SYNTHETIC` / DEMONSTRATION; the genuine **$24.12** is described as REAL (never synthetic); the
+**33m01s** figure is stated as the email-to-email (request→completion) interval, never as a measured system latency.
+
+---
+
 ## 1. Per-feature acceptance (Friday)
 
 | # | Item | Verdict | Evidence |
@@ -19,7 +59,7 @@ the architecture. One coherent bounded delivery on top of the merged WV1 foundat
 | 3 | **Ten ACTUAL MT5 account inventory/status** (≥2 same-broker) | **PASS (truthful) / PARTIAL on same-broker** | Read-only estate inventory below. Real same-broker *external* accounts do **not** exist; two same-broker accounts **with empirical HEALTHY data** are the hosted-MT5 terminals 25 & 33. Synthetic seeded 10 are **not** claimed as connectivity. |
 | 4 | **Frontend cleanup CI fix** (PR#531 source) | **PASS** | `AccountWithdrawalMonitoring.tsx` unmount guard (`mountedRef`) + a **discriminating** regression `AccountWithdrawalMonitoring.test.tsx` (setter-spy via `vi.mock("react")` — empirically fails ×2 on the reverted component, passes on the guarded head, so it genuinely exercises the guard rather than React 19's silent setState-after-unmount no-op); final-head CI to confirm on the PR. |
 | 5 | **Reliable isolated demo (A–F) + rehearsal + fallback** | **PASS** | All six screens verified live on the isolated demo; six screenshots in `docs/wv1_demo_evidence/` serve as the offline fallback. Sequence below. |
-| 6 | **Governance / final CI** | **PASS (pending CI + review on this PR)** | DARK; prod untouched; tests green; adversarial review + CI on the PR before governed squash-merge (auto-merge OFF). |
+| 6 | **Governance / final CI** | **PASS** | DARK; prod untouched; all 5 exact-head CI jobs green; adversarial review fixes landed; **governed squash-merge to `main` as `e6117aab`** (auto-merge OFF). See §0. |
 
 **Production activation: NO-GO (unchanged).** See §6.
 
@@ -139,3 +179,30 @@ production (deploy-time checklist: `GUVFX_WV1_FRIDAY_BOARD_DEMO_REPORT.md` §7a)
 ## 7. One bounded next action
 Run the Board demo on the isolated demo DB per the runbook on Monday 2026-10-26; keep production untouched until the
 G1 DB-recovery gate clears.
+
+---
+
+## 8. Rehearsal evidence (merged `main` `e6117aab`, isolated demo)
+
+Full isolated rehearsal executed from the documented clean state (runbook §1–§4), verifying the merged result:
+
+1. **Clean state:** `guvfx_wv1_demo` dropped + recreated (owned by `dev`), migrated through 0016, seeded via
+   `seed_wv1_board_demo --confirm-demo-db` → member `demo-board`, **10 accounts (2 same-broker)**, **8 synthetic
+   withdrawals**, correlation `{processed:2, created:1, completion_advanced:1}`. All `provenance=SYNTHETIC`.
+2. **Screen F — WTM preview** (`/brokers/wtm`): renders PREVIEW badge, authentic `INSUFFICIENT_VERIFIED_DATA`,
+   SIMULATED scorecard (22 samples · 11 contributors · median 45m / avg 63m / p90 2h), distribution histogram,
+   lifecycle 86%, GuvFX→aggregate→WAYOND flow, source/methodology/privacy. Screenshot captured.
+3. **Screen D — genuine case study** (`/brokers/case-study`): renders REAL badge + the genuine facts from the gated
+   endpoint — TradersWay / External withdrawal / Ethereum / **$24.12** / 2026-10-19 07:55:04→08:28:05 UTC /
+   **33m01s (1981s)** / request+completion emails linked by one broker reference; DKIM+SPF; broker-reported
+   completion only; owner-attributed / account UNRESOLVED; full redaction note. Screenshot captured.
+4. **DARK-off negative behaviour:** with the flags unset, `/api/public/case-study/` and `/api/public/wtm-preview/`
+   both return **404** — demonstrated live (prod-equivalent).
+5. **Screen C/E — withdrawal monitoring/history** (member API): **8 rows, all SYNTHETIC/demonstration**; the one
+   **account-UNRESOLVED** row = TradersWay 250.00 USD, dur 1981s, `reference_correlated=true` (the SYNTHETIC
+   reconstruction — demo $250 amount, real 33m01s structure; distinct from the REAL $24.12).
+6. **Screen B — connected email:** 1 `CONNECTED` demo mailbox, `credential_ref` empty (no token in the DB).
+7. **No production activation needed; MT5 Copier functionality untouched; repeatable from the runbook.**
+
+Screenshots refreshed this session for screens D and F (the two surfaces changed by this PR); the six committed
+`docs/wv1_demo_evidence/*.jpg` remain the offline fallback for Monday.
