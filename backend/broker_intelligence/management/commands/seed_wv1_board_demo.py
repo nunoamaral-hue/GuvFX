@@ -23,7 +23,8 @@ from django.db import connection
 from django.utils import timezone
 
 from broker_intelligence import correlation
-from broker_intelligence.models import BrokerEvent, Provenance, TransactionCategory, Withdrawal
+from broker_intelligence.models import (BrokerEvent, ConnectedMailbox, Provenance, TransactionCategory,
+                                        Withdrawal)
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -86,6 +87,14 @@ class Command(BaseCommand):
         if member.email != _DEMO_EMAIL:
             member.email = _DEMO_EMAIL
             member.save(update_fields=["email"])
+
+        # A CONNECTED demo mailbox (screen B — connected email management). credential_ref stays empty (no token in
+        # the DB, ever); primary_email is a clearly-demo placeholder address, masked in the UI.
+        ConnectedMailbox.objects.get_or_create(
+            user=member, provider_mailbox_id="demo-gmail-sub-0001",
+            defaults=dict(provider=ConnectedMailbox.Provider.GMAIL, primary_email=_DEMO_EMAIL,
+                          status=ConnectedMailbox.Status.CONNECTED, scopes="gmail.readonly",
+                          last_successful_sync=now))
 
         accts = []
         for broker, number in _ACCOUNTS:

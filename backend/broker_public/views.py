@@ -20,8 +20,9 @@ from rest_framework.views import APIView
 # BROKER_PUBLIC_DIRECTORY_ENABLED).
 from core.throttling import GuvFXPublicAnonRateThrottle
 
-from .flags import broker_public_directory_enabled
+from .flags import broker_public_directory_enabled, broker_public_wtm_preview_enabled
 from .models import BrokerMetricAggregate, PublicBroker
+from .wtm_preview import wtm_preview_payload
 
 
 def _aggregate_json(agg: BrokerMetricAggregate) -> dict:
@@ -86,3 +87,20 @@ class PublicBrokerProfileView(APIView):
         if b is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(_broker_json(b, include_metrics=True))
+
+
+class PublicWtmPreviewView(APIView):
+    """GET /api/public/wtm-preview/ — the WAYOND Trader Match broker-metrics PREVIEW (investor demo, DARK).
+
+    Returns a clearly-labelled SIMULATED broker-performance scorecard (every figure synthetic, ``simulated: True``)
+    illustrating future multi-sample analytics, plus the truthful authentic state (INSUFFICIENT_VERIFIED_DATA). It
+    reads NO member/withdrawal/broker data and publishes NO real rating. 404 until ``broker_public_wtm_preview_enabled``
+    is armed (isolated demo only)."""
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+    throttle_classes = [GuvFXPublicAnonRateThrottle]
+
+    def get(self, request):
+        if not broker_public_wtm_preview_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(wtm_preview_payload())

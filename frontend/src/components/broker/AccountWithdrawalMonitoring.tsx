@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type {
   AccountContactsResponse,
@@ -94,18 +94,24 @@ export const AccountWithdrawalMonitoring: React.FC<{ accountId: number; brokerNa
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reasonById, setReasonById] = useState<Record<number, string>>({});
+  // Unmount guard: the mount-time fetches below (and the post-await handlers) must never setState after the
+  // component unmounts — otherwise an in-flight apiFetch resolving after teardown triggers an async-setState-after-
+  // unmount warning (observed as the PR#531 frontend CI failure). All setState is gated on mountedRef.current.
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const load = useCallback(() => {
     apiFetch<AccountContactsResponse>(contactsUrl(accountId), {})
       .then((d) => {
+        if (!mountedRef.current) return;
         if (d && Array.isArray(d.contacts)) setContacts(d.contacts);
         else setHidden(true);               // non-conforming -> hide, never a broken card
       })
-      .catch(() => setHidden(true));        // 404 => feature DARK; any error => hide
+      .catch(() => { if (mountedRef.current) setHidden(true); });   // 404 => feature DARK; any error => hide
     // Best-effort mailbox list for the dropdown; its own flag may be off (404) — then just omit the selector.
     apiFetch<{ mailboxes?: MailboxOption[] }>(MAILBOX_STATUS, {})
-      .then((d) => setMailboxes(Array.isArray(d?.mailboxes) ? d!.mailboxes : []))
-      .catch(() => setMailboxes([]));
+      .then((d) => { if (mountedRef.current) setMailboxes(Array.isArray(d?.mailboxes) ? d!.mailboxes : []); })
+      .catch(() => { if (mountedRef.current) setMailboxes([]); });
   }, [accountId]);
 
   useEffect(() => { load(); }, [load]);
@@ -118,12 +124,13 @@ export const AccountWithdrawalMonitoring: React.FC<{ accountId: number; brokerNa
       const body: Record<string, unknown> = { email: addr, broker: brokerName || brokerOf(contacts) };
       if (mailboxId) body.connected_mailbox_id = Number(mailboxId);
       await apiFetch<CreateContactResponse>(createUrl(accountId), { method: "POST", body: JSON.stringify(body) });
+      if (!mountedRef.current) return;
       setEmail("");
       load();
     } catch {
-      setError(STR.associateFailed[L]);
+      if (mountedRef.current) setError(STR.associateFailed[L]);
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   }, [email, mailboxId, accountId, brokerName, contacts, L, load]);
 
@@ -131,13 +138,14 @@ export const AccountWithdrawalMonitoring: React.FC<{ accountId: number; brokerNa
     setBusy(true); setError(null);
     try {
       const r = await apiFetch<VerifyContactResponse>(verifyUrl(accountId, cid), { method: "POST" });
+      if (!mountedRef.current) return;
       if (r && !r.verified && r.reason) setReasonById((m) => ({ ...m, [cid]: r.reason }));
       else setReasonById((m) => { const n = { ...m }; delete n[cid]; return n; });
       load();
     } catch {
-      setError(STR.verifyFailed[L]);
+      if (mountedRef.current) setError(STR.verifyFailed[L]);
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   }, [accountId, L, load]);
 
