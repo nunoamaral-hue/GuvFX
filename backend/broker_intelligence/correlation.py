@@ -2,11 +2,20 @@
 
 The single, deterministic path from parsed broker events to a member-visible withdrawal. Contract:
 
-* **Only ``EXTERNAL_WITHDRAWAL``** events are correlated. INTERNAL_TRANSFER / DEPOSIT / UNKNOWN never create or
-  advance a Withdrawal — so an internal transfer (e.g. the genuine TradersWay "confirm your withdrawal request"
-  email, which is an internal transfer) can never inflate withdrawal statistics.
+* **Only an ``EXTERNAL_WITHDRAWAL`` event may CREATE a Withdrawal.** INTERNAL_TRANSFER / DEPOSIT / UNKNOWN never
+  create one — so an internal transfer (e.g. the genuine TradersWay "confirm your withdrawal request" email, which is
+  an internal transfer) can never inflate withdrawal statistics. The one exception is ADVANCE-only: a neutral
+  COMPLETED-lifecycle event (category UNKNOWN — the genuine payout completion carries no rail/direction) may ADVANCE
+  an EXISTING external Withdrawal it matches by the shared authenticated broker reference (``correlate_completion_event``,
+  ADR-0050); it NEVER creates one, so externality is still only ever asserted by the request (positive evidence).
+* **Owner-attributed, account-optional (ADR-0050).** A Withdrawal carries both ``trading_account`` (the resolved
+  GuvFX account, may be NULL) and ``owner`` (the mailbox owner, independent of the account). An event that resolved
+  an account is keyed account-scoped; an owner-attributed event whose account is UNRESOLVED (e.g. the genuine pilot
+  withdrawal, whose TradersWay account is not registered) is keyed owner-scoped. Only a truly unattributed event
+  (no account AND no owner) is skipped.
 * **Reference-id first (deterministic).** An event carrying a ``broker_reference_id`` is correlated to the single
-  Withdrawal keyed by ``(trading_account, broker_reference_id)`` — idempotent via the partial-unique constraint.
+  Withdrawal keyed by ``(trading_account, broker_reference_id)`` when an account is resolved, else
+  ``(owner, broker_reference_id)`` over account-NULL rows — idempotent via the two partial-unique constraints.
 * **Bounded heuristic fallback.** With no reference id, match an EXISTING ref-less Withdrawal on
   account + amount + currency within a bounded time window. **Exactly one** candidate ⇒ correlate; **two or more**
   ⇒ AMBIGUOUS (never guessed); **zero** ⇒ a requested-class event starts a new record, a completion-class event is
@@ -87,6 +96,7 @@ OUT_REFERENCE = "correlated_reference"
 OUT_HEURISTIC = "correlated_heuristic"
 OUT_CROSS_INBOX = "correlated_cross_inbox"   # a duplicate inbox copy of one logical email adopted the sibling withdrawal
 OUT_CREATED = "created"                 # a new withdrawal was started from a requested-class event
+OUT_COMPLETION_ADVANCED = "completion_advanced"   # a neutral completion advanced an EXISTING external withdrawal (never created)
 OUT_AMBIGUOUS = "ambiguous"             # >=2 heuristic candidates — never guessed
 OUT_UNRESOLVED = "unresolved"           # a completion with no ref and no match — never fabricated
 OUT_ALREADY = "already_correlated"      # event already CORRELATED (idempotent no-op under re-run/concurrency)
@@ -174,9 +184,29 @@ def _mark_event(event: BrokerEvent, status: str) -> None:
 
 
 def _find_by_reference(event: BrokerEvent):
-    return (Withdrawal.objects
-            .filter(trading_account_id=event.trading_account_id,
-                    broker_reference_id=event.broker_reference_id).first())
+    """The single Withdrawal this event's reference belongs to. Events for ONE real withdrawal can differ in account
+    resolution — the request may resolve a GuvFX account while a follow-up/completion carries only the shared
+    reference (ADR-0050) — so the OWNER is the robust dedup key across that mix. Strategy: the strict key first
+    (``(account, ref)`` if the event resolved an account, else ``(owner, account IS NULL, ref)``), then, when the
+    event carries an owner, BRIDGE to any ``(owner, ref)`` row. The bridge makes an account-less advancing/completion
+    event ADVANCE the existing account-resolved withdrawal (and vice-versa) instead of creating a parallel row — so a
+    single real withdrawal is never double-counted (review fix for the pass-1/pass-2 asymmetry). The sequential,
+    single-worker correlation loop makes the find-then-advance atomic enough; the partial-unique indexes remain the
+    backstop. A non-match returns None — so a deposit/other event whose reference matches no withdrawal has no effect,
+    and (in the completion path) a completion never fabricates a record."""
+    ref = event.broker_reference_id
+    if event.trading_account_id is not None:
+        w = Withdrawal.objects.filter(trading_account_id=event.trading_account_id, broker_reference_id=ref).first()
+        if w is not None:
+            return w
+    elif event.owner_id is not None:
+        w = Withdrawal.objects.filter(owner_id=event.owner_id, trading_account__isnull=True,
+                                      broker_reference_id=ref).first()
+        if w is not None:
+            return w
+    if event.owner_id is not None:   # owner bridge: one real withdrawal, mixed account resolution across its events
+        return Withdrawal.objects.filter(owner_id=event.owner_id, broker_reference_id=ref).first()
+    return None
 
 
 def _correlate_by_reference(event: BrokerEvent, target_status: str) -> CorrelationResult:
@@ -220,6 +250,7 @@ def _correlate_by_reference(event: BrokerEvent, target_status: str) -> Correlati
         with transaction.atomic():   # OWN savepoint: a uniqueness race aborts only this, leaving the outer txn usable
             withdrawal = Withdrawal.objects.create(
                 trading_account_id=event.trading_account_id,
+                owner_id=event.owner_id,                      # owner attribution, independent of account (ADR-0050)
                 broker_reference_id=event.broker_reference_id,
                 amount=event.amount, currency=event.currency or "",
                 status=target_status, correlation_method=Withdrawal.CorrelationMethod.REFERENCE_ID,
@@ -244,11 +275,13 @@ def _heuristic_candidates(event: BrokerEvent):
     """Ref-less Withdrawals for this account matching amount+currency within the bounded window. Ref-id withdrawals
     are excluded (they are matched deterministically by ref, never by heuristic)."""
     anchor = _event_time(event)
-    qs = Withdrawal.objects.filter(
-        trading_account_id=event.trading_account_id,
-        broker_reference_id="",
-        amount=event.amount, currency=event.currency,
-    )
+    # Account-scoped when the event resolved an account, else owner-scoped over account-UNRESOLVED rows (ADR-0050).
+    if event.trading_account_id is not None:
+        qs = Withdrawal.objects.filter(trading_account_id=event.trading_account_id, broker_reference_id="",
+                                       amount=event.amount, currency=event.currency)
+    else:
+        qs = Withdrawal.objects.filter(owner_id=event.owner_id, trading_account__isnull=True, broker_reference_id="",
+                                       amount=event.amount, currency=event.currency)
     lo, hi = anchor - HEURISTIC_WINDOW, anchor + HEURISTIC_WINDOW
     out = []
     for w in qs:
@@ -261,6 +294,7 @@ def _heuristic_candidates(event: BrokerEvent):
 def _create_heuristic(event: BrokerEvent, target_status: str) -> CorrelationResult:
     withdrawal = Withdrawal.objects.create(
         trading_account_id=event.trading_account_id,
+        owner_id=event.owner_id,                          # owner attribution, independent of account (ADR-0050)
         broker_reference_id="",
         amount=event.amount, currency=event.currency or "",
         status=target_status, correlation_method=Withdrawal.CorrelationMethod.HEURISTIC,
@@ -344,7 +378,9 @@ def correlate_event(event: BrokerEvent) -> CorrelationResult:
     merely a reliance on the ``run_correlation`` queryset filter (a TOCTOU)."""
     if event.transaction_category != TransactionCategory.EXTERNAL_WITHDRAWAL:
         return CorrelationResult(event.id, OUT_SKIP_NOT_EXTERNAL)
-    if event.trading_account_id is None:
+    if event.trading_account_id is None and event.owner_id is None:
+        # Neither a resolved account NOR an owner — unattributable, so never projected (ADR-0050: an owner-attributed,
+        # account-UNRESOLVED event IS projected, keyed on owner; only a truly unattributed event is skipped).
         return CorrelationResult(event.id, OUT_SKIP_NO_ACCOUNT)
     target_status = _status_for_event(event)
     if target_status is None:
@@ -363,21 +399,68 @@ def correlate_event(event: BrokerEvent) -> CorrelationResult:
         return _correlate_by_heuristic(event, target_status)
 
 
+def correlate_completion_event(event: BrokerEvent) -> CorrelationResult:
+    """ADVANCE-ONLY completion-by-reference (ADR-0050). A COMPLETED-lifecycle event that is NOT itself an
+    ``EXTERNAL_WITHDRAWAL`` (the genuine TradersWay payout COMPLETION is category UNKNOWN — it carries no rail and no
+    direction wording, so its externality cannot be asserted from its own text) but DOES carry a broker reference
+    ADVANCES an EXISTING external ``Withdrawal`` — matched by the shared authenticated reference, by (account, ref) if
+    the completion resolved an account else by (owner, ref) — to COMPLETED.
+
+    It NEVER creates a Withdrawal: externality is only ever asserted by the REQUEST (positive external evidence), so a
+    completion with no matching external withdrawal is left UNRESOLVED and a deposit/other completion whose reference
+    matches nothing has NO effect — metric inflation from a completion is therefore structurally impossible. Fail-
+    closed + idempotent exactly like ``correlate_event`` (event row locked, mutable ``correlation_status`` re-read)."""
+    if _status_for_event(event) != Withdrawal.Status.COMPLETED:
+        return CorrelationResult(event.id, OUT_SKIP_NOT_LIFECYCLE)
+    if not event.broker_reference_id:
+        return CorrelationResult(event.id, OUT_UNRESOLVED)       # no reference -> cannot link; never fabricated
+    if event.trading_account_id is None and event.owner_id is None:
+        return CorrelationResult(event.id, OUT_SKIP_NO_ACCOUNT)
+    with transaction.atomic():
+        locked = BrokerEvent.objects.select_for_update().filter(pk=event.pk).first()
+        if locked is None:
+            return CorrelationResult(event.id, OUT_SKIP_NOT_LIFECYCLE)
+        if locked.correlation_status == BrokerEvent.CorrelationStatus.CORRELATED:
+            return CorrelationResult(event.id, OUT_ALREADY)
+        event = locked
+        withdrawal = _find_by_reference(event)                   # owner/account bridge (same finder as pass 1)
+        if withdrawal is None:
+            return CorrelationResult(event.id, OUT_UNRESOLVED)   # NEVER create a withdrawal from a completion
+        _apply_event(withdrawal, event, Withdrawal.Status.COMPLETED,
+                     method=withdrawal.correlation_method or Withdrawal.CorrelationMethod.REFERENCE_ID, created=False)
+        return CorrelationResult(event.id, OUT_COMPLETION_ADVANCED, withdrawal.id)
+
+
 def run_correlation(*, limit: Optional[int] = None) -> dict:
-    """Correlate all not-yet-resolved EXTERNAL_WITHDRAWAL events in chronological (append-only) order. Re-entrant and
-    idempotent: CORRELATED events are skipped; UNRESOLVED/AMBIGUOUS are re-evaluated (ambiguity may resolve as more
-    evidence accrues). Returns a secret-free summary counting each outcome. NO flag check here — the caller (the DARK
-    worker/command) gates the live run; this stays pure/testable."""
-    qs = (BrokerEvent.objects
-          .filter(transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL,
-                  correlation_status__in=[BrokerEvent.CorrelationStatus.UNRESOLVED,
-                                          BrokerEvent.CorrelationStatus.AMBIGUOUS])
-          .order_by("id"))
-    if limit is not None:
-        qs = qs[:limit]
+    """Correlate all not-yet-resolved events in chronological (append-only) order, in TWO passes. Re-entrant and
+    idempotent: CORRELATED events are skipped; UNRESOLVED/AMBIGUOUS are re-evaluated (ambiguity/missing-request may
+    resolve as more evidence accrues). Returns a secret-free summary counting each outcome. NO flag check here — the
+    caller (the DARK worker/command) gates the live run; this stays pure/testable.
+
+    Pass 1 — ``EXTERNAL_WITHDRAWAL`` events (create + advance). Pass 2 — neutral COMPLETED-lifecycle events that are
+    NOT external (category UNKNOWN) and carry a reference: ADVANCE-ONLY by reference (``correlate_completion_event``),
+    run AFTER pass 1 so the request has already created the withdrawal the completion advances. A completion can only
+    ever complete an externally-evidenced withdrawal; it can never create one, so this pass cannot inflate metrics."""
     summary: dict = {"processed": 0}
-    for event in qs:
-        res = correlate_event(event)
-        summary["processed"] += 1
-        summary[res.outcome] = summary.get(res.outcome, 0) + 1
+
+    def _drain(qs, fn):
+        if limit is not None:
+            qs = qs[:limit]
+        for event in qs:
+            res = fn(event)
+            summary["processed"] += 1
+            summary[res.outcome] = summary.get(res.outcome, 0) + 1
+
+    # Pass 1: external-withdrawal lifecycle events.
+    _drain((BrokerEvent.objects
+            .filter(transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL,
+                    correlation_status__in=[BrokerEvent.CorrelationStatus.UNRESOLVED,
+                                            BrokerEvent.CorrelationStatus.AMBIGUOUS])
+            .order_by("id")), correlate_event)
+    # Pass 2: neutral (non-external) completion events carrying a reference — advance-only, never create.
+    _drain((BrokerEvent.objects
+            .filter(event_type__in=list(_COMPLETED_EVENTS), broker_reference_id__gt="",
+                    correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED)
+            .exclude(transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
+            .order_by("id")), correlate_completion_event)
     return summary

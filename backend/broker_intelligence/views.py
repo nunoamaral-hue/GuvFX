@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 
 from .flags import (broker_account_contact_enabled, broker_identity_verification_enabled,
                     broker_mailbox_connect_enabled, broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
-                    broker_withdrawal_ux_enabled)
+                    broker_withdrawal_demo_include_synthetic, broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_history, withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
@@ -139,7 +139,11 @@ class WithdrawalMetricsView(APIView):
         # dashboard (which excludes disconnected accounts because their LIVE balance is gone), this is a historical
         # record. Still strictly owner-scoped (user=request.user) with no staff bypass — never another member's data.
         accounts = TradingAccount.objects.filter(user=request.user)
-        return Response(withdrawal_metrics(accounts))
+        # owner=request.user ALSO includes the member's owner-attributed, account-UNRESOLVED withdrawals (ADR-0050) —
+        # a withdrawal whose broker account is not registered in GuvFX is still the member's own history.
+        # include_demonstration is OFF in prod (GENUINE-only); ON only in an isolated demo env (labelled synthetic).
+        return Response(withdrawal_metrics(accounts, owner=request.user,
+                                           include_demonstration=broker_withdrawal_demo_include_synthetic()))
 
 
 class WithdrawalHistoryView(APIView):
@@ -158,7 +162,10 @@ class WithdrawalHistoryView(APIView):
         acct_id = request.query_params.get("account_id") or None
         # A member can only ever filter to ONE OF THEIR OWN accounts: the id is intersected with their own account
         # set below in withdrawal_history (ids come from `accounts`), so a foreign account_id yields nothing.
-        return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id))
+        # owner=request.user ALSO includes the member's owner-attributed, account-UNRESOLVED withdrawals (ADR-0050).
+        # include_demonstration is OFF in prod (GENUINE-only); ON only in an isolated demo env (labelled synthetic).
+        return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id, owner=request.user,
+                                           include_demonstration=broker_withdrawal_demo_include_synthetic()))
 
 
 def _identity_json(i) -> dict:

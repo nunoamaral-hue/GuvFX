@@ -25,6 +25,15 @@ const STR = {
   na: { en: "N/A", ja: "該当なし" },
   ref: { en: "ref", ja: "参照" },
   unresolvedNote: { en: "Unresolved — awaiting matching evidence", ja: "未解決 — 照合証跡待ち" },
+  accountUnresolved: { en: "Account unresolved", ja: "口座未特定" },
+  accountUnresolvedNote: {
+    en: "Owner-attributed — this broker account is not registered in GuvFX",
+    ja: "所有者に紐付け — このブローカー口座はGuvFXに未登録です",
+  },
+  demoBanner: {
+    en: "DEMONSTRATION DATA — synthetic, for illustration only (not a genuine broker record)",
+    ja: "デモ用データ — 合成データ、説明目的のみ（実際のブローカー記録ではありません）",
+  },
 };
 
 const STATE_LABEL: Record<WithdrawalState, { en: string; ja: string; color: string }> = {
@@ -109,6 +118,14 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
         </div>
       </div>
 
+      {data.demonstration ? (
+        <div data-testid="demo-banner" style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8,
+          background: "rgba(201,162,74,0.14)", border: "1px solid rgba(201,162,74,0.5)", color: "#e7c77a",
+          fontSize: "0.72rem", fontWeight: 600, letterSpacing: "0.02em" }}>
+          ⚠ {STR.demoBanner[L]}
+        </div>
+      ) : null}
+
       {rows.length === 0 ? (
         <div style={{ ...meta, padding: "10px 0", textAlign: "center" }}>
           {everEmpty ? STR.none[L] : STR.noneFilter[L]}
@@ -124,7 +141,11 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
                 <div style={{ minWidth: 0 }}>
                   <div style={{ color: "#e9f4ff", fontSize: "0.85rem" }}>
                     {w.amount !== null && w.currency ? `${w.amount} ${w.currency}` : STR.na[L]}
-                    <span style={{ ...meta, marginLeft: 8 }}>{w.broker} · {w.account_masked}</span>
+                    <span style={{ ...meta, marginLeft: 8 }}>
+                      {w.broker} · {w.account_unresolved
+                        ? <span style={{ color: "#c9a24a" }} title={STR.accountUnresolvedNote[L]}>⚠ {STR.accountUnresolved[L]}</span>
+                        : w.account_masked}
+                    </span>
                   </div>
                   <div style={meta}>
                     {w.state === "unresolved"

@@ -89,6 +89,20 @@ class Aggregation(TestCase):
         _wd(_acct(), provenance=Provenance.SANITISED, ref="sanitised")   # excluded
         r = compute_withdrawal_processing(b, certified_brokers=CERT)
         self.assertEqual(r["sample_size"], 1)                 # only the genuine one
+
+    def test_account_unresolved_withdrawal_excluded_from_public_aggregate(self):
+        # Invariant-2 (ADR-0050): an owner-attributed, account-UNRESOLVED withdrawal cannot be attributed to a broker
+        # ACCOUNT, so it must NEVER feed a per-broker PUBLIC aggregate — even when genuine, certified and completed.
+        b = _broker()
+        _category(min_contributors=1, min_samples=1, max_share=100)
+        _wd(_acct(), provenance=Provenance.REAL, ref="resolved")        # account-resolved -> counts
+        owner = User.objects.create_user(username="pubun%s" % _uniq(), email="pubun@x.invalid", password="x")
+        Withdrawal.objects.create(                                      # owner-attributed, account-UNRESOLVED
+            owner=owner, trading_account=None, status=Withdrawal.Status.COMPLETED, provenance=Provenance.REAL,
+            broker_reference_id="unresolved", amount=Decimal("500.00"), currency="USD",
+            requested_at=timezone.now() - timedelta(hours=2), completed_at=timezone.now())
+        r = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(r["sample_size"], 1)                 # the account-UNRESOLVED row is excluded
         self.assertEqual(r["contributor_count"], 1)
 
     def test_published_aggregate_has_pii_free_stats(self):

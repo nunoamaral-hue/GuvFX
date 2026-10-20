@@ -22,6 +22,16 @@ fabricated — the parser has a structural no-prose→EXTERNAL invariant) and on
 run `extract_sanitised_fixture` on the production blob) so the EXTERNAL_WITHDRAWAL classifier can be certified against
 genuine evidence — every other §6 step is gated behind that. Activation (public metrics, routing/attribution/
 consent flags) remains PM/Sponsor-gated behind genuine data + scoring/consent governance + migration-first deploy.
+## ★★★ WV1 BOARD-DEMO CRITICAL PATH — DELIVERED + DARK-MERGED, PRODUCTION NO-GO/GATED (2026-10-20, main `2d6c3f1a`)
+Four DARK PRs (#530–#533) make Withdrawal Intelligence a functioning, visible demo: certified external-withdrawal
+parser; owner-attributed/account-UNRESOLVED schema+correlation (ADR-0050, mig 0016); owner-scoped member API+UI;
+isolated board-demo env (seed + demo-visible flag + env plumbing). **The genuine-evidence blocker is RESOLVED** — the
+pilot pair IS in the prod evidence store (authenticated, 33m01s, owner-29/account-UNRESOLVED) and the parser is
+certified against it (read-only, RULE-11). Report `docs/GUVFX_WV1_FRIDAY_BOARD_DEMO_REPORT.md`; runbook
+`docs/WV1_BOARD_DEMO_RUNBOOK.md`. **One bounded next action:** run the Board demo per the runbook on the isolated demo
+DB (Monday 2026-10-26). Production activation stays human-gated: **G1** prod migration 0011→0016 NO-GO until off-host
+DB-recovery verified restore; **G2** production certification needs a genuine Sponsor-initiated withdrawal observed
+live (GuvFX never initiates/confirms/cancels); **G3** Google OAuth publish; **G4** confirm the WAYOND preview surface.
 
 ## ★★★ T1 SOURCE-AWARE IDENTITY — MERGED, NOT DEPLOYED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED` (2026-10-13, PR #495)
 `T1_IMPLEMENTATION_COMPLETE` + `T1_CERTIFIED_IN_TESTS` + `T1_MERGED` (`main` `48db801`, CI 10/10). DARK-deployment

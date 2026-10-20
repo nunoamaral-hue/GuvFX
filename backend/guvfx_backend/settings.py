@@ -282,20 +282,32 @@ AUTH_USER_MODEL = "users.User"
 # CORS Configuration
 CORS_ALLOW_CREDENTIALS = True
 
-_raw_cors = env("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
-CORS_ALLOWED_ORIGINS = ["https://guvfx.com", "https://www.guvfx.com"]
+# Production defaults are FIXED to the guvfx.com origins; an isolated staging/investor-demo host (or local dev)
+# ADDS its origins via the env vars below. With the env vars UNSET this block is byte-identical to production
+# (prod origins only) — the env is additive, never a replacement, so a demo deployment can never narrow or lose the
+# production origins. (ADR-0050 / WV1 demo-env: see docs/WV1_BOARD_DEMO_RUNBOOK.md.)
+_CORS_PROD = ["https://guvfx.com", "https://www.guvfx.com"]
+_CSRF_PROD = ["https://guvfx.com", "https://www.guvfx.com", "https://api.guvfx.com"]
+_extra_cors = [o.strip() for o in env("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+_extra_csrf = [o.strip() for o in env("CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()]
+CORS_ALLOWED_ORIGINS = _CORS_PROD + [o for o in _extra_cors if o not in _CORS_PROD]
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "Authorization",
     "X-CSRFToken",
 ]
 
 # CSRF Settings
-CSRF_TRUSTED_ORIGINS = [
-    "https://guvfx.com",
-    "https://www.guvfx.com",
-    "https://api.guvfx.com",
-]
-CSRF_COOKIE_DOMAIN = ".guvfx.com"
+CSRF_TRUSTED_ORIGINS = _CSRF_PROD + [o for o in _extra_csrf if o not in _CSRF_PROD]
+# Default ".guvfx.com" (prod unchanged); a demo host sets CSRF_COOKIE_DOMAIN to its own domain, or empty for a
+# host-only cookie (localhost). Empty env ⇒ the production default.
+CSRF_COOKIE_DOMAIN = env("CSRF_COOKIE_DOMAIN", ".guvfx.com") or None
+
+# Auth (JWT) cookie attributes — consumed by users.auth_cookie_views._cookie_kwargs. Defaults are the PRODUCTION
+# values, so with the env UNSET this is byte-identical to production; a demo/staging host overrides them (e.g.
+# AUTH_COOKIE_SECURE=False + AUTH_COOKIE_DOMAIN= for http://localhost). Additive/override, never a silent weakening.
+AUTH_COOKIE_SECURE = env("AUTH_COOKIE_SECURE", "True").lower() == "true"
+AUTH_COOKIE_SAMESITE = env("AUTH_COOKIE_SAMESITE", "Lax")
+AUTH_COOKIE_DOMAIN = env("AUTH_COOKIE_DOMAIN", ".guvfx.com") or None
 CSRF_COOKIE_HTTPONLY = False  # Must be False so JS can read and send X-CSRFToken header
 CSRF_USE_SESSIONS = False  # Use cookie-based CSRF (double-submit pattern)
 

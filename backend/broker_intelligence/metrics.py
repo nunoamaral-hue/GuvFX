@@ -19,6 +19,8 @@ import statistics
 from collections import Counter, defaultdict
 from decimal import Decimal
 
+from django.db.models import Q
+
 from .models import Provenance, Withdrawal
 
 # In-flight (requested, completion not yet observed) — explicitly NOT failed.
@@ -40,45 +42,86 @@ def _masked_account(acct) -> str:
     return ("••••" + num[-4:]) if len(num) >= 4 else (num or "—")
 
 
-def withdrawal_history(accounts, *, broker: str = "", account_id=None) -> dict:
-    """Per-withdrawal history for ``accounts`` (owner-scoped; the caller passes ONLY the member's own accounts),
-    optionally filtered by broker name and/or a single trading-account id. Read-only; never fabricates.
+def _owner_scoped_q(ids, owner):
+    """The member's withdrawals: account-matched rows (the member's own accounts) UNION, when ``owner`` is given,
+    OWNER-attributed account-UNRESOLVED rows (ADR-0050) — so a withdrawal whose broker account is not registered in
+    GuvFX still surfaces to the member who owns the mailbox it arrived in, keyed on owner, not on an account it
+    never resolved. With ``owner`` None the scope is account-only (unchanged legacy behaviour)."""
+    q = Q(trading_account_id__in=ids)
+    if owner is not None:
+        q |= Q(owner=owner, trading_account__isnull=True)
+    return q
+
+
+def _row_broker(w) -> str:
+    """Broker name for a row: from the resolved account, else (account-UNRESOLVED) from the originating event — the
+    Withdrawal itself carries no broker field (ADR-0050 known limitation)."""
+    acct = w.trading_account
+    if acct is not None:
+        return getattr(acct, "broker_name", "") or ""
+    for ev in (w.requested_event, w.completed_event):
+        b = getattr(ev, "broker", "") or ""
+        if b:
+            return b
+    return ""
+
+
+def withdrawal_history(accounts, *, broker: str = "", account_id=None, owner=None,
+                       include_demonstration: bool = False) -> dict:
+    """Per-withdrawal history for ``accounts`` (owner-scoped; the caller passes ONLY the member's own accounts) PLUS,
+    when ``owner`` is given, the member's OWNER-attributed account-UNRESOLVED withdrawals (ADR-0050). Optionally
+    filtered by broker name and/or a single trading-account id. Read-only; never fabricates.
 
     Returns the withdrawal rows (newest first) PLUS the distinct brokers and accounts present in the member's
     withdrawal history, so the UI can offer broker/account selectors without a second query. Each row carries an
     evidence-backed lifecycle ``state`` (pending / completed / failed / unresolved — PENDING is in-flight, NOT a
     failure), amount+currency AS OBSERVED (never summed, never fabricated), the processing ``duration_seconds``
-    (None when both anchors are not present) and whether the broker reference id resolved the correlation."""
+    (None when both anchors are not present), whether the broker reference id resolved the correlation, and
+    ``account_unresolved`` (True for an owner-attributed row with no registered account; ``trading_account_id`` is
+    then None and ``account_masked`` is the sentinel ``"UNRESOLVED"``, never a fabricated number)."""
     ids = [getattr(a, "id", a) for a in accounts]
     # GENUINE-ONLY member view (§507): a member's history shows ONLY real broker observations (provenance REAL).
     # Synthetic/sanitised fixture or test records are NEVER surfaced to a member — they could neither be mistaken for
     # a real withdrawal nor appear in the broker/account selectors. (In production the member surface carries only
     # REAL rows anyway; this is a defence-in-depth guarantee at the projection boundary.)
-    base = (Withdrawal.objects.filter(trading_account_id__in=ids, provenance=Provenance.REAL)
-            .select_related("trading_account").order_by("-requested_at", "-id"))
+    # GENUINE-only by default (provenance REAL). The DEMO-only ``include_demonstration`` (set by the view ONLY when
+    # the isolated-demo flag is armed, never prod) ALSO admits SYNTHETIC/SANITISED rows, each tagged below with
+    # ``demonstration`` so the UI labels them — synthetic demo data is visible yet never mistaken for genuine.
+    prov_q = Q() if include_demonstration else Q(provenance=Provenance.REAL)
+    base = (Withdrawal.objects.filter(_owner_scoped_q(ids, owner)).filter(prov_q)
+            .select_related("trading_account", "requested_event", "completed_event")
+            .order_by("-requested_at", "-id"))
 
     # Selector lists from the member's FULL (genuine) withdrawal set — NEVER narrowed by the active filters — so the
-    # broker/account dropdowns stay complete and stable while filtering.
+    # broker/account dropdowns stay complete and stable while filtering. An account-UNRESOLVED row contributes its
+    # broker to the broker selector but NO account entry (it has no account to select).
     brokers, accts = set(), {}
     for w in base:
+        bname = _row_broker(w)
+        if bname:
+            brokers.add(bname)
         acct = w.trading_account
-        bname = getattr(acct, "broker_name", "") or ""
-        brokers.add(bname)
-        accts.setdefault(acct.id, {"id": acct.id, "broker": bname, "account_masked": _masked_account(acct)})
+        if acct is not None:
+            accts.setdefault(acct.id, {"id": acct.id, "broker": bname, "account_masked": _masked_account(acct)})
 
-    # Rows = the filtered view.
+    # Rows = the filtered view. A specific account_id filter naturally excludes account-UNRESOLVED rows (they are not
+    # that account); the broker filter matches the row's broker (account- or event-derived).
     qs = base.filter(trading_account_id=account_id) if account_id not in (None, "") else base
     rows = []
     for w in qs:
-        acct = w.trading_account
-        bname = getattr(acct, "broker_name", "") or ""
+        bname = _row_broker(w)
         if broker and bname != broker:
             continue
+        acct = w.trading_account
+        unresolved = acct is None
         rows.append({
             "id": w.id,
             "broker": bname,
-            "trading_account_id": acct.id,
-            "account_masked": _masked_account(acct),
+            "trading_account_id": (acct.id if acct is not None else None),
+            "account_masked": (_masked_account(acct) if acct is not None else "UNRESOLVED"),
+            "account_unresolved": unresolved,            # owner-attributed; the broker account is not registered
+            "demonstration": w.provenance != Provenance.REAL,   # True ⇒ labelled synthetic/sanitised demo row
+            "provenance": w.provenance,
             "state": _STATE.get(w.status, "unresolved"),
             "status": w.status,
             "amount": str(w.amount) if w.amount is not None else None,   # never fabricated / never summed here
@@ -93,11 +136,13 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None) -> dict:
         "withdrawals": rows,
         "brokers": sorted(b for b in brokers if b),
         "accounts": sorted(accts.values(), key=lambda a: (a["broker"], a["id"])),
+        "demonstration": any(r["demonstration"] for r in rows),   # UI shows a DEMONSTRATION banner when true
     }
 
 
-def withdrawal_metrics(accounts) -> dict:
-    """Withdrawal statistics for ``accounts`` (an iterable of TradingAccount or ids). Read-only; never fabricates.
+def withdrawal_metrics(accounts, *, owner=None, include_demonstration: bool = False) -> dict:
+    """Withdrawal statistics for ``accounts`` (an iterable of TradingAccount or ids) PLUS, when ``owner`` is given,
+    the member's OWNER-attributed account-UNRESOLVED withdrawals (ADR-0050). Read-only; never fabricates.
 
     GENUINE-ONLY (§507): EVERY member-facing figure — total, counts, per-currency amounts, processing duration — is
     computed over REAL broker observations ONLY. Synthetic/sanitised fixture or test records are EXCLUDED so they can
@@ -105,9 +150,12 @@ def withdrawal_metrics(accounts) -> dict:
     number excluded is reported as ``excluded_non_genuine_count`` (for operator transparency), but they contribute to
     NO statistic."""
     ids = [getattr(a, "id", a) for a in accounts]
-    all_rows = list(Withdrawal.objects.filter(trading_account_id__in=ids))
-    rows = [w for w in all_rows if w.provenance == Provenance.REAL]   # genuine broker observations only
+    all_rows = list(Withdrawal.objects.filter(_owner_scoped_q(ids, owner)))
+    # GENUINE-only by default. DEMO-only include_demonstration ALSO counts synthetic/sanitised rows (flagged via the
+    # ``demonstration`` field below) — set ONLY in an isolated demo env, never prod.
+    rows = all_rows if include_demonstration else [w for w in all_rows if w.provenance == Provenance.REAL]
     excluded_non_genuine = len(all_rows) - len(rows)
+    demonstration = any(w.provenance != Provenance.REAL for w in rows)
 
     by_status = dict(Counter(w.status for w in rows))
     pending = [w for w in rows if w.status in _PENDING]
@@ -152,7 +200,8 @@ def withdrawal_metrics(accounts) -> dict:
         "completed_amount_by_currency": {k: str(v) for k, v in sorted(amt.items())},
         "completed_amount_known_count": completed_amount_known,
         "processing_duration": duration,          # None when no completed-with-both-anchors (never fabricated)
-        "genuine_count": len(rows),               # REAL-provenance withdrawals (== total; synthetic excluded)
-        "excluded_non_genuine_count": excluded_non_genuine,   # synthetic/sanitised set aside; in NO statistic
+        "genuine_count": sum(1 for w in rows if w.provenance == Provenance.REAL),   # REAL-provenance withdrawals
+        "excluded_non_genuine_count": excluded_non_genuine,   # non-genuine set aside; in NO statistic (prod default)
+        "demonstration": demonstration,           # DEMO-only: true ⇒ figures include labelled synthetic rows
         "sample_caveat": bool(duration) and duration["count"] <= 1,   # a stat resting on a single sample
     }
