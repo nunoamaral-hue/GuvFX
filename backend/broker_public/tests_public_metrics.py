@@ -62,6 +62,60 @@ def _wd(acct, *, status=Withdrawal.Status.COMPLETED, amount="100.00", currency="
 CERT = frozenset({"TradersWay"})   # certified-broker override for tests (production default is empty)
 
 
+class WtmPreviewTests(TestCase):
+    """WAYOND Trader Match preview — DARK endpoint; clearly-labelled SIMULATED scorecard, no member/real data."""
+
+    def test_404_when_flag_off(self):
+        c = APIClient()
+        self.assertEqual(c.get("/api/public/wtm-preview/").status_code, 404)
+
+    @override_settings(BROKER_PUBLIC_WTM_PREVIEW_ENABLED="1")
+    def test_payload_when_armed_is_simulated_and_pii_free(self):
+        c = APIClient()
+        r = c.get("/api/public/wtm-preview/")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["preview"])
+        self.assertTrue(body["not_a_deployed_integration"])
+        self.assertEqual(body["authentic_state"], "INSUFFICIENT_VERIFIED_DATA")
+        self.assertTrue(body["simulated_brokers"])
+        for b in body["simulated_brokers"]:
+            self.assertTrue(b["simulated"])                          # every scorecard is flagged simulated
+            wp = b["withdrawal_processing"]
+            self.assertIn("median_minutes", wp)
+            self.assertEqual(sum(h["count"] for h in wp["histogram"]), b["sample_size"])   # histogram totals samples
+            # Aggregate-only: a scorecard carries NO member/PII keys (only slug/display_name + aggregate stats).
+            for pii_key in ("email", "account_number", "broker_reference_id", "owner", "user_id", "user", "login"):
+                self.assertNotIn(pii_key, b)
+                self.assertNotIn(pii_key, wp)
+
+    def test_case_study_404_when_flag_off(self):
+        self.assertEqual(APIClient().get("/api/public/case-study/").status_code, 404)
+
+    @override_settings(BROKER_PUBLIC_CASE_STUDY_ENABLED="1")
+    def test_case_study_payload_is_redacted_real_facts(self):
+        r = APIClient().get("/api/public/case-study/")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["real"])
+        # the genuine amount is present; no raw email/account/link/wallet anywhere in the payload
+        flat = str(body)
+        self.assertIn("24.12 USD", flat)
+        self.assertIn("Ethereum", flat)
+        for leak in ("@gmail", "@googlemail", "http://", "https://", "0x", "confirm?t="):
+            self.assertNotIn(leak, flat)
+
+    @override_settings(BROKER_PUBLIC_WTM_PREVIEW_ENABLED="1")
+    def test_does_not_read_withdrawal_or_publicbroker(self):
+        # The preview is pure/synthetic — it must return the same scorecard regardless of DB withdrawals/brokers.
+        a = _acct(); _wd(a, provenance=Provenance.REAL); _broker()
+        c = APIClient()
+        r1 = c.get("/api/public/wtm-preview/").json()
+        Withdrawal.objects.all().delete(); PublicBroker.objects.all().delete()
+        r2 = c.get("/api/public/wtm-preview/").json()
+        self.assertEqual(r1["simulated_brokers"], r2["simulated_brokers"])   # deterministic, DB-independent
+
+
 class Aggregation(TestCase):
     def test_uncertified_broker_yields_insufficient_data(self):
         b = _broker()

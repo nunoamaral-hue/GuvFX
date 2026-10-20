@@ -13,7 +13,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
-from broker_intelligence.models import Provenance, Withdrawal
+from broker_intelligence.models import ConnectedMailbox, Provenance, Withdrawal
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -54,6 +54,10 @@ class SeedBoardDemoGuardTests(TestCase):
         self.assertEqual(g.status, Withdrawal.Status.COMPLETED)
         self.assertEqual(g.owner_id, member.id)
         self.assertEqual(g.duration_seconds(), 33 * 60 + 1)
+        # a CONNECTED demo mailbox for screen B, with NO token in the DB
+        mb = ConnectedMailbox.objects.get(user=member)
+        self.assertEqual(mb.status, ConnectedMailbox.Status.CONNECTED)
+        self.assertEqual(mb.credential_ref, "")
         # idempotent
         call_command("seed_wv1_board_demo", "--confirm-demo-db", stdout=StringIO())
         self.assertEqual(TradingAccount.objects.filter(user=member).count(), 10)
