@@ -21,8 +21,9 @@ export type WithdrawalMetrics = {
   completed_amount_by_currency: Record<string, string>;   // decimal strings, per currency (never mixed)
   completed_amount_known_count: number;
   processing_duration: WithdrawalDuration | null;          // null => "N/A" (never fabricated 0)
-  genuine_count?: number;             // REAL-provenance withdrawals counted (== total; synthetic/sanitised excluded)
+  genuine_count?: number;             // REAL-provenance withdrawals counted (== total unless demonstration)
   excluded_non_genuine_count?: number; // synthetic/sanitised records set aside (in NO statistic) — transparency only
+  demonstration?: boolean;            // DEMO env only: true => figures include labelled synthetic rows
   sample_caveat?: boolean;            // true => a headline aggregate rests on a single sample (not representative)
 };
 
@@ -47,6 +48,8 @@ export type WithdrawalRow = {
   duration_seconds: number | null;    // null => "N/A" (never 0)
   broker_reference_id: string;
   reference_correlated: boolean;       // true => matched deterministically by broker reference id
+  demonstration?: boolean;             // DEMO env only: true => labelled synthetic/sanitised row
+  provenance?: string;                 // REAL | SYNTHETIC | SANITISED (present on the demo surface)
 };
 
 export type WithdrawalAccountRef = { id: number; broker: string; account_masked: string };
@@ -55,4 +58,5 @@ export type WithdrawalHistory = {
   withdrawals: WithdrawalRow[];
   brokers: string[];
   accounts: WithdrawalAccountRef[];
+  demonstration?: boolean;             // DEMO env only: true => the list contains labelled synthetic rows
 };
