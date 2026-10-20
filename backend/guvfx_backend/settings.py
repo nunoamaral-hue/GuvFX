@@ -207,6 +207,10 @@ REST_FRAMEWORK = {
         "csrf": "60/min",
         "auth": "20/min",
         "customer_telegram_webhook": "120/min",
+        # Dedicated anonymous ceiling for the public broker-directory surface (broker_public). Conservative by
+        # design; the public surface is DARK (404) until BROKER_PUBLIC_DIRECTORY_ENABLED is armed. The exact value is
+        # a governance/capacity decision (Amber) — this is the proposed pre-activation default.
+        "public": "60/min",
     },
 }
 
