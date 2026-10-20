@@ -260,23 +260,67 @@ class PublicApiDark(TestCase):
 
 
 class MinorityBucketSuppression(TestCase):
-    def test_minority_currency_bucket_collapsed_only_when_enabled(self):
+    def test_minority_currency_bucket_dropped_not_relabelled(self):
+        # PR2-review fix: a lone minority currency must NOT reappear as `suppressed: 1` (that would re-publish the
+        # exact rare count under a new label). Currency has no published total to difference against, so the small
+        # bucket is DROPPED and the healthy majority preserved; no sub-min_size count is published anywhere.
         b = _broker()
         _category(min_contributors=5, min_samples=5, max_share=100, min_completed=5, min_bucket=3)
         for _ in range(5):
             _wd(_acct(), currency="USD")       # majority bucket (5)
-        _wd(_acct(), currency="EUR")           # minority bucket (1) — identifies one member's rare currency
+        _wd(_acct(), currency="EUR")           # minority bucket (1) — a rare, member-identifying currency
         off = compute_withdrawal_processing(b, certified_brokers=CERT)
         self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)
         self.assertEqual(off["stats"]["per_currency_counts"].get("EUR"), 1)        # OFF: minority still emitted
-        self.assertNotIn("suppressed", off["stats"]["per_currency_counts"])
         with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
             on = compute_withdrawal_processing(b, certified_brokers=CERT)
         ccy = on["stats"]["per_currency_counts"]
-        self.assertNotIn("EUR", ccy)                                               # ON: minority collapsed
-        self.assertEqual(ccy.get("suppressed"), 1)
-        self.assertEqual(ccy.get("USD"), 5)
-        self.assertEqual(sum(ccy.values()), 6)                                     # totals conserved
+        self.assertEqual(ccy, {"USD": 5})                                          # EUR dropped, majority kept
+        self.assertNotIn("EUR", ccy)
+        self.assertNotIn("suppressed", ccy)                                        # NEVER a sub-min_size tally
+        # no published currency bucket is below the k-anonymity floor
+        self.assertTrue(all(v >= 3 for v in ccy.values()))
+
+    def test_lifecycle_minority_not_reconstructable_by_differencing(self):
+        # PR2-review fix (the harder vector): lifecycle buckets sum to the published sample_size, so a lone withheld
+        # outcome is reconstructable by subtraction. Complementary suppression must fold until no single rare count
+        # can be differenced out — every published non-sentinel bucket is >= min_bucket AND sample_size minus their
+        # sum is 0 or >= min_bucket (never the lone rare count).
+        b = _broker()
+        _category(min_contributors=2, min_samples=5, max_share=100, min_completed=5, min_bucket=3)
+        done = _acct()
+        for _ in range(19):
+            _wd(done, status=Withdrawal.Status.COMPLETED)
+        _wd(_acct(), status=Withdrawal.Status.REJECTED)        # one member's lone REJECTED (count 1)
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            r = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(r["state"], BrokerMetricAggregate.State.PUBLISHED)
+        lc = r["stats"]["lifecycle_counts"]
+        non_sentinel = {k: v for k, v in lc.items() if k != "receipt_confirmed_if_ever_available"}
+        for k, v in non_sentinel.items():
+            self.assertTrue(v == 0 or v >= 3, f"published bucket {k}={v} below the k-anonymity floor")
+        residual = r["sample_size"] - sum(non_sentinel.values())
+        self.assertTrue(residual == 0 or residual >= 3, f"differenceable residual {residual} isolates a rare count")
+        self.assertNotIn(1, non_sentinel.values())             # the lone REJECTED (1) is nowhere recoverable
+
+    def test_processing_time_count_respects_bucket_floor(self):
+        # PR2-review finding 4: min_bucket_size > min_completed_samples. processing_time.count is the same completed
+        # population as the lifecycle 'broker_reported_completed' bucket, so when suppression is on it must also clear
+        # the k-anonymity floor — else it re-reveals the completed count lifecycle suppression hides.
+        b = _broker()
+        _category(min_contributors=1, min_samples=5, max_share=100, min_completed=5, min_bucket=10)
+        a = _acct()
+        for _ in range(7):
+            _wd(a, status=Withdrawal.Status.COMPLETED)   # 7 completed: >= min_completed(5) but < min_bucket(10)
+        off = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)
+        self.assertEqual(off["stats"]["processing_time"]["count"], 7)             # OFF: published
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            on = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertIsNone(on["stats"]["processing_time"])                         # ON: withheld (< k-anon floor)
+        lc = {k: v for k, v in on["stats"]["lifecycle_counts"].items()
+              if k != "receipt_confirmed_if_ever_available"}
+        self.assertNotIn(7, lc.values())                                          # completed count not reconstructable
 
     def test_receipt_sentinel_is_never_suppressed(self):
         b = _broker()

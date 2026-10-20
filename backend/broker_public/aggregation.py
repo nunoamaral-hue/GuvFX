@@ -71,20 +71,33 @@ def _eligible_withdrawals(public_broker, *, certified_brokers):
     return rows
 
 
-def _suppress_small_buckets(counts: dict, min_size: int, *, protect=()) -> dict:
-    """k-anonymity: collapse any bucket with 0 < value < ``min_size`` into a single ``"suppressed"`` tally, so a rare
-    outcome (one member's lone REJECTED, a single-member currency) can never be read as an exact count. Totals are
-    CONSERVED (the suppressed tally equals the sum of the removed buckets). Keys in ``protect`` (e.g. the always-0
-    receipt sentinel) pass through untouched."""
-    out: dict = {}
-    suppressed = 0
-    for k, v in counts.items():
-        if k in protect or v == 0 or v >= min_size:
-            out[k] = v
-        else:
-            suppressed += v
-    if suppressed:
-        out["suppressed"] = out.get("suppressed", 0) + suppressed
+def _suppress_small_buckets(counts: dict, min_size: int, *, protect=(), differenceable: bool = False) -> dict:
+    """k-anonymity small-bucket suppression with COMPLEMENTARY suppression.
+
+    Any bucket with ``0 < value < min_size`` is withheld so a rare outcome (one member's lone REJECTED, a
+    single-member currency) can't be read as an exact count. Crucially, a ``"suppressed"`` tally is published ONLY
+    when it is itself ``>= min_size`` — a residual of 1..min_size-1 would just RE-reveal the exact rare count under a
+    new label (the defect the PR2 review caught), so such a residual is dropped, not published.
+
+    ``differenceable`` (set for a vector whose buckets sum to a SEPARATELY-published total, e.g. lifecycle_counts vs
+    ``sample_size``): a single withheld bucket is otherwise reconstructable by subtraction. So when the sub-threshold
+    residual is itself < min_size, the SMALLEST published buckets are additionally folded into the tally until it
+    reaches ``min_size`` — so neither the tally nor differencing against the total can isolate a rare count. For a
+    non-differenceable vector (e.g. per_currency_counts, which omits currency-less rows and has no published total) a
+    sub-threshold residual is simply dropped (nothing to difference against), preserving the healthy majority buckets.
+    ``protect`` keys (the always-0 receipt sentinel — a truthful constant) pass through untouched."""
+    protected = {k: v for k, v in counts.items() if k in protect}
+    big = {k: v for k, v in counts.items() if k not in protect and v >= min_size}
+    suppressed = sum(v for k, v in counts.items() if k not in protect and 0 < v < min_size)
+    if differenceable and 0 < suppressed < min_size:
+        for k in sorted(big, key=lambda k: big[k]):   # fold the smallest published buckets until non-identifying
+            suppressed += big.pop(k)
+            if suppressed >= min_size:
+                break
+    out = dict(big)
+    out.update(protected)
+    if suppressed >= min_size:
+        out["suppressed"] = suppressed   # a residual below min_size is DROPPED, never published as an exact count
     return out
 
 
@@ -152,7 +165,13 @@ def compute_withdrawal_processing(public_broker, *, certified_brokers=CERTIFIED_
     durs = [w.duration_seconds() for w in capped
             if w.status == Withdrawal.Status.COMPLETED and w.duration_seconds() is not None]
     processing = None
-    if len(durs) >= min_completed:
+    suppress = broker_public_minority_suppression_enabled()
+    # processing_time.count is the exact count of COMPLETED-with-both-anchors observations — the same population as the
+    # 'broker_reported_completed' lifecycle bucket. When suppression is on it must ALSO clear the k-anonymity floor,
+    # else publishing it would re-reveal a completed count that lifecycle suppression hides (PR2-review finding 4,
+    # latent unless a category sets min_bucket_size > min_completed_samples).
+    completed_floor = max(min_completed, min_bucket) if suppress else min_completed
+    if len(durs) >= completed_floor:
         processing = {"count": len(durs), "median_seconds": int(statistics.median(durs)),
                       "p25_seconds": int(statistics.quantiles(durs, n=4)[0]) if len(durs) >= 4 else None,
                       "p75_seconds": int(statistics.quantiles(durs, n=4)[2]) if len(durs) >= 4 else None}
@@ -160,10 +179,12 @@ def compute_withdrawal_processing(public_broker, *, certified_brokers=CERTIFIED_
     ccy_counts = Counter((w.currency or "").upper() for w in capped if w.currency)
     lifecycle_out = dict(lifecycle)
     ccy_out = dict(ccy_counts)
-    if broker_public_minority_suppression_enabled():
-        # k-anonymity small-bucket collapse — protect the always-0 receipt sentinel (a truthful constant, not a
-        # member-identifying count).
-        lifecycle_out = _suppress_small_buckets(lifecycle_out, min_bucket,
+    if suppress:
+        # k-anonymity small-bucket collapse. Lifecycle is DIFFERENCEABLE (its buckets sum to the published
+        # sample_size, so a single withheld bucket is reconstructable by subtraction) → complementary suppression.
+        # Currency is not (currency-less rows are excluded; no total is published) → small buckets are simply dropped,
+        # preserving the healthy majority. The always-0 receipt sentinel is protected (a truthful constant).
+        lifecycle_out = _suppress_small_buckets(lifecycle_out, min_bucket, differenceable=True,
                                                 protect=("receipt_confirmed_if_ever_available",))
         ccy_out = _suppress_small_buckets(ccy_out, min_bucket)
     stats = {
