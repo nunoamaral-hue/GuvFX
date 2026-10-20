@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★★ MT5 MASTER/FOLLOWER COPIER — backend foundation ENGINEERING COMPLETE + DARK (2026-10-20, PR #528)
+Packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0; PD scope GO = DARK observer-first; ADR-0051).
+`trade_copier` app: **PR A** read-only master observer + append-only event ledger (+additive bridge sl/tp
+read field); **PR B** follower config + replication **intent** engine (sizing/symbol-map/SL-TP translation/
+idempotency) that creates **ZERO ExecutionJobs**. All DARK (default-OFF flags); `trade_copier` 64 tests +
+full regression **6188 OK**. PR #528 open, auto-merge OFF, **merge gated on governance ratification**;
+**Activation NO-GO**; no prod deploy/migration. **LIVE follower execution NOT authorized (RED); LIVE
+follower close/SL-TP has NO bridge path (demo-locked).** Monday demo = LIVE master read-only observation +
+DEMO/shadow followers, clearly labelled (packet §15 fallback) — a genuine LIVE-money copy demo is NO-GO.
+**One bounded next action:** build **B-exec** — the gated DEMO `ExecutionJob` creation from recorded
+intents (enqueue-only, DEMO followers only, LIVE blocked) — then PR C (Copy Trading UX) and PR D
+(cross-broker cert + real-MT5 DEMO rehearsal; infra reachable: VPS + bridge :8788 up 2026-10-20).
+Detail: `docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md`, `docs/ADRs/0051-mt5-master-follower-copier.md`.
+
 ## ★★★ T1 SOURCE-AWARE IDENTITY — MERGED, NOT DEPLOYED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED` (2026-10-13, PR #495)
 `T1_IMPLEMENTATION_COMPLETE` + `T1_CERTIFIED_IN_TESTS` + `T1_MERGED` (`main` `48db801`, CI 10/10). DARK-deployment
 readiness assessed (read-only prod inspection + isolated rehearsal): **GO conditional on a controlled maintenance
