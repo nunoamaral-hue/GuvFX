@@ -1,5 +1,35 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-20 — Broker Intelligence Customer Pilot Completion (P0, DARK, merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GUVFX-BI-CUSTOMER-PILOT-COMPLETION-2026-10-20
+Packet ID: GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_COMPLETION
+Status: PASS for the engineerable DARK scope (§2–§6 + public privacy); §7 genuine pilot certification BLOCKED on raw
+        genuine evidence (not fabricated). All DARK. Activation NO-GO.
+Baseline → final main: 6554290 → 8125770f
+PRs (governed squash, CI-green, auto-merge OFF, SHA-verified):
+  #522 §6a public leak fix + anon throttle        dc6e43f
+  #523 §6b minority k-anon + consent contract      1883e76
+  #524 §3  multi-mailbox OAuth (+PG concurrency)    4365724
+  #525 §4  account contact API + EN/JA UI           5b20983   (review: HIGH cross-user takeover fixed pre-merge)
+  #526 §5  contact-scoped attribution               fa0f15f   (review: clean)
+  #527 §2  routing-evidence requirement             8125770f  (review: observed-delivery scoping fixed pre-merge)
+Verified vs assumed: VERIFIED by test — backend broker_intelligence 594 + broker_public 22 green (--parallel 1),
+  mailbox 69 incl. a PostgreSQL two-thread concurrency proof; frontend eslint+tsc clean + public routes in-browser.
+  ASSUMED/not run: no suite run against prod data; no prod migration applied; genuine-evidence steps not executed.
+Deviations: §7 added NO speculative broker_processing_at field and NO fabricated TradersWay external extractor
+  (architecture.md speculative-infra + no-assumption rule) — documented in the report; engine already truthful
+  (COMPLETED = broker-reported, receipt=0) + fail-closed UNRESOLVED for the unconnected pilot account.
+Tests: cd backend && .venv/bin/python manage.py test broker_intelligence broker_public --parallel 1 --noinput
+Commit/branch/push: six feature branches merged + deleted on remote; this docs branch adds the report + handoff.
+One bounded next action: Sponsor/ops supply the genuine withdrawal RFC822 (or run extract_sanitised_fixture on the
+  prod blob) to unblock EXTERNAL_WITHDRAWAL classifier certification; all other §7 steps gate behind it.
+Report: docs/GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_REPORT.md
+```
+
 ## 2026-10-14 — DB Recovery Foundation REPOSITORY CLOSEOUT (PR #498, DARK, merge-gated)
 
 ```

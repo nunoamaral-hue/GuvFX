@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★★ BROKER INTELLIGENCE CUSTOMER PILOT — ENGINEERING COMPLETE + DARK-MERGED, ACTIVATION NO-GO (2026-10-20, main `8125770f`)
+Seven DARK PRs (#522–#527) complete the multi-account customer subsystem (§2–§6) + public privacy posture. Report:
+`docs/GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_REPORT.md`. All flags default OFF; no prod migration/activation. The
+genuine TradersWay external-withdrawal pilot is **BLOCKED on the raw genuine RFC822 evidence** (not in repo; not
+fabricated — the parser has a structural no-prose→EXTERNAL invariant) and on operator certification
+(`CERTIFIED_BROKERS` empty). **One bounded next action:** the Sponsor/ops provide the genuine withdrawal RFC822 (or
+run `extract_sanitised_fixture` on the production blob) so the EXTERNAL_WITHDRAWAL classifier can be certified against
+genuine evidence — every other §6 step is gated behind that. Activation (public metrics, routing/attribution/
+consent flags) remains PM/Sponsor-gated behind genuine data + scoring/consent governance + migration-first deploy.
+
 ## ★★★ T1 SOURCE-AWARE IDENTITY — MERGED, NOT DEPLOYED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED` (2026-10-13, PR #495)
 `T1_IMPLEMENTATION_COMPLETE` + `T1_CERTIFIED_IN_TESTS` + `T1_MERGED` (`main` `48db801`, CI 10/10). DARK-deployment
 readiness assessed (read-only prod inspection + isolated rehearsal): **GO conditional on a controlled maintenance
