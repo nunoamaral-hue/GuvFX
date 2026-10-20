@@ -115,7 +115,11 @@ function sizingSummary(f: CopyTradingFollower): string {
 
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  try {
+    // Deterministic UTC format: identical on server and client, so no SSR/client locale+timezone
+    // hydration mismatch (observed_at is already UTC from the backend).
+    return new Date(iso).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  } catch { return iso; }
 }
 
 function sltp(sl: string | null, tp: string | null): string {
@@ -127,12 +131,17 @@ function sltp(sl: string | null, tp: string | null): string {
 const CELL: React.CSSProperties = { padding: "0.4rem 0.6rem", fontSize: "0.82rem", textAlign: "left" };
 const HEAD: React.CSSProperties = { ...CELL, color: "#9db6d6", fontWeight: 600, borderBottom: "1px solid rgba(74,179,255,0.12)" };
 
-export const CopyTradingContent: React.FC<{ accountId: number; lang?: Lang }> = ({ accountId, lang = "en" }) => {
+export const CopyTradingContent: React.FC<{
+  accountId: number;
+  lang?: Lang;
+  initialData?: CopyTradingOverview;   // preloaded data (SSR / preview harness) — skips the fetch
+}> = ({ accountId, lang = "en", initialData }) => {
   const L: Lang = lang === "ja" ? "ja" : "en";
-  const [data, setData] = useState<CopyTradingOverview | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [data, setData] = useState<CopyTradingOverview | null>(initialData ?? null);
+  const [loaded, setLoaded] = useState(!!initialData);
 
   useEffect(() => {
+    if (initialData) return;   // data supplied directly — do not fetch
     let active = true;   // unmount guard: never setState after teardown (prevents the #531-class CI failure)
     getCopyTradingOverview(accountId)
       .then((d) => { if (active) { setData(d); setLoaded(true); } })
@@ -145,7 +154,7 @@ export const CopyTradingContent: React.FC<{ accountId: number; lang?: Lang }> = 
         }
       });
     return () => { active = false; };
-  }, [accountId]);
+  }, [accountId, initialData]);
 
   if (!loaded) return <p style={{ color: "#9db6d6" }}>{STR.loading[L]}</p>;
 
