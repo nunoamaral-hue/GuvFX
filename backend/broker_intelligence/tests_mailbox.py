@@ -1172,3 +1172,124 @@ class MailboxConnectConcurrency(TransactionTestCase):
             connections.close_all()
         finally:
             O.exchange_code, S.fetch_profile = orig
+
+
+@override_settings(**ENV, BROKER_MULTI_MAILBOX_ENABLED="1")
+class MultiMailbox(TransactionTestCase):
+    """MULTI_ACCOUNT §3 — multiple independent Gmail inboxes per member (flag ON). Preserves explicit ADD_NEW vs
+    RECONNECT, owner-scoped ops, signed state, gmail.readonly, encrypted creds, per-mailbox cursors, the per-owner
+    advisory lock, and cross-user (provider, provider_mailbox_id) uniqueness; adds a per-owner cap enforced
+    atomically at the callback. (TransactionTestCase: the advisory-lock concurrency proof needs real per-thread
+    connections + commits.)"""
+
+    _ACCT = {"CA": "a@gmail.com", "CB": "b@gmail.com", "CC": "c@gmail.com"}
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="mm", email="mm@x.invalid", password="x")
+        self.c = APIClient(); self.c.force_authenticate(self.u)
+
+    def _install_fakes(self, O, S):
+        O.exchange_code = lambda code=None, **k: {"access_token": "AT-" + str(code), "refresh_token": "RT-" + str(code),
+                                                  "scope": OAUTH.GMAIL_READONLY_SCOPE, "token_type": "Bearer",
+                                                  "expiry": ""}
+        S.fetch_profile = lambda at, **k: {"emailAddress": self._ACCT.get(at[3:], at[3:] + "@gmail.com"),
+                                           "historyId": "1"}
+
+    def _state(self, op, n):
+        from django.core import signing
+        from broker_intelligence.views import _STATE_SALT
+        return signing.dumps({"uid": self.u.id, "n": n, "op": op}, salt=_STATE_SALT)
+
+    def _callback(self, code, op):
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._install_fakes(O, S)
+            st = self._state(op, code)
+            return self.c.get(f"/api/broker-intelligence/mailboxes/callback/?code={code}&state={st}")
+        finally:
+            O.exchange_code, S.fetch_profile = orig
+
+    def _mb(self, pmid, user=None):
+        return ConnectedMailbox.objects.create(
+            user=user or self.u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=pmid,
+            primary_email=pmid, credential_ref="cr-" + pmid, status=ConnectedMailbox.Status.CONNECTED)
+
+    def _live(self):
+        return ConnectedMailbox.objects.filter(user=self.u, status=ConnectedMailbox.Status.CONNECTED).count()
+
+    def test_add_new_authorization_permitted_with_live_mailbox(self):
+        self._mb("a@gmail.com")
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/?op=ADD_NEW_MAILBOX")
+        self.assertEqual(r.status_code, 200, r.content)        # permitted in multi-mode (was 409 in V1)
+        self.assertEqual(r.json()["op"], "ADD_NEW_MAILBOX")
+
+    def test_second_mailbox_added_via_callback(self):
+        self.assertEqual(self._callback("CA", "CONNECT_FIRST_MAILBOX").status_code, 200)   # first account A
+        self.assertEqual(self._callback("CB", "ADD_NEW_MAILBOX").status_code, 200)         # second account B
+        self.assertEqual(self._live(), 2)
+
+    @override_settings(BROKER_MAX_MAILBOXES_PER_OWNER="2")
+    def test_cap_boundary_rejects_beyond_limit(self):
+        self.assertEqual(self._callback("CA", "CONNECT_FIRST_MAILBOX").status_code, 200)
+        self.assertEqual(self._callback("CB", "ADD_NEW_MAILBOX").status_code, 200)          # total 2 (== cap)
+        r = self._callback("CC", "ADD_NEW_MAILBOX")                                         # 3rd -> cap reached
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "mailbox_limit_reached")
+        self.assertEqual(self._live(), 2)
+
+    def test_multiple_live_no_op_requires_explicit(self):
+        self._mb("a@gmail.com"); self._mb("b@gmail.com")
+        r = self.c.get("/api/broker-intelligence/mailboxes/connect/")   # no op, no mailbox_id
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"], "mailbox_op_required")
+
+    def test_add_new_cross_user_account_still_rejected(self):
+        other = User.objects.create_user(username="oth", email="oth@x.invalid", password="x")
+        self._mb("b@gmail.com", user=other)                     # account B already owned by ANOTHER member
+        r = self._callback("CB", "ADD_NEW_MAILBOX")             # self.u tries to connect the same Google account
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "mailbox_already_connected")   # anti-hijack preserved
+        self.assertEqual(self._live(), 0)
+
+    def test_two_simultaneous_add_new_both_succeed_under_cap(self):
+        # The multi-mode counterpart of the single-mailbox TOCTOU proof: two concurrent callbacks returning DIFFERENT
+        # accounts, started together. The per-owner advisory lock SERIALISES them; both are under the cap, so BOTH
+        # succeed — exactly two live mailboxes (never a lost write, never a cap breach, never a duplicate).
+        import threading
+        import broker_intelligence.gmail_oauth as O
+        import broker_intelligence.gmail_source as S
+        from django.db import connection, connections
+        orig = (O.exchange_code, S.fetch_profile)
+        try:
+            self._install_fakes(O, S)
+            codes = ["CA", "CB"]
+            states = {c: self._state("ADD_NEW_MAILBOX", c) for c in codes}
+            out = {}
+            barrier = threading.Barrier(len(codes))
+
+            def worker(code):
+                try:
+                    c = APIClient(); c.force_authenticate(self.u)
+                    barrier.wait(timeout=5)
+                    out[code] = c.get(f"/api/broker-intelligence/mailboxes/callback/?code={code}&state={states[code]}")
+                except Exception as e:   # noqa: BLE001
+                    out[code] = e
+                finally:
+                    connection.close()
+
+            threads = [threading.Thread(target=worker, args=(c,)) for c in codes]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=20)
+            for c in codes:
+                self.assertFalse(isinstance(out.get(c), Exception), f"{c} errored: {out.get(c)!r}")
+            self.assertEqual(sorted(r.status_code for r in out.values()), [200, 200])   # both distinct adds succeed
+            live = ConnectedMailbox.objects.filter(user=self.u, status=ConnectedMailbox.Status.CONNECTED)
+            self.assertEqual(live.count(), 2)
+            self.assertEqual({m.provider_mailbox_id for m in live}, {"a@gmail.com", "b@gmail.com"})
+            connections.close_all()
+        finally:
+            O.exchange_code, S.fetch_profile = orig

@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .flags import (broker_identity_verification_enabled, broker_mailbox_connect_enabled,
-                    broker_mailbox_status_enabled, broker_withdrawal_ux_enabled)
+                    broker_mailbox_status_enabled, broker_multi_mailbox_enabled, broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_history, withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
@@ -39,6 +39,22 @@ def _conf(name: str) -> str:
     if v is None:
         v = os.getenv(name, "")
     return str(v or "")
+
+
+_DEFAULT_MAX_MAILBOXES_PER_OWNER = 5
+
+
+def _mailbox_cap() -> int:
+    """Max non-revoked Gmail inboxes one member may have connected at once (multi-mailbox mode). Configurable via
+    ``BROKER_MAX_MAILBOXES_PER_OWNER``; conservative default. This is a MAILBOX-connection ceiling — deliberately NOT
+    the trading-account entitlement (``GUVFX_MAX_OWNED_ACCOUNTS_CEILING``), which governs owned accounts, a different
+    concern. Falls back to the default on a missing/invalid value (never 0/unbounded)."""
+    raw = _conf("BROKER_MAX_MAILBOXES_PER_OWNER")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_MAILBOXES_PER_OWNER
+    return n if n >= 1 else _DEFAULT_MAX_MAILBOXES_PER_OWNER
 
 
 def _connect_return_url() -> str:
@@ -286,19 +302,34 @@ class MailboxConnectView(APIView):
         elif len(live) == 1:
             # No explicit op: a single live mailbox is reconnected (targeted) rather than silently adding a second.
             target, op = live[0], _OP_RECONNECT_EXISTING
+        elif broker_multi_mailbox_enabled() and len(live) > 1:
+            # Multi-mailbox: with several live mailboxes and no explicit op/target, NEVER guess which one to act on.
+            return Response({"ok": False, "error": "mailbox_op_required",
+                             "message": "Specify ADD_NEW_MAILBOX, or which connected mailbox to reconnect."},
+                            status=status.HTTP_400_BAD_REQUEST)
         else:
             op = _OP_CONNECT_FIRST
 
-        # --- V1 single-mailbox enforcement at AUTHORIZATION (mirrors the callback mutation guard) ---
-        # A first/add connect cannot create a SECOND live mailbox...
-        if op in (_OP_CONNECT_FIRST, _OP_ADD_NEW) and live:
+        # --- single-mailbox enforcement at AUTHORIZATION (the authoritative guard is the callback mutation) ---
+        # CONNECT_FIRST never applies while any mailbox is live (use ADD_NEW_MAILBOX instead) — unchanged in both modes.
+        if op == _OP_CONNECT_FIRST and live:
+            # Flag OFF: keep the V1 message verbatim (byte-identical). Flag ON: advise the op that actually works.
+            msg = ("A mailbox is already connected. Use ADD_NEW_MAILBOX to connect another."
+                   if broker_multi_mailbox_enabled()
+                   else "A mailbox is already connected. Disconnect it before connecting another.")
+            return Response({"ok": False, "error": "single_mailbox_only", "message": msg},
+                            status=status.HTTP_409_CONFLICT)
+        # ADD_NEW while a live mailbox exists is refused in single-mailbox (V1) mode; in multi-mailbox mode it is
+        # PERMITTED (bounded by the per-owner cap enforced atomically at the callback).
+        if op == _OP_ADD_NEW and live and not broker_multi_mailbox_enabled():
             return Response({"ok": False, "error": "single_mailbox_only",
                              "message": "A mailbox is already connected. Disconnect it before connecting another."},
                             status=status.HTTP_409_CONFLICT)
-        # ...and a RECONNECT of a (possibly revoked) mailbox cannot either: if a DIFFERENT live mailbox already exists,
-        # reactivating this target would leave two live mailboxes. Only the member's CURRENT live mailbox (or their
-        # sole mailbox) may be reconnected. (Revoke-A, connect-B, reconnect-A is refused here and at the callback.)
-        if op == _OP_RECONNECT_EXISTING and target is not None and any(m.id != target.id for m in live):
+        # A RECONNECT of a (possibly revoked) mailbox while a DIFFERENT live mailbox exists would leave two live in V1
+        # mode → refused. In multi-mailbox mode multiple live are allowed (cap-bounded at the callback; the
+        # (provider, provider_mailbox_id) unique still prevents a true duplicate), so the reconnect proceeds.
+        if (op == _OP_RECONNECT_EXISTING and target is not None and any(m.id != target.id for m in live)
+                and not broker_multi_mailbox_enabled()):
             return Response({"ok": False, "error": "single_mailbox_only",
                              "message": "A different mailbox is already connected. Disconnect it first."},
                             status=status.HTTP_409_CONFLICT)
@@ -443,14 +474,21 @@ class MailboxCallbackView(APIView):
         try:
             with transaction.atomic():
                 _acquire_owner_mailbox_lock(request.user.id)
-                # V1 SINGLE-MAILBOX guard, UNCONDITIONAL (incl. reconnect). The write sets THIS mailbox_id to
-                # CONNECTED; if the member already has ANY OTHER live (non-revoked) mailbox, that would be a second
-                # live mailbox. `.exclude(provider_mailbox_id=...)` lets a legitimate in-place reconnect of the
-                # member's OWN mailbox through; only a write that would create a SECOND live mailbox is refused.
-                if (ConnectedMailbox.objects
-                        .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
-                        .exclude(status=ConnectedMailbox.Status.REVOKED)
-                        .exclude(provider_mailbox_id=mailbox_id).exists()):
+                # AUTHORITATIVE mailbox-count guard, serialized per owner (the TOCTOU-safe mutation point). Count the
+                # member's OTHER live (non-revoked) mailboxes — `.exclude(provider_mailbox_id=...)` lets a legitimate
+                # in-place reconnect of the member's OWN mailbox through, so it never counts against itself.
+                other_live = (ConnectedMailbox.objects
+                              .filter(user=request.user, provider=ConnectedMailbox.Provider.GMAIL)
+                              .exclude(status=ConnectedMailbox.Status.REVOKED)
+                              .exclude(provider_mailbox_id=mailbox_id).count())
+                if broker_multi_mailbox_enabled():
+                    # Multi-mailbox: the post-write total (other_live + this one) must stay within the per-owner cap.
+                    if other_live >= _mailbox_cap():
+                        return _callback_result(rt, ok=False, code="mailbox_limit_reached",
+                                                http_status=status.HTTP_409_CONFLICT,
+                                                json_body={"ok": False, "error": "mailbox_limit_reached"})
+                elif other_live > 0:
+                    # V1 single-mailbox (flag OFF): any other live mailbox means this write would create a second.
                     return _callback_result(rt, ok=False, code="single_mailbox_only",
                                             http_status=status.HTTP_409_CONFLICT,
                                             json_body={"ok": False, "error": "single_mailbox_only"})
