@@ -111,3 +111,13 @@ def broker_multi_mailbox_enabled() -> bool:
     scope, encrypted credentials, per-mailbox cursors and independent health/revocation are all unchanged. Kept
     SEPARATE from ``broker_mailbox_connect_enabled`` so multi-connect is armed deliberately."""
     return _flag("BROKER_MULTI_MAILBOX_ENABLED")
+
+
+def broker_account_contact_enabled() -> bool:
+    """Gate for the ACCOUNT-LEVEL broker-email contact HTTP surface (list / create / verify a
+    ``TradingAccountBrokerContact`` binding, scoped to one of the member's OWN trading accounts). DEFAULT OFF → the
+    endpoints 404. The association model + its append-only audit + the DB-enforced fail-closed VERIFIED invariant and
+    the ``contact_verification`` writer already exist (merged DARK); this flag only governs whether the member HTTP
+    surface is reachable. One ``(email, broker)`` may bind to many of the member's accounts; binding is explicit and
+    audited; NEVER auto-verifies; grants NO execution/strategy/credential authority and never a financial action."""
+    return _flag("BROKER_ACCOUNT_CONTACT_ENABLED")
