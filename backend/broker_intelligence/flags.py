@@ -100,3 +100,14 @@ def broker_cross_inbox_dedup_enabled() -> bool:
     idempotency itself is UNCONDITIONAL — not gated by this flag — once the migration is applied.) Read-only
     observation plane; NO execution/strategy/credential authority."""
     return _flag("BROKER_CROSS_INBOX_DEDUP_ENABLED")
+
+
+def broker_multi_mailbox_enabled() -> bool:
+    """Gate for connecting MULTIPLE independent Gmail inboxes per member (MULTI_ACCOUNT §3). DEFAULT OFF → the V1
+    single-mailbox policy is byte-identical (the three view guards refuse a second live mailbox). While ON, an
+    explicit ADD_NEW_MAILBOX while a live mailbox exists is permitted, bounded by the per-owner cap
+    ``BROKER_MAX_MAILBOXES_PER_OWNER`` enforced atomically at the OAuth callback (under the per-owner advisory lock).
+    The cross-user ``(provider, provider_mailbox_id)`` uniqueness (anti-hijack), signed OAuth state, gmail.readonly
+    scope, encrypted credentials, per-mailbox cursors and independent health/revocation are all unchanged. Kept
+    SEPARATE from ``broker_mailbox_connect_enabled`` so multi-connect is armed deliberately."""
+    return _flag("BROKER_MULTI_MAILBOX_ENABLED")
