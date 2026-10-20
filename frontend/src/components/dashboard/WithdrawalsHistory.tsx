@@ -25,6 +25,11 @@ const STR = {
   na: { en: "N/A", ja: "該当なし" },
   ref: { en: "ref", ja: "参照" },
   unresolvedNote: { en: "Unresolved — awaiting matching evidence", ja: "未解決 — 照合証跡待ち" },
+  accountUnresolved: { en: "Account unresolved", ja: "口座未特定" },
+  accountUnresolvedNote: {
+    en: "Owner-attributed — this broker account is not registered in GuvFX",
+    ja: "所有者に紐付け — このブローカー口座はGuvFXに未登録です",
+  },
 };
 
 const STATE_LABEL: Record<WithdrawalState, { en: string; ja: string; color: string }> = {
@@ -124,7 +129,11 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
                 <div style={{ minWidth: 0 }}>
                   <div style={{ color: "#e9f4ff", fontSize: "0.85rem" }}>
                     {w.amount !== null && w.currency ? `${w.amount} ${w.currency}` : STR.na[L]}
-                    <span style={{ ...meta, marginLeft: 8 }}>{w.broker} · {w.account_masked}</span>
+                    <span style={{ ...meta, marginLeft: 8 }}>
+                      {w.broker} · {w.account_unresolved
+                        ? <span style={{ color: "#c9a24a" }} title={STR.accountUnresolvedNote[L]}>⚠ {STR.accountUnresolved[L]}</span>
+                        : w.account_masked}
+                    </span>
                   </div>
                   <div style={meta}>
                     {w.state === "unresolved"
