@@ -62,4 +62,24 @@ describe("WithdrawalsHistory", () => {
     const panel = await screen.findByTestId("withdrawals-history");
     expect(panel.textContent).toMatch(/No withdrawals observed yet/);
   });
+
+  it("renders an owner-attributed account-UNRESOLVED row without exposing the sentinel or a fabricated account", async () => {
+    // ADR-0050: trading_account_id null + account_unresolved true. The row shows "Account unresolved", NOT the raw
+    // "UNRESOLVED" sentinel and NOT a fabricated account number; the broker reference remains the identifier.
+    api.apiFetch.mockResolvedValue(history({
+      withdrawals: [
+        { id: 9, broker: "TradersWay", trading_account_id: null, account_masked: "UNRESOLVED",
+          account_unresolved: true, state: "completed", status: "COMPLETED", amount: "250.00", currency: "USD",
+          requested_at: "2026-10-19T07:55:04Z", completed_at: "2026-10-19T08:28:05Z", duration_seconds: 1981,
+          broker_reference_id: "7654321", reference_correlated: true },
+      ],
+      brokers: ["TradersWay"], accounts: [],
+    }));
+    render(<WithdrawalsHistory />);
+    const panel = await screen.findByTestId("withdrawals-history");
+    expect(panel.textContent).toMatch(/Account unresolved/);     // the distinct label is shown
+    expect(panel.textContent).not.toMatch(/UNRESOLVED/);          // never the raw sentinel
+    expect(panel.textContent).toMatch(/7654321/);                // broker reference is the identifier
+    expect(panel.textContent).toMatch(/250\.00 USD/);
+  });
 });
