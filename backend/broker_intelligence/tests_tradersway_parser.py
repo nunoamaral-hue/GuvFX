@@ -110,6 +110,81 @@ class TransactionClassifierTests(TestCase):
                 self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL,
                                     f"prose over-claimed EXTERNAL: {b!r}")
 
+    # --- Certified EXTERNAL path (WV1 2026-10-19): the structured ``Payment method: <rail>`` label, not prose. ---
+    def test_payment_method_ethereum_label_with_withdrawal_is_external(self):
+        # The genuine pilot REQUEST shape: a withdrawal-direction lifecycle + the structured external-rail label.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Please confirm your withdrawal request",
+            body=("Received the request number #7654321 to withdraw funds from your account.\n"
+                  "Amount: 250.00 USD\nPayment method: Ethereum\nConfirm in your TradersWay cabinet.\n"))
+        self.assertEqual(parsed.event_type, "WITHDRAWAL_CONFIRMATION_REQUIRED")
+        self.assertEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+        self.assertEqual(parsed.broker_reference_id, "7654321")      # "request number #N", NOT a token
+        self.assertEqual(parsed.amount, Decimal("250.00"))
+        self.assertEqual(parsed.currency, "USD")
+        self.assertEqual(parsed.source_account, "")                  # genuine request states no "trading account #" -> unresolved
+        self.assertEqual(parsed.destination_account, "")
+
+    def test_bank_wire_label_with_withdrawal_is_external(self):
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Your withdrawal request has been received",
+            body="Your withdrawal request has been received.\nAmount: 500.00 USD\nPayment method: Bank wire\n")
+        self.assertEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_deposit_via_external_rail_is_not_a_withdrawal(self):
+        # DIRECTION guard: the SAME rail label on a DEPOSIT (no withdrawal-direction lifecycle) must never be read as
+        # a withdrawal. No withdrawal-lifecycle wording -> no lifecycle -> parse returns None (never categorised).
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Your deposit has been received",
+            body="Your deposit has been received.\nAmount: 300.00 USD\nPayment method: Ethereum\n")
+        self.assertIsNone(parsed)                                    # not a withdrawal-lifecycle message at all
+
+    def test_unlisted_rail_is_underclaimed_not_external(self):
+        # A rail not on the whitelist -> UNKNOWN (safe under-claim), never a prose guess at externality.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Please confirm your withdrawal request",
+            body="Please confirm your withdrawal request.\nAmount: 10.00 USD\nPayment method: CarrierPigeonPay\n")
+        self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_payment_method_without_colon_is_not_external(self):
+        # "payment method" as narrative (no ``: <rail>`` field) must not fire the label path (prose-not-label).
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Please confirm your withdrawal request",
+            body="Please confirm your withdrawal request. Amount: 10.00 USD\nUpdate your payment method Ethereum preference in settings.\n")
+        self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_neutral_completion_is_completed_lifecycle_and_unknown_category(self):
+        # The genuine COMPLETION shape: no rail, no direction wording -> COMPLETED lifecycle but UNKNOWN category
+        # (externality is supplied ONLY by WP5 correlation to the referenced request, never re-derived here).
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Payment request update",
+            body="Your Payment request #7654321 status changed from Confirmed to Completed.\n")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.event_type, "WITHDRAWAL_COMPLETED")
+        self.assertEqual(parsed.transaction_category, TransactionCategory.UNKNOWN)   # never self-asserts external
+        self.assertEqual(parsed.broker_reference_id, "7654321")
+
+    def test_request_and_completion_share_the_same_reference(self):
+        # Reference linkage (WP5 correlation key): request "request number #N" == completion "Payment request #N".
+        req = self.p.parse(
+            from_address="payments@tradersway.com", subject="Please confirm your withdrawal request",
+            body="Received the request number #7654321 to withdraw.\nAmount: 250.00 USD\nPayment method: Ethereum\n")
+        done = self.p.parse(
+            from_address="payments@tradersway.com", subject="Payment request update",
+            body="Your Payment request #7654321 status changed from Confirmed to Completed.\n")
+        self.assertEqual(req.broker_reference_id, done.broker_reference_id)
+        self.assertEqual(req.broker_reference_id, "7654321")
+
+    def test_deposit_completion_template_is_never_external(self):
+        # A DEPOSIT that happens to reuse the identical "Payment request … Confirmed to Completed" template is
+        # text-indistinguishable from a withdrawal completion, so it is emitted COMPLETED/UNKNOWN — crucially NOT
+        # external. Economic safety is then enforced by correlation (its reference won't match any withdrawal, and a
+        # completion never creates a record). Here we assert the parser never self-claims external on it.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Payment request update",
+            body="Your Payment request #1111111 (deposit) status changed from Confirmed to Completed.\n")
+        self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
     def test_european_decimal_amount_not_fragment_grabbed(self):
         parsed = self.p.parse(from_address="payments@tradersway.com",
                               subject="Please confirm your withdrawal request",
