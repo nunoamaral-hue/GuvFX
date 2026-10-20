@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional, Tuple
 
+from .flags import broker_attribution_contact_scoped_enabled
 from .models import BrokerEmailAlias, BrokerEmailIdentity
 
 
@@ -178,11 +179,19 @@ def resolve_owner_identity(to_addresses: Iterable[str], *, owner_user=None):
     return None, None, None
 
 
-def resolve_transaction_account(owner_user, broker_name: str, account_numbers):
+def resolve_transaction_account(owner_user, broker_name: str, account_numbers, *, identity=None):
     """Resolve the GuvFX ``TradingAccount`` a transaction concerns by matching the broker's STATED account numbers
     (source/destination) to the OWNER's own accounts — NEVER inferred from the recipient email. Returns the account
     only on an UNAMBIGUOUS single match (owner + account_number, broker-token-scoped when a broker is given);
-    otherwise None (attribution UNRESOLVED — never guess). Read-only; no mutation."""
+    otherwise None (attribution UNRESOLVED — never guess). Read-only; no mutation.
+
+    CONTACT-SCOPED narrowing (MULTI_ACCOUNT §5, DARK). When ``identity`` (a VERIFIED ``BrokerEmailIdentity`` the
+    message resolved to) is given AND ``broker_attribution_contact_scoped_enabled()``, the broker-stated-number match
+    is NARROWED to the account(s) this identity is VERIFIED-bound to via ``TradingAccountBrokerContact`` — so a shared
+    email across several of the owner's accounts resolves to the ONE bound account instead of going ambiguous. The
+    stated-number match stays MANDATORY (this only narrows; the binding NEVER substitutes for a number match, and
+    inbox/identity ownership ALONE never assigns an account). Flag OFF, or no identity ⇒ the number-only behaviour is
+    byte-identical."""
     if owner_user is None:
         return None
     nums = {str(n).strip() for n in (account_numbers or ()) if str(n).strip()}
@@ -194,4 +203,12 @@ def resolve_transaction_account(owner_user, broker_name: str, account_numbers):
     if token:
         qs = qs.filter(broker_name__icontains=token[0])
     accts = list(qs.distinct())
+    if identity is not None and broker_attribution_contact_scoped_enabled():
+        from .models import TradingAccountBrokerContact
+        bound = set(TradingAccountBrokerContact.objects
+                    .filter(broker_email_identity=identity,
+                            status=TradingAccountBrokerContact.Status.VERIFIED,
+                            trading_account__user=owner_user)
+                    .values_list("trading_account_id", flat=True))
+        accts = [a for a in accts if a.id in bound]   # narrow (an empty binding set ⇒ no account ⇒ UNRESOLVED)
     return accts[0] if len(accts) == 1 else None

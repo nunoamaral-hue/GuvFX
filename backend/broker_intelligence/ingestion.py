@@ -85,7 +85,7 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
     # 1) resolve recipient -> (alias, identity, owner); owner-scoped (spoofed recipient headers can't cross-attribute
     #    to another member). This does NOT pick the transaction trading-account — that is resolved from the broker's
     #    stated source/destination accounts AFTER parsing (an email identifies the owner+broker, not the account).
-    alias, _identity, resolved_owner = resolve_owner_identity(message.to_addresses, owner_user=owner_user)
+    alias, identity, resolved_owner = resolve_owner_identity(message.to_addresses, owner_user=owner_user)
 
     # The OWNER a BrokerEvent is attributed to and keyed on. Prefer the TRUSTED mailbox owner (non-null on every live
     # mailbox_ingest delivery) over the recipient-resolved owner, which is fail-closed NULL on the common
@@ -145,7 +145,8 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
             trading_account = resolve_account(alias)
         else:
             trading_account = resolve_transaction_account(
-                resolved_owner, parsed.broker, [parsed.source_account, parsed.destination_account])
+                resolved_owner, parsed.broker, [parsed.source_account, parsed.destination_account],
+                identity=identity)
         # Create in its OWN savepoint so a concurrent-ingest IntegrityError (the uniq_brokerevent_evidence_owner
         # backstop) is isolated and recovered idempotently (one (owner, blob) -> one event).
         try:
