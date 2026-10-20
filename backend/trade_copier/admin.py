@@ -6,7 +6,11 @@ observation and must never be edited through the admin (``.claude/rules/data.md`
 from django.contrib import admin
 
 from trade_copier.models import (
+    CopierFollower,
+    CopierFollowerAudit,
     CopierMaster,
+    CopierReplication,
+    CopierSymbolMap,
     MasterEvent,
     MasterObservationPoll,
     MasterPositionSnapshot,
@@ -52,3 +56,35 @@ class MasterEventAdmin(_ReadOnlyAdmin):
                     "volume_delta", "observed_at")
     list_filter = ("event_type",)
     search_fields = ("position_ticket", "symbol")
+
+
+# ── PR B — follower side ──
+@admin.register(CopierFollower)
+class CopierFollowerAdmin(admin.ModelAdmin):
+    list_display = ("id", "master", "follower_account", "enabled", "sizing_mode",
+                    "disable_policy", "sync_status")
+    list_filter = ("enabled", "sizing_mode", "disable_policy", "sync_status")
+    raw_id_fields = ("master", "follower_account", "strategy_assignment", "unprotected_close_authorized_by")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(CopierSymbolMap)
+class CopierSymbolMapAdmin(admin.ModelAdmin):
+    list_display = ("id", "master_broker", "master_symbol", "follower_broker", "follower_symbol",
+                    "verified", "verified_at")
+    list_filter = ("verified",)
+    search_fields = ("master_broker", "master_symbol", "follower_broker", "follower_symbol")
+
+
+@admin.register(CopierReplication)
+class CopierReplicationAdmin(_ReadOnlyAdmin):
+    list_display = ("id", "master_event", "follower", "requested_op", "status", "reason",
+                    "target_volume", "follower_symbol")
+    list_filter = ("status", "requested_op")
+    search_fields = ("follower_symbol", "reason")
+
+
+@admin.register(CopierFollowerAudit)
+class CopierFollowerAuditAdmin(_ReadOnlyAdmin):
+    list_display = ("id", "follower", "action", "actor", "at")
+    list_filter = ("action",)

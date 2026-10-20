@@ -26,3 +26,14 @@ class CopierFlagTests(SimpleTestCase):
     @override_settings(COPIER_ENABLED="yes")
     def test_tolerant_truthy_tokens(self):
         self.assertTrue(flags.copier_enabled())
+
+    def test_replication_default_off(self):
+        self.assertFalse(flags.copier_replication_enabled())
+
+    @override_settings(COPIER_ENABLED=True, COPIER_REPLICATION_ENABLED=True)
+    def test_replication_requires_both(self):
+        self.assertTrue(flags.copier_replication_enabled())
+
+    @override_settings(COPIER_ENABLED=False, COPIER_REPLICATION_ENABLED=True)
+    def test_replication_master_off_keeps_off(self):
+        self.assertFalse(flags.copier_replication_enabled())

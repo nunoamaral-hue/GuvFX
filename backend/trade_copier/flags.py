@@ -37,3 +37,12 @@ def copier_observer_enabled() -> bool:
     ANDed with the master gate: the observer runs only when BOTH ``COPIER_ENABLED`` and
     ``COPIER_OBSERVER_ENABLED`` are on, so the subsystem cannot half-activate."""
     return copier_enabled() and _flag("COPIER_OBSERVER_ENABLED")
+
+
+def copier_replication_enabled() -> bool:
+    """Gate for the replication INTENT engine (PR B). DEFAULT OFF, ANDed with the master gate.
+
+    This gates recording of replication INTENTS only — PR B creates no ExecutionJobs and performs no
+    execution. Any future gated DEMO execution-job creation sits behind a SEPARATE, additional flag
+    and is never enabled by this one."""
+    return copier_enabled() and _flag("COPIER_REPLICATION_ENABLED")

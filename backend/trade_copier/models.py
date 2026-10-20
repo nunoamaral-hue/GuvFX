@@ -9,14 +9,21 @@ Three concerns, all READ-ONLY with respect to the broker (nothing here mutates a
 * ``MasterEvent``             — the append-only event ledger derived by diffing consecutive polls.
 
 Raw observation is IMMUTABLE (``.claude/rules/data.md``): poll rows and events are written once and
-never edited in place; ``save()`` refuses an update. The follower side (configuration, replication
-ledger, symbol maps) is PR B and is NOT in this module.
+never edited in place; ``save()`` refuses an update.
+
+PR B (below the PR-A observation models) adds the FOLLOWER side — follower configuration
+(``CopierFollower`` + append-only ``CopierFollowerAudit``), the verified cross-broker symbol map
+(``CopierSymbolMap``), and the replication INTENT ledger (``CopierReplication``). PR B records what
+it WOULD copy (sized volume, mapped symbol, translated SL/TP) and creates ZERO ExecutionJobs — the
+gated DEMO execution-job creation is a separate, tightly-scoped follow-up. Nothing here mutates a
+broker or places an order.
 
 Everything is DARK: these models are inert foundation until ``trade_copier.flags.copier_observer_enabled``
 is turned on AND a ``CopierMaster`` is marked ``observe_enabled``. No execution path reads them.
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -181,3 +188,202 @@ class MasterEvent(_ImmutableRawEvidence):
 
     def __str__(self) -> str:
         return f"Event(master={self.master_id}, seq={self.sequence}, {self.event_type}, ticket={self.position_ticket})"
+
+
+# ─────────────────────────────── PR B — FOLLOWER SIDE ───────────────────────────────
+# Follower configuration + the replication INTENT ledger. PR B records what it WOULD copy and
+# creates NO ExecutionJobs. All DARK; cross-user and self-follow are rejected at the service layer.
+
+
+class SizingMode(models.TextChoices):
+    FIXED_LOT = "FIXED_LOT", "Fixed lot"
+    MULTIPLIER = "MULTIPLIER", "Master lot multiplier"
+    BALANCE_PROPORTIONAL = "BALANCE_PROPORTIONAL", "Balance/equity proportional"
+    RISK_BASED = "RISK_BASED", "Risk-based (SL distance)"
+
+
+class SltpTranslation(models.TextChoices):
+    SAME_PRICE = "SAME_PRICE", "Same absolute price"
+    SAME_DISTANCE = "SAME_DISTANCE", "Equivalent distance from entry"
+    NONE = "NONE", "Do not replicate SL/TP"
+
+
+class DisablePolicy(models.TextChoices):
+    A_KEEP_MANAGING = "A_KEEP_MANAGING", "Keep managing existing positions"
+    B_DETACH = "B_DETACH", "Detach and manage manually"
+    C_CLOSE = "C_CLOSE", "Close copied positions"
+
+
+class FollowerSyncStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    SYNCED = "SYNCED", "Synced"
+    REPLICATING = "REPLICATING", "Replicating"
+    DEGRADED = "DEGRADED", "Degraded"
+    OUT_OF_SYNC = "OUT_OF_SYNC", "Out of sync"
+    PROTECTION_FAILED = "PROTECTION_FAILED", "Protection failed"
+    RECONNECT_REQUIRED = "RECONNECT_REQUIRED", "Reconnect required"
+    DISABLED_NEW_ENTRIES = "DISABLED_NEW_ENTRIES", "Disabled for new entries / managing existing"
+    DETACHED_MANUAL = "DETACHED_MANUAL", "Detached — manual management"
+    CLOSING = "CLOSING", "Closing"
+    RESIDUAL_EXPOSURE = "RESIDUAL_EXPOSURE", "Residual exposure"
+
+
+class CopierFollower(models.Model):
+    """One follower account that copies a master, with its sizing/caps/policy configuration.
+
+    Ownership invariant (enforced at the service layer, fail-closed): ``follower_account.user`` MUST
+    equal ``master.trading_account.user`` and the follower MUST NOT be the master account itself. A
+    follower cannot activate itself — ``enabled`` is set only through the audited service."""
+
+    master = models.ForeignKey(CopierMaster, on_delete=models.CASCADE, related_name="followers")
+    follower_account = models.ForeignKey(
+        "trading.TradingAccount", on_delete=models.CASCADE, related_name="copier_follower_link"
+    )
+    enabled = models.BooleanField(default=False)
+
+    # Sizing
+    sizing_mode = models.CharField(max_length=24, choices=SizingMode.choices, default=SizingMode.MULTIPLIER)
+    fixed_lot = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    multiplier = models.DecimalField(max_digits=10, decimal_places=4, default=1)
+    risk_per_trade_pct = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
+
+    # Caps / guards
+    max_volume = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    max_aggregate_exposure = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    max_concurrent_positions = models.PositiveIntegerField(null=True, blank=True)
+    max_spread_points = models.PositiveIntegerField(null=True, blank=True)
+    max_slippage_points = models.PositiveIntegerField(null=True, blank=True)
+
+    # Translation / policy
+    sltp_translation = models.CharField(max_length=16, choices=SltpTranslation.choices,
+                                        default=SltpTranslation.SAME_PRICE)
+    disable_policy = models.CharField(max_length=20, choices=DisablePolicy.choices,
+                                      default=DisablePolicy.A_KEEP_MANAGING)
+
+    # Pre-authorized protective auto-close of UNPROTECTED (no-SL) copied positions. Config only in PR B;
+    # actuation is a separate LIVE-gated step. Account-specific, versioned, revocable (packet §11).
+    unprotected_close_enabled = models.BooleanField(default=False)
+    unprotected_close_authorization_version = models.PositiveIntegerField(default=0)
+    unprotected_close_authorized_at = models.DateTimeField(null=True, blank=True)
+    unprotected_close_authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+
+    # Future execution routing (populated when the gated DEMO execution follow-up wires jobs).
+    strategy_assignment = models.ForeignKey(
+        "strategies.StrategyAssignment", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+
+    sync_status = models.CharField(max_length=24, choices=FollowerSyncStatus.choices,
+                                   default=FollowerSyncStatus.PENDING)
+    last_outcome = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["master", "follower_account"],
+                                    name="uq_copier_follower_master_account"),
+        ]
+        indexes = [models.Index(fields=["master", "enabled"])]
+
+    def __str__(self) -> str:
+        return f"Follower(master={self.master_id}, acct={self.follower_account_id}, enabled={self.enabled})"
+
+
+class CopierFollowerAudit(_ImmutableRawEvidence):
+    """Append-only audit of every follower enable/disable/configuration change (packet §6)."""
+
+    follower = models.ForeignKey(CopierFollower, on_delete=models.CASCADE, related_name="audits")
+    action = models.CharField(max_length=48)
+    detail = models.JSONField(default=dict, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                              blank=True, related_name="+")
+    at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["follower", "id"])]
+
+
+class CopierSymbolMap(models.Model):
+    """VERIFIED cross-broker symbol equivalence (packet §8 — never select a destination symbol by
+    name resemblance). Same-broker needs no row (identity). A cross-broker replication with no
+    verified row fails CLOSED. ``verified`` must be True before the map is honored."""
+
+    master_broker = models.CharField(max_length=128)
+    master_symbol = models.CharField(max_length=64)
+    follower_broker = models.CharField(max_length=128)
+    follower_symbol = models.CharField(max_length=64)
+    verified = models.BooleanField(default=False)
+    verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                    blank=True, related_name="+")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    note = models.CharField(max_length=256, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["master_broker", "master_symbol", "follower_broker"],
+                                    name="uq_copier_symbolmap_master_follower"),
+        ]
+        indexes = [models.Index(fields=["master_broker", "master_symbol"])]
+
+    def __str__(self) -> str:
+        return (f"SymbolMap({self.master_broker}:{self.master_symbol} -> "
+                f"{self.follower_broker}:{self.follower_symbol}, verified={self.verified})")
+
+
+class ReplicationStatus(models.TextChoices):
+    SHADOW_RECORDED = "SHADOW_RECORDED", "Shadow intent recorded (no execution)"
+    REJECTED = "REJECTED", "Rejected (eligibility/sizing/symbol)"
+    SKIPPED = "SKIPPED", "Skipped (disabled / not applicable)"
+    # Reserved for the gated DEMO execution follow-up:
+    EXECUTION_REQUESTED = "EXECUTION_REQUESTED", "Execution requested (job created)"
+    EXECUTION_VERIFIED = "EXECUTION_VERIFIED", "Execution verified on follower"
+    EXECUTION_FAILED = "EXECUTION_FAILED", "Execution failed"
+
+
+class CopierReplication(models.Model):
+    """The replication ledger: ONE row per (follower, master_event). Idempotent — a master event is
+    replicated to a given follower at most once. In PR B it records the computed INTENT (sized volume,
+    mapped symbol, translated SL/TP) with ``status=SHADOW_RECORDED`` and NO ExecutionJob; the gated
+    DEMO follow-up fills ``execution_job``/``follower_ticket``/result and advances the status."""
+
+    master_event = models.ForeignKey(MasterEvent, on_delete=models.CASCADE, related_name="replications")
+    follower = models.ForeignKey(CopierFollower, on_delete=models.CASCADE, related_name="replications")
+    requested_op = models.CharField(max_length=24)
+    status = models.CharField(max_length=24, choices=ReplicationStatus.choices)
+    reason = models.CharField(max_length=64, blank=True)
+
+    target_volume = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    sizing_detail = models.CharField(max_length=64, blank=True)
+    follower_symbol = models.CharField(max_length=64, blank=True)
+    translated_sl = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    translated_tp = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+
+    # Filled by the gated DEMO execution follow-up (null in PR B).
+    execution_job = models.ForeignKey("execution.ExecutionJob", on_delete=models.SET_NULL,
+                                      null=True, blank=True, related_name="+")
+    follower_ticket = models.BigIntegerField(null=True, blank=True)
+    broker_result = models.JSONField(null=True, blank=True)
+    latency_ms = models.IntegerField(null=True, blank=True)
+    reconciliation_status = models.CharField(max_length=24, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["master_event", "follower"],
+                                    name="uq_copier_replication_event_follower"),
+        ]
+        indexes = [
+            models.Index(fields=["follower", "status"]),
+            models.Index(fields=["master_event"]),
+        ]
+
+    def __str__(self) -> str:
+        return (f"Replication(event={self.master_event_id}, follower={self.follower_id}, "
+                f"{self.status}, vol={self.target_volume})")
