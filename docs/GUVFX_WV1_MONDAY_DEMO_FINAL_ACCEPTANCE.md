@@ -15,9 +15,9 @@ the architecture. One coherent bounded delivery on top of the merged WV1 foundat
 | # | Item | Verdict | Evidence |
 |---|------|---------|----------|
 | 1 | **WTM broker-metrics preview** (not the strategy card) | **PASS** | New `/brokers/wtm` reusing `broker_public`; authentic `INSUFFICIENT_VERIFIED_DATA` + labelled SIMULATED scorecard + flow + badges + broker filter. `docs/wv1_demo_evidence/wtm_preview_*.jpg` |
-| 2 | **Genuine TradersWay evidence case study** (private, accurate) | **PASS** | New `/brokers/case-study`: real **$24.12** · Ethereum · **33m01s** · owner-attributed/account-UNRESOLVED · DKIM+SPF · broker-reported completion only; redacted; separate from synthetic. `genuine_case_study.jpg` |
+| 2 | **Genuine TradersWay evidence case study** (private, accurate) | **PASS** | New **DARK-gated** `/brokers/case-study` (facts served from `GET /api/public/case-study/`, 404 until `BROKER_PUBLIC_CASE_STUDY_ENABLED`): real **$24.12** · Ethereum · **33m01s** · owner-attributed/account-UNRESOLVED · DKIM+SPF · broker-reported completion only; redacted; separate from synthetic. `genuine_case_study.jpg` |
 | 3 | **Ten ACTUAL MT5 account inventory/status** (≥2 same-broker) | **PASS (truthful) / PARTIAL on same-broker** | Read-only estate inventory below. Real same-broker *external* accounts do **not** exist; two same-broker accounts **with empirical HEALTHY data** are the hosted-MT5 terminals 25 & 33. Synthetic seeded 10 are **not** claimed as connectivity. |
-| 4 | **Frontend cleanup CI fix** (PR#531 source) | **PASS** | `AccountWithdrawalMonitoring.tsx` unmount guard (`mountedRef`) + negative regression `AccountWithdrawalMonitoring.test.tsx`; final-head CI to confirm on the PR. |
+| 4 | **Frontend cleanup CI fix** (PR#531 source) | **PASS** | `AccountWithdrawalMonitoring.tsx` unmount guard (`mountedRef`) + a **discriminating** regression `AccountWithdrawalMonitoring.test.tsx` (setter-spy via `vi.mock("react")` — empirically fails ×2 on the reverted component, passes on the guarded head, so it genuinely exercises the guard rather than React 19's silent setState-after-unmount no-op); final-head CI to confirm on the PR. |
 | 5 | **Reliable isolated demo (A–F) + rehearsal + fallback** | **PASS** | All six screens verified live on the isolated demo; six screenshots in `docs/wv1_demo_evidence/` serve as the offline fallback. Sequence below. |
 | 6 | **Governance / final CI** | **PASS (pending CI + review on this PR)** | DARK; prod untouched; tests green; adversarial review + CI on the PR before governed squash-merge (auto-merge OFF). |
 
@@ -38,7 +38,9 @@ the architecture. One coherent bounded delivery on top of the merged WV1 foundat
   password manager / secure channel) with whoever drives Monday's screenshare. No password is committed or printed
   in this report, the runbook, or any tracked file.
 - **Flags armed in the demo env only** (all default OFF; prod leaves them unset): `BROKER_WITHDRAWAL_UX_ENABLED`,
-  `BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC`, `BROKER_MAILBOX_STATUS_ENABLED`, `BROKER_PUBLIC_WTM_PREVIEW_ENABLED`.
+  `BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC`, `BROKER_MAILBOX_STATUS_ENABLED`, `BROKER_PUBLIC_CASE_STUDY_ENABLED`,
+  `BROKER_PUBLIC_WTM_PREVIEW_ENABLED`. Both the WTM preview and the case study are DARK endpoints (404 when unset),
+  so the real-withdrawal facts are not even shipped in the client bundle until the demo is armed.
 
 ---
 
@@ -96,18 +98,22 @@ a screen recording can be captured from the same click-through.
 ## 5. What shipped (DARK)
 
 - **Frontend reliability (item 4):** `AccountWithdrawalMonitoring.tsx` — `mountedRef` unmount guard on all async
-  setState (mount fetches + user actions); regression `AccountWithdrawalMonitoring.test.tsx`.
+  setState (mount fetches + user actions); **discriminating** regression `AccountWithdrawalMonitoring.test.tsx`
+  (setter-spy; proven to fail on the reverted component and pass on the guarded head).
 - **WTM preview (item 1):** `broker_public` — `broker_public_wtm_preview_enabled()` flag (default OFF),
   `wtm_preview.py` (pure, deterministic, synthetic — reads NO member/withdrawal/broker data, touches NO
   `CERTIFIED_BROKERS`), `PublicWtmPreviewView` at `GET /api/public/wtm-preview/` (404 when off); frontend
   `/brokers/wtm` page. Tests in `tests_public_metrics.py` + `wtm/page.test.tsx`.
-- **Genuine case study (item 2):** static frontend `/brokers/case-study` (redacted facts only; no API, no PII).
-  Test `case-study/page.test.tsx`.
+- **Genuine case study (item 2):** `broker_public` — `broker_public_case_study_enabled()` flag (default OFF),
+  `case_study.py` (redacted verified facts only — no raw email / account number / confirmation link / wallet /
+  evidence pointer), `PublicCaseStudyView` at `GET /api/public/case-study/` (404 when off); DARK-graceful frontend
+  `/brokers/case-study` page that fetches it (facts not shipped in the bundle until armed). Tests in
+  `tests_public_metrics.py` + `case-study/page.test.tsx`.
 - **Demo completeness:** `seed_wv1_board_demo` also seeds a CONNECTED demo mailbox (screen B); runbook updated with
   the two new flags + the two new screens.
 
-Tests: `broker_public` incl. WTM (26) + seed (4, incl. mailbox) + withdrawal-history (all) green; frontend new tests
-+ production build (parity 52 routes, tsc, next) green. No migration.
+Tests: `broker_public` incl. WTM + case study (28) + seed (incl. mailbox) + withdrawal-history (all) green; frontend
+new tests + production build (parity 52 routes, tsc, next) green. No migration.
 
 ---
 

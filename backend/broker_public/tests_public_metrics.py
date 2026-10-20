@@ -89,6 +89,22 @@ class WtmPreviewTests(TestCase):
                 self.assertNotIn(pii_key, b)
                 self.assertNotIn(pii_key, wp)
 
+    def test_case_study_404_when_flag_off(self):
+        self.assertEqual(APIClient().get("/api/public/case-study/").status_code, 404)
+
+    @override_settings(BROKER_PUBLIC_CASE_STUDY_ENABLED="1")
+    def test_case_study_payload_is_redacted_real_facts(self):
+        r = APIClient().get("/api/public/case-study/")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["real"])
+        # the genuine amount is present; no raw email/account/link/wallet anywhere in the payload
+        flat = str(body)
+        self.assertIn("24.12 USD", flat)
+        self.assertIn("Ethereum", flat)
+        for leak in ("@gmail", "@googlemail", "http://", "https://", "0x", "confirm?t="):
+            self.assertNotIn(leak, flat)
+
     @override_settings(BROKER_PUBLIC_WTM_PREVIEW_ENABLED="1")
     def test_does_not_read_withdrawal_or_publicbroker(self):
         # The preview is pure/synthetic — it must return the same scorecard regardless of DB withdrawals/brokers.

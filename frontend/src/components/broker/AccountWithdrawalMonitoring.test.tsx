@@ -1,47 +1,54 @@
 /** Unmount-safety regression (WV1 final integration). The PR#531 frontend CI failed because a mount-time apiFetch in
  * AccountWithdrawalMonitoring resolved AFTER the test env tore down and its .then/.catch ran setState on an unmounted
- * component (AccountWithdrawalMonitoring.tsx:104, "window is not defined" → unhandled rejection → workflow exit 1).
- * The mountedRef guard makes those late callbacks no-ops. This test unmounts the component while its mount fetches are
- * still pending, then settles them (one resolve, one reject) and asserts nothing escapes — no console error, no
- * unhandled rejection, no throw. Without the guard the late .then/.catch would run setState after unmount. */
+ * component. The mountedRef guard makes those late callbacks no-ops.
+ *
+ * This test DISCRIMINATES the guard (React 19 silently no-ops setState-after-unmount and emits no console warning, so
+ * asserting on console.error / unhandledrejection would pass with OR without the fix — a fake). Instead it wraps
+ * React's useState so every state setter is recorded; after unmount it settles the two pending mount fetches and
+ * asserts NO setter is invoked. Without the guard the late .then/.catch call setContacts/setHidden/setMailboxes and
+ * the assertion fails; with the guard the `if (!mountedRef.current) return;` early-return runs first and it passes.
+ * (Verified by reverting AccountWithdrawalMonitoring.tsx to the pre-guard version: this test fails there.) */
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 
+const rec = vi.hoisted(() => ({ recording: false, calls: [] as string[] }));
 const api = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("@/lib/api", () => api);
+// Wrap the exported useState so each dispatch is observable. react-dom/testing-library use the internal dispatcher,
+// not this export, so only the component-under-test's setState calls are recorded.
+vi.mock("react", async (orig) => {
+  const actual = await orig<typeof import("react")>();
+  const wrapUseState = ((init: unknown) => {
+    const [v, s] = (actual.useState as (i: unknown) => [unknown, (...a: unknown[]) => void])(init);
+    return [v, (...a: unknown[]) => { if (rec.recording) rec.calls.push("setState-after-unmount"); return s(...a); }];
+  }) as typeof actual.useState;
+  return { ...actual, default: { ...actual.default, useState: wrapUseState }, useState: wrapUseState };
+});
 
 import { AccountWithdrawalMonitoring } from "./AccountWithdrawalMonitoring";
 
 describe("AccountWithdrawalMonitoring — unmount safety", () => {
-  beforeEach(() => api.apiFetch.mockReset());
+  beforeEach(() => { api.apiFetch.mockReset(); rec.recording = false; rec.calls.length = 0; });
   afterEach(() => cleanup());
 
-  it("does not setState / throw when the mount fetches settle after unmount", async () => {
-    // Two deferred promises the test settles AFTER unmount (contacts call, then mailbox-status call).
+  it("invokes NO setState after unmount when the mount fetches settle late", async () => {
     let resolveContacts!: (v: unknown) => void;
     let rejectMailboxes!: (e: unknown) => void;
     api.apiFetch
-      .mockImplementationOnce(() => new Promise((res) => { resolveContacts = res; }))
-      .mockImplementationOnce(() => new Promise((_res, rej) => { rejectMailboxes = rej; }));
-
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const unhandled: unknown[] = [];
-    const onUnhandled = (e: PromiseRejectionEvent) => unhandled.push(e.reason);
-    window.addEventListener("unhandledrejection", onUnhandled);
+      .mockImplementationOnce(() => new Promise((res) => { resolveContacts = res; }))        // contacts
+      .mockImplementationOnce(() => new Promise((_res, rej) => { rejectMailboxes = rej; }));  // mailbox status
 
     const { unmount } = render(<AccountWithdrawalMonitoring accountId={12} brokerName="IS6" />);
-    unmount();                                   // unmount BEFORE either fetch settles
-    resolveContacts({ contacts: [] });           // late success → .then must early-return (no setContacts/setHidden)
-    rejectMailboxes(new Error("late failure"));  // late failure → .catch must early-return (no setMailboxes)
+    rec.recording = true;                         // from here, any state setter call is a post-unmount call
+    unmount();
+    resolveContacts({ contacts: [] });            // late success → guard must early-return (no setContacts/setHidden)
+    rejectMailboxes(new Error("late failure"));   // late failure → guard must early-return (no setMailboxes)
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
+    rec.recording = false;
 
-    window.removeEventListener("unhandledrejection", onUnhandled);
-    const logged = errSpy.mock.calls.flat().map(String).join(" ");
-    expect(logged).not.toMatch(/unmount|not wrapped in act|window is not defined/i);
-    expect(unhandled).toHaveLength(0);
-    errSpy.mockRestore();
+    expect(rec.calls).toEqual([]);                // the mountedRef guard prevented every late setState
   });
 });

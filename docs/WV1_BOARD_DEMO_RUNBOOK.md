@@ -51,6 +51,7 @@ AUTH_COOKIE_SAMESITE=Lax
 BROKER_WITHDRAWAL_UX_ENABLED=1
 BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC=1
 BROKER_MAILBOX_STATUS_ENABLED=1          # screen B — connected email panel
+BROKER_PUBLIC_CASE_STUDY_ENABLED=1       # screen D — genuine evidence case study (/brokers/case-study)
 BROKER_PUBLIC_WTM_PREVIEW_ENABLED=1      # screen F — WAYOND Trader Match preview (/brokers/wtm)
 ```
 Frontend (`frontend/.env.local`): `NEXT_PUBLIC_API_BASE=http://localhost:8000`.

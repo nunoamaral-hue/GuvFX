@@ -38,6 +38,14 @@ def broker_public_wtm_preview_enabled() -> bool:
     return _flag("BROKER_PUBLIC_WTM_PREVIEW_ENABLED")
 
 
+def broker_public_case_study_enabled() -> bool:
+    """Gate for the genuine-evidence PRIVATE case-study endpoint (investor demo). DEFAULT OFF → 404, so the redacted
+    real-withdrawal facts are NOT served (not even in the client bundle) until armed in an isolated demo env, never
+    prod. Returns ONLY redacted, aggregate-style facts (amount/rail/timestamps/interval/attribution) — never a raw
+    email, account number, confirmation link, wallet address or evidence pointer. Read-only; no member data."""
+    return _flag("BROKER_PUBLIC_CASE_STUDY_ENABLED")
+
+
 def broker_public_consent_required() -> bool:
     """Gate for the participation/consent contract: when ON, only members with an ACTIVE
     ``MetricParticipationConsent`` for the broker scope contribute to a public aggregate (fail-closed -- no row ->
