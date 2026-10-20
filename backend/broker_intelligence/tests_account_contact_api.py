@@ -135,3 +135,34 @@ class AccountContactApi(TestCase):
         # try to verify another member's contact via this member's account path
         r = self.c.post(self._base() + f"{oc.id}/verify/")
         self.assertEqual(r.status_code, 404)
+
+    def test_create_does_not_claim_identity_attributed_to_another_member(self):
+        # Review finding 1/3 (HIGH): an unowned (user=None) identity ATTRIBUTED to another member's account (the
+        # backfill shape) must NOT be claimable — the firewall uses the effective owner (user OR trading_account.user).
+        other = User.objects.create_user(username="o%s" % _uniq(), email="o@x.invalid", password="x")
+        oa = _acct(other)
+        idn = BrokerEmailIdentity.objects.create(email="attr@gmail.com", broker_name="TradersWay",
+                                                 user=None, trading_account=oa)
+        r = self.c.post(self._base() + "create/", {"email": "attr@gmail.com", "broker": "TradersWay"})
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json()["error"], "cannot_associate")
+        idn.refresh_from_db()
+        self.assertIsNone(idn.user_id)                                        # NOT claimed (no cross-user takeover)
+        self.assertFalse(TradingAccountBrokerContact.objects.filter(trading_account=self.a).exists())
+
+    def test_mailbox_change_resets_verified_binding_to_pending(self):
+        # Review finding 5 (LOW): changing the receiving mailbox on an already-VERIFIED binding must RESET it to
+        # PENDING (clear verified_at) so routing is re-proven — never a silent re-point of a VERIFIED binding.
+        mb1, mb2 = _mb(self.u), _mb(self.u)
+        self.c.post(self._base() + "create/",
+                    {"email": "trader@gmail.com", "broker": "TradersWay", "connected_mailbox_id": mb1.id})
+        contact = TradingAccountBrokerContact.objects.get(trading_account=self.a)
+        self.c.post(self._base() + f"{contact.id}/verify/")
+        contact.refresh_from_db()
+        self.assertEqual(contact.status, TradingAccountBrokerContact.Status.VERIFIED)
+        self.c.post(self._base() + "create/",
+                    {"email": "trader@gmail.com", "broker": "TradersWay", "connected_mailbox_id": mb2.id})
+        contact.refresh_from_db()
+        self.assertEqual(contact.status, TradingAccountBrokerContact.Status.PENDING)   # re-verification required
+        self.assertIsNone(contact.verified_at)
+        self.assertEqual(contact.connected_mailbox_id, mb2.id)

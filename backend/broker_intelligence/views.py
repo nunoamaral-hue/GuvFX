@@ -651,9 +651,14 @@ class AccountBrokerContactListView(APIView):
 class AccountBrokerContactCreateView(APIView):
     """POST /api/broker-intelligence/accounts/<account_id>/contacts/create/ — associate a broker-registered
     notification email with one of the member's OWN accounts. Body: {email, broker, connected_mailbox_id?}. Creates
-    the (email, broker) identity if new (claiming an UNOWNED registry row for this member), refuses a
-    DIFFERENT-member's identity generically (no existence leak), and get_or_creates the PENDING binding (idempotent
-    under uniq_tabc_account_identity). Owner-scoped + audited; NEVER auto-verifies (status stays PENDING)."""
+    the (email, broker) identity if new, CLAIMS it only when TRULY unowned (no user AND not attributed to another
+    member's account — the same effective-owner rule the verify service/DB trigger use), refuses a DIFFERENT-member's
+    identity GENERICALLY (message never reveals WHICH member) under a row lock, and get_or_creates the PENDING binding
+    (idempotent under uniq_tabc_account_identity). Owner-scoped + audited; NEVER auto-verifies (status stays PENDING);
+    a mailbox change on an existing binding resets it to PENDING. NB (bounded residual): the 422 cross-user refusal is
+    distinguishable from success, so a member-typed address can be probed for existing cross-member registration (a
+    coarse, authenticated, audited, per-user-throttled signal — never which member); a tighter create-throttle is a
+    documented pre-activation hardening."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, account_id):
@@ -678,32 +683,53 @@ class AccountBrokerContactCreateView(APIView):
         if cmid not in (None, ""):
             mailbox = ConnectedMailbox.objects.filter(id=cmid, user=request.user).first()
         with transaction.atomic():
-            identity, _created = BrokerEmailIdentity.objects.get_or_create(
-                email=email, broker_name=broker, defaults={"user": request.user})
-            if identity.user_id and identity.user_id != request.user.id:
-                # Another member already registered this (email, broker). Refuse GENERICALLY (never reveal that the
-                # address belongs to someone else) + record a durable REJECT. Mirrors the identity-verify firewall.
-                TradingAccountBrokerContactAudit.objects.create(
-                    action=TradingAccountBrokerContactAudit.Action.REJECT, subject_user=request.user,
-                    trading_account=account, outcome="cross_user", reason="address registered to another member",
-                    status_after="")
-                return Response({"ok": False, "error": "cannot_associate",
-                                 "message": "That broker email can't be associated with this account."},
-                                status=status.HTTP_422_UNPROCESSABLE_ENTITY)
-            if identity.user_id is None:
-                identity.user = request.user   # claim the unowned registry row for this member (enables later VERIFY)
-                identity.save(update_fields=["user"])
+            # Lock the identity row for the claim decision so two members cannot race to claim one unowned identity
+            # (last-writer-wins). Same discipline as verify_identity.
+            identity = (BrokerEmailIdentity.objects.select_for_update()
+                        .filter(email=email, broker_name=broker).first())
+            if identity is None:
+                identity = BrokerEmailIdentity.objects.create(email=email, broker_name=broker, user=request.user)
+            else:
+                # EFFECTIVE owner: the explicit user, else the owner of the account this identity is attributed to.
+                # Both the verify service (contact_verification.check_consistency) and the migration-0015 VERIFIED
+                # trigger treat trading_account.user as authoritative ownership, so the firewall MUST too — else a
+                # backfilled (user=None, trading_account=<other member>) identity could be CLAIMED and later verified
+                # by any member (cross-user takeover).
+                eff_owner = identity.user_id or (
+                    identity.trading_account.user_id if identity.trading_account_id else None)
+                if eff_owner is not None and eff_owner != request.user.id:
+                    # Refuse GENERICALLY + durable REJECT. (NB: a 422 here is distinguishable from the 201/200 success
+                    # path, so a determined authenticated caller can probe whether a MEMBER-TYPED address is already
+                    # registered to SOME other member — a coarse, audited, per-user-throttled existence signal, never
+                    # revealing WHICH member. A tighter create throttle is a documented pre-activation hardening.)
+                    TradingAccountBrokerContactAudit.objects.create(
+                        action=TradingAccountBrokerContactAudit.Action.REJECT, subject_user=request.user,
+                        trading_account=account, outcome="cross_user",
+                        reason="address registered to another member", status_after="")
+                    return Response({"ok": False, "error": "cannot_associate",
+                                     "message": "That broker email can't be associated with this account."},
+                                    status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+                if identity.user_id is None:
+                    identity.user = request.user   # claim only a TRULY unowned (+unattributed) registry row
+                    identity.save(update_fields=["user"])
             contact, created = TradingAccountBrokerContact.objects.get_or_create(
                 trading_account=account, broker_email_identity=identity,
                 defaults={"connected_mailbox": mailbox})
-            if created or (mailbox is not None and contact.connected_mailbox_id != mailbox.id):
-                if not created and mailbox is not None:
-                    contact.connected_mailbox = mailbox
-                    contact.save(update_fields=["connected_mailbox", "updated_at"])
+            mailbox_changed = not created and mailbox is not None and contact.connected_mailbox_id != mailbox.id
+            if mailbox_changed:
+                # Changing the receiving mailbox invalidates any prior verification (different routing): reset to
+                # PENDING + clear verified_at so routing must be re-proven via contact_verification (never a silent
+                # re-point of a VERIFIED binding).
+                contact.connected_mailbox = mailbox
+                status_before = contact.status
+                contact.status = TradingAccountBrokerContact.Status.PENDING
+                contact.verified_at = None
+                contact.save(update_fields=["connected_mailbox", "status", "verified_at", "updated_at"])
+            if created or mailbox_changed:
                 TradingAccountBrokerContactAudit.objects.create(
                     contact=contact, action=TradingAccountBrokerContactAudit.Action.BIND, subject_user=request.user,
                     trading_account=account, broker_email_identity=identity, connected_mailbox=mailbox,
-                    outcome="OK", status_before="" if created else contact.status, status_after=contact.status)
+                    outcome="OK", status_before="" if created else status_before, status_after=contact.status)
         return Response({"ok": True, "contact": _contact_json(contact)},
                         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
