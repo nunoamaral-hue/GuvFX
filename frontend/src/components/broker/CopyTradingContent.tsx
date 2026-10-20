@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { getCopyTradingOverview } from "@/lib/copy-trading-api";
 import type {
   CopyTradingFollower,
@@ -23,6 +23,14 @@ const STR = {
   intro: {
     en: "Monitor how this master account's trades are copied to your selected follower accounts.",
     ja: "このマスター口座の取引が、選択したフォロワー口座へどのようにコピーされるかを監視します。",
+  },
+  configNote: {
+    en: "Monitoring view only — follower selection and sizing changes are not available here yet.",
+    ja: "監視専用ビューです — フォロワーの選択やサイズ変更はここではまだ行えません。",
+  },
+  shadowLegend: {
+    en: "SHADOW — NO ORDER SENT means an intent was recorded; no broker order was placed. Green marks broker-verified execution only.",
+    ja: "「シャドー — 発注なし」は意図を記録しただけで、ブローカーへの発注は行っていないことを意味します。緑はブローカー確認済みの実行のみを示します。",
   },
   notEnabled: {
     en: "Copy Trading is not enabled for your account yet.",
@@ -80,10 +88,19 @@ const Pill: React.FC<{ color: BadgeColor; children: React.ReactNode }> = ({ colo
 );
 
 function statusColor(status: string): BadgeColor {
-  if (status === "SHADOW_RECORDED" || status === "EXECUTION_VERIFIED") return "green";
+  // GREEN is reserved for BROKER-VERIFIED execution only. A recorded intent (SHADOW_RECORDED) must
+  // never read as a successful order (ADR-0051 PR C UX truthfulness correction).
+  if (status === "EXECUTION_VERIFIED") return "green";
   if (status === "REJECTED" || status === "EXECUTION_FAILED") return "red";
   if (status === "SKIPPED") return "gray";
-  return "blue";
+  if (status === "SHADOW_RECORDED") return "yellow";       // intent only — NO order sent
+  return "blue";                                           // e.g. EXECUTION_REQUESTED (in flight)
+}
+
+export function statusLabel(status: string, lang: Lang): string {
+  if (status === "SHADOW_RECORDED") return lang === "ja" ? "シャドー — 発注なし" : "SHADOW — NO ORDER SENT";
+  if (status === "EXECUTION_VERIFIED") return lang === "ja" ? "ブローカー確認済み" : "BROKER-VERIFIED";
+  return status;
 }
 
 function sizingSummary(f: CopyTradingFollower): string {
@@ -115,18 +132,20 @@ export const CopyTradingContent: React.FC<{ accountId: number; lang?: Lang }> = 
   const [data, setData] = useState<CopyTradingOverview | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  const load = useCallback(() => {
+  useEffect(() => {
+    let active = true;   // unmount guard: never setState after teardown (prevents the #531-class CI failure)
     getCopyTradingOverview(accountId)
-      .then((d) => { setData(d); setLoaded(true); })
+      .then((d) => { if (active) { setData(d); setLoaded(true); } })
       .catch(() => {
         // 404 / error => treat as DARK-off; show the calm not-enabled state, never a broken page.
-        setData({ enabled: false, master: null, followers: [], recent_events: [], recent_replications: [],
-                  limitations: { live_follower_execution: "blocked", note: "" } });
-        setLoaded(true);
+        if (active) {
+          setData({ enabled: false, master: null, followers: [], recent_events: [], recent_replications: [],
+                    limitations: { live_follower_execution: "blocked", note: "" } });
+          setLoaded(true);
+        }
       });
+    return () => { active = false; };
   }, [accountId]);
-
-  useEffect(() => { load(); }, [load]);
 
   if (!loaded) return <p style={{ color: "#9db6d6" }}>{STR.loading[L]}</p>;
 
@@ -138,7 +157,8 @@ export const CopyTradingContent: React.FC<{ accountId: number; lang?: Lang }> = 
   return (
     <div style={panel}>
       <h3 style={{ margin: "0 0 0.35rem", fontSize: "1.15rem" }}>{STR.title[L]}</h3>
-      <p style={{ color: "#9db6d6", margin: "0 0 1rem", fontSize: "0.9rem", lineHeight: 1.5 }}>{STR.intro[L]}</p>
+      <p style={{ color: "#9db6d6", margin: "0 0 0.25rem", fontSize: "0.9rem", lineHeight: 1.5 }}>{STR.intro[L]}</p>
+      <p style={{ color: "#6f86a6", margin: "0 0 1rem", fontSize: "0.8rem", fontStyle: "italic" }}>{STR.configNote[L]}</p>
 
       {/* Execution limitations — always visible and prominent. */}
       <div style={{ border: "1px solid rgba(234,179,8,0.35)", background: "rgba(234,179,8,0.08)", borderRadius: 10,
@@ -235,7 +255,7 @@ export const CopyTradingContent: React.FC<{ accountId: number; lang?: Lang }> = 
                       <td style={CELL}>#{r.follower_account_id}</td>
                       <td style={CELL}>{r.requested_op}</td>
                       <td style={CELL}>
-                        <Pill color={statusColor(r.status)}>{r.status}</Pill>
+                        <Pill color={statusColor(r.status)}>{statusLabel(r.status, L)}</Pill>
                         {r.reason ? <span style={{ color: "#c08a8a", fontSize: "0.72rem", marginLeft: 6 }}>{r.reason}</span> : null}
                       </td>
                       <td style={CELL}>{r.target_volume ?? "—"}</td>
@@ -246,6 +266,9 @@ export const CopyTradingContent: React.FC<{ accountId: number; lang?: Lang }> = 
                 </tbody>
               </table>
             )}
+          <p style={{ color: "#6f86a6", fontSize: "0.72rem", marginTop: "0.5rem", lineHeight: 1.5 }}>
+            {STR.shadowLegend[L]}
+          </p>
         </>
       )}
     </div>
