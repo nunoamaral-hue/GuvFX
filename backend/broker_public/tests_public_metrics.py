@@ -16,7 +16,8 @@ from rest_framework.test import APIClient
 
 from broker_intelligence.models import Provenance, Withdrawal
 from broker_public.aggregation import compute_withdrawal_processing, upsert_withdrawal_processing
-from broker_public.models import BrokerMetricAggregate, BrokerMetricCategory, PublicBroker
+from broker_public.models import (BrokerMetricAggregate, BrokerMetricCategory, MetricParticipationConsent,
+                                   PublicBroker)
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -34,12 +35,12 @@ def _broker(slug="tradersway", source="TradersWay", published=True):
                                        is_published=published)
 
 
-def _category(*, min_contributors=5, min_samples=20, max_share=40, min_completed=5, version=1):
+def _category(*, min_contributors=5, min_samples=20, max_share=40, min_completed=5, version=1, min_bucket=5):
     return BrokerMetricCategory.objects.create(
         key=BrokerMetricCategory.Key.WITHDRAWAL_PROCESSING, status=BrokerMetricCategory.Status.ACTIVE,
         methodology_version=version, methodology="median broker-reported processing time; dedup + winsorised",
         min_contributors=min_contributors, min_samples=min_samples, max_contributor_share_pct=max_share,
-        min_completed_samples=min_completed)
+        min_completed_samples=min_completed, min_bucket_size=min_bucket)
 
 
 def _acct(broker="TradersWay"):
@@ -256,3 +257,124 @@ class PublicApiDark(TestCase):
         c = APIClient()
         self.assertEqual(c.get("/api/public/brokers/").status_code, 404)
         self.assertEqual(c.get("/api/public/brokers/tradersway/").status_code, 404)
+
+
+class MinorityBucketSuppression(TestCase):
+    def test_minority_currency_bucket_dropped_not_relabelled(self):
+        # PR2-review fix: a lone minority currency must NOT reappear as `suppressed: 1` (that would re-publish the
+        # exact rare count under a new label). Currency has no published total to difference against, so the small
+        # bucket is DROPPED and the healthy majority preserved; no sub-min_size count is published anywhere.
+        b = _broker()
+        _category(min_contributors=5, min_samples=5, max_share=100, min_completed=5, min_bucket=3)
+        for _ in range(5):
+            _wd(_acct(), currency="USD")       # majority bucket (5)
+        _wd(_acct(), currency="EUR")           # minority bucket (1) — a rare, member-identifying currency
+        off = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)
+        self.assertEqual(off["stats"]["per_currency_counts"].get("EUR"), 1)        # OFF: minority still emitted
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            on = compute_withdrawal_processing(b, certified_brokers=CERT)
+        ccy = on["stats"]["per_currency_counts"]
+        self.assertEqual(ccy, {"USD": 5})                                          # EUR dropped, majority kept
+        self.assertNotIn("EUR", ccy)
+        self.assertNotIn("suppressed", ccy)                                        # NEVER a sub-min_size tally
+        # no published currency bucket is below the k-anonymity floor
+        self.assertTrue(all(v >= 3 for v in ccy.values()))
+
+    def test_lifecycle_minority_not_reconstructable_by_differencing(self):
+        # PR2-review fix (the harder vector): lifecycle buckets sum to the published sample_size, so a lone withheld
+        # outcome is reconstructable by subtraction. Complementary suppression must fold until no single rare count
+        # can be differenced out — every published non-sentinel bucket is >= min_bucket AND sample_size minus their
+        # sum is 0 or >= min_bucket (never the lone rare count).
+        b = _broker()
+        _category(min_contributors=2, min_samples=5, max_share=100, min_completed=5, min_bucket=3)
+        done = _acct()
+        for _ in range(19):
+            _wd(done, status=Withdrawal.Status.COMPLETED)
+        _wd(_acct(), status=Withdrawal.Status.REJECTED)        # one member's lone REJECTED (count 1)
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            r = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(r["state"], BrokerMetricAggregate.State.PUBLISHED)
+        lc = r["stats"]["lifecycle_counts"]
+        non_sentinel = {k: v for k, v in lc.items() if k != "receipt_confirmed_if_ever_available"}
+        for k, v in non_sentinel.items():
+            self.assertTrue(v == 0 or v >= 3, f"published bucket {k}={v} below the k-anonymity floor")
+        residual = r["sample_size"] - sum(non_sentinel.values())
+        self.assertTrue(residual == 0 or residual >= 3, f"differenceable residual {residual} isolates a rare count")
+        self.assertNotIn(1, non_sentinel.values())             # the lone REJECTED (1) is nowhere recoverable
+
+    def test_processing_time_count_respects_bucket_floor(self):
+        # PR2-review finding 4: min_bucket_size > min_completed_samples. processing_time.count is the same completed
+        # population as the lifecycle 'broker_reported_completed' bucket, so when suppression is on it must also clear
+        # the k-anonymity floor — else it re-reveals the completed count lifecycle suppression hides.
+        b = _broker()
+        _category(min_contributors=1, min_samples=5, max_share=100, min_completed=5, min_bucket=10)
+        a = _acct()
+        for _ in range(7):
+            _wd(a, status=Withdrawal.Status.COMPLETED)   # 7 completed: >= min_completed(5) but < min_bucket(10)
+        off = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)
+        self.assertEqual(off["stats"]["processing_time"]["count"], 7)             # OFF: published
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            on = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertIsNone(on["stats"]["processing_time"])                         # ON: withheld (< k-anon floor)
+        lc = {k: v for k, v in on["stats"]["lifecycle_counts"].items()
+              if k != "receipt_confirmed_if_ever_available"}
+        self.assertNotIn(7, lc.values())                                          # completed count not reconstructable
+
+    def test_receipt_sentinel_is_never_suppressed(self):
+        b = _broker()
+        _category(min_contributors=5, min_samples=5, max_share=100, min_completed=5, min_bucket=100)
+        for _ in range(5):
+            _wd(_acct())
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            r = compute_withdrawal_processing(b, certified_brokers=CERT)
+        lc = r["stats"]["lifecycle_counts"]
+        self.assertEqual(lc.get("receipt_confirmed_if_ever_available"), 0)   # always-0 sentinel passes through
+
+
+class ParticipationConsent(TestCase):
+    def test_consent_required_is_fail_closed_and_revocable(self):
+        b = _broker()
+        _category(min_contributors=2, min_samples=2, max_share=100, min_completed=2)
+        a1, a2 = _acct(), _acct()
+        _wd(a1); _wd(a2)
+        off = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)      # OFF: both eligible
+        self.assertEqual(off["contributor_count"], 2)
+        with override_settings(BROKER_PUBLIC_CONSENT_REQUIRED="1"):
+            r0 = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r0["state"], BrokerMetricAggregate.State.INSUFFICIENT_DATA)   # no consent -> excluded
+            MetricParticipationConsent.objects.create(owner=a1.user, scope="TradersWay")
+            MetricParticipationConsent.objects.create(owner=a2.user, scope="TradersWay")
+            r1 = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r1["state"], BrokerMetricAggregate.State.PUBLISHED)           # both consent -> published
+            self.assertEqual(r1["contributor_count"], 2)
+            c = MetricParticipationConsent.objects.get(owner=a1.user, scope="TradersWay")
+            c.state = MetricParticipationConsent.State.REVOKED
+            c.revoked_at = timezone.now()
+            c.save(update_fields=["state", "revoked_at"])                                   # supersede, not overwrite
+            r2 = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r2["contributor_count"], 1)                                    # a1 excluded after revoke
+            self.assertEqual(MetricParticipationConsent.objects.filter(owner=a1.user).count(), 1)  # row retained
+
+    def test_wildcard_scope_consent_applies_to_all_brokers(self):
+        b = _broker()
+        _category(min_contributors=1, min_samples=1, max_share=100, min_completed=1)
+        a = _acct()
+        _wd(a)
+        with override_settings(BROKER_PUBLIC_CONSENT_REQUIRED="1"):
+            MetricParticipationConsent.objects.create(owner=a.user, scope="*")
+            r = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r["sample_size"], 1)
+
+    def test_single_active_consent_per_owner_scope_db_enforced(self):
+        from django.db import IntegrityError, transaction
+        u = _acct().user
+        MetricParticipationConsent.objects.create(owner=u, scope="TradersWay")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                MetricParticipationConsent.objects.create(owner=u, scope="TradersWay")   # 2nd ACTIVE -> rejected
+        # a REVOKED row for the same (owner, scope) coexists (the partial unique only binds ACTIVE)
+        MetricParticipationConsent.objects.create(owner=u, scope="TradersWay",
+                                                  state=MetricParticipationConsent.State.REVOKED)

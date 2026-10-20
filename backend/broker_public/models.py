@@ -8,6 +8,7 @@ migration is additive/reversible and NOT applied to production under this packet
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import models
 
 
@@ -63,6 +64,10 @@ class BrokerMetricCategory(models.Model):
     # Max share of the sample any single contributor may provide (winsorisation), so one user/duplicate can't
     # dominate a public statistic. Expressed as a percentage 1..100.
     max_contributor_share_pct = models.PositiveSmallIntegerField(default=40)
+    # k-anonymity small-bucket floor: any single lifecycle/currency bucket smaller than this is collapsed into a
+    # "suppressed" tally rather than published as an exact count, so a rare outcome (e.g. one member's single REJECTED
+    # or a lone currency) can never pinpoint that member. A PROPOSED default — the reviewed value is governance (PD).
+    min_bucket_size = models.PositiveSmallIntegerField(default=5)
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.DRAFT, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -109,3 +114,40 @@ class BrokerMetricAggregate(models.Model):
 
     def __str__(self) -> str:
         return f"BrokerMetricAggregate({self.public_broker_id}/{self.category_key}, {self.state}, n={self.sample_size})"
+
+
+class MetricParticipationConsent(models.Model):
+    """Explicit, revocable OPT-IN by a GuvFX member to let THEIR genuine withdrawal evidence contribute to a PUBLIC
+    broker metric. This is a DISTINCT concern from Gmail inbox-READ consent (which authorises ingestion, not public
+    use): a member may allow GuvFX to read their broker mail yet NOT allow that evidence to feed a public statistic.
+
+    Fail-closed: aggregation includes a member's evidence only while an ACTIVE row exists for the scope. Supersede,
+    never overwrite (data.md): a revocation is a state transition to REVOKED (``revoked_at`` set) — the ACTIVE row's
+    history is retained, never edited away. DB-enforced at most one ACTIVE row per ``(owner, scope)`` (mirrors the
+    one-ACTIVE-per-key pointer on BrokerMetricCategory). Holds NO credential, NO transaction, NO identity beyond the
+    owner FK + an opaque scope string. DARK: consulted only when ``broker_public_consent_required()``.
+    """
+
+    class State(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active (participating)"
+        REVOKED = "REVOKED", "Revoked (withdrawn)"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                              related_name="metric_participation_consents")
+    # Opaque participation scope — the authoritative internal broker key (source_slug), or "*" for all brokers. NOT a
+    # display name. Kept as a string so scope granularity can evolve without a schema change.
+    scope = models.CharField(max_length=64)
+    state = models.CharField(max_length=8, choices=State.choices, default=State.ACTIVE, db_index=True)
+    granted_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # At most one ACTIVE participation row per (owner, scope) — the atomic participation pointer, DB-enforced.
+            models.UniqueConstraint(fields=["owner", "scope"], condition=models.Q(state="ACTIVE"),
+                                    name="uniq_mpc_one_active_per_owner_scope"),
+        ]
+        indexes = [models.Index(fields=["owner", "scope", "state"])]
+
+    def __str__(self) -> str:
+        return f"MetricParticipationConsent(owner={self.owner_id}, scope={self.scope}, {self.state})"
