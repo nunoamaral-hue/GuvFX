@@ -184,32 +184,28 @@ def _mark_event(event: BrokerEvent, status: str) -> None:
 
 
 def _find_by_reference(event: BrokerEvent):
-    """The Withdrawal keyed by reference — account-scoped when the event resolved an account, else owner-scoped over
-    account-UNRESOLVED rows (ADR-0050). The two key spaces are DISJOINT (account NOT NULL vs account NULL), matching
-    the two partial-unique indexes, so an owner-attributed withdrawal is never confused with an account-resolved one
-    and the create-path IntegrityError recovery re-reads the correct winner."""
+    """The single Withdrawal this event's reference belongs to. Events for ONE real withdrawal can differ in account
+    resolution — the request may resolve a GuvFX account while a follow-up/completion carries only the shared
+    reference (ADR-0050) — so the OWNER is the robust dedup key across that mix. Strategy: the strict key first
+    (``(account, ref)`` if the event resolved an account, else ``(owner, account IS NULL, ref)``), then, when the
+    event carries an owner, BRIDGE to any ``(owner, ref)`` row. The bridge makes an account-less advancing/completion
+    event ADVANCE the existing account-resolved withdrawal (and vice-versa) instead of creating a parallel row — so a
+    single real withdrawal is never double-counted (review fix for the pass-1/pass-2 asymmetry). The sequential,
+    single-worker correlation loop makes the find-then-advance atomic enough; the partial-unique indexes remain the
+    backstop. A non-match returns None — so a deposit/other event whose reference matches no withdrawal has no effect,
+    and (in the completion path) a completion never fabricates a record."""
+    ref = event.broker_reference_id
     if event.trading_account_id is not None:
-        return (Withdrawal.objects
-                .filter(trading_account_id=event.trading_account_id,
-                        broker_reference_id=event.broker_reference_id).first())
-    return (Withdrawal.objects
-            .filter(owner_id=event.owner_id, trading_account__isnull=True,
-                    broker_reference_id=event.broker_reference_id).first())
-
-
-def _find_withdrawal_for_completion(event: BrokerEvent):
-    """ADVANCE-ONLY finder for a neutral completion (ADR-0050): match an EXISTING external Withdrawal by broker
-    reference — by (account, ref) when the completion itself resolved an account, else by (owner, ref). This covers
-    the common shape where the external REQUEST resolved an account (or stayed account-UNRESOLVED) but the COMPLETION
-    email carries no account, only the shared reference. It never creates; a non-match returns None (so a deposit/
-    other completion whose reference matches no external withdrawal has no effect)."""
-    qs = Withdrawal.objects.filter(broker_reference_id=event.broker_reference_id)
-    if event.trading_account_id is not None:
-        w = qs.filter(trading_account_id=event.trading_account_id).first()
+        w = Withdrawal.objects.filter(trading_account_id=event.trading_account_id, broker_reference_id=ref).first()
         if w is not None:
             return w
-    if event.owner_id is not None:
-        return qs.filter(owner_id=event.owner_id).first()
+    elif event.owner_id is not None:
+        w = Withdrawal.objects.filter(owner_id=event.owner_id, trading_account__isnull=True,
+                                      broker_reference_id=ref).first()
+        if w is not None:
+            return w
+    if event.owner_id is not None:   # owner bridge: one real withdrawal, mixed account resolution across its events
+        return Withdrawal.objects.filter(owner_id=event.owner_id, broker_reference_id=ref).first()
     return None
 
 
@@ -427,7 +423,7 @@ def correlate_completion_event(event: BrokerEvent) -> CorrelationResult:
         if locked.correlation_status == BrokerEvent.CorrelationStatus.CORRELATED:
             return CorrelationResult(event.id, OUT_ALREADY)
         event = locked
-        withdrawal = _find_withdrawal_for_completion(event)
+        withdrawal = _find_by_reference(event)                   # owner/account bridge (same finder as pass 1)
         if withdrawal is None:
             return CorrelationResult(event.id, OUT_UNRESOLVED)   # NEVER create a withdrawal from a completion
         _apply_event(withdrawal, event, Withdrawal.Status.COMPLETED,

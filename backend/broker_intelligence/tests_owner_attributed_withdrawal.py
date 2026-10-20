@@ -157,6 +157,48 @@ class AdvanceOnlyCompletion(TestCase):
         self.assertEqual(w.trading_account_id, acct.id)
         self.assertEqual(w.status, Withdrawal.Status.COMPLETED)
 
+    def test_account_resolved_request_then_account_less_external_advance_no_duplicate(self):
+        # Review regression (HIGH double-count): an account-RESOLVED EXTERNAL request creates W1(account=A); a later
+        # account-LESS EXTERNAL advancing/completion event for the SAME withdrawal (restates the rail, omits the
+        # account) must ADVANCE W1 via the owner bridge, NOT create a parallel account-null row.
+        u = _owner()
+        acct = _acct(u)
+        req = _event(owner=u, account=acct, ref="DUP-1", occurred_at=timezone.now() - timedelta(minutes=5))
+        C.correlate_event(req)
+        # account-less EXTERNAL advancing event (PROCESSING) sharing the reference
+        proc = _event(owner=u, account=None, event_type="WITHDRAWAL_PROCESSING",
+                      category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="DUP-1", amount=None, currency="")
+        res = C.correlate_event(proc)
+        self.assertEqual(res.outcome, C.OUT_REFERENCE)                    # advanced, not created
+        self.assertEqual(Withdrawal.objects.count(), 1)                   # NO duplicate
+        w = Withdrawal.objects.get()
+        self.assertEqual(w.trading_account_id, acct.id)
+        self.assertEqual(w.status, Withdrawal.Status.PROCESSING)
+
+    def test_account_less_request_then_account_resolved_external_advance_no_duplicate(self):
+        # The symmetric reverse order must also converge to ONE withdrawal.
+        u = _owner()
+        acct = _acct(u)
+        req = _event(owner=u, account=None, ref="DUP-2", occurred_at=timezone.now() - timedelta(minutes=5))
+        C.correlate_event(req)
+        adv = _event(owner=u, account=acct, event_type="WITHDRAWAL_APPROVED",
+                     category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="DUP-2", amount=None, currency="")
+        res = C.correlate_event(adv)
+        self.assertEqual(res.outcome, C.OUT_REFERENCE)
+        self.assertEqual(Withdrawal.objects.count(), 1)                   # NO duplicate
+
+    def test_account_resolved_request_then_account_less_external_completed_no_duplicate(self):
+        # And the account-less EXTERNAL *completion* variant (a completion that DID classify external) also advances.
+        u = _owner()
+        acct = _acct(u)
+        C.correlate_event(_event(owner=u, account=acct, ref="DUP-3",
+                                 occurred_at=timezone.now() - timedelta(minutes=5)))
+        C.correlate_event(_event(owner=u, account=None, event_type="WITHDRAWAL_COMPLETED",
+                                 category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="DUP-3",
+                                 amount=None, currency="", occurred_at=timezone.now()))
+        self.assertEqual(Withdrawal.objects.count(), 1)
+        self.assertEqual(Withdrawal.objects.get().status, Withdrawal.Status.COMPLETED)
+
     def test_run_correlation_is_idempotent(self):
         u = _owner()
         _event(owner=u, account=None, category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="W-1",
