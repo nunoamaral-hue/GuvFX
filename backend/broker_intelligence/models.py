@@ -316,8 +316,16 @@ class Withdrawal(models.Model):
         REFERENCE_ID = "REFERENCE_ID", "Broker reference id (deterministic)"
         HEURISTIC = "HEURISTIC", "Bounded heuristic (account+amount+currency+time window)"
 
+    # Account-OPTIONAL (ADR-0050): an owner-attributed withdrawal whose TradersWay account is not registered in GuvFX
+    # stays account-UNRESOLVED (trading_account NULL) rather than being bound to an unrelated account. PROTECT is kept
+    # (a withdrawal still pins a resolved account against deletion); nullability is the only change.
     trading_account = models.ForeignKey("trading.TradingAccount", on_delete=models.PROTECT,
-                                        related_name="withdrawals")
+                                        related_name="withdrawals", null=True, blank=True)
+    # Owner attribution, INDEPENDENT of trading_account — mirrors BrokerEvent.owner (SET_NULL so an operator
+    # User.delete() purge decays attribution to NULL without destroying the financial-evidence row). Populated by the
+    # correlation engine from the originating event's owner. Enables surfacing account-UNRESOLVED withdrawals.
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="owner_withdrawals")
     broker_reference_id = models.CharField(max_length=128, blank=True, default="")
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=8, blank=True, default="")
@@ -336,15 +344,23 @@ class Withdrawal(models.Model):
     class Meta:
         ordering = ["-requested_at", "-id"]
         constraints = [
-            # One withdrawal per (account, reference id) — makes reference-id correlation idempotent. Partial:
-            # only when a reference id is present (blank refs are heuristic/unresolved and not uniqueness-bearing).
+            # Idempotency is split in TWO so it holds for BOTH account-resolved and owner-attributed/account-NULL
+            # withdrawals (Postgres treats NULL trading_account as DISTINCT, so a single (trading_account, ref) partial
+            # index would NOT dedupe account-NULL rows — ADR-0050; same owner-scoping idiom as migration 0014 for
+            # BrokerEvent). Both partial: only a present reference id is uniqueness-bearing (blank refs are
+            # heuristic/unresolved).
             models.UniqueConstraint(
                 fields=["trading_account", "broker_reference_id"],
-                condition=models.Q(broker_reference_id__gt=""),
+                condition=models.Q(broker_reference_id__gt="", trading_account__isnull=False),
                 name="uniq_withdrawal_account_reference"),
+            models.UniqueConstraint(
+                fields=["owner", "broker_reference_id"],
+                condition=models.Q(broker_reference_id__gt="", trading_account__isnull=True, owner__isnull=False),
+                name="uniq_withdrawal_owner_reference"),
         ]
         indexes = [
             models.Index(fields=["trading_account", "status"]),
+            models.Index(fields=["owner", "status"]),
             models.Index(fields=["status"]),
         ]
 
