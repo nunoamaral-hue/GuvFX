@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-10-20 - BROKER INTELLIGENCE CUSTOMER PILOT COMPLETION (P0, DARK; main `8125770f`).** Seven coherent DARK
+  squash-merges on baseline `6554290`: #522 public INSUFFICIENT_DATA leak fix + anon throttle (§6a, `dc6e43f`); #523
+  minority k-anon + participation-consent (§6b, `1883e76`); #524 multi-mailbox OAuth + PG concurrency proof (§3,
+  `4365724`); #525 account-level broker-email contact API + EN/JA Withdrawal Monitoring UI (§4, `5b20983`); #526
+  contact-scoped attribution (§5, `fa0f15f`); #527 routing-evidence requirement (§2, `8125770f`). All flags default
+  OFF (404/no-op/byte-identical); no prod migration applied, no activation, no publication, no financial/trading
+  action. Adversarial review on every substantive PR fixed real defects pre-merge (a HIGH cross-user identity
+  takeover in #525; a cosmetic-suppression privacy defect in #523). Backend `broker_intelligence` 594 +
+  `broker_public` 22 green. **Genuine TradersWay external-withdrawal pilot certification is BLOCKED on the raw genuine
+  RFC822 (not in repo; not fabricated)** — see `docs/GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_REPORT.md`. **Activation
+  GO/NO-GO: NO-GO** (gated on genuine certified data + consent/scoring governance + migration-first deploy).
+
 - **2026-10-14 - DB RECOVERY FOUNDATION REPOSITORY CLOSEOUT (PR #498, DARK; merge-gated).** PD accepted
   through `c2ebfa1` (93/93) + authorized a governed squash merge on gate-pass. One final shutdown-status
   correction: `pg_ctl status` returns 0=running, **3=stopped**, **4=inaccessible/unspecified**,
