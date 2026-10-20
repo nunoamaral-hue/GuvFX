@@ -26,7 +26,8 @@ from django.utils import timezone
 from broker_intelligence.external_withdrawal_classifier import CERTIFIED_BROKERS
 from broker_intelligence.models import Provenance, Withdrawal
 
-from .models import BrokerMetricAggregate, BrokerMetricCategory
+from .flags import broker_public_consent_required, broker_public_minority_suppression_enabled
+from .models import BrokerMetricAggregate, BrokerMetricCategory, MetricParticipationConsent
 
 # Map a durable Withdrawal.status to the PUBLIC lifecycle vocabulary (§F). REJECTED/CANCELLED are terminal
 # non-completions (never "completed processing"); UNRESOLVED stays visible. RECEIPT_CONFIRMED has no signal today
@@ -58,8 +59,33 @@ def _eligible_withdrawals(public_broker, *, certified_brokers):
         return []   # fail-closed: no authoritative key, or broker not certified ⇒ no eligible evidence
     key_l = key.lower()
     rows = (Withdrawal.objects.filter(provenance=Provenance.REAL).select_related("trading_account"))
-    return [w for w in rows
+    rows = [w for w in rows
             if (getattr(w.trading_account, "broker_name", "") or "").strip().lower() == key_l]
+    if broker_public_consent_required():
+        # Participation is OPT-IN and fail-closed: include a member's evidence only while an ACTIVE consent row exists
+        # for THIS broker scope (its source_slug) or the all-brokers wildcard. No row ⇒ excluded.
+        consenting = set(MetricParticipationConsent.objects
+                         .filter(state=MetricParticipationConsent.State.ACTIVE, scope__in=[key, "*"])
+                         .values_list("owner_id", flat=True))
+        rows = [w for w in rows if getattr(w.trading_account, "user_id", None) in consenting]
+    return rows
+
+
+def _suppress_small_buckets(counts: dict, min_size: int, *, protect=()) -> dict:
+    """k-anonymity: collapse any bucket with 0 < value < ``min_size`` into a single ``"suppressed"`` tally, so a rare
+    outcome (one member's lone REJECTED, a single-member currency) can never be read as an exact count. Totals are
+    CONSERVED (the suppressed tally equals the sum of the removed buckets). Keys in ``protect`` (e.g. the always-0
+    receipt sentinel) pass through untouched."""
+    out: dict = {}
+    suppressed = 0
+    for k, v in counts.items():
+        if k in protect or v == 0 or v >= min_size:
+            out[k] = v
+        else:
+            suppressed += v
+    if suppressed:
+        out["suppressed"] = out.get("suppressed", 0) + suppressed
+    return out
 
 
 def _winsorise_counts(raw_counts: dict, max_share_pct: int) -> dict:
@@ -90,6 +116,7 @@ def compute_withdrawal_processing(public_broker, *, certified_brokers=CERTIFIED_
     min_samples = category.min_samples if category else 20
     max_share = (category.max_contributor_share_pct if category else 40)
     min_completed = category.min_completed_samples if category else 5
+    min_bucket = category.min_bucket_size if category else 5
     version = category.methodology_version if category else 1
 
     rows = _eligible_withdrawals(public_broker, certified_brokers=certified_brokers)
@@ -131,10 +158,18 @@ def compute_withdrawal_processing(public_broker, *, certified_brokers=CERTIFIED_
                       "p75_seconds": int(statistics.quantiles(durs, n=4)[2]) if len(durs) >= 4 else None}
     # Per-currency COUNTS only (never amounts — amounts could identify a member's transaction).
     ccy_counts = Counter((w.currency or "").upper() for w in capped if w.currency)
+    lifecycle_out = dict(lifecycle)
+    ccy_out = dict(ccy_counts)
+    if broker_public_minority_suppression_enabled():
+        # k-anonymity small-bucket collapse — protect the always-0 receipt sentinel (a truthful constant, not a
+        # member-identifying count).
+        lifecycle_out = _suppress_small_buckets(lifecycle_out, min_bucket,
+                                                protect=("receipt_confirmed_if_ever_available",))
+        ccy_out = _suppress_small_buckets(ccy_out, min_bucket)
     stats = {
-        "lifecycle_counts": dict(lifecycle),
+        "lifecycle_counts": lifecycle_out,
         "processing_time": processing,            # None until >= min_completed completed-with-both-anchors samples
-        "per_currency_counts": dict(ccy_counts),  # counts, not amounts
+        "per_currency_counts": ccy_out,           # counts, not amounts
     }
     # Freshness COARSENED to the date (no sub-day precision — can't pinpoint one member's transaction time) and only
     # on the PUBLISHED path (>= min_contributors + min_samples); INSUFFICIENT_DATA emits no timestamp.

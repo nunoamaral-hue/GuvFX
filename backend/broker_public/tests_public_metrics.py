@@ -16,7 +16,8 @@ from rest_framework.test import APIClient
 
 from broker_intelligence.models import Provenance, Withdrawal
 from broker_public.aggregation import compute_withdrawal_processing, upsert_withdrawal_processing
-from broker_public.models import BrokerMetricAggregate, BrokerMetricCategory, PublicBroker
+from broker_public.models import (BrokerMetricAggregate, BrokerMetricCategory, MetricParticipationConsent,
+                                   PublicBroker)
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -34,12 +35,12 @@ def _broker(slug="tradersway", source="TradersWay", published=True):
                                        is_published=published)
 
 
-def _category(*, min_contributors=5, min_samples=20, max_share=40, min_completed=5, version=1):
+def _category(*, min_contributors=5, min_samples=20, max_share=40, min_completed=5, version=1, min_bucket=5):
     return BrokerMetricCategory.objects.create(
         key=BrokerMetricCategory.Key.WITHDRAWAL_PROCESSING, status=BrokerMetricCategory.Status.ACTIVE,
         methodology_version=version, methodology="median broker-reported processing time; dedup + winsorised",
         min_contributors=min_contributors, min_samples=min_samples, max_contributor_share_pct=max_share,
-        min_completed_samples=min_completed)
+        min_completed_samples=min_completed, min_bucket_size=min_bucket)
 
 
 def _acct(broker="TradersWay"):
@@ -256,3 +257,80 @@ class PublicApiDark(TestCase):
         c = APIClient()
         self.assertEqual(c.get("/api/public/brokers/").status_code, 404)
         self.assertEqual(c.get("/api/public/brokers/tradersway/").status_code, 404)
+
+
+class MinorityBucketSuppression(TestCase):
+    def test_minority_currency_bucket_collapsed_only_when_enabled(self):
+        b = _broker()
+        _category(min_contributors=5, min_samples=5, max_share=100, min_completed=5, min_bucket=3)
+        for _ in range(5):
+            _wd(_acct(), currency="USD")       # majority bucket (5)
+        _wd(_acct(), currency="EUR")           # minority bucket (1) — identifies one member's rare currency
+        off = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)
+        self.assertEqual(off["stats"]["per_currency_counts"].get("EUR"), 1)        # OFF: minority still emitted
+        self.assertNotIn("suppressed", off["stats"]["per_currency_counts"])
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            on = compute_withdrawal_processing(b, certified_brokers=CERT)
+        ccy = on["stats"]["per_currency_counts"]
+        self.assertNotIn("EUR", ccy)                                               # ON: minority collapsed
+        self.assertEqual(ccy.get("suppressed"), 1)
+        self.assertEqual(ccy.get("USD"), 5)
+        self.assertEqual(sum(ccy.values()), 6)                                     # totals conserved
+
+    def test_receipt_sentinel_is_never_suppressed(self):
+        b = _broker()
+        _category(min_contributors=5, min_samples=5, max_share=100, min_completed=5, min_bucket=100)
+        for _ in range(5):
+            _wd(_acct())
+        with override_settings(BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED="1"):
+            r = compute_withdrawal_processing(b, certified_brokers=CERT)
+        lc = r["stats"]["lifecycle_counts"]
+        self.assertEqual(lc.get("receipt_confirmed_if_ever_available"), 0)   # always-0 sentinel passes through
+
+
+class ParticipationConsent(TestCase):
+    def test_consent_required_is_fail_closed_and_revocable(self):
+        b = _broker()
+        _category(min_contributors=2, min_samples=2, max_share=100, min_completed=2)
+        a1, a2 = _acct(), _acct()
+        _wd(a1); _wd(a2)
+        off = compute_withdrawal_processing(b, certified_brokers=CERT)
+        self.assertEqual(off["state"], BrokerMetricAggregate.State.PUBLISHED)      # OFF: both eligible
+        self.assertEqual(off["contributor_count"], 2)
+        with override_settings(BROKER_PUBLIC_CONSENT_REQUIRED="1"):
+            r0 = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r0["state"], BrokerMetricAggregate.State.INSUFFICIENT_DATA)   # no consent -> excluded
+            MetricParticipationConsent.objects.create(owner=a1.user, scope="TradersWay")
+            MetricParticipationConsent.objects.create(owner=a2.user, scope="TradersWay")
+            r1 = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r1["state"], BrokerMetricAggregate.State.PUBLISHED)           # both consent -> published
+            self.assertEqual(r1["contributor_count"], 2)
+            c = MetricParticipationConsent.objects.get(owner=a1.user, scope="TradersWay")
+            c.state = MetricParticipationConsent.State.REVOKED
+            c.revoked_at = timezone.now()
+            c.save(update_fields=["state", "revoked_at"])                                   # supersede, not overwrite
+            r2 = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r2["contributor_count"], 1)                                    # a1 excluded after revoke
+            self.assertEqual(MetricParticipationConsent.objects.filter(owner=a1.user).count(), 1)  # row retained
+
+    def test_wildcard_scope_consent_applies_to_all_brokers(self):
+        b = _broker()
+        _category(min_contributors=1, min_samples=1, max_share=100, min_completed=1)
+        a = _acct()
+        _wd(a)
+        with override_settings(BROKER_PUBLIC_CONSENT_REQUIRED="1"):
+            MetricParticipationConsent.objects.create(owner=a.user, scope="*")
+            r = compute_withdrawal_processing(b, certified_brokers=CERT)
+            self.assertEqual(r["sample_size"], 1)
+
+    def test_single_active_consent_per_owner_scope_db_enforced(self):
+        from django.db import IntegrityError, transaction
+        u = _acct().user
+        MetricParticipationConsent.objects.create(owner=u, scope="TradersWay")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                MetricParticipationConsent.objects.create(owner=u, scope="TradersWay")   # 2nd ACTIVE -> rejected
+        # a REVOKED row for the same (owner, scope) coexists (the partial unique only binds ACTIVE)
+        MetricParticipationConsent.objects.create(owner=u, scope="TradersWay",
+                                                  state=MetricParticipationConsent.State.REVOKED)

@@ -21,3 +21,18 @@ def broker_public_directory_enabled() -> bool:
     onboarding). Read-only aggregate data only; NO member data, NO execution/credential authority. Independent of
     whether aggregates have been computed — an armed-but-empty directory simply returns INSUFFICIENT_DATA."""
     return _flag("BROKER_PUBLIC_DIRECTORY_ENABLED")
+
+
+def broker_public_minority_suppression_enabled() -> bool:
+    """Gate for k-anonymity small-bucket suppression in the metric aggregation (collapse any lifecycle/currency
+    bucket below the category's ``min_bucket_size`` into a 'suppressed' tally). DEFAULT OFF -> aggregation is
+    byte-identical to today. Additive privacy hardening; no activation, no member data exposed either way."""
+    return _flag("BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED")
+
+
+def broker_public_consent_required() -> bool:
+    """Gate for the participation/consent contract: when ON, only members with an ACTIVE
+    ``MetricParticipationConsent`` for the broker scope contribute to a public aggregate (fail-closed -- no row ->
+    excluded). DEFAULT OFF -> aggregation byte-identical to today (consent is a prerequisite the PM/Sponsor arms, and
+    the public surface is 404 regardless until the directory flag is on). Distinct from Gmail inbox-read consent."""
+    return _flag("BROKER_PUBLIC_CONSENT_REQUIRED")
