@@ -131,3 +131,18 @@ def broker_attribution_contact_scoped_enabled() -> bool:
     instead of going ambiguous. The stated-number match stays MANDATORY (the binding only narrows; inbox/identity
     ownership ALONE never assigns an account). No execution/financial authority."""
     return _flag("BROKER_ATTRIBUTION_CONTACT_SCOPED_ENABLED")
+
+
+def broker_routing_evidence_required() -> bool:
+    """Gate for requiring independently-supportable ROUTING evidence before a TradingAccountBrokerContact reaches
+    VERIFIED (MULTI_ACCOUNT §2). DEFAULT OFF → contact_verification is byte-identical (owner + broker + connected
+    mailbox proof only). While ON, a binding additionally needs routing proof: either the bound mailbox IS the
+    broker-registered address (direct), or an AUTHENTICATED broker delivery was observed through it
+    (BrokerMessageObservation → a REAL event) — so a mere same-owner mailbox no longer proves routing.
+
+    ARMING / HARD DEPENDENCY: the 'observed_delivery' kind depends on BrokerMessageObservation rows, which are written
+    ONLY under broker_cross_inbox_dedup_enabled(). The 'direct_address' kind needs no ingestion history, so the common
+    (member connected the broker's own inbox) case still verifies; but a forwarding/alias case (connected mailbox !=
+    registered address) can be proven only once the delivery plane is populated. Arm this flag only after that is in
+    place (or rely on direct_address). No execution/financial authority."""
+    return _flag("BROKER_ROUTING_EVIDENCE_REQUIRED")
