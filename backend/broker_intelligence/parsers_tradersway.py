@@ -65,10 +65,12 @@ _INTERNAL_EVIDENCE = re.compile(
 _AMOUNT_OF = re.compile(
     r"amount\s+of\s+(?:(?P<cur1>[A-Za-z]{3}|\$)\s*)?"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?|\d+)\s*(?P<cur2>[A-Za-z]{3})?", re.IGNORECASE)
-# Reference stays on the SAME line as the label ([^\S\n]* = horizontal whitespace only) so a confirmation URL on the
+# Reference stays on the SAME line as the label ([^\S\n] = horizontal whitespace only) so a confirmation URL on the
 # next line can never be captured; a captured token starting with a URL scheme is additionally rejected in parse().
+# Each horizontal-whitespace run is BOUNDED ({0,8}) — a genuine label never has more than a few spaces before the
+# value — so no catastrophic backtracking is possible on a long (e.g. HTML &nbsp; U+00A0) whitespace run (RULE: ReDoS).
 _REQUEST_NUMBER = re.compile(
-    r"(?:withdrawal\s+)?request\s+number\s+is[^\S\n]*[:#]?[^\S\n]*([A-Za-z0-9\-]{3,32})", re.IGNORECASE)
+    r"(?:withdrawal\s+)?request\s+number\s+is[^\S\n]{0,8}[:#]?[^\S\n]{0,8}([A-Za-z0-9\-]{3,32})", re.IGNORECASE)
 # Source + destination are captured as ONE anchored transfer clause ("<src> in amount of <...> transferring to your
 # [trading] account <dst>") — never two independent body-wide first-matches, so an unrelated "to your account <N>"
 # elsewhere (e.g. a login/greeting line) cannot be mis-taken as the destination. The middle is bounded + newline-free.
@@ -82,14 +84,16 @@ _LABELED_AMOUNT = re.compile(
     r"(?:withdrawal\s+)?(?:amount|total)\s*[:\-]?\s*(?:(?P<cur1>[A-Za-z]{3}|\$)\s*)?"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?|\d+)\s*(?P<cur2>[A-Za-z]{3})?", re.IGNORECASE)
 _ACCOUNT = re.compile(r"(?:trading\s+)?account(?:\s*(?:number|no\.?|#|:))?\s*[:#]?\s*(\d{4,12})", re.IGNORECASE)
-_REFERENCE = re.compile(r"\b(?:reference|ref(?:erence)?\s*(?:id|no\.?|#)?)[^\S\n]*[:#]?[^\S\n]*([A-Za-z0-9\-]{3,32})",
-                        re.IGNORECASE)
+_REFERENCE = re.compile(
+    r"\b(?:reference|ref(?:erence)?\s*(?:id|no\.?|#)?)[^\S\n]{0,8}[:#]?[^\S\n]{0,8}([A-Za-z0-9\-]{3,32})",
+    re.IGNORECASE)
 
 # POSITIVE external evidence: the broker's STRUCTURED "Payment method: <rail>" field naming an external money-OUT
-# rail. Whitelisted values only (an unlisted rail ⇒ UNKNOWN, a safe under-claim — never a prose guess). This is the
-# ONLY parser→EXTERNAL path and it fires ONLY with a withdrawal-direction lifecycle (``parse`` runs
-# ``_classify_lifecycle`` first), so a DEPOSIT through the same rail is never mis-classified as a withdrawal.
-# Certified against the genuine pilot external-withdrawal REQUEST (2026-10-19): "Payment method: Ethereum".
+# rail. Whitelisted values only (an unlisted rail ⇒ UNKNOWN, a safe under-claim — never a prose guess). This label is
+# NECESSARY but NOT SUFFICIENT for EXTERNAL_WITHDRAWAL: the same rail label appears on DEPOSITS (money IN) and on
+# COMPLETION notices, so ``_classify_category`` additionally requires a requesting/in-flight withdrawal lifecycle AND
+# affirmative anchored withdrawal-direction wording AND the absence of deposit-direction wording (see below). The
+# label is certified against the genuine pilot external-withdrawal REQUEST (2026-10-19): "Payment method: Ethereum".
 _EXTERNAL_PAYMENT_RAILS = (
     "ethereum", "erc20", "erc-20", "bitcoin", "bitcoin cash", "litecoin", "dogecoin", "monero", "dash",
     "tether", "usdt", "usdc", "tron", "trc20", "trc-20", "ripple", "xrp",
@@ -100,13 +104,31 @@ _EXTERNAL_EVIDENCE = re.compile(
     r"payment\s+method\s*[:\-]\s*(?:" + "|".join(re.escape(r) for r in _EXTERNAL_PAYMENT_RAILS) + r")\b",
     re.IGNORECASE)
 
+# Lifecycles that MAY bear EXTERNAL_WITHDRAWAL: a withdrawal being REQUESTED or in flight. A direction-NEUTRAL
+# COMPLETION (``WITHDRAWAL_COMPLETED``) and any terminal event are DELIBERATELY excluded — a completion's externality
+# is established ONLY by WP5 correlation to its request (shared authenticated reference), never from its own text.
+_EXTERNAL_ELIGIBLE_LIFECYCLES = frozenset({
+    "WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED",
+    "WITHDRAWAL_PROCESSING", "WITHDRAWAL_APPROVED"})
+# Affirmative, ANCHORED withdrawal-DIRECTION evidence (money leaving) — NOT a scattered "withdrawal" substring that a
+# footer/disclaimer on a deposit could supply. Required (together with the rail label) for EXTERNAL_WITHDRAWAL.
+_WITHDRAWAL_DIRECTION = re.compile(
+    r"\b(to\s+withdraw|withdrawal\s+request|request(?:ed)?\s+(?:a\s+|your\s+)?withdrawal|"
+    r"withdraw(?:al)?\s+(?:of\s+)?funds?|withdrawn)\b", re.IGNORECASE)
+# Deposit-direction wording (money arriving). Its presence VETOES EXTERNAL_WITHDRAWAL — a deposit/funding email that
+# quotes a rail and mentions "withdrawal" only in boilerplate must never be read as a withdrawal. (Verified: the
+# genuine external-withdrawal request contains no "deposit" token, so this veto never under-claims the real case.)
+_DEPOSIT_DIRECTION = re.compile(r"\bdeposit(?:ed|s|ing)?\b", re.IGNORECASE)
+
 # TradersWay external-payout references (genuine pilot pair, 2026-10-19): the REQUEST states "request number #<N>";
 # the COMPLETION states "Payment request #<N>" — the SAME authenticated broker transaction reference links the pair
 # (WP5 correlation). Digits only, same-line (``[^\S\n]`` = horizontal whitespace), so a confirmation URL/token on
 # the next line can never be captured as a reference. Distinct anchors (the request has no "payment request" phrase;
-# the completion has no "request number" phrase — verified on the genuine emails) so neither cross-matches.
-_TW_REQUEST_NUMBER = re.compile(r"request\s+number[^\S\n]*[:#]?[^\S\n]*#?[^\S\n]*(\d{3,16})", re.IGNORECASE)
-_TW_PAYMENT_REQUEST = re.compile(r"payment\s+request[^\S\n]*[:#]?[^\S\n]*#?[^\S\n]*(\d{3,16})", re.IGNORECASE)
+# the completion has no "request number" phrase — verified on the genuine emails) so neither cross-matches. Each
+# horizontal-whitespace run is BOUNDED ({0,8}) so a long run (e.g. HTML &nbsp; → U+00A0, which [^\S\n] matches and
+# gmail_source does not collapse) followed by a non-digit cannot trigger catastrophic backtracking (ReDoS).
+_TW_REQUEST_NUMBER = re.compile(r"request\s+number[^\S\n]{0,8}[:#]?[^\S\n]{0,8}#?[^\S\n]{0,8}(\d{3,16})", re.IGNORECASE)
+_TW_PAYMENT_REQUEST = re.compile(r"payment\s+request[^\S\n]{0,8}[:#]?[^\S\n]{0,8}#?[^\S\n]{0,8}(\d{3,16})", re.IGNORECASE)
 
 
 def _norm_currency(tok: str) -> str:
@@ -126,7 +148,10 @@ def _classify_lifecycle(subject: str, body: str) -> Optional[str]:
     # word "Confirmed" as confirmation-required. Certified against the genuine completion email (2026-10-19).
     if "payment request" in t and "status changed" in t and "confirmed to completed" in t:
         return "WITHDRAWAL_COMPLETED"
-    if "confirm" in t and "withdrawal" in t:
+    # ANCHORED confirm-withdrawal-request phrase (not two scattered substrings): a deposit/notice whose footer merely
+    # contains "confirm" and "withdrawal" independently must NOT be labelled a withdrawal confirmation.
+    if re.search(r"confirm\s+(?:your\s+)?withdrawal\s+request", t) or \
+       re.search(r"withdrawal\s+request[^\n]{0,30}confirm", t):
         return "WITHDRAWAL_CONFIRMATION_REQUIRED"
     if re.search(r"\bwithdrawal (confirmed|has been confirmed)\b", t):
         return "WITHDRAWAL_CONFIRMED"
@@ -145,17 +170,25 @@ def _classify_lifecycle(subject: str, body: str) -> Optional[str]:
     return None
 
 
-def _classify_category(subject: str, body: str) -> str:
+def _classify_category(subject: str, body: str, lifecycle: Optional[str]) -> str:
     """INTERNAL_TRANSFER on explicit positive internal evidence (checked FIRST — if an email somehow carried both an
     internal-transfer clause and a payment-rail label, internal wins, a safe under-claim of external). Otherwise
-    EXTERNAL_WITHDRAWAL on the structured ``Payment method: <external rail>`` label (``_EXTERNAL_EVIDENCE`` — the one
-    certified external path; a whitelisted rail, never a prose guess). Else UNKNOWN. There is still NO prose→external
-    path, so no boilerplate / negation / ambiguous-destination narrative can over-claim an external withdrawal; and a
-    genuine completion (no label) stays UNKNOWN, its externality supplied only by WP5 correlation to the request."""
+    EXTERNAL_WITHDRAWAL only when ALL FOUR hold: (1) the ``lifecycle`` is a requesting/in-flight withdrawal state
+    (``_EXTERNAL_ELIGIBLE_LIFECYCLES`` — a COMPLETION or terminal event is NEVER external from its own text), (2) the
+    structured ``Payment method: <rail>`` label is present (``_EXTERNAL_EVIDENCE``), (3) affirmative ANCHORED
+    withdrawal-direction wording is present (``_WITHDRAWAL_DIRECTION``), and (4) NO deposit-direction wording is
+    present (``_DEPOSIT_DIRECTION`` veto). Else UNKNOWN. This structurally enforces the module invariant: there is no
+    prose→external path; a deposit via the same rail, a completion carrying a rail, and footer/boilerplate mentions of
+    "withdrawal" can none of them over-claim. A genuine completion stays UNKNOWN; its externality is supplied ONLY by
+    WP5 correlation to the request that shares its authenticated reference. Under-claiming is safe; over-claiming is
+    the forbidden error (it would inflate investor-facing withdrawal metrics)."""
     blob = f"{subject}\n{body}"
     if _INTERNAL_EVIDENCE.search(blob):
         return "INTERNAL_TRANSFER"
-    if _EXTERNAL_EVIDENCE.search(blob):
+    if (lifecycle in _EXTERNAL_ELIGIBLE_LIFECYCLES
+            and _EXTERNAL_EVIDENCE.search(blob)
+            and _WITHDRAWAL_DIRECTION.search(blob)
+            and not _DEPOSIT_DIRECTION.search(blob)):
         return "EXTERNAL_WITHDRAWAL"
     return "UNKNOWN"
 
@@ -202,7 +235,7 @@ class TradersWayParser:
         lifecycle = _classify_lifecycle(subject, body)
         if lifecycle is None:
             return None                                   # not a recognisable withdrawal-lifecycle message
-        category = _classify_category(subject, body)
+        category = _classify_category(subject, body, lifecycle)
         amount, currency = _extract_amount(body)
         # broker_reference_id is the broker's REFERENCE label only — NEVER a URL/token. Anchored to "reference", the
         # internal "request number is: <N>" template, or the external-payout pair's "Payment request #N" (completion)

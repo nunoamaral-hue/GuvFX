@@ -185,6 +185,53 @@ class TransactionClassifierTests(TestCase):
             body="Your Payment request #1111111 (deposit) status changed from Confirmed to Completed.\n")
         self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
 
+    # --- Review regressions (adversarial find→verify): the external-rail label alone must NEVER over-claim. ---
+    def test_completion_template_carrying_a_rail_stays_unknown(self):
+        # CONFIRMED defect: a completion (direction-neutral WITHDRAWAL_COMPLETED lifecycle) that ALSO quotes a rail
+        # must stay UNKNOWN — externality for a completion comes only from WP5 correlation to its request, never from
+        # the completion's own text. (Previously over-claimed EXTERNAL because the rail label fired unconditionally.)
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Payment request update",
+            body=("Your Payment request #1234567 status changed from Confirmed to Completed.\n"
+                  "Payment method: Ethereum\n"))
+        self.assertEqual(parsed.event_type, "WITHDRAWAL_COMPLETED")
+        self.assertEqual(parsed.transaction_category, TransactionCategory.UNKNOWN)   # NOT external
+
+    def test_deposit_confirmation_with_withdrawal_boilerplate_and_rail_is_not_external(self):
+        # CONFIRMED defect: a crypto DEPOSIT confirmation whose footer mentions "withdrawal" and which quotes its
+        # rail must NOT be read as an external withdrawal. The deposit-direction veto + anchored direction gate block
+        # it even though "confirm"+"withdrawal" substrings appear and the rail label matches.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Your deposit is confirmed",
+            body=("Your deposit has been confirmed.\nAmount: 300.00 USD\nPayment method: Ethereum\n"
+                  "Security notice: TradersWay will never email you to confirm your withdrawal request.\n"))
+        if parsed is not None:
+            self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_deposit_notice_quoting_withdrawal_request_phrase_and_rail_is_not_external(self):
+        # Hardest variant: the deposit body itself contains the anchored "withdrawal request" phrase AND a rail; only
+        # the deposit-direction veto stops the over-claim.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Your deposit is confirmed",
+            body=("Your deposit has been received. You can submit a withdrawal request at any time.\n"
+                  "Amount: 300.00 USD\nPayment method: Ethereum\n"))
+        if parsed is not None:
+            self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_reference_regexes_are_not_redos_on_long_unicode_whitespace(self):
+        # CONFIRMED defect: the reference patterns had three adjacent unbounded horizontal-whitespace stars → cubic
+        # backtracking reachable via an HTML &nbsp; (U+00A0) run that _html_to_text does not collapse. Bounded {0,8}
+        # runs make them linear. Assert parse() stays fast on a huge U+00A0 run after each anchor + a trailing non-digit.
+        import time
+        pad = " " * 40000
+        for anchor in ("payment request", "request number is", "reference"):
+            body = (f"Please confirm your withdrawal request.\nPayment method: Ethereum\n"
+                    f"{anchor}{pad}x\n")
+            t0 = time.monotonic()
+            self.p.parse(from_address="payments@tradersway.com",
+                         subject="Please confirm your withdrawal request", body=body)
+            self.assertLess(time.monotonic() - t0, 1.0, f"possible ReDoS on anchor {anchor!r}")
+
     def test_european_decimal_amount_not_fragment_grabbed(self):
         parsed = self.p.parse(from_address="payments@tradersway.com",
                               subject="Please confirm your withdrawal request",
