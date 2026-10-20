@@ -84,6 +84,30 @@ from the same‑poll snapshot — an SL‑only change preserves the intact TP). 
 produces **OPEN** only; CLOSE/MODIFY require a verified current copier‑owned follower ticket and are
 fail‑closed (deferred). Pending orders are not observed (ingest reads executed deals only).
 
+## 9a. Complete trade‑lifecycle matrix (code‑backed)
+
+Observed = diff engine + ledger; Intent = `replication.py`; Execution = `execution_producer.py` (DARK,
+SHADOW/armed‑DEMO); Reconciled = broker‑result reconciliation; DEMO cert = real‑MT5 DEMO rehearsal.
+
+| Master operation | Observed | Intent | Execution | Reconciled | DEMO cert |
+|---|---|---|---|---|---|
+| Open | ✅ `diff.OPEN` | ✅ OPEN intent | ✅ producer OPEN (P0‑hardened) | ❌ gated | ❌ synthetic only |
+| Increase (scale‑in) | ✅ `VOLUME_INCREASE` | ✅ SCALE_IN intent | ❌ producer OPEN‑only | ❌ | ❌ |
+| Partial close | ✅ `PARTIAL_CLOSE` | ✅ intent | ❌ needs follower ticket | ❌ | ❌ |
+| Full close | ✅ `FULL_CLOSE` | ✅ intent | ❌ needs follower ticket (+bridge demo close) | ❌ | ❌ |
+| Set/change/remove SL | ✅ | ✅ complete same‑poll state | ❌ bridge modify = breakeven‑only | ❌ | ❌ |
+| Set/change/remove TP | ✅ | ✅ complete same‑poll state | ❌ bridge modify = breakeven‑only | ❌ | ❌ |
+| Disable policy A (keep managing) | n/a | ✅ | ✅ intent‑level | ❌ | ❌ |
+| Disable policy B (detach) | n/a | ✅ | ✅ intent‑level | ❌ | ❌ |
+| Disable policy C (close) | n/a | ✅ | ❌ needs close execution | ❌ | ❌ |
+| Restart/recovery | ✅ single‑flight + stale‑discard + freshness | ✅ | ✅ producer rejects stale/superseded | ❌ | ❌ |
+| Duplicate / lost‑ACK | ✅ idempotent ledger | ✅ | ✅ one job per intent (row‑locked) | ❌ | ❌ |
+| Pending orders | ❌ not observed (deals only) | ❌ | ❌ | ❌ | **deferred** |
+
+Evidence: `trade_copier/diff.py` + `tests_diff.py`; `replication.py` + `tests_replication.py`;
+`execution_producer.py` + `tests_execution_producer.py`; `observer.py` + `tests_observer.py`. No cell is
+`DEMO cert` ✅ — no real‑MT5 DEMO run has occurred.
+
 ## 10. Disabled‑follower safety
 
 Disable policy A (keep managing) / B (detach) / C (close) honored at the intent level: a disabled follower
@@ -129,6 +153,16 @@ same‑poll snapshot); **B4** guessed constraints / unknown opcode (unknown even
 `constraints_authoritative`/`sltp_translation_ok` flags). PR C UX: SHADOW ≠ success relabel, unmount guard,
 hydration fix.
 
+**#537 B‑exec producer (PD Friday review), with negative tests:** **P0‑A** DARK flag bypass — `produce_one`
+now enforces `copier_execute_enabled()` at entry AND under the lock; mode captured once (flags‑OFF direct‑call
+proves no job/mutation). **P0‑B** stale‑intent/config TOCTOU — ALL admission re‑run inside the atomic
+boundary on the locked, re‑read replication; an OPEN superseded by a later CLOSE or outside the freshness
+window is rejected. **P0‑C** payload — numeric positive `lots` sized against fresh constraints, `max_lot` cap
++ `CPY<id>` provenance; a clamp (silent shrink) or non‑positive volume is rejected. **P0‑D** protection —
+complete, directionally‑valid SL+TP from the authoritative snapshot + fresh authoritative constraints
+required. **P1** SHADOW semantics — a suppressed job sets `SHADOW_JOB_RECORDED` (not `EXECUTION_REQUESTED`);
+UI renders "SHADOW JOB RECORDED — NO ORDER SENT", never green/success.
+
 ## 17. LIVE execution authorization requirements
 
 LIVE follower execution is RED. It additionally requires: a LIVE close/modify bridge path (does not exist —
@@ -162,3 +196,36 @@ Outstanding for a certified DEMO demonstration: a real‑MT5 DEMO rehearsal (ope
 
 LIVE close/modify bridge path (RED); real‑MT5 DEMO rehearsal (operator GO + accounts); broker metadata
 sync for authoritative constraints per broker; ADR‑0051 ratification + final‑head CI before any merge.
+
+## 23. CLOSE/MODIFY & follower‑ticket — gated design (STOP boundary)
+
+The master/follower lifecycle is not fully executable until follower CLOSE/MODIFY are safe. What remains:
+
+- **Durable follower‑ticket tracking** (master position identity → the exact follower position ticket),
+  recorded only AFTER broker‑result reconciliation proves the follower position was opened by THIS copier.
+  This is **buildable DARK as data + reconciliation** (no new bridge mutation) BUT can only be populated by
+  a real DEMO execution → it waits on the operator‑gated DEMO rehearsal. Design: extend `CopierReplication`
+  (or a `CopierFollowerPosition` row) with the reconciled follower ticket + broker fill evidence; a
+  reconciliation pass reads the follower's own identity‑firewalled snapshot and binds the ticket by the
+  `CPY<id>` provenance comment; owner/account/node/binding re‑validated; orphaned/ambiguous/manually‑changed
+  positions rejected; a master ticket is never used against a follower account.
+- **Full CLOSE (DEMO):** once a verified follower ticket exists, a `CLOSE_TRADE` job targets the follower
+  ticket only (the bridge's demo `close_position` already exists). Partial close validates the close volume.
+- **General SL/TP MODIFY:** **blocked at a bridge‑authority boundary.** The existing bridge
+  `modify_position` is **risk‑reducing / breakeven‑only** — it refuses SL widening and does not support TP
+  removal or general SL/TP replication. Implementing general copier SL/TP replication requires **broadening
+  the bridge's authorized mutation capability**, which I will NOT do autonomously.
+
+**Gated increment for general MODIFY (Sponsor + Security decision required):**
+- *Exact missing capability:* a demo‑only, identity‑pinned bridge `modify_sltp` that can set/change/remove
+  SL and TP on a verified copier‑owned follower ticket, within a pre‑authorized protection policy.
+- *Proposed safety contract:* demo‑only wall preserved for LIVE; identity pin at send time; reject any
+  change that would weaken an approved stop beyond policy; verified follower ticket + owner/account/node;
+  idempotency key; re‑read current broker state before mutate; audited.
+- *Tests:* SL‑widen rejected; TP‑remove per policy; wrong/absent ticket rejected; lost‑ACK/duplicate; demo
+  wall holds for LIVE; send‑time re‑validation.
+- *Threat analysis:* a broadened mutation path is a new LIVE‑adjacent surface — must stay demo‑locked and
+  fail‑closed; risk of weakening protection, cross‑account mutation, replay.
+- *Migration/rollback:* additive bridge handler behind a default‑OFF flag; rollback = disable flag + revert
+  handler; no schema change on the critical path.
+- *Decision required:* Sponsor + Security GO before building or deploying the broadened bridge mutation.
