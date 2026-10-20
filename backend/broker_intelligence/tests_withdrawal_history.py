@@ -203,3 +203,47 @@ class OwnerAttributedHistoryTests(TestCase):
         rows = resp.json()["withdrawals"]
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["account_unresolved"])
+
+
+class DemoIncludeSyntheticTests(TestCase):
+    """WV1 §5/§6 — DEMO-only include-synthetic: hidden by default (prod leak barrier), shown + labelled when armed."""
+
+    def test_history_synthetic_hidden_by_default_shown_with_demo_flag(self):
+        u = _user(); a = _acct(u)
+        _wd(a, provenance=Provenance.SYNTHETIC, amount="10.00", ref="S-1")
+        out = withdrawal_history(TradingAccount.objects.filter(user=u), owner=u)   # GENUINE-only
+        self.assertEqual(out["withdrawals"], [])
+        self.assertFalse(out["demonstration"])
+        out2 = withdrawal_history(TradingAccount.objects.filter(user=u), owner=u, include_demonstration=True)
+        self.assertEqual(len(out2["withdrawals"]), 1)
+        self.assertTrue(out2["withdrawals"][0]["demonstration"])     # the row is flagged demonstration
+        self.assertTrue(out2["demonstration"])                       # and the panel-level flag is set
+
+    def test_metrics_synthetic_counted_only_with_demo_flag(self):
+        u = _user(); a = _acct(u)
+        _wd(a, provenance=Provenance.SYNTHETIC, amount="10.00", ref="S-2")
+        m0 = withdrawal_metrics(TradingAccount.objects.filter(user=u), owner=u)
+        self.assertEqual(m0["total"], 0)
+        self.assertFalse(m0["demonstration"])
+        m1 = withdrawal_metrics(TradingAccount.objects.filter(user=u), owner=u, include_demonstration=True)
+        self.assertEqual(m1["total"], 1)
+        self.assertTrue(m1["demonstration"])
+        self.assertEqual(m1["genuine_count"], 0)                     # none are genuine — truthful
+
+    @override_settings(BROKER_WITHDRAWAL_UX_ENABLED="1", BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC="1")
+    def test_api_shows_synthetic_when_demo_flag_armed(self):
+        u = _user(); a = _acct(u)
+        _wd(a, provenance=Provenance.SYNTHETIC, amount="10.00", ref="S-3")
+        c = APIClient(); c.force_authenticate(u)
+        body = c.get("/api/broker-intelligence/withdrawals/history/").json()
+        self.assertEqual(len(body["withdrawals"]), 1)
+        self.assertTrue(body["demonstration"])
+
+    @override_settings(BROKER_WITHDRAWAL_UX_ENABLED="1")   # demo flag OFF
+    def test_api_hides_synthetic_in_prod_default(self):
+        u = _user(); a = _acct(u)
+        _wd(a, provenance=Provenance.SYNTHETIC, amount="10.00", ref="S-4")
+        c = APIClient(); c.force_authenticate(u)
+        body = c.get("/api/broker-intelligence/withdrawals/history/").json()
+        self.assertEqual(body["withdrawals"], [])                    # REAL-only barrier intact when flag OFF
+        self.assertFalse(body["demonstration"])

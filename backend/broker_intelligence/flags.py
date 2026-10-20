@@ -67,6 +67,15 @@ def broker_withdrawal_ux_enabled() -> bool:
     return _flag("BROKER_WITHDRAWAL_UX_ENABLED")
 
 
+def broker_withdrawal_demo_include_synthetic() -> bool:
+    """DEMO-ONLY gate (DEFAULT OFF). While OFF the member withdrawal surface is GENUINE-only (provenance REAL) — the
+    production leak barrier. When ON (set ONLY in an isolated investor-demo environment, never prod), the member
+    surface ALSO includes SYNTHETIC/SANITISED withdrawals, each flagged ``demonstration: True`` so the UI labels them
+    "DEMONSTRATION DATA". This lets a demo show labelled synthetic data WITHOUT ever relaxing prod's REAL-only rule
+    and WITHOUT seeding REAL-provenance rows (so synthetic demo data can never masquerade as genuine). WV1 §5/§6."""
+    return _flag("BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC")
+
+
 def broker_identity_verification_enabled() -> bool:
     """Gate for the member identity-verification/binding API (list identities + verify owner↔broker↔account). DEFAULT
     OFF → the endpoints 404 until the Sponsor arms the capability. Verification is an explicit, audited action that
