@@ -1939,7 +1939,12 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
             positions = mt5.positions_get()
 
         if positions is None:
-            positions = ()
+            # positions_get() returning None is a FAILURE, not a flat account (ADR-0051 BLOCKER-1).
+            # Masking it as an empty list would let a read error be misread downstream as "all
+            # positions closed" and fabricate closes. A genuine flat account returns an empty TUPLE
+            # from a SUCCESSFUL call; None means the query failed. Report it as an error so the
+            # read-only observer fails closed and never advances its baseline. Still a pure read.
+            return {"ok": False, "error": "positions_get_failed", "detail": str(mt5.last_error())}
 
         pos_list = []
         for p in positions:

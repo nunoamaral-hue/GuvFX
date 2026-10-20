@@ -108,6 +108,17 @@ class BridgeLiveReadAllowed(SimpleTestCase):
         self.assertEqual(r["count"], 0)
         self.assertEqual(r["trade_mode"], LIVE)
 
+    def test_fetch_positions_none_is_error_not_flat(self):
+        # ADR-0051 BLOCKER-1: positions_get() returning None is a FAILURE, not a flat account. It must
+        # report an error (so the read-only observer fails closed) rather than masquerade as empty.
+        m = _fake(trade_mode=LIVE)
+        m.positions_get.return_value = None
+        self._install(m)
+        r = self.bridge.fetch_positions("")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "positions_get_failed")
+        m.order_send.assert_not_called()
+
     def test_fetch_deals_snapshot_allows_live_and_reports_trade_mode(self):
         m = _fake(trade_mode=LIVE, deals=())
         self._install(m)

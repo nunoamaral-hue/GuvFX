@@ -15,6 +15,7 @@ from trade_copier.models import (
     DisablePolicy,
     MasterEvent,
     MasterObservationPoll,
+    MasterPositionSnapshot,
     ReplicationStatus,
     SizingMode,
     SltpTranslation,
@@ -97,7 +98,8 @@ class ReplicationIntentTests(_Fixture):
     def test_disabled_policy_A_keeps_managing_modify(self):
         facct = self._follower_account("2000004", server="IS6Technologies-Demo")
         f = services.add_follower(self.master, facct, disable_policy=DisablePolicy.A_KEEP_MANAGING)
-        ev = self._event(diff.SL_CHANGE, new_sl=1990.0)
+        self._snap(1, sl=1990.0, tp=2100.0)   # authoritative full state (BLOCKER-3 requires it for a modify)
+        ev = self._event(diff.SL_CHANGE, ticket=1, new_sl=1990.0)
         replicate_master_event(ev)
         rep = CopierReplication.objects.get(master_event=ev, follower=f)
         self.assertEqual(rep.status, ReplicationStatus.SHADOW_RECORDED)
@@ -160,6 +162,67 @@ class ReplicationIntentTests(_Fixture):
                          ReplicationStatus.SHADOW_RECORDED)
         self.assertEqual(CopierReplication.objects.get(master_event=ev, follower=fb).status,
                          ReplicationStatus.REJECTED)
+
+    # ── BLOCKER-3: complete SL/TP desired state from the authoritative same-poll snapshot ──
+    def _snap(self, ticket, *, sl=None, tp=None, entry=2000.0, symbol="XAUUSD", side="BUY", vol=0.10):
+        return MasterPositionSnapshot.objects.create(
+            poll=self.poll, position_ticket=ticket, symbol=symbol, side=side, volume=Decimal(str(vol)),
+            sl=(Decimal(str(sl)) if sl is not None else None),
+            tp=(Decimal(str(tp)) if tp is not None else None), price_open=Decimal(str(entry)))
+
+    def _enabled_follower(self, number, **cfg):
+        facct = self._follower_account(number, server="IS6Technologies-Demo")
+        f = services.add_follower(self.master, facct, **cfg)
+        services.set_follower_enabled(f, True)
+        return f
+
+    def test_modify_sl_only_preserves_existing_tp(self):
+        f = self._enabled_follower("2000011")
+        self._snap(1, sl=1995.0, tp=2100.0)                        # authoritative full state: BOTH set
+        ev = self._event(diff.SL_CHANGE, ticket=1, new_sl=1995.0, new_tp=None)  # event carries ONLY new_sl
+        replicate_master_event(ev)
+        rep = CopierReplication.objects.get(master_event=ev, follower=f)
+        self.assertEqual(rep.status, ReplicationStatus.SHADOW_RECORDED)
+        self.assertEqual(float(rep.translated_sl), 1995.0)
+        self.assertEqual(float(rep.translated_tp), 2100.0)         # TP preserved (not erased)
+
+    def test_modify_tp_only_preserves_existing_sl(self):
+        f = self._enabled_follower("2000012")
+        self._snap(2, sl=1990.0, tp=2200.0)
+        ev = self._event(diff.TP_CHANGE, ticket=2, new_sl=None, new_tp=2200.0)
+        replicate_master_event(ev)
+        rep = CopierReplication.objects.get(master_event=ev, follower=f)
+        self.assertEqual(float(rep.translated_sl), 1990.0)         # SL preserved
+        self.assertEqual(float(rep.translated_tp), 2200.0)
+
+    def test_modify_without_authoritative_snapshot_rejected(self):
+        f = self._enabled_follower("2000013")
+        ev = self._event(diff.SL_CHANGE, ticket=99, new_sl=1995.0)  # no snapshot for ticket 99
+        replicate_master_event(ev)
+        rep = CopierReplication.objects.get(master_event=ev, follower=f)
+        self.assertEqual(rep.status, ReplicationStatus.REJECTED)
+        self.assertEqual(rep.reason, "master_state_unavailable")
+
+    # ── BLOCKER-4: unknown opcode fail-closed; non-authoritative broker constraints flagged ──
+    def test_unknown_event_type_rejected_not_defaulted_to_mutation(self):
+        f = self._enabled_follower("2000014")
+        self._seq += 1
+        ev = MasterEvent.objects.create(
+            master=self.master, sequence=self._seq, from_poll=self.poll, event_type="BOGUS_EVENT",
+            position_ticket=1, symbol="XAUUSD", side="BUY", volume_before=Decimal("0"),
+            volume_after=Decimal("0.1"), volume_delta=Decimal("0.1"), observed_at=timezone.now())
+        replicate_master_event(ev)
+        rep = CopierReplication.objects.get(master_event=ev, follower=f)
+        self.assertEqual(rep.status, ReplicationStatus.REJECTED)
+        self.assertEqual(rep.reason, "unknown_event_type")
+
+    def test_open_marks_broker_constraints_unverified_when_no_metadata(self):
+        f = self._enabled_follower("2000015", multiplier=Decimal("1"))
+        ev = self._event(diff.OPEN, ticket=5, vol_after=0.10)
+        replicate_master_event(ev)
+        rep = CopierReplication.objects.get(master_event=ev, follower=f)
+        self.assertEqual(rep.status, ReplicationStatus.SHADOW_RECORDED)
+        self.assertIn("unverified", rep.sizing_detail)             # guessed constraints flagged for B-exec
 
 
 class FollowerServiceTests(_Fixture):

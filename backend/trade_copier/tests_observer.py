@@ -1,9 +1,11 @@
 """Observer recording + identity firewall + ledger certification (DB-backed, injected I/O)."""
 import os
+from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from trade_copier import diff, observer
 from trade_copier.diff import ObservedPosition as P
@@ -14,10 +16,10 @@ from trading.models import BrokerServer, TradingAccount
 User = get_user_model()
 
 
-def _result(positions, *, login="1302575", server="IS6Technologies-Demo", trade_mode=0):
+def _result(positions, *, login="1302575", server="IS6Technologies-Demo", trade_mode=0, read_at=None):
     return MasterReadResult(True, "ok", observed_login=login, observed_server=server,
                             observed_trade_mode=trade_mode, transport_reason="snapshot_transport_legacy_global",
-                            positions=tuple(positions))
+                            positions=tuple(positions), read_at=read_at)
 
 
 def _queued_fetch(results):
@@ -97,6 +99,26 @@ class ObserverRecordTests(TestCase):
         m.refresh_from_db()
         self.assertEqual(m.last_poll_id, baseline_poll)          # baseline NOT advanced
         self.assertEqual(MasterObservationPoll.objects.count(), 1)  # no new poll invented
+
+    def test_stale_out_of_order_read_discarded_no_false_events(self):
+        # BLOCKER-2: an older read arriving AFTER a newer one has committed must be discarded —
+        # never diffed against the newer baseline (which would fabricate closes + regress the baseline).
+        m = self._master()
+        t0 = timezone.now()
+        observe_master(m, fetch=_queued_fetch([_result([P(1, "XAUUSD", "BUY", 0.10)], read_at=t0)]))
+        observe_master(m, fetch=_queued_fetch([_result(
+            [P(1, "XAUUSD", "BUY", 0.10), P(2, "EURUSD", "SELL", 0.5)],
+            read_at=t0 + timedelta(seconds=2))]))                 # newer: OPEN pos2, baseline -> t0+2
+        m.refresh_from_db()
+        newer_poll = m.last_poll_id
+        events_before = MasterEvent.objects.count()
+        # Older read (t0+1s) arriving LATE, empty set (would be 2 false FULL_CLOSEs if applied).
+        out = observe_master(m, fetch=lambda _a: _result([], read_at=t0 + timedelta(seconds=1)))
+        self.assertEqual(out["reason"], "stale_read_discarded")
+        m.refresh_from_db()
+        self.assertEqual(m.last_poll_id, newer_poll)              # baseline NOT regressed
+        self.assertEqual(MasterEvent.objects.count(), events_before)        # no fabricated events
+        self.assertEqual(MasterEvent.objects.filter(event_type=diff.FULL_CLOSE).count(), 0)
 
     def test_master_event_is_append_only(self):
         m = self._master()
@@ -190,3 +212,45 @@ class FetchFirewallTests(TestCase):
             res = observer.fetch_master_positions(acct)
         self.assertFalse(res.ok)
         self.assertEqual(res.reason, "no_agent_token")
+
+    def _ok_payload(self, positions):
+        return {"ok": True, "account_login": "1302575", "account_server": "IS6Technologies-Demo",
+                "trade_mode": 0, "positions": positions}
+
+    def test_null_positions_with_ok_true_is_refused_not_flat(self):
+        # BLOCKER-1: ok:true + positions:null is an INVALID read, not a confirmed-flat account.
+        acct = self._legacy_account(number="1302575")
+        with mock.patch.dict(os.environ, self._ENV, clear=False), \
+                mock.patch.object(observer, "_http_get_json", return_value=self._ok_payload(None)):
+            res = observer.fetch_master_positions(acct)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, "positions_not_a_list")
+
+    def test_missing_positions_field_is_refused(self):
+        acct = self._legacy_account(number="1302575")
+        payload = {"ok": True, "account_login": "1302575", "account_server": "IS6Technologies-Demo",
+                   "trade_mode": 0}  # no "positions" key
+        with mock.patch.dict(os.environ, self._ENV, clear=False), \
+                mock.patch.object(observer, "_http_get_json", return_value=payload):
+            res = observer.fetch_master_positions(acct)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, "positions_not_a_list")
+
+    def test_empty_list_is_a_valid_flat_account(self):
+        # Confirmed flat (ok:true + empty LIST) is authoritative and accepted.
+        acct = self._legacy_account(number="1302575")
+        with mock.patch.dict(os.environ, self._ENV, clear=False), \
+                mock.patch.object(observer, "_http_get_json", return_value=self._ok_payload([])):
+            res = observer.fetch_master_positions(acct)
+        self.assertTrue(res.ok)
+        self.assertEqual(len(res.positions), 0)
+
+    def test_duplicate_tickets_refused(self):
+        acct = self._legacy_account(number="1302575")
+        dup = [{"ticket": 1, "symbol": "XAUUSD", "type": 0, "volume": 0.1},
+               {"ticket": 1, "symbol": "XAUUSD", "type": 0, "volume": 0.2}]
+        with mock.patch.dict(os.environ, self._ENV, clear=False), \
+                mock.patch.object(observer, "_http_get_json", return_value=self._ok_payload(dup)):
+            res = observer.fetch_master_positions(acct)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, "duplicate_position_ticket")

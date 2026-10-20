@@ -24,6 +24,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Optional
 
@@ -47,7 +48,10 @@ _HTTP_TIMEOUT = 10
 
 @dataclass(frozen=True)
 class MasterReadResult:
-    """Outcome of a single read of a master's open positions. ``ok`` gates recording."""
+    """Outcome of a single read of a master's open positions. ``ok`` gates recording.
+
+    ``read_at`` is stamped when the read completed; it provides the monotonic ordering used to
+    discard a stale (older) read that arrives after a newer one has committed (ADR-0051 BLOCKER-2)."""
     ok: bool
     reason: str
     observed_login: str = ""
@@ -55,6 +59,7 @@ class MasterReadResult:
     observed_trade_mode: Optional[int] = None
     transport_reason: str = ""
     positions: tuple[ObservedPosition, ...] = field(default_factory=tuple)
+    read_at: Optional[datetime] = None
 
 
 def _agent_config() -> tuple[str, str]:
@@ -106,21 +111,38 @@ def fetch_master_positions(account) -> MasterReadResult:
         return MasterReadResult(False, idc.reason_code, transport_reason=st.reason_code)
 
     raw_positions = pdata.get("positions")
+    # BLOCKER-1: a missing/null/non-list positions field — even with ok:true — is an INVALID or
+    # ambiguous read, NOT a confirmed-flat account. Fail closed (record nothing, keep the baseline).
+    # Only an actual list (incl. an empty list from a successful positions_get) is authoritative; the
+    # bridge now reports a failed positions_get as an error (never an empty list), so ok:true + [] is
+    # a genuine flat account.
+    if not isinstance(raw_positions, list):
+        logger.warning("copier positions response not a list for account %s", getattr(account, "id", None))
+        return MasterReadResult(False, "positions_not_a_list", transport_reason=st.reason_code)
     positions: list[ObservedPosition] = []
-    if isinstance(raw_positions, list):
-        for p in raw_positions:
-            if isinstance(p, dict) and p.get("ticket") is not None:
-                try:
-                    positions.append(ObservedPosition.from_payload(p))
-                except (KeyError, TypeError, ValueError):
-                    # A malformed position row fails the WHOLE read closed — never a partial,
-                    # possibly-misordered observation (packet §5: no inventing/assuming).
-                    logger.warning("copier malformed position row for account %s", getattr(account, "id", None))
-                    return MasterReadResult(False, "malformed_position", transport_reason=st.reason_code)
+    seen_tickets: set[int] = set()
+    for p in raw_positions:
+        if not (isinstance(p, dict) and p.get("ticket") is not None):
+            logger.warning("copier malformed position row for account %s", getattr(account, "id", None))
+            return MasterReadResult(False, "malformed_position", transport_reason=st.reason_code)
+        try:
+            op = ObservedPosition.from_payload(p)
+        except (KeyError, TypeError, ValueError):
+            # A malformed row fails the WHOLE read closed — never a partial, possibly-misordered
+            # observation (packet §5: no inventing/assuming).
+            logger.warning("copier malformed position row for account %s", getattr(account, "id", None))
+            return MasterReadResult(False, "malformed_position", transport_reason=st.reason_code)
+        if op.ticket in seen_tickets:
+            # Duplicate tickets make the open-position set ambiguous → fail closed.
+            logger.warning("copier duplicate position ticket for account %s", getattr(account, "id", None))
+            return MasterReadResult(False, "duplicate_position_ticket", transport_reason=st.reason_code)
+        seen_tickets.add(op.ticket)
+        positions.append(op)
     return MasterReadResult(
         True, "ok", observed_login=obs_login, observed_server=obs_server,
         observed_trade_mode=(int(obs_trade_mode) if obs_trade_mode is not None else None),
         transport_reason=st.reason_code, positions=tuple(positions),
+        read_at=timezone.now(),
     )
 
 
@@ -163,16 +185,30 @@ def record_observation(master: CopierMaster, result: MasterReadResult) -> dict:
     Must only be called with ``result.ok``. Creates the poll + snapshot rows, diffs against the
     master's previous poll, appends events with a monotone per-master sequence, and advances the
     baseline. A crash rolls back the whole unit (poll + events together)."""
-    # Row lock serialises concurrent passes for this master (single-flight) and makes the
-    # sequence allocation + baseline advance race-free.
+    # Row lock serialises concurrent passes for this master and makes the sequence allocation +
+    # baseline advance race-free. The network read happened BEFORE this lock (so the lock is never
+    # held across the network); ordering is enforced here by a monotonic read timestamp.
     master = CopierMaster.objects.select_for_update().get(pk=master.pk)
     prev_poll = master.last_poll
-    prev_positions = _positions_from_poll(prev_poll) if prev_poll is not None else []
 
+    # BLOCKER-2: discard a STALE read. If an older read (smaller read_at) arrives after a newer one
+    # has already committed, recording it would diff old data against the newer baseline and
+    # fabricate OPEN/CLOSE events AND regress the baseline. Reject it fail-closed: no poll, no events,
+    # baseline unchanged. (Skipped only when read_at is absent — e.g. a synthetic caller.)
     now = timezone.now()
+    read_at = result.read_at or now
+    if prev_poll is not None and result.read_at is not None and prev_poll.read_at is not None \
+            and result.read_at <= prev_poll.read_at:
+        logger.warning("copier discarding stale read for master %s (read_at %s <= baseline %s)",
+                       master.pk, result.read_at, prev_poll.read_at)
+        return {"poll_id": None, "positions": len(result.positions), "events": 0,
+                "first_poll": False, "stale_discarded": True}
+
+    prev_positions = _positions_from_poll(prev_poll) if prev_poll is not None else []
     poll = MasterObservationPoll.objects.create(
         master=master,
         observed_at=now,
+        read_at=read_at,
         observed_login=result.observed_login,
         observed_server=result.observed_server,
         observed_trade_mode=result.observed_trade_mode,
@@ -235,7 +271,8 @@ def observe_master(master: CopierMaster, *, fetch: Callable = fetch_master_posit
         return {"master_id": master.pk, "ok": False, "reason": result.reason,
                 "poll_id": None, "events": 0}
     summary = record_observation(master, result)
-    summary.update({"master_id": master.pk, "ok": True, "reason": "ok"})
+    summary.update({"master_id": master.pk, "ok": True,
+                    "reason": "stale_read_discarded" if summary.get("stale_discarded") else "ok"})
     return summary
 
 

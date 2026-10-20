@@ -83,6 +83,10 @@ class MasterObservationPoll(_ImmutableRawEvidence):
 
     master = models.ForeignKey(CopierMaster, on_delete=models.CASCADE, related_name="polls")
     observed_at = models.DateTimeField(default=timezone.now, db_index=True)
+    read_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the bridge read completed — the monotonic ordering key used to discard a "
+                  "stale (older) read that arrives after a newer one (ADR-0051 BLOCKER-2).")
     # Observed MT5 session identity (from account_info in the same session that produced positions).
     observed_login = models.CharField(max_length=64, blank=True)
     observed_server = models.CharField(max_length=128, blank=True)

@@ -30,10 +30,15 @@ RISK_BASED = "RISK_BASED"
 @dataclass(frozen=True)
 class BrokerConstraints:
     """Destination broker's lot rules for the resolved follower symbol (from BrokerInstrument
-    metadata when available; conservative defaults otherwise)."""
+    metadata when available; conservative defaults otherwise).
+
+    ``authoritative`` is True only when the bounds came from the broker's own synced metadata. When
+    False the bounds are non-authoritative defaults: tolerable for a SHADOW intent calculation, but a
+    real DEMO job must NOT be created on guessed bounds (ADR-0051 BLOCKER-4) — B-exec rejects them."""
     min_volume: float = 0.01
     lot_step: float = 0.01
     max_volume: Optional[float] = None
+    authoritative: bool = False
 
 
 @dataclass(frozen=True)

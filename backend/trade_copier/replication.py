@@ -23,6 +23,7 @@ from trade_copier import diff
 from trade_copier.models import (
     CopierReplication,
     DisablePolicy,
+    MasterPositionSnapshot,
     ReplicationStatus,
     SizingMode,
     SltpTranslation,
@@ -93,13 +94,21 @@ def _broker_constraints(account, follower_symbol: str) -> BrokerConstraints:
                 if md.get(k) is not None:
                     return md.get(k)
             return None
+        vmin = _get("volume_min", "min_volume")
+        vstep = _get("volume_step", "lot_step")
+        vmax = _get("volume_max", "max_volume")
+        # Authoritative only when the broker's OWN synced metadata provided the critical bounds
+        # (min + step). Otherwise the bounds are non-authoritative defaults (BLOCKER-4): fine for a
+        # SHADOW intent, never for a real DEMO job.
+        authoritative = (row is not None and vmin is not None and vstep is not None)
         return BrokerConstraints(
-            min_volume=float(_get("volume_min", "min_volume") or 0.01),
-            lot_step=float(_get("volume_step", "lot_step") or 0.01),
-            max_volume=(float(_get("volume_max", "max_volume")) if _get("volume_max", "max_volume") else None),
+            min_volume=float(vmin) if vmin is not None else 0.01,
+            lot_step=float(vstep) if vstep is not None else 0.01,
+            max_volume=float(vmax) if vmax is not None else None,
+            authoritative=authoritative,
         )
-    except Exception:  # noqa: BLE001 — metadata is best-effort; conservative defaults otherwise
-        return BrokerConstraints()
+    except Exception:  # noqa: BLE001 — metadata is best-effort; non-authoritative defaults otherwise
+        return BrokerConstraints()  # authoritative=False
 
 
 def _cfg(follower) -> FollowerSizing:
@@ -125,10 +134,22 @@ def _record(event, follower, op, status, reason="", **fields) -> CopierReplicati
         return CopierReplication.objects.get(master_event=event, follower=follower)
 
 
+def _master_position_from_event(event):
+    """The authoritative CURRENT master position state captured in the SAME poll as the event, so
+    SL/TP are the COMPLETE desired state (both sides), never a single changed field (BLOCKER-3)."""
+    return (MasterPositionSnapshot.objects
+            .filter(poll_id=event.from_poll_id, position_ticket=event.position_ticket)
+            .first())
+
+
 def _replicate_one(event, follower) -> CopierReplication | None:
     if CopierReplication.objects.filter(master_event=event, follower=follower).exists():
         return None  # idempotent: already replicated this event to this follower
-    op = _OP_FOR_EVENT.get(event.event_type, "MODIFY_SLTP")
+
+    # BLOCKER-4: an unknown master event type must FAIL CLOSED — never default to a trading mutation.
+    op = _OP_FOR_EVENT.get(event.event_type)
+    if op is None:
+        return _record(event, follower, "UNKNOWN", ReplicationStatus.REJECTED, "unknown_event_type")
 
     ok, reason = validate_follower_binding(follower)
     if not ok:
@@ -148,23 +169,35 @@ def _replicate_one(event, follower) -> CopierReplication | None:
 
     if event.event_type in _OPEN_LIKE:
         master_vol = event.volume_after if event.event_type == diff.OPEN else event.volume_delta
-        sr = compute_follower_volume(master_vol, _cfg(follower),
-                                     _broker_constraints(follower.follower_account, sym.follower_symbol))
+        constraints = _broker_constraints(follower.follower_account, sym.follower_symbol)
+        sr = compute_follower_volume(master_vol, _cfg(follower), constraints)
         if not sr.ok:
             return _record(event, follower, op, ReplicationStatus.REJECTED, sr.detail,
                            follower_symbol=sym.follower_symbol)
         target_volume = sr.volume
-        sizing_detail = sr.detail
-        tr = translate_sltp(follower.sltp_translation, event.side, master_entry=None,
-                            master_sl=_f(event.new_sl), master_tp=_f(event.new_tp))
+        c_note = "c:auth" if constraints.authoritative else "c:unverified"
+        # COMPLETE desired SL+TP from the authoritative same-poll snapshot (fall back to the event's
+        # own levels if the snapshot row is missing — an OPEN always carries both).
+        snap = _master_position_from_event(event)
+        m_sl = _f(snap.sl) if snap is not None else _f(event.new_sl)
+        m_tp = _f(snap.tp) if snap is not None else _f(event.new_tp)
+        m_entry = _f(snap.price_open) if snap is not None else None
+        tr = translate_sltp(follower.sltp_translation, event.side, master_entry=m_entry,
+                            master_sl=m_sl, master_tp=m_tp)
         tsl, ttp = tr.sl, tr.tp
-        if not tr.ok:
-            sizing_detail = (sizing_detail + f";sltp:{tr.reason}")[:64]
+        sizing_detail = f"{sr.detail};{c_note};sltp:{tr.reason}"
     elif event.event_type in _MODIFY_LIKE:
-        tr = translate_sltp(follower.sltp_translation, event.side, master_entry=None,
-                            master_sl=_f(event.new_sl), master_tp=_f(event.new_tp))
+        # BLOCKER-3: a modify needs the COMPLETE desired SL+TP from the authoritative same-poll
+        # snapshot, NOT the single changed field (an SL-only change carries new_tp=None and would
+        # erase an intact TP at MODIFY time). No authoritative state ⇒ do NOT issue a modify.
+        snap = _master_position_from_event(event)
+        if snap is None:
+            return _record(event, follower, op, ReplicationStatus.REJECTED, "master_state_unavailable",
+                           follower_symbol=sym.follower_symbol)
+        tr = translate_sltp(follower.sltp_translation, event.side, master_entry=_f(snap.price_open),
+                            master_sl=_f(snap.sl), master_tp=_f(snap.tp))
         tsl, ttp = tr.sl, tr.tp
-        sizing_detail = (f"sltp:{tr.reason}")[:64]
+        sizing_detail = f"sltp:{tr.reason}"
     # CLOSE/PARTIAL_CLOSE intents reference the master event; follower-position mapping and the
     # actual close volume are resolved at execution time (follower ticket is unknown in PR B).
 
