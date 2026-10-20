@@ -12,11 +12,16 @@ COOKIE_ACCESS = "guvfx_access"
 COOKIE_REFRESH = "guvfx_refresh"
 
 def _cookie_kwargs():
+    # Auth-cookie attributes are settings-driven so an isolated staging/investor-demo host (or local dev) can
+    # authenticate. The settings DEFAULT to the production values (Secure, Lax, ".guvfx.com"), so with the env UNSET
+    # this is byte-identical to production — the env is additive/override, never a silent weakening. A demo host sets
+    # AUTH_COOKIE_SECURE=False + AUTH_COOKIE_DOMAIN= (host-only) for http://localhost. See WV1_BOARD_DEMO_RUNBOOK.md.
+    from django.conf import settings
     return dict(
         httponly=True,
-        secure=True,
-        samesite="Lax",
-        domain=".guvfx.com",
+        secure=getattr(settings, "AUTH_COOKIE_SECURE", True),
+        samesite=getattr(settings, "AUTH_COOKIE_SAMESITE", "Lax"),
+        domain=getattr(settings, "AUTH_COOKIE_DOMAIN", ".guvfx.com"),
         path="/",
     )
 

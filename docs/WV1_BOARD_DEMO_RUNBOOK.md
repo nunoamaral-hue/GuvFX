@@ -38,6 +38,10 @@ DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
 CORS_ALLOWED_ORIGINS=http://localhost:3000
 CSRF_TRUSTED_ORIGINS=http://localhost:3000
 CSRF_COOKIE_DOMAIN=
+# auth (JWT) cookie — host-only + non-Secure so it is sent over http://localhost (prod default is Secure/.guvfx.com)
+AUTH_COOKIE_SECURE=False
+AUTH_COOKIE_DOMAIN=
+AUTH_COOKIE_SAMESITE=Lax
 # WV1 demo surface (DARK in prod)
 BROKER_WITHDRAWAL_UX_ENABLED=1
 BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC=1

@@ -300,6 +300,13 @@ CSRF_TRUSTED_ORIGINS = _CSRF_PROD + [o for o in _extra_csrf if o not in _CSRF_PR
 # Default ".guvfx.com" (prod unchanged); a demo host sets CSRF_COOKIE_DOMAIN to its own domain, or empty for a
 # host-only cookie (localhost). Empty env ⇒ the production default.
 CSRF_COOKIE_DOMAIN = env("CSRF_COOKIE_DOMAIN", ".guvfx.com") or None
+
+# Auth (JWT) cookie attributes — consumed by users.auth_cookie_views._cookie_kwargs. Defaults are the PRODUCTION
+# values, so with the env UNSET this is byte-identical to production; a demo/staging host overrides them (e.g.
+# AUTH_COOKIE_SECURE=False + AUTH_COOKIE_DOMAIN= for http://localhost). Additive/override, never a silent weakening.
+AUTH_COOKIE_SECURE = env("AUTH_COOKIE_SECURE", "True").lower() == "true"
+AUTH_COOKIE_SAMESITE = env("AUTH_COOKIE_SAMESITE", "Lax")
+AUTH_COOKIE_DOMAIN = env("AUTH_COOKIE_DOMAIN", ".guvfx.com") or None
 CSRF_COOKIE_HTTPONLY = False  # Must be False so JS can read and send X-CSRFToken header
 CSRF_USE_SESSIONS = False  # Use cookie-based CSRF (double-submit pattern)
 
