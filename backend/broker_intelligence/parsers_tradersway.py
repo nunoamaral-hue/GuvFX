@@ -100,13 +100,19 @@ _EXTERNAL_PAYMENT_RAILS = (
     "bank wire", "wire transfer", "bank transfer", "international wire", "sepa", "swift",
     "skrill", "neteller", "perfect money", "webmoney", "advcash", "sticpay", "payeer",
 )
+# LINE-ANCHORED (``(?m)^``): the rail must be a STRUCTURED FIELD on its own line ("Payment method: Ethereum"), not a
+# narrative/footer mention ("manage your payment method: Ethereum anytime in settings") — so the "structured field,
+# not prose" invariant is actually enforced. Leading indent + the label→rail gap are bounded horizontal whitespace
+# ({0,8}, no newline) — no backtracking, and the rail cannot sit on a different line from the label. (Verified: the
+# genuine pilot request states "Payment method: Ethereum" at line start, so this never under-claims the real case.)
 _EXTERNAL_EVIDENCE = re.compile(
-    r"payment\s+method\s*[:\-]\s*(?:" + "|".join(re.escape(r) for r in _EXTERNAL_PAYMENT_RAILS) + r")\b",
-    re.IGNORECASE)
+    r"(?m)^[^\S\n]{0,8}payment\s+method\s*[:\-][^\S\n]{0,8}(?:"
+    + "|".join(re.escape(r) for r in _EXTERNAL_PAYMENT_RAILS) + r")\b", re.IGNORECASE)
 
 # Lifecycles that MAY bear EXTERNAL_WITHDRAWAL: a withdrawal being REQUESTED or in flight. A direction-NEUTRAL
-# COMPLETION (``WITHDRAWAL_COMPLETED``) and any terminal event are DELIBERATELY excluded — a completion's externality
-# is established ONLY by WP5 correlation to its request (shared authenticated reference), never from its own text.
+# COMPLETION (``WITHDRAWAL_COMPLETED``) and any terminal event (REJECTED/CANCELLED) are DELIBERATELY excluded — a
+# rejected/cancelled withdrawal did NOT leave the broker, and a completion's externality is established ONLY by WP5
+# correlation to its request (shared authenticated reference), never from its own text.
 _EXTERNAL_ELIGIBLE_LIFECYCLES = frozenset({
     "WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED",
     "WITHDRAWAL_PROCESSING", "WITHDRAWAL_APPROVED"})
@@ -115,10 +121,15 @@ _EXTERNAL_ELIGIBLE_LIFECYCLES = frozenset({
 _WITHDRAWAL_DIRECTION = re.compile(
     r"\b(to\s+withdraw|withdrawal\s+request|request(?:ed)?\s+(?:a\s+|your\s+)?withdrawal|"
     r"withdraw(?:al)?\s+(?:of\s+)?funds?|withdrawn)\b", re.IGNORECASE)
-# Deposit-direction wording (money arriving). Its presence VETOES EXTERNAL_WITHDRAWAL — a deposit/funding email that
-# quotes a rail and mentions "withdrawal" only in boilerplate must never be read as a withdrawal. (Verified: the
-# genuine external-withdrawal request contains no "deposit" token, so this veto never under-claims the real case.)
-_DEPOSIT_DIRECTION = re.compile(r"\bdeposit(?:ed|s|ing)?\b", re.IGNORECASE)
+# VETO tokens: wording that means money did NOT leave the broker to an external rail as part of THIS message —
+# money-IN (deposit / funding / top-up) OR a terminal-negative outcome (rejected / declined / denied / cancelled).
+# Any of these present ⇒ never EXTERNAL_WITHDRAWAL (defense-in-depth backstop for a mis-routed lifecycle or a
+# funding/credit email that quotes a rail + withdrawal boilerplate). Deliberately NOT "credited" (ambiguous — a
+# genuine payout may be "credited to your bank"). Verified: the genuine request carries none of these, so the veto
+# never under-claims the real case; and under-claiming is the safe direction regardless.
+_NOT_EXTERNAL_VETO = re.compile(
+    r"\b(deposit(?:ed|s|ing)?|funded|funding|top[\s-]?up|topped\s+up|rejected|declined|denied|cancell?ed|canceled)\b",
+    re.IGNORECASE)
 
 # TradersWay external-payout references (genuine pilot pair, 2026-10-19): the REQUEST states "request number #<N>";
 # the COMPLETION states "Payment request #<N>" — the SAME authenticated broker transaction reference links the pair
@@ -161,9 +172,15 @@ def _classify_lifecycle(subject: str, body: str) -> Optional[str]:
         return "WITHDRAWAL_PROCESSING"
     if re.search(r"\bwithdrawal (approved|has been approved)\b", t):
         return "WITHDRAWAL_APPROVED"
-    if re.search(r"\bwithdrawal (rejected|declined|was declined)\b", t):
+    # Terminal outcomes BEFORE the generic REQUESTED branch, and tolerant of "withdrawal[ request][ #N] … rejected"
+    # so "Your withdrawal request has been rejected/cancelled" is not mis-routed to the eligible REQUESTED state (which
+    # would let a NON-departed-funds event over-claim EXTERNAL). The outcome verb must follow "withdrawal" (so an offer
+    # "to cancel/decline your withdrawal request" — verb BEFORE withdrawal — is never mis-read as a terminal outcome).
+    if re.search(r"\bwithdrawal(?:\s+request)?(?:\s+#?\d{3,16})?\s+(?:has\s+been\s+|was\s+|is\s+|been\s+)?"
+                 r"(?:rejected|declined|denied)\b", t):
         return "WITHDRAWAL_REJECTED"
-    if re.search(r"\bwithdrawal (cancelled|canceled)\b", t):
+    if re.search(r"\bwithdrawal(?:\s+request)?(?:\s+#?\d{3,16})?\s+(?:has\s+been\s+|was\s+|is\s+|been\s+)?"
+                 r"(?:cancell?ed|canceled)\b", t):
         return "WITHDRAWAL_CANCELLED"
     if re.search(r"\bwithdrawal (request(ed)?|has been received|received)\b", t):
         return "WITHDRAWAL_REQUESTED"
@@ -174,21 +191,23 @@ def _classify_category(subject: str, body: str, lifecycle: Optional[str]) -> str
     """INTERNAL_TRANSFER on explicit positive internal evidence (checked FIRST — if an email somehow carried both an
     internal-transfer clause and a payment-rail label, internal wins, a safe under-claim of external). Otherwise
     EXTERNAL_WITHDRAWAL only when ALL FOUR hold: (1) the ``lifecycle`` is a requesting/in-flight withdrawal state
-    (``_EXTERNAL_ELIGIBLE_LIFECYCLES`` — a COMPLETION or terminal event is NEVER external from its own text), (2) the
-    structured ``Payment method: <rail>`` label is present (``_EXTERNAL_EVIDENCE``), (3) affirmative ANCHORED
-    withdrawal-direction wording is present (``_WITHDRAWAL_DIRECTION``), and (4) NO deposit-direction wording is
-    present (``_DEPOSIT_DIRECTION`` veto). Else UNKNOWN. This structurally enforces the module invariant: there is no
-    prose→external path; a deposit via the same rail, a completion carrying a rail, and footer/boilerplate mentions of
-    "withdrawal" can none of them over-claim. A genuine completion stays UNKNOWN; its externality is supplied ONLY by
-    WP5 correlation to the request that shares its authenticated reference. Under-claiming is safe; over-claiming is
-    the forbidden error (it would inflate investor-facing withdrawal metrics)."""
+    (``_EXTERNAL_ELIGIBLE_LIFECYCLES`` — a COMPLETION or terminal REJECTED/CANCELLED event is NEVER external from its
+    own text), (2) the structured LINE-ANCHORED ``Payment method: <rail>`` field is present (``_EXTERNAL_EVIDENCE`` —
+    not a narrative/footer mention), (3) affirmative ANCHORED withdrawal-direction wording is present
+    (``_WITHDRAWAL_DIRECTION``), and (4) NO veto wording is present (``_NOT_EXTERNAL_VETO`` — money-IN deposit/funding/
+    top-up, or a terminal-negative rejected/declined/cancelled). Else UNKNOWN. This structurally enforces the module
+    invariant: there is no prose→external path; a deposit/funding email quoting a rail, a completion carrying a rail, a
+    rejected/cancelled withdrawal, and footer/boilerplate mentions of "withdrawal" can none of them over-claim. A
+    genuine completion stays UNKNOWN; its externality is supplied ONLY by WP5 correlation to the request that shares
+    its authenticated reference. Under-claiming is safe; over-claiming is the forbidden error (it would inflate
+    investor-facing withdrawal metrics)."""
     blob = f"{subject}\n{body}"
     if _INTERNAL_EVIDENCE.search(blob):
         return "INTERNAL_TRANSFER"
     if (lifecycle in _EXTERNAL_ELIGIBLE_LIFECYCLES
             and _EXTERNAL_EVIDENCE.search(blob)
             and _WITHDRAWAL_DIRECTION.search(blob)
-            and not _DEPOSIT_DIRECTION.search(blob)):
+            and not _NOT_EXTERNAL_VETO.search(blob)):
         return "EXTERNAL_WITHDRAWAL"
     return "UNKNOWN"
 

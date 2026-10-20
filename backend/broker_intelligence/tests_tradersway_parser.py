@@ -232,6 +232,49 @@ class TransactionClassifierTests(TestCase):
                          subject="Please confirm your withdrawal request", body=body)
             self.assertLess(time.monotonic() - t0, 1.0, f"possible ReDoS on anchor {anchor!r}")
 
+    # --- Re-review regressions (round 2): terminal outcome, money-in veto, line-anchored label. ---
+    def test_rejected_withdrawal_with_rail_is_not_external(self):
+        # CONFIRMED defect F1: "withdrawal request has been rejected" mis-routed to the eligible REQUESTED lifecycle,
+        # then a rail yielded EXTERNAL — but a REJECTED withdrawal did NOT leave the broker. Must be terminal + UNKNOWN.
+        for verb in ("rejected", "declined", "cancelled"):
+            parsed = self.p.parse(
+                from_address="payments@tradersway.com", subject="Your withdrawal request update",
+                body=(f"Your withdrawal request #7654321 has been {verb}.\nAmount: 250.00 USD\n"
+                      f"Payment method: Ethereum\n"))
+            self.assertIsNotNone(parsed)
+            self.assertIn(parsed.event_type, ("WITHDRAWAL_REJECTED", "WITHDRAWAL_CANCELLED"))   # terminal, not REQUESTED
+            self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_offer_to_cancel_or_decline_still_classifies_the_pending_request(self):
+        # A confirmation email offering "confirm or cancel/decline" (verb BEFORE "withdrawal") must NOT be mis-read as a
+        # terminal outcome — it is the genuine pending request and must stay EXTERNAL (guards against under-claim).
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Please confirm your withdrawal request",
+            body=("To confirm or cancel your withdrawal request, use your cabinet.\n"
+                  "Received the request number #7654321 to withdraw funds.\nPayment method: Ethereum\n"))
+        self.assertEqual(parsed.event_type, "WITHDRAWAL_CONFIRMATION_REQUIRED")
+        self.assertEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_funding_email_with_withdrawal_boilerplate_and_rail_is_not_external(self):
+        # CONFIRMED defect F2: a money-IN "funded/credited" email that evades the single "deposit" token, carries
+        # withdrawal-request boilerplate, and quotes a rail must NOT over-claim. The broadened veto ("funded") blocks it.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Your account has been funded",
+            body=("Your account has been funded and credited successfully.\n"
+                  "You can submit a withdrawal request at any time.\nAmount: 300.00 USD\nPayment method: Ethereum\n"))
+        if parsed is not None:
+            self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
+    def test_settings_footer_rail_mid_sentence_is_not_external(self):
+        # CONFIRMED defect F3: a rail named mid-sentence in a settings footer ("manage your payment method: Ethereum
+        # anytime") must NOT satisfy the external-evidence field — the label is line-anchored (a structured field),
+        # so this internal-transfer-shaped body (no "transferring to your account" clause) stays UNKNOWN, not external.
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Please confirm your withdrawal request",
+            body=("Please confirm your withdrawal request for trading account 55442.\nAmount: 200.00 USD\n"
+                  "Reference: 4112808\nManage your payment method: Ethereum anytime in your cabinet settings.\n"))
+        self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
     def test_european_decimal_amount_not_fragment_grabbed(self):
         parsed = self.p.parse(from_address="payments@tradersway.com",
                               subject="Please confirm your withdrawal request",
