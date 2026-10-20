@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     "broker_intelligence",  # Withdrawal Intelligence V1 — broker-email identity + evidence (DARK; isolated ingestion)
     "broker_public",  # Public broker directory + privacy-safe metric aggregates (DARK; unauthenticated read surface)
     "customer_notifications.apps.CustomerNotificationsConfig",  # Customer Telegram plane; DARK
+    "trade_copier",  # ADR-0051 MT5 Master/Follower Copier — read-only observer + ledger (DARK; observer-first)
 ]
 
 MIDDLEWARE = [

@@ -1,0 +1,28 @@
+"""Copier DARK-flag gating — default OFF, master ANDs subsystem, settings override wins."""
+from django.test import SimpleTestCase, override_settings
+
+from trade_copier import flags
+
+
+class CopierFlagTests(SimpleTestCase):
+    def test_default_off(self):
+        self.assertFalse(flags.copier_enabled())
+        self.assertFalse(flags.copier_observer_enabled())
+
+    @override_settings(COPIER_ENABLED=True)
+    def test_observer_requires_both_flags(self):
+        # Master on, observer sub-flag off -> still OFF (cannot half-activate).
+        self.assertTrue(flags.copier_enabled())
+        self.assertFalse(flags.copier_observer_enabled())
+
+    @override_settings(COPIER_ENABLED=True, COPIER_OBSERVER_ENABLED=True)
+    def test_observer_on_only_when_both(self):
+        self.assertTrue(flags.copier_observer_enabled())
+
+    @override_settings(COPIER_ENABLED=False, COPIER_OBSERVER_ENABLED=True)
+    def test_master_off_keeps_observer_off(self):
+        self.assertFalse(flags.copier_observer_enabled())
+
+    @override_settings(COPIER_ENABLED="yes")
+    def test_tolerant_truthy_tokens(self):
+        self.assertTrue(flags.copier_enabled())

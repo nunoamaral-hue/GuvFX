@@ -1954,6 +1954,15 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
                 "profit": p.profit,
                 "magic": p.magic,
                 "comment": p.comment,
+                # ADDITIVE (ADR-0051 copier observer): protective levels + position timing/identity so the
+                # read-only master observer can diff SL/TP changes and correlate positions. PURE READ — these
+                # are attributes of the position object already fetched; no extra MT5 call, no mutation. MT5
+                # encodes "no level" as 0.0. getattr-guarded so an older MT5 object shape cannot break the read.
+                "sl": getattr(p, "sl", None),
+                "tp": getattr(p, "tp", None),
+                "time": getattr(p, "time", None),
+                "time_update": getattr(p, "time_update", None),
+                "identifier": getattr(p, "identifier", None),
             })
 
         # Return the OBSERVED session identity alongside the positions so the backend read firewall can bind
