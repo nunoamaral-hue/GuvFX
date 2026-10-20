@@ -62,6 +62,32 @@ class GuvFXUserRateThrottle(SimpleRateThrottle):
             pass
 
 
+class GuvFXPublicAnonRateThrottle(SimpleRateThrottle):
+    """
+    Dedicated per-IP rate limit for the UNAUTHENTICATED public broker-directory surface (broker_public).
+
+    These endpoints set ``authentication_classes = []`` + ``AllowAny``, so the per-user throttle never binds; this
+    gives them their own conservative anonymous ceiling (configured via the ``public`` scope in
+    ``DEFAULT_THROTTLE_RATES``) that is stricter than the global IP ceiling. It is keyed purely on the client ident
+    (never a user) and audits a rate-limit breach (fail-open on logging).
+    """
+
+    scope = "public"
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+    def allow_request(self, request, view):
+        allowed = super().allow_request(request, view)
+        if not allowed:
+            try:
+                log_event(request, event_type="RATE_LIMIT_EXCEEDED", severity="WARN", entity_type="public",
+                          entity_id=None, metadata={"scope": self.scope, "rate": self.rate})
+            except Exception:
+                pass  # fail-open: never block a request because audit logging failed
+        return allowed
+
+
 class GuvFXIPRateThrottle(SimpleRateThrottle):
     """
     Rate limit per IP address.

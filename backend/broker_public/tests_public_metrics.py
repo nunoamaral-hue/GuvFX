@@ -202,9 +202,47 @@ class PublicApiArmed(TestCase):
         self.assertEqual(data["slug"], "tradersway")
         m = next(x for x in data["metrics"] if x["category"] == "WITHDRAWAL_PROCESSING")
         self.assertEqual(m["state"], "INSUFFICIENT_DATA")
-        self.assertEqual(m["stats"], {})
-        self.assertIn("sample_size", m)
         self.assertIn("methodology_version", m)
+        # PD review §6: the INSUFFICIENT_DATA HTTP payload leaks NO exact contributor/observation counts, NO window,
+        # NO transaction-derived timestamp — only the truthful generic stub. (Previously this asserted
+        # `assertIn("sample_size", m)` / `stats == {}`, which LOCKED IN the leak; "all tests pass" was not proof the
+        # leak was closed until these assertions were flipped.)
+        for leaked in ("sample_size", "contributor_count", "observation_window", "last_update",
+                       "data_freshness", "stats"):
+            self.assertNotIn(leaked, m, leaked)
+        self.assertEqual(set(m.keys()), {"category", "state", "methodology_version"})
+
+    def test_published_profile_payload_includes_aggregate_fields(self):
+        # The counterpart regression: a PUBLISHED metric DOES expose the aggregate-only fields (so the suppression
+        # above is not over-broad). 5 members x 5 completed each -> PUBLISHED.
+        b = _broker()
+        _category(min_contributors=5, min_samples=20, max_share=40, min_completed=5)
+        for _ in range(5):
+            a = _acct()
+            for _ in range(5):
+                _wd(a)
+        upsert_withdrawal_processing(b, certified_brokers=CERT)
+        r = self.c.get("/api/public/brokers/tradersway/")
+        self.assertEqual(r.status_code, 200)
+        m = next(x for x in r.json()["metrics"] if x["category"] == "WITHDRAWAL_PROCESSING")
+        self.assertEqual(m["state"], "PUBLISHED")
+        for field in ("sample_size", "contributor_count", "observation_window", "last_update", "stats"):
+            self.assertIn(field, m)
+
+    def test_public_anon_throttle_configured_and_enforced(self):
+        # The dedicated anonymous throttle is CONFIGURED (resolves a rate — the prior AnonRateThrottle
+        # ImproperlyConfigured blocker is gone) and ENFORCED on the public surface.
+        from unittest.mock import patch
+        from django.core.cache import cache
+        from core.throttling import GuvFXPublicAnonRateThrottle
+        self.assertIsNotNone(GuvFXPublicAnonRateThrottle().get_rate())   # 'public' scope resolves (no misconfig)
+        _broker(slug="tradersway", published=True)
+        cache.clear()
+        with patch.object(GuvFXPublicAnonRateThrottle, "get_rate", return_value="1/min"):
+            first = self.c.get("/api/public/brokers/")
+            second = self.c.get("/api/public/brokers/")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)   # anonymous ceiling enforced
 
     def test_unknown_or_unpublished_broker_is_404(self):
         _broker(slug="hidden", published=False)
