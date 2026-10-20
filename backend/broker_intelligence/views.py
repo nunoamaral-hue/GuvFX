@@ -313,8 +313,11 @@ class MailboxConnectView(APIView):
         # --- single-mailbox enforcement at AUTHORIZATION (the authoritative guard is the callback mutation) ---
         # CONNECT_FIRST never applies while any mailbox is live (use ADD_NEW_MAILBOX instead) — unchanged in both modes.
         if op == _OP_CONNECT_FIRST and live:
-            return Response({"ok": False, "error": "single_mailbox_only",
-                             "message": "A mailbox is already connected. Use ADD_NEW_MAILBOX to connect another."},
+            # Flag OFF: keep the V1 message verbatim (byte-identical). Flag ON: advise the op that actually works.
+            msg = ("A mailbox is already connected. Use ADD_NEW_MAILBOX to connect another."
+                   if broker_multi_mailbox_enabled()
+                   else "A mailbox is already connected. Disconnect it before connecting another.")
+            return Response({"ok": False, "error": "single_mailbox_only", "message": msg},
                             status=status.HTTP_409_CONFLICT)
         # ADD_NEW while a live mailbox exists is refused in single-mailbox (V1) mode; in multi-mailbox mode it is
         # PERMITTED (bounded by the per-owner cap enforced atomically at the callback).
