@@ -121,3 +121,28 @@ def broker_account_contact_enabled() -> bool:
     surface is reachable. One ``(email, broker)`` may bind to many of the member's accounts; binding is explicit and
     audited; NEVER auto-verifies; grants NO execution/strategy/credential authority and never a financial action."""
     return _flag("BROKER_ACCOUNT_CONTACT_ENABLED")
+
+
+def broker_attribution_contact_scoped_enabled() -> bool:
+    """Gate for CONTACT-SCOPED transaction-account attribution (MULTI_ACCOUNT §5). DEFAULT OFF → the resolver is
+    byte-identical (broker-stated account numbers matched against ALL the owner's accounts). While ON, when an
+    attributed VERIFIED identity is known, the broker-stated-number match is NARROWED to the account(s) that identity
+    is VERIFIED-bound to — so a shared email across several of the owner's accounts resolves to the ONE bound account
+    instead of going ambiguous. The stated-number match stays MANDATORY (the binding only narrows; inbox/identity
+    ownership ALONE never assigns an account). No execution/financial authority."""
+    return _flag("BROKER_ATTRIBUTION_CONTACT_SCOPED_ENABLED")
+
+
+def broker_routing_evidence_required() -> bool:
+    """Gate for requiring independently-supportable ROUTING evidence before a TradingAccountBrokerContact reaches
+    VERIFIED (MULTI_ACCOUNT §2). DEFAULT OFF → contact_verification is byte-identical (owner + broker + connected
+    mailbox proof only). While ON, a binding additionally needs routing proof: either the bound mailbox IS the
+    broker-registered address (direct), or an AUTHENTICATED broker delivery was observed through it
+    (BrokerMessageObservation → a REAL event) — so a mere same-owner mailbox no longer proves routing.
+
+    ARMING / HARD DEPENDENCY: the 'observed_delivery' kind depends on BrokerMessageObservation rows, which are written
+    ONLY under broker_cross_inbox_dedup_enabled(). The 'direct_address' kind needs no ingestion history, so the common
+    (member connected the broker's own inbox) case still verifies; but a forwarding/alias case (connected mailbox !=
+    registered address) can be proven only once the delivery plane is populated. Arm this flag only after that is in
+    place (or rely on direct_address). No execution/financial authority."""
+    return _flag("BROKER_ROUTING_EVIDENCE_REQUIRED")
