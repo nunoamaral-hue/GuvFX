@@ -166,6 +166,10 @@ def _replicate_one(event, follower) -> CopierReplication | None:
     target_volume = None
     sizing_detail = ""
     tsl = ttp = None
+    # Structured B-exec admission signals (never parsed from the display string). Defaults assume the
+    # op has no constraint/translation dependency (e.g. CLOSE); set precisely per branch below.
+    constraints_authoritative = True
+    sltp_ok = True
 
     if event.event_type in _OPEN_LIKE:
         master_vol = event.volume_after if event.event_type == diff.OPEN else event.volume_delta
@@ -173,8 +177,9 @@ def _replicate_one(event, follower) -> CopierReplication | None:
         sr = compute_follower_volume(master_vol, _cfg(follower), constraints)
         if not sr.ok:
             return _record(event, follower, op, ReplicationStatus.REJECTED, sr.detail,
-                           follower_symbol=sym.follower_symbol)
+                           follower_symbol=sym.follower_symbol, constraints_authoritative=False)
         target_volume = sr.volume
+        constraints_authoritative = constraints.authoritative
         c_note = "c:auth" if constraints.authoritative else "c:unverified"
         # COMPLETE desired SL+TP from the authoritative same-poll snapshot (fall back to the event's
         # own levels if the snapshot row is missing — an OPEN always carries both).
@@ -185,6 +190,7 @@ def _replicate_one(event, follower) -> CopierReplication | None:
         tr = translate_sltp(follower.sltp_translation, event.side, master_entry=m_entry,
                             master_sl=m_sl, master_tp=m_tp)
         tsl, ttp = tr.sl, tr.tp
+        sltp_ok = tr.ok
         sizing_detail = f"{sr.detail};{c_note};sltp:{tr.reason}"
     elif event.event_type in _MODIFY_LIKE:
         # BLOCKER-3: a modify needs the COMPLETE desired SL+TP from the authoritative same-poll
@@ -197,6 +203,7 @@ def _replicate_one(event, follower) -> CopierReplication | None:
         tr = translate_sltp(follower.sltp_translation, event.side, master_entry=_f(snap.price_open),
                             master_sl=_f(snap.sl), master_tp=_f(snap.tp))
         tsl, ttp = tr.sl, tr.tp
+        sltp_ok = tr.ok
         sizing_detail = f"sltp:{tr.reason}"
     # CLOSE/PARTIAL_CLOSE intents reference the master event; follower-position mapping and the
     # actual close volume are resolved at execution time (follower ticket is unknown in PR B).
@@ -204,7 +211,8 @@ def _replicate_one(event, follower) -> CopierReplication | None:
     return _record(event, follower, op, ReplicationStatus.SHADOW_RECORDED, "",
                    target_volume=target_volume, sizing_detail=sizing_detail[:64],
                    follower_symbol=sym.follower_symbol,
-                   translated_sl=_dec(tsl), translated_tp=_dec(ttp))
+                   translated_sl=_dec(tsl), translated_tp=_dec(ttp),
+                   constraints_authoritative=constraints_authoritative, sltp_translation_ok=sltp_ok)
 
 
 def _f(v):

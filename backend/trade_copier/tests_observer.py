@@ -10,7 +10,7 @@ from django.utils import timezone
 from trade_copier import diff, observer
 from trade_copier.diff import ObservedPosition as P
 from trade_copier.models import CopierMaster, MasterEvent, MasterObservationPoll, MasterPositionSnapshot
-from trade_copier.observer import MasterReadResult, observe_master, run_observer_pass
+from trade_copier.observer import MasterReadResult, observe_master, record_observation, run_observer_pass
 from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
@@ -118,6 +118,49 @@ class ObserverRecordTests(TestCase):
         m.refresh_from_db()
         self.assertEqual(m.last_poll_id, newer_poll)              # baseline NOT regressed
         self.assertEqual(MasterEvent.objects.count(), events_before)        # no fabricated events
+        self.assertEqual(MasterEvent.objects.filter(event_type=diff.FULL_CLOSE).count(), 0)
+
+    def test_single_flight_rejects_concurrent_observation(self):
+        # BLOCKER-2 (bounded single-flight): a pass must not even read while another holds the lease.
+        m = self._master()
+        m.observation_lease_token = "other-pass"
+        m.observation_lease_until = timezone.now() + timedelta(seconds=30)   # active lease
+        m.save(update_fields=["observation_lease_token", "observation_lease_until"])
+        called = {"n": 0}
+
+        def _fetch(_a):
+            called["n"] += 1
+            return _result([P(1, "XAUUSD", "BUY", 0.10)])
+        out = observe_master(m, fetch=_fetch)
+        self.assertEqual(out["reason"], "observation_in_flight")
+        self.assertEqual(called["n"], 0)                          # did NOT perform the remote read
+        self.assertEqual(MasterObservationPoll.objects.count(), 0)
+
+    def test_late_older_response_after_lease_takeover_discarded(self):
+        # Adversarial INVERTED completion order (BLOCKER-2): pass A captured an OLDER snapshot and was
+        # slow; its lease expired; pass B captured a NEWER snapshot and committed; A's response then
+        # arrives LAST. A must be discarded (lease lost) — never regress the baseline or fabricate closes,
+        # regardless of A's (later) response-arrival timestamp.
+        m = self._master()
+        t0 = timezone.now()
+        observe_master(m, fetch=_queued_fetch([_result([P(1, "XAUUSD", "BUY", 0.10)], read_at=t0)]))  # baseline P1
+        # Pass A claimed earlier; its lease has EXPIRED by now.
+        m.refresh_from_db()
+        m.observation_lease_token = "A"
+        m.observation_lease_until = t0 - timedelta(seconds=1)
+        m.save(update_fields=["observation_lease_token", "observation_lease_until"])
+        # Pass B takes over (A's lease expired) and commits a NEWER snapshot adding P2.
+        observe_master(m, fetch=_queued_fetch([_result(
+            [P(1, "XAUUSD", "BUY", 0.10), P(2, "EURUSD", "SELL", 0.5)], read_at=t0 + timedelta(seconds=5))]))
+        m.refresh_from_db()
+        b_poll = m.last_poll_id
+        events_before = MasterEvent.objects.count()
+        # Pass A's OLDER (empty) response arrives LAST with a HIGHER arrival time but a stale lease token.
+        out = record_observation(m, _result([], read_at=t0 + timedelta(seconds=9)), lease_token="A")
+        self.assertTrue(out.get("lease_lost"))
+        m.refresh_from_db()
+        self.assertEqual(m.last_poll_id, b_poll)                  # baseline NOT regressed
+        self.assertEqual(MasterEvent.objects.count(), events_before)       # no fabricated events
         self.assertEqual(MasterEvent.objects.filter(event_type=diff.FULL_CLOSE).count(), 0)
 
     def test_master_event_is_append_only(self):

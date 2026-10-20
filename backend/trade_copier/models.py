@@ -63,6 +63,13 @@ class CopierMaster(models.Model):
         null=True, blank=True, related_name="+",
         help_text="The most recent successful, identity-verified poll (the diff baseline).",
     )
+    # Bounded single-flight observation (ADR-0051 BLOCKER-2): a lease claimed BEFORE the remote read
+    # so at most one observation per master is in flight; a second pass skips. The lease is
+    # time-bounded (auto-expires) and ownership is re-checked under the persist lock, so a slow/hung
+    # read whose lease expired and was taken over cannot commit a stale snapshot. This makes acquisition
+    # order == persist order and removes any dependence on response-arrival wall-clock timestamps.
+    observation_lease_token = models.CharField(max_length=36, blank=True, default="")
+    observation_lease_until = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -366,6 +373,14 @@ class CopierReplication(models.Model):
     follower_symbol = models.CharField(max_length=64, blank=True)
     translated_sl = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
     translated_tp = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    # STRUCTURED B-exec admission signals (never parse the truncated sizing_detail text to authorize a
+    # job — ADR-0051 R2). B-exec must still INDEPENDENTLY re-read fresh broker constraints/symbol/
+    # readiness at order time; these flags let it fail closed early without string parsing.
+    constraints_authoritative = models.BooleanField(
+        default=False, help_text="True only when destination broker lot bounds came from synced metadata.")
+    sltp_translation_ok = models.BooleanField(
+        default=True, help_text="False when the SL/TP translation could not be completed (e.g. SAME_DISTANCE "
+                                "without a follower entry) — B-exec must reject such an intent.")
 
     # Filled by the gated DEMO execution follow-up (null in PR B).
     execution_job = models.ForeignKey("execution.ExecutionJob", on_delete=models.SET_NULL,

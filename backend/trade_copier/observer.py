@@ -23,8 +23,9 @@ import logging
 import os
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Callable, Optional
 
@@ -44,6 +45,32 @@ from trade_copier.models import (
 logger = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = 10
+_OBSERVATION_LEASE_SECONDS = 30  # bounded single-flight window per master (auto-expires)
+
+
+@transaction.atomic
+def _claim_observation_lease(master_pk, token: str, seconds: int) -> bool:
+    """Claim the single-flight observation lease for a master BEFORE the remote read (ADR-0051
+    BLOCKER-2). Returns False when another pass holds an unexpired lease — that pass then skips, so at
+    most one observation per master is ever in flight and acquisition order == persist order."""
+    m = CopierMaster.objects.select_for_update().get(pk=master_pk)
+    now = timezone.now()
+    if m.observation_lease_until and m.observation_lease_until > now:
+        return False
+    m.observation_lease_token = token
+    m.observation_lease_until = now + timedelta(seconds=seconds)
+    m.save(update_fields=["observation_lease_token", "observation_lease_until", "updated_at"])
+    return True
+
+
+@transaction.atomic
+def _release_observation_lease(master_pk, token: str) -> None:
+    """Release the lease iff this pass still owns it (a taken-over lease is left for its new owner)."""
+    m = CopierMaster.objects.select_for_update().get(pk=master_pk)
+    if m.observation_lease_token == token:
+        m.observation_lease_token = ""
+        m.observation_lease_until = None
+        m.save(update_fields=["observation_lease_token", "observation_lease_until", "updated_at"])
 
 
 @dataclass(frozen=True)
@@ -179,7 +206,7 @@ def _positions_from_poll(poll: MasterObservationPoll) -> list[ObservedPosition]:
 
 
 @transaction.atomic
-def record_observation(master: CopierMaster, result: MasterReadResult) -> dict:
+def record_observation(master: CopierMaster, result: MasterReadResult, *, lease_token=None) -> dict:
     """Persist ONE identity-verified observation + its derived events, atomically, under a row lock.
 
     Must only be called with ``result.ok``. Creates the poll + snapshot rows, diffs against the
@@ -187,15 +214,25 @@ def record_observation(master: CopierMaster, result: MasterReadResult) -> dict:
     baseline. A crash rolls back the whole unit (poll + events together)."""
     # Row lock serialises concurrent passes for this master and makes the sequence allocation +
     # baseline advance race-free. The network read happened BEFORE this lock (so the lock is never
-    # held across the network); ordering is enforced here by a monotonic read timestamp.
+    # held across the network).
     master = CopierMaster.objects.select_for_update().get(pk=master.pk)
+    now = timezone.now()
+
+    # BLOCKER-2 (primary ordering guarantee): if this pass's single-flight lease was lost — it expired
+    # and a newer pass took over — its result is stale. Discard it: never commit a snapshot whose
+    # single-flight ownership lapsed (this is what makes a network-delayed older read unable to win).
+    if lease_token is not None and (master.observation_lease_token != lease_token
+                                    or not master.observation_lease_until
+                                    or master.observation_lease_until <= now):
+        logger.warning("copier discarding read for master %s: observation lease lost", master.pk)
+        return {"poll_id": None, "positions": len(result.positions), "events": 0,
+                "first_poll": False, "lease_lost": True}
+
     prev_poll = master.last_poll
 
-    # BLOCKER-2: discard a STALE read. If an older read (smaller read_at) arrives after a newer one
-    # has already committed, recording it would diff old data against the newer baseline and
-    # fabricate OPEN/CLOSE events AND regress the baseline. Reject it fail-closed: no poll, no events,
-    # baseline unchanged. (Skipped only when read_at is absent — e.g. a synthetic caller.)
-    now = timezone.now()
+    # Secondary backstop to single-flight: discard a read whose read_at is not strictly newer than the
+    # baseline's. With single-flight this rarely triggers, but it guards a --force diagnostic pass or
+    # any path that bypasses the lease. (Skipped when read_at is absent — e.g. a synthetic caller.)
     read_at = result.read_at or now
     if prev_poll is not None and result.read_at is not None and prev_poll.read_at is not None \
             and result.read_at <= prev_poll.read_at:
@@ -264,16 +301,34 @@ def record_observation(master: CopierMaster, result: MasterReadResult) -> dict:
             "first_poll": prev_poll is None}
 
 
-def observe_master(master: CopierMaster, *, fetch: Callable = fetch_master_positions) -> dict:
-    """Observe one master: read + (on success) record. A refused read records nothing (honest)."""
-    result = fetch(master.trading_account)
-    if not result.ok:
-        return {"master_id": master.pk, "ok": False, "reason": result.reason,
+def observe_master(master: CopierMaster, *, fetch: Callable = fetch_master_positions,
+                   lease_seconds: int = _OBSERVATION_LEASE_SECONDS) -> dict:
+    """Observe one master under a bounded single-flight lease (ADR-0051 BLOCKER-2).
+
+    The lease is claimed BEFORE the remote read, so at most one observation per master is in flight;
+    a second concurrent pass skips (``observation_in_flight``) and reads fresh on its next cycle. A
+    refused read records nothing. The lease is released in ``finally``; if it had already expired and
+    been taken over, ``record_observation`` discards this (stale) result (``lease_lost``)."""
+    token = uuid.uuid4().hex
+    if not _claim_observation_lease(master.pk, token, lease_seconds):
+        return {"master_id": master.pk, "ok": False, "reason": "observation_in_flight",
                 "poll_id": None, "events": 0}
-    summary = record_observation(master, result)
-    summary.update({"master_id": master.pk, "ok": True,
-                    "reason": "stale_read_discarded" if summary.get("stale_discarded") else "ok"})
-    return summary
+    try:
+        result = fetch(master.trading_account)
+        if not result.ok:
+            return {"master_id": master.pk, "ok": False, "reason": result.reason,
+                    "poll_id": None, "events": 0}
+        summary = record_observation(master, result, lease_token=token)
+        if summary.get("stale_discarded"):
+            reason = "stale_read_discarded"
+        elif summary.get("lease_lost"):
+            reason = "lease_lost"
+        else:
+            reason = "ok"
+        summary.update({"master_id": master.pk, "ok": True, "reason": reason})
+        return summary
+    finally:
+        _release_observation_lease(master.pk, token)
 
 
 def run_observer_pass(*, limit: Optional[int] = None, fetch: Callable = fetch_master_positions) -> dict:
