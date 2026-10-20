@@ -16,8 +16,9 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .flags import (broker_identity_verification_enabled, broker_mailbox_connect_enabled,
-                    broker_mailbox_status_enabled, broker_multi_mailbox_enabled, broker_withdrawal_ux_enabled)
+from .flags import (broker_account_contact_enabled, broker_identity_verification_enabled,
+                    broker_mailbox_connect_enabled, broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
+                    broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_history, withdrawal_metrics
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
@@ -597,3 +598,160 @@ class MailboxStatusView(APIView):
         # NOT connected — the UI must offer a fresh connect, not present a dead mailbox as active.
         connected = any(getattr(mb, "status", "") == ConnectedMailbox.Status.CONNECTED for mb in mboxes)
         return Response({"connected": connected, "mailboxes": items})
+
+
+# ======================================================================================================
+# Account-level broker-email CONTACT API (MULTI_ACCOUNT §A/§C/§4) — DARK (broker_account_contact_enabled).
+# One (email, broker) identity may bind to MANY of the member's OWN accounts; binding is explicit + audited;
+# verification reuses the fail-closed contact_verification writer (the migration-0015 DB trigger is the hard backstop).
+# ======================================================================================================
+
+def _contact_json(c) -> dict:
+    """Owner-private binding summary — masked identity + mailbox, status. No raw email, no secret."""
+    idn = c.broker_email_identity
+    return {
+        "id": c.id,
+        "trading_account_id": c.trading_account_id,
+        "broker": idn.broker_name,
+        "email_masked": idn.masked_email(),
+        "broker_email_identity_id": c.broker_email_identity_id,
+        "connected_mailbox_id": c.connected_mailbox_id,
+        "connected_mailbox_masked": c.connected_mailbox.masked_email() if c.connected_mailbox_id else None,
+        "status": c.status,
+        "verified": c.status == c.Status.VERIFIED,
+        "verified_at": c.verified_at.isoformat() if c.verified_at else None,
+    }
+
+
+def _owned_account_or_none(request, account_id):
+    """Owner-scoped account lookup — the cross-user firewall at the boundary (a foreign/absent id is indistinguishable
+    from 'does not exist')."""
+    from trading.models import TradingAccount
+    return TradingAccount.objects.filter(id=account_id, user=request.user).first()
+
+
+class AccountBrokerContactListView(APIView):
+    """GET /api/broker-intelligence/accounts/<account_id>/contacts/ — the member's broker-email bindings for ONE of
+    their OWN trading accounts (masked). Owner-scoped (no staff bypass); DARK-gated."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, account_id):
+        if not broker_account_contact_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        account = _owned_account_or_none(request, account_id)
+        if account is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .models import TradingAccountBrokerContact
+        rows = (TradingAccountBrokerContact.objects
+                .filter(trading_account=account).select_related("broker_email_identity", "connected_mailbox")
+                .order_by("id"))
+        return Response({"trading_account_id": account.id, "contacts": [_contact_json(c) for c in rows]})
+
+
+class AccountBrokerContactCreateView(APIView):
+    """POST /api/broker-intelligence/accounts/<account_id>/contacts/create/ — associate a broker-registered
+    notification email with one of the member's OWN accounts. Body: {email, broker, connected_mailbox_id?}. Creates
+    the (email, broker) identity if new, CLAIMS it only when TRULY unowned (no user AND not attributed to another
+    member's account — the same effective-owner rule the verify service/DB trigger use), refuses a DIFFERENT-member's
+    identity GENERICALLY (message never reveals WHICH member) under a row lock, and get_or_creates the PENDING binding
+    (idempotent under uniq_tabc_account_identity). Owner-scoped + audited; NEVER auto-verifies (status stays PENDING);
+    a mailbox change on an existing binding resets it to PENDING. NB (bounded residual): the 422 cross-user refusal is
+    distinguishable from success, so a member-typed address can be probed for existing cross-member registration (a
+    coarse, authenticated, audited, per-user-throttled signal — never which member); a tighter create-throttle is a
+    documented pre-activation hardening."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, account_id):
+        if not broker_account_contact_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        account = _owned_account_or_none(request, account_id)
+        if account is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
+        email = str(data.get("email", "") or "").strip()
+        broker = str(data.get("broker", "") or "").strip()
+        cmid = data.get("connected_mailbox_id")
+        if not email or not broker:
+            return Response({"ok": False, "error": "invalid_input",
+                             "message": "A broker and a broker-registered email are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        from django.db import transaction
+        from .models import (BrokerEmailIdentity, ConnectedMailbox, TradingAccountBrokerContact,
+                             TradingAccountBrokerContactAudit)
+        # Owner-scope the optional mailbox (a foreign mailbox id is simply ignored — never bound cross-user).
+        mailbox = None
+        if cmid not in (None, ""):
+            mailbox = ConnectedMailbox.objects.filter(id=cmid, user=request.user).first()
+        with transaction.atomic():
+            # Lock the identity row for the claim decision so two members cannot race to claim one unowned identity
+            # (last-writer-wins). Same discipline as verify_identity.
+            identity = (BrokerEmailIdentity.objects.select_for_update()
+                        .filter(email=email, broker_name=broker).first())
+            if identity is None:
+                identity = BrokerEmailIdentity.objects.create(email=email, broker_name=broker, user=request.user)
+            else:
+                # EFFECTIVE owner: the explicit user, else the owner of the account this identity is attributed to.
+                # Both the verify service (contact_verification.check_consistency) and the migration-0015 VERIFIED
+                # trigger treat trading_account.user as authoritative ownership, so the firewall MUST too — else a
+                # backfilled (user=None, trading_account=<other member>) identity could be CLAIMED and later verified
+                # by any member (cross-user takeover).
+                eff_owner = identity.user_id or (
+                    identity.trading_account.user_id if identity.trading_account_id else None)
+                if eff_owner is not None and eff_owner != request.user.id:
+                    # Refuse GENERICALLY + durable REJECT. (NB: a 422 here is distinguishable from the 201/200 success
+                    # path, so a determined authenticated caller can probe whether a MEMBER-TYPED address is already
+                    # registered to SOME other member — a coarse, audited, per-user-throttled existence signal, never
+                    # revealing WHICH member. A tighter create throttle is a documented pre-activation hardening.)
+                    TradingAccountBrokerContactAudit.objects.create(
+                        action=TradingAccountBrokerContactAudit.Action.REJECT, subject_user=request.user,
+                        trading_account=account, outcome="cross_user",
+                        reason="address registered to another member", status_after="")
+                    return Response({"ok": False, "error": "cannot_associate",
+                                     "message": "That broker email can't be associated with this account."},
+                                    status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+                if identity.user_id is None:
+                    identity.user = request.user   # claim only a TRULY unowned (+unattributed) registry row
+                    identity.save(update_fields=["user"])
+            contact, created = TradingAccountBrokerContact.objects.get_or_create(
+                trading_account=account, broker_email_identity=identity,
+                defaults={"connected_mailbox": mailbox})
+            mailbox_changed = not created and mailbox is not None and contact.connected_mailbox_id != mailbox.id
+            if mailbox_changed:
+                # Changing the receiving mailbox invalidates any prior verification (different routing): reset to
+                # PENDING + clear verified_at so routing must be re-proven via contact_verification (never a silent
+                # re-point of a VERIFIED binding).
+                contact.connected_mailbox = mailbox
+                status_before = contact.status
+                contact.status = TradingAccountBrokerContact.Status.PENDING
+                contact.verified_at = None
+                contact.save(update_fields=["connected_mailbox", "status", "verified_at", "updated_at"])
+            if created or mailbox_changed:
+                TradingAccountBrokerContactAudit.objects.create(
+                    contact=contact, action=TradingAccountBrokerContactAudit.Action.BIND, subject_user=request.user,
+                    trading_account=account, broker_email_identity=identity, connected_mailbox=mailbox,
+                    outcome="OK", status_before="" if created else status_before, status_after=contact.status)
+        return Response({"ok": True, "contact": _contact_json(contact)},
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class AccountBrokerContactVerifyView(APIView):
+    """POST /api/broker-intelligence/accounts/<account_id>/contacts/<contact_id>/verify/ — attempt to VERIFY one of
+    the member's OWN bindings via the fail-closed contact_verification writer (composed ownership + mailbox + broker
+    proof). NEVER auto-verifies; the migration-0015 DB trigger is the hard backstop. Returns the resulting status +
+    reason. Owner-scoped + audited; never a financial action."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, account_id, contact_id):
+        if not broker_account_contact_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .contact_verification import check_consistency, verify_contact
+        from .models import TradingAccountBrokerContact
+        contact = (TradingAccountBrokerContact.objects
+                   .filter(id=contact_id, trading_account_id=account_id, trading_account__user=request.user)
+                   .select_related("trading_account", "broker_email_identity", "connected_mailbox").first())
+        if contact is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        _ok, reason = check_consistency(contact)
+        contact = verify_contact(contact, actor=request.user, proofs={"via": "account_contact_api"})
+        return Response({"verified": contact.status == contact.Status.VERIFIED, "status": contact.status,
+                         "reason": reason, "contact": _contact_json(contact)})

@@ -16,6 +16,8 @@ import { ReplaceCredentialsDialog } from "@/components/broker/ReplaceCredentials
 import { DisconnectDialog } from "@/components/broker/DisconnectDialog";
 import { Dialog } from "@/components/broker/Dialog";
 import { ErrorState, LoadingState } from "@/components/broker/States";
+import { AccountWithdrawalMonitoring } from "@/components/broker/AccountWithdrawalMonitoring";
+import { useLang } from "@/components/AppShell";
 
 /** Self-contained SVG spinner (SMIL animation — no global CSS keyframes needed). */
 const Spinner: React.FC = () => (
@@ -37,6 +39,7 @@ import type { BrokerAccount, BrokerStatus, ValidationAttempt } from "@/types/bro
  * redirect share one implementation. The caller owns the flag gate. Test/Retry run inline; Replace/
  * Disconnect use confirmation dialogs. */
 export function BrokerAccountDetailContent() {
+  const lang = useLang();
   const params = useParams();
   const id = Number(Array.isArray(params?.id) ? params.id[0] : params?.id);
 
@@ -189,6 +192,10 @@ export function BrokerAccountDetailContent() {
           {history === null ? <LoadingState label="Loading history…" /> : <ValidationHistoryTable attempts={history} />}
         </Card>
       </div>
+
+      {/* §4 Withdrawal Monitoring — account-level broker-email association + verify. DARK-safe: self-hides (null)
+          while BROKER_ACCOUNT_CONTACT_ENABLED is off, so it is invisible until armed. */}
+      <AccountWithdrawalMonitoring accountId={id} brokerName={account.broker_name || ""} lang={lang} />
 
       {/* Validation runs in a modal so the page never appears to hang; every result path is customer-safe. */}
       <Dialog
