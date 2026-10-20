@@ -63,11 +63,13 @@ def _routing_proven(contact: Contact) -> Tuple[bool, str]:
     identity's mail — not merely that it is a same-owner mailbox (§2). Two supported kinds, fail-closed:
       * ``direct_address`` — the bound CONNECTED mailbox's gmail-canonical address IS the identity's broker-registered
         address (the member connected the very inbox the broker sends to); needs no ingestion history.
-      * ``observed_delivery`` — an AUTHENTICATED (``provenance=REAL``) broker delivery was observed THROUGH the bound
-        mailbox for its owner (``BrokerMessageObservation`` → a real ``BrokerEvent``), i.e. the broker's mail
-        demonstrably arrived in that inbox (covers an approved forwarding/alias where the connected mailbox differs
-        from the registered address). This evidence exists only once the delivery plane is populated (cross-inbox
-        dedup armed) — see the arming note below.
+      * ``observed_delivery`` — an AUTHENTICATED (``provenance=REAL``) delivery of THIS identity's BROKER mail was
+        observed THROUGH the bound mailbox for its owner (``BrokerMessageObservation`` → a real ``BrokerEvent`` whose
+        broker token-matches the identity's broker), i.e. this broker's mail demonstrably arrived in that inbox
+        (covers an approved forwarding/alias where the connected mailbox differs from the registered address). It is
+        BROKER-scoped (another broker's mail in the same consolidated inbox never proves routing for this identity)
+        and owner-scoped on BOTH the observation and the joined event. Exists only once the delivery plane is
+        populated (cross-inbox dedup armed) — see the arming note below.
     Returns ``(ok, kind)``; neither ⇒ ``(False, "unproven")``."""
     mbx = contact.connected_mailbox
     idn = contact.broker_email_identity
@@ -76,10 +78,17 @@ def _routing_proven(contact: Contact) -> Tuple[bool, str]:
     if (idn.email and mbx.primary_email
             and canonical_address(mbx.primary_email) == canonical_address(idn.email)):
         return True, "direct_address"
+    from .identity_verification import _broker_matches
     from .models import BrokerMessageObservation
-    if BrokerMessageObservation.objects.filter(
-            connected_mailbox=mbx, owner_id=mbx.user_id, event__provenance=Provenance.REAL).exists():
-        return True, "observed_delivery"
+    idn_broker = getattr(idn, "broker_name", "") or ""
+    # Candidate authenticated deliveries through THIS mailbox, owner-scoped on both the observation AND the joined
+    # event; then require the event's broker to token-match the identity's broker (never broker-agnostic).
+    for obs in (BrokerMessageObservation.objects
+                .filter(connected_mailbox=mbx, owner_id=mbx.user_id,
+                        event__provenance=Provenance.REAL, event__owner_id=mbx.user_id)
+                .select_related("event")):
+        if obs.event_id and _broker_matches(getattr(obs.event, "broker", "") or "", idn_broker):
+            return True, "observed_delivery"
     return False, "unproven"
 
 

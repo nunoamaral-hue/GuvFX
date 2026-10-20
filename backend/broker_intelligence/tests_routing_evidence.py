@@ -84,12 +84,25 @@ class RoutingEvidence(TestCase):
         # (REAL) broker delivery was observed through it => routing proven.
         mb = self._mb("personal@gmail.com")
         c = self._contact(identity_email="broker@gmail.com", mailbox=mb)
-        ev = BrokerEvent.objects.create(owner=self.u, provenance=Provenance.REAL, event_type="WITHDRAWAL_REQUESTED",
-                                        received_at=timezone.now(),
+        ev = BrokerEvent.objects.create(owner=self.u, provenance=Provenance.REAL, broker="TradersWay",
+                                        event_type="WITHDRAWAL_REQUESTED", received_at=timezone.now(),
                                         transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
         BrokerMessageObservation.objects.create(owner=self.u, connected_mailbox=mb, provider="GMAIL",
                                                 provider_message_id="pm-%s" % _uniq(), event=ev)
         self.assertEqual(contact_verification.check_consistency(c), (True, "ok"))
+
+    @ON
+    def test_observed_delivery_of_a_different_broker_does_not_prove_routing(self):
+        # Broker-scoping (review findings 1/3): a REAL delivery of ANOTHER broker's mail into the same consolidated
+        # inbox must NOT prove routing for THIS (TradersWay) identity.
+        mb = self._mb("personal@gmail.com")
+        c = self._contact(identity_email="broker@gmail.com", mailbox=mb)   # identity broker = TradersWay
+        ev = BrokerEvent.objects.create(owner=self.u, provenance=Provenance.REAL, broker="IS6",
+                                        event_type="WITHDRAWAL_REQUESTED", received_at=timezone.now(),
+                                        transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
+        BrokerMessageObservation.objects.create(owner=self.u, connected_mailbox=mb, provider="GMAIL",
+                                                provider_message_id="pm-%s" % _uniq(), event=ev)
+        self.assertEqual(contact_verification.check_consistency(c), (False, "routing_unproven"))
 
     @ON
     def test_observed_delivery_must_be_authenticated_real(self):
@@ -109,8 +122,8 @@ class RoutingEvidence(TestCase):
         mb_bound = self._mb("personal@gmail.com")
         mb_other = self._mb("other@gmail.com")
         c = self._contact(identity_email="broker@gmail.com", mailbox=mb_bound)
-        ev = BrokerEvent.objects.create(owner=self.u, provenance=Provenance.REAL, event_type="WITHDRAWAL_REQUESTED",
-                                        received_at=timezone.now(),
+        ev = BrokerEvent.objects.create(owner=self.u, provenance=Provenance.REAL, broker="TradersWay",
+                                        event_type="WITHDRAWAL_REQUESTED", received_at=timezone.now(),
                                         transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
         BrokerMessageObservation.objects.create(owner=self.u, connected_mailbox=mb_other, provider="GMAIL",
                                                 provider_message_id="pm-%s" % _uniq(), event=ev)
