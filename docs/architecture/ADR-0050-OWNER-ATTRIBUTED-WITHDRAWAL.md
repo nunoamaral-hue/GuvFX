@@ -106,3 +106,17 @@ external-withdrawal evidence.**
   `account.withdrawals`), but readers that dereference `w.trading_account` must guard the None path.
 - The schema and correlation changes **must co-deploy** (code is incorrect against the old schema), and
   only after the DB-recovery GO/NO-GO gate clears for any production rollout.
+
+## Known limitation — cross-broker reference collapse (LOW, safe direction)
+
+`Withdrawal` has no `broker` field, so the correlation finder's owner bridge keys on `(owner,
+broker_reference_id)`. If one owner ever held two genuinely distinct external withdrawals that share the
+*same* `broker_reference_id` across *two different brokers* (brokers that independently reuse a numeric id),
+the bridge would **collapse** them into one record — an **under-count** (two real withdrawals shown as one),
+never an over-count. This is in the safe direction under the cardinal invariant and is **unreachable in the
+current single-broker (TradersWay) pilot**, where a reference is unique per broker; owner scoping also means
+it never leaks across owners. The robust fix, required **before** multi-broker owner-attributed withdrawals
+are relied upon, is to add a `broker` field to `Withdrawal` and bridge on `(owner, broker,
+broker_reference_id)` (the event already carries `broker`). That is a further schema change, deliberately
+**out of scope** for this DARK PR; recorded here so the account-optional projection is not mistaken for
+multi-broker-complete.
