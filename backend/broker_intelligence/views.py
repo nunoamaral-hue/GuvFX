@@ -139,7 +139,9 @@ class WithdrawalMetricsView(APIView):
         # dashboard (which excludes disconnected accounts because their LIVE balance is gone), this is a historical
         # record. Still strictly owner-scoped (user=request.user) with no staff bypass — never another member's data.
         accounts = TradingAccount.objects.filter(user=request.user)
-        return Response(withdrawal_metrics(accounts))
+        # owner=request.user ALSO includes the member's owner-attributed, account-UNRESOLVED withdrawals (ADR-0050) —
+        # a withdrawal whose broker account is not registered in GuvFX is still the member's own history.
+        return Response(withdrawal_metrics(accounts, owner=request.user))
 
 
 class WithdrawalHistoryView(APIView):
@@ -158,7 +160,8 @@ class WithdrawalHistoryView(APIView):
         acct_id = request.query_params.get("account_id") or None
         # A member can only ever filter to ONE OF THEIR OWN accounts: the id is intersected with their own account
         # set below in withdrawal_history (ids come from `accounts`), so a foreign account_id yields nothing.
-        return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id))
+        # owner=request.user ALSO includes the member's owner-attributed, account-UNRESOLVED withdrawals (ADR-0050).
+        return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id, owner=request.user))
 
 
 def _identity_json(i) -> dict:

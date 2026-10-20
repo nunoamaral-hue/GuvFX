@@ -10,8 +10,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from broker_intelligence.metrics import withdrawal_history
-from broker_intelligence.models import Provenance, Withdrawal
+from broker_intelligence.metrics import withdrawal_history, withdrawal_metrics
+from broker_intelligence.models import BrokerEvent, Provenance, TransactionCategory, Withdrawal
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -134,3 +134,72 @@ class WithdrawalHistoryDarkTests(TestCase):
         u = _user()
         c = APIClient(); c.force_authenticate(u)
         self.assertEqual(c.get("/api/broker-intelligence/withdrawals/history/").status_code, 404)
+
+
+class OwnerAttributedHistoryTests(TestCase):
+    """WV1 §4 / ADR-0050 — owner-attributed, account-UNRESOLVED withdrawals surface to the owning member."""
+
+    def _owner_wd(self, user, *, status=Withdrawal.Status.REQUESTED, ref="OW-1", broker="TradersWay"):
+        ev = BrokerEvent.objects.create(
+            owner=user, broker=broker, event_type="WITHDRAWAL_CONFIRMATION_REQUIRED",
+            transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL, broker_reference_id=ref,
+            received_at=timezone.now(), provenance=Provenance.REAL,
+            correlation_status=BrokerEvent.CorrelationStatus.CORRELATED)
+        return Withdrawal.objects.create(
+            owner=user, trading_account=None, status=status, broker_reference_id=ref, currency="USD",
+            amount=Decimal("250.00") if status == Withdrawal.Status.COMPLETED else None,
+            requested_at=timezone.now() - timedelta(minutes=33), requested_event=ev,
+            completed_at=timezone.now() if status == Withdrawal.Status.COMPLETED else None,
+            correlation_method=Withdrawal.CorrelationMethod.REFERENCE_ID, provenance=Provenance.REAL)
+
+    def test_account_unresolved_withdrawal_surfaces_to_owner(self):
+        u = _user()
+        self._owner_wd(u)
+        out = withdrawal_history(TradingAccount.objects.filter(user=u), owner=u)
+        self.assertEqual(len(out["withdrawals"]), 1)
+        r = out["withdrawals"][0]
+        self.assertTrue(r["account_unresolved"])
+        self.assertIsNone(r["trading_account_id"])
+        self.assertEqual(r["account_masked"], "UNRESOLVED")        # sentinel, never a fabricated number
+        self.assertEqual(r["broker"], "TradersWay")                # derived from the originating event
+        self.assertEqual(out["brokers"], ["TradersWay"])
+        self.assertEqual(out["accounts"], [])                      # no account selector entry for a null-account row
+
+    def test_account_unresolved_hidden_without_owner_param(self):
+        u = _user()
+        self._owner_wd(u)
+        self.assertEqual(withdrawal_history(TradingAccount.objects.filter(user=u))["withdrawals"], [])   # legacy scope
+
+    def test_account_unresolved_not_visible_to_other_user(self):
+        u, other = _user(), _user()
+        self._owner_wd(u)
+        out = withdrawal_history(TradingAccount.objects.filter(user=other), owner=other)
+        self.assertEqual(out["withdrawals"], [])                   # strictly owner-scoped — never cross-user
+
+    def test_mixed_account_and_owner_rows_both_surface(self):
+        u = _user()
+        a = _acct(u, "TradersWay")
+        _wd(a, status=Withdrawal.Status.COMPLETED, amount="100.00")   # account-resolved
+        self._owner_wd(u, ref="OW-2")                                  # account-unresolved
+        out = withdrawal_history(TradingAccount.objects.filter(user=u), owner=u)
+        self.assertEqual(len(out["withdrawals"]), 2)
+        self.assertEqual(len(out["accounts"]), 1)                   # only the resolved account is selectable
+        self.assertTrue(any(r["account_unresolved"] for r in out["withdrawals"]))
+
+    def test_metrics_count_includes_owner_attributed(self):
+        u = _user()
+        self._owner_wd(u, status=Withdrawal.Status.COMPLETED)
+        m = withdrawal_metrics(TradingAccount.objects.filter(user=u), owner=u)
+        self.assertEqual(m["total"], 1)
+        self.assertEqual(m["completed_count"], 1)
+
+    @override_settings(BROKER_WITHDRAWAL_UX_ENABLED="1")
+    def test_api_surfaces_owner_attributed(self):
+        u = _user()
+        self._owner_wd(u)
+        c = APIClient(); c.force_authenticate(u)
+        resp = c.get("/api/broker-intelligence/withdrawals/history/")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["withdrawals"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["account_unresolved"])

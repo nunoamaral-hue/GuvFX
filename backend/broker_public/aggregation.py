@@ -58,7 +58,12 @@ def _eligible_withdrawals(public_broker, *, certified_brokers):
     if not key or key not in certified_brokers:
         return []   # fail-closed: no authoritative key, or broker not certified ⇒ no eligible evidence
     key_l = key.lower()
-    rows = (Withdrawal.objects.filter(provenance=Provenance.REAL).select_related("trading_account"))
+    # ``trading_account__isnull=False``: an owner-attributed, account-UNRESOLVED withdrawal (ADR-0050) cannot be
+    # attributed to a specific broker ACCOUNT, so it must NEVER feed a broker's cross-member public metrics. These
+    # rows were already excluded incidentally (a null account yields no broker_name to match); the explicit filter
+    # makes the exclusion a guarantee (and keeps owner grouping below, which reads trading_account.user_id, correct).
+    rows = (Withdrawal.objects.filter(provenance=Provenance.REAL, trading_account__isnull=False)
+            .select_related("trading_account"))
     rows = [w for w in rows
             if (getattr(w.trading_account, "broker_name", "") or "").strip().lower() == key_l]
     if broker_public_consent_required():

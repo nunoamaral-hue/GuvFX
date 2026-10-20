@@ -35,8 +35,9 @@ export type WithdrawalState = "pending" | "completed" | "failed" | "unresolved";
 export type WithdrawalRow = {
   id: number;
   broker: string;
-  trading_account_id: number;
-  account_masked: string;
+  trading_account_id: number | null;   // null => owner-attributed, account-UNRESOLVED (ADR-0050)
+  account_masked: string;               // last-4, or the sentinel "UNRESOLVED" for an account-unresolved row
+  account_unresolved?: boolean;         // true => the broker account is not registered in GuvFX (owner-attributed)
   state: WithdrawalState;
   status: string;
   amount: string | null;              // observed amount (decimal string) or null — never fabricated
