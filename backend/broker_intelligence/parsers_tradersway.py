@@ -122,14 +122,16 @@ _WITHDRAWAL_DIRECTION = re.compile(
     r"\b(to\s+withdraw|withdrawal\s+request|request(?:ed)?\s+(?:a\s+|your\s+)?withdrawal|"
     r"withdraw(?:al)?\s+(?:of\s+)?funds?|withdrawn)\b", re.IGNORECASE)
 # VETO tokens: wording that means money did NOT leave the broker to an external rail as part of THIS message —
-# money-IN (deposit / funding / top-up) OR a terminal-negative outcome (rejected / declined / denied / cancelled).
-# Any of these present ⇒ never EXTERNAL_WITHDRAWAL (defense-in-depth backstop for a mis-routed lifecycle or a
-# funding/credit email that quotes a rail + withdrawal boilerplate). Deliberately NOT "credited" (ambiguous — a
-# genuine payout may be "credited to your bank"). Verified: the genuine request carries none of these, so the veto
-# never under-claims the real case; and under-claiming is the safe direction regardless.
+# money-IN (deposit / funding / top-up / credited / replenished) OR a terminal-negative outcome (rejected / declined
+# / denied / cancelled). Any of these present ⇒ never EXTERNAL_WITHDRAWAL (defense-in-depth backstop for a mis-routed
+# lifecycle or a funding/credit receipt that quotes a rail + withdrawal CTA boilerplate). "credited"/"replenished"
+# ARE vetoed: a deposit receipt ("your account has been credited") could otherwise over-claim, and the only cost is
+# UNDER-claiming the rare withdrawal notice phrased "will be credited to your wallet" — safe under the domain rule
+# (over-claim is forbidden; under-claim is not). Verified: the genuine request carries NONE of these tokens, so the
+# veto never under-claims the real pilot case.
 _NOT_EXTERNAL_VETO = re.compile(
-    r"\b(deposit(?:ed|s|ing)?|funded|funding|top[\s-]?up|topped\s+up|rejected|declined|denied|cancell?ed|canceled)\b",
-    re.IGNORECASE)
+    r"\b(deposit(?:ed|s|ing)?|funded|funding|top[\s-]?up|topped\s+up|credited|replenished|"
+    r"rejected|declined|denied|cancell?ed|canceled)\b", re.IGNORECASE)
 
 # TradersWay external-payout references (genuine pilot pair, 2026-10-19): the REQUEST states "request number #<N>";
 # the COMPLETION states "Payment request #<N>" — the SAME authenticated broker transaction reference links the pair

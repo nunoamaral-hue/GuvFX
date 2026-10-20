@@ -265,6 +265,17 @@ class TransactionClassifierTests(TestCase):
         if parsed is not None:
             self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
 
+    def test_credited_deposit_receipt_with_rail_is_not_external(self):
+        # Re-review round 3: a money-IN receipt phrased "credited" (evading the deposit/funded tokens) that also
+        # carries a withdrawal-CTA footer and a line-start rail must NOT over-claim. The broadened veto ("credited")
+        # blocks it. (The genuine pilot request carries no "credited" token, so this never under-claims it.)
+        parsed = self.p.parse(
+            from_address="payments@tradersway.com", subject="Your payment has been received",
+            body=("Your trading account has been credited with 300.00 USD.\nPayment method: Ethereum\n"
+                  "You can submit a withdrawal request at any time from your cabinet.\n"))
+        if parsed is not None:
+            self.assertNotEqual(parsed.transaction_category, TransactionCategory.EXTERNAL_WITHDRAWAL)
+
     def test_settings_footer_rail_mid_sentence_is_not_external(self):
         # CONFIRMED defect F3: a rail named mid-sentence in a settings footer ("manage your payment method: Ethereum
         # anytime") must NOT satisfy the external-evidence field — the label is line-anchored (a structured field),
