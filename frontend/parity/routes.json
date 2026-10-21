@@ -5,6 +5,7 @@
   "src/app/(app)/account/usage/page.tsx",
   "src/app/(app)/accounts/[id]/page.tsx",
   "src/app/(app)/accounts/[id]/strategies/[assignmentId]/page.tsx",
+  "src/app/(app)/accounts/[id]/copy-trading/page.tsx",
   "src/app/(app)/accounts/[id]/strategies/page.tsx",
   "src/app/(app)/accounts/page.tsx",
   "src/app/(app)/admin/hosting/page.tsx",

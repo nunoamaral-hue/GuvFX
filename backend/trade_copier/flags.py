@@ -46,3 +46,12 @@ def copier_replication_enabled() -> bool:
     execution. Any future gated DEMO execution-job creation sits behind a SEPARATE, additional flag
     and is never enabled by this one."""
     return copier_enabled() and _flag("COPIER_REPLICATION_ENABLED")
+
+
+def copier_ui_enabled() -> bool:
+    """Gate for the customer-facing read-only Copy Trading UI + its read API (PR C). DEFAULT OFF.
+
+    Independent of the observer/replication gates so the monitoring UI can be shown (read-only) without
+    arming any observation or execution. When OFF the read API reports enabled:false and returns no
+    rows, and the frontend hides the Copy Trading entry — nothing is exposed in production until armed."""
+    return _flag("COPIER_UI_ENABLED")
