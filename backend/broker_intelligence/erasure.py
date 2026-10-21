@@ -5,11 +5,14 @@ plane for erasure: the dry-run PLAN (pure) and the validated, concurrency-safe E
 destructive deletion runs ONLY through a privileged database backend that is **provisioned separately under
 Sponsor authorization** (a dedicated NOLOGIN role `guvfx_erasure` + a SECURITY DEFINER procedure), because:
 
-- **Finding 2 (privilege boundary).** Immutability is enforced by the DB triggers checking that the deleting
+- **Finding 2 (privilege boundary).** Immutability is enforced by DB BEFORE-DELETE triggers checking that the
   session's ``current_user`` is ``guvfx_erasure`` (migration 0017) — NOT a forgeable session GUC. The ordinary
-  application role is not a member of ``guvfx_erasure`` and cannot ``SET ROLE`` to it, so it can never delete
-  evidence/events, even with arbitrary ``SET``/raw SQL/ORM. Until the privileged backend is provisioned the
-  role does not exist and deletion is impossible for everyone — fail-closed.
+  app role is not a member of ``guvfx_erasure`` and cannot ``SET ROLE`` to it, so EVERY ordinary DML DELETE path
+  (ORM/bulk/raw) is blocked. The migration alone is NOT a complete boundary against a FULLY-COMPROMISED app role
+  (which still OWNS these tables + trigger functions and could TRUNCATE or strip the triggers via DDL); those
+  OWNER-LEVEL vectors are closed by the separate superuser provisioning that moves object ownership off the app
+  role + REVOKEs DELETE/TRUNCATE (ops/erasure/provision_erasure_privilege.sql). Until that role exists, no
+  governed delete is possible either — fail-closed.
 
 This control plane adds: concurrency safety (``select_for_update`` + per-subject advisory lock + re-validation
 under the lock), identity/hold/flag/token gates, and a hard readiness check. The durable deletion-outbox +

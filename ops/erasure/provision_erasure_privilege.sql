@@ -34,6 +34,24 @@ GRANT DELETE ON
   TO guvfx_erasure;
 -- GRANT INSERT ON broker_intelligence_deletiontask TO guvfx_erasure;   -- (after the outbox table ships)
 
+-- 2b) CLOSE THE OWNER-LEVEL TRUNCATE/DDL VECTORS (adversarial-review HIGH). The migration-only state blocks all
+--     ordinary DML DELETE, but the application role still OWNS the two evidence tables + the trigger functions, so
+--     a FULLY-COMPROMISED app role could TRUNCATE, DISABLE/DROP the triggers, or CREATE OR REPLACE the functions.
+--     Moving OWNERSHIP off the app role removes that power; the app role keeps only the DML it needs for ingestion
+--     (SELECT/INSERT/UPDATE), never DELETE/TRUNCATE. Replace <APPLICATION_ROLE> with the real app role.
+ALTER TABLE broker_intelligence_evidenceblob OWNER TO guvfx_erasure;
+ALTER TABLE broker_intelligence_brokerevent  OWNER TO guvfx_erasure;
+ALTER FUNCTION bi_evidenceblob_block_delete()   OWNER TO guvfx_erasure;
+ALTER FUNCTION bi_brokerevent_block_delete()    OWNER TO guvfx_erasure;
+ALTER FUNCTION bi_evidenceblob_block_truncate() OWNER TO guvfx_erasure;
+ALTER FUNCTION bi_brokerevent_block_truncate()  OWNER TO guvfx_erasure;
+REVOKE DELETE, TRUNCATE ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent FROM <APPLICATION_ROLE>;
+GRANT SELECT, INSERT, UPDATE ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent TO <APPLICATION_ROLE>;
+GRANT USAGE, SELECT ON SEQUENCE broker_intelligence_evidenceblob_id_seq, broker_intelligence_brokerevent_id_seq
+      TO <APPLICATION_ROLE>;
+-- OPERATIONAL CAVEAT: after ownership moves, future Django migrations that ALTER these two tables must run as a
+-- role that owns them (guvfx_erasure or a superuser), not the ordinary app role. Factor this into the deploy runbook.
+
 -- 3) The governed SECURITY DEFINER procedure (findings 3/4/5/8). OWNED BY guvfx_erasure; the application
 --    role is granted EXECUTE only. Body is authored with the durable deletion-outbox increment and must be
 --    reviewed + rehearsed before use. Outline (DO NOT run until the outbox table + body are finalized):

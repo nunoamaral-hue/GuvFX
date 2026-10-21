@@ -159,10 +159,12 @@ def broker_routing_evidence_required() -> bool:
 
 def broker_intelligence_erasure_enabled() -> bool:
     """Master gate for the CONTROLLED OWNER-SCOPED ERASURE path (GDPR/UK-GDPR Art 17), per ADR-0054. DEFAULT OFF and
-    this is the ONLY switch that lets the governed erasure run at all: while OFF, ``execute_owner_erasure`` refuses
-    and the per-session GUC that the DB immutability triggers consult is never set — so ordinary immutability
-    (EvidenceBlob/BrokerEvent are never deletable) is completely unaffected. The plan (dry-run) is pure/testable
-    regardless; this flag governs only whether a real mutation may be attempted, and even then only through the
-    staff/governance CLI with a verified owner, an explicit ErasureRequest and a second confirmation. It grants NO
-    execution/strategy/credential authority and never a financial action. Never exposed as a customer endpoint."""
+    this is the ONLY switch that lets the governed erasure run at all: while OFF, ``execute_owner_erasure`` refuses.
+    Immutability itself is NOT enforced by this flag or by any session setting — it is enforced at the DATABASE by
+    the EvidenceBlob/BrokerEvent BEFORE-DELETE triggers (migration 0017), which permit a DELETE ONLY when
+    current_user is the privileged role ``guvfx_erasure``; owner-level vectors (TRUNCATE/DDL) are closed by the
+    separate superuser provisioning that moves object ownership off the app role. The plan (dry-run) is pure/testable regardless; this flag governs only whether a real mutation may
+    be attempted, and even then only through the staff/governance CLI with a verified owner, an explicit
+    ErasureRequest and a second confirmation. It grants NO execution/strategy/credential authority and never a
+    financial action. Never exposed as a customer endpoint."""
     return _flag("BROKER_INTELLIGENCE_ERASURE_ENABLED")

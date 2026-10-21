@@ -155,3 +155,10 @@ class ControlledErasureControlPlaneTests(TestCase):
                     cur.execute("SET LOCAL \"guvfx.erasure_authorized\" = 'on'")
                 BrokerEvent.objects.filter(pk=e.pk).delete()
         self.assertTrue(BrokerEvent.objects.filter(pk=e.pk).exists())
+
+    # NOTE (adversarial-review HIGH): row-level BEFORE-DELETE triggers do NOT cover TRUNCATE, and the ordinary
+    # app role (table owner, pre-provisioning) can TRUNCATE / DISABLE / DROP triggers via DDL. Those owner-level
+    # vectors are closed by the SEPARATE superuser provisioning (ops/erasure/provision_erasure_privilege.sql),
+    # which moves object ownership off the app role + REVOKEs DELETE/TRUNCATE — not by this app-role migration.
+    # A trigger-level TRUNCATE block was rejected: an owner bypasses any trigger, and it breaks Django's test
+    # flush. The migration here closes exactly the DML DELETE vectors the forgeable GUC previously gated.

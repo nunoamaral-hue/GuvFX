@@ -22,9 +22,15 @@ be removed, gated so ordinary immutability is unchanged everywhere else.
    not proof the delete came through the governed path. `current_user` can become `guvfx_erasure` **only**
    via a SECURITY DEFINER procedure owned by that role; the ordinary application role is not a member and
    cannot `SET ROLE` to it. The privileged role + procedure are **provisioned separately by a superuser**
-   (`ops/erasure/provision_erasure_privilege.sql`); until then the role does not exist and deletion is
-   impossible for everyone — fail-closed. Proved by `test_ordinary_delete_blocked` and
-   `test_old_guc_cannot_bypass`.
+   The migration (app-role-safe) blocks **every ordinary DML DELETE** (ORM/bulk/raw). It is **not, by itself, a
+   complete boundary against a fully-compromised app role**, which still OWNS these tables + trigger functions and
+   could **TRUNCATE** (row-level DELETE triggers do not cover TRUNCATE) or strip the triggers via DDL (DISABLE/DROP
+   trigger, CREATE OR REPLACE the function). Those **owner-level** vectors are closed by the **separate superuser
+   provisioning** (`ops/erasure/provision_erasure_privilege.sql`), which moves object **ownership** off the app
+   role and REVOKEs DELETE/TRUNCATE. (A BEFORE-TRUNCATE trigger was considered and rejected: an owner bypasses any
+   trigger pre-provisioning, it adds nothing the provisioning REVOKE does not, and it breaks Django's legitimate
+   owner-level test-flush.) Until `guvfx_erasure` exists, no governed delete is possible either — fail-closed.
+   Proved by `test_ordinary_delete_blocked` and `test_old_guc_cannot_bypass`.
 2. **Data-subject identity verification.** An explicit `ErasureRequest` with `identity_verified = True`
    is required (operator attests out-of-band verification). Unverified ⇒ refused.
 3. **Owner-scoped authorization.** Erasure acts on exactly ONE owner (`subject_user_id_snapshot`); it

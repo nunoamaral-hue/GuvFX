@@ -52,33 +52,31 @@ class Migration(migrations.Migration):
             },
         ),
         # ADR-0054 (post-adversarial-review): ROLE-ENFORCED immutability — NOT a forgeable GUC. The
-        # EvidenceBlob/BrokerEvent BEFORE-DELETE trigger functions (migration 0002) permit a delete ONLY when the
-        # DELETING SESSION'S current_user is the dedicated privileged role `guvfx_erasure`. A custom GUC was
-        # rejected because ANY session on the ordinary application role can `SET`/`SET LOCAL` it — it is not proof
-        # the delete came through the governed path. `current_user` can only become `guvfx_erasure` via a
-        # SECURITY DEFINER procedure owned by that NOLOGIN role (or a dedicated connection as it); the ordinary
-        # application role is NOT a member of `guvfx_erasure` and so cannot `SET ROLE` to it. Until that privileged
-        # backend is SEPARATELY PROVISIONED (superuser; see ops/erasure/provision_erasure_privilege.sql), the role
-        # does not exist, so `current_user` can never equal it and deletion of evidence/events is IMPOSSIBLE for
-        # every ordinary path — fail-closed. This migration is runnable by the non-superuser application role (it
-        # only CREATE OR REPLACEs functions the app role already owns); it creates no role and grants nothing.
-        # Reverse restores the unconditional-raise bodies from migration 0002. No backfill; no data change.
+        # EvidenceBlob/BrokerEvent BEFORE-DELETE trigger functions permit a DELETE ONLY when the session's
+        # current_user is the dedicated privileged role `guvfx_erasure`. A session GUC was rejected (any session on
+        # the ordinary app role can SET it). This app-role migration closes EVERY ORDINARY DML DELETE path — ORM
+        # `.delete()`, `QuerySet.delete()`, bulk, raw `DELETE`. It does NOT by itself close the OWNER-LEVEL vectors
+        # a FULLY-COMPROMISED app role could use (it still OWNS these tables + trigger functions, so it could
+        # TRUNCATE — row-level DELETE triggers do not cover TRUNCATE — or DISABLE/DROP the triggers or CREATE OR
+        # REPLACE the functions via DDL). Those owner-level vectors are closed by the SEPARATE superuser-authorized
+        # provisioning (ops/erasure/provision_erasure_privilege.sql), which moves object OWNERSHIP off the app role
+        # and REVOKEs DELETE/TRUNCATE. (A BEFORE-TRUNCATE trigger here was deliberately NOT added: an owner can
+        # bypass any trigger pre-provisioning, it adds nothing the provisioning REVOKE does not, and it breaks
+        # Django's legitimate owner-level test-flush TRUNCATE.) Until `guvfx_erasure` exists, current_user can never
+        # equal it, so no governed delete is possible either — fail-closed. Reverse restores the unconditional-raise
+        # DELETE bodies from migration 0002.
         migrations.RunSQL(
             sql=r"""
 CREATE OR REPLACE FUNCTION bi_evidenceblob_block_delete() RETURNS trigger AS $fn$
 BEGIN
-    IF current_user = 'guvfx_erasure' THEN
-        RETURN OLD;
-    END IF;
+    IF current_user = 'guvfx_erasure' THEN RETURN OLD; END IF;
     RAISE EXCEPTION 'EvidenceBlob is immutable raw evidence; DELETE is not allowed (quarantine, never destroy)';
 END;
 $fn$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION bi_brokerevent_block_delete() RETURNS trigger AS $fn$
 BEGIN
-    IF current_user = 'guvfx_erasure' THEN
-        RETURN OLD;
-    END IF;
+    IF current_user = 'guvfx_erasure' THEN RETURN OLD; END IF;
     RAISE EXCEPTION 'BrokerEvent is append-only evidence; DELETE is not allowed (quarantine, never destroy)';
 END;
 $fn$ LANGUAGE plpgsql;
