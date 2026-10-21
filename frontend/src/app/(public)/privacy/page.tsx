@@ -94,8 +94,8 @@ const copy: Record<Lang, {
         h: "7. Retention and deletion",
         p: [
           "Disconnecting your email in GuvFX removes GuvFX's stored access to that mailbox and stops further reading. You can also remove GuvFX's access directly in your Google Account (see section 8).",
-          "You may request deletion of your derived withdrawal and broker records and stored evidence by contacting support@guvfx.com; we delete within [RETENTION PERIOD — Sponsor to confirm] unless retention is legally required.",
-          "Operational and security logs are retained for [LOG RETENTION PERIOD — Sponsor to confirm].",
+          "Broker-email evidence is retained write-once in a separate evidence store. A controlled process for erasing your derived records and stored evidence on request is being implemented; until it is live for your account, erasure requests are handled on a case-by-case basis — contact support@guvfx.com — and some records may be retained where we are required to keep them by law or for fraud-prevention and security.",
+          "Operational and security logs are retained for a limited period; security and legal-evidence records (such as authentication and credential events) may be kept longer under a lawful basis.",
         ],
       },
       {
@@ -114,13 +114,13 @@ const copy: Record<Lang, {
       {
         h: "10. Your rights",
         p: [
-          "Depending on your jurisdiction you may have rights to access, rectification, erasure, restriction, portability, objection and withdrawal of consent. Contact support@guvfx.com. You may also complain to your data-protection authority [SUPERVISORY AUTHORITY — Sponsor to confirm].",
+          "Depending on your jurisdiction you may have rights to access, rectification, erasure, restriction, portability, objection and withdrawal of consent. Contact support@guvfx.com. You may also complain to your data-protection authority; in the UK this is the Information Commissioner's Office (ICO).",
         ],
       },
       {
         h: "11. Changes and contact",
         p: [
-          "We will post changes here and update the date above. Questions: support@guvfx.com. Data protection contact: [DPO / DATA-PROTECTION CONTACT — Sponsor to confirm].",
+          "We will post changes here and update the date above. Questions: support@guvfx.com. We have not appointed a Data Protection Officer; data-protection enquiries may be sent to support@guvfx.com.",
         ],
       },
     ],
@@ -184,8 +184,8 @@ const copy: Record<Lang, {
         h: "7. 保持と削除",
         p: [
           "GuvFXでメール連携を解除すると、GuvFXが保管する当該メールボックスへのアクセスが削除され、以降の読み取りは停止します。Googleアカウントから直接GuvFXのアクセスを削除することもできます（第8項参照）。",
-          "抽出された出金・ブローカー記録および保存された証跡の削除は、support@guvfx.com までご請求いただけます。法令上の保持義務がない限り[保持期間 — スポンサー確認待ち]以内に削除します。",
-          "運用・セキュリティログは[ログ保持期間 — スポンサー確認待ち]保持します。",
+          "ブローカーメールの証跡は、別個の証跡ストアにwrite-onceで保持されます。ご請求に応じて派生記録および保存証跡を消去する管理された手続きを現在実装中であり、お客様のアカウントで利用可能になるまでは、消去のご請求は個別に対応します（support@guvfx.com）。法令上、または不正防止・セキュリティ上、保持が必要な記録は保持される場合があります。",
+          "運用・セキュリティログは限定された期間保持します。認証・資格情報イベント等のセキュリティ／法的証跡記録は、適法な根拠に基づきより長く保持される場合があります。",
         ],
       },
       {
@@ -204,13 +204,13 @@ const copy: Record<Lang, {
       {
         h: "10. お客様の権利",
         p: [
-          "お住まいの法域に応じて、アクセス・訂正・消去・制限・ポータビリティ・異議・同意撤回の権利を有する場合があります。support@guvfx.com までご連絡ください。データ保護監督機関[監督機関 — スポンサー確認待ち]への申立ても可能です。",
+          "お住まいの法域に応じて、アクセス・訂正・消去・制限・ポータビリティ・異議・同意撤回の権利を有する場合があります。support@guvfx.com までご連絡ください。データ保護監督機関（英国では情報コミッショナー事務局（ICO））への申立ても可能です。",
         ],
       },
       {
         h: "11. 変更と連絡先",
         p: [
-          "変更は本ページに掲示し、上記の日付を更新します。お問い合わせ：support@guvfx.com。データ保護に関する連絡先：[DPO／データ保護担当 — スポンサー確認待ち]。",
+          "変更は本ページに掲示し、上記の日付を更新します。お問い合わせ：support@guvfx.com。データ保護責任者（DPO）は選任していません。データ保護に関するお問い合わせは support@guvfx.com までお送りください。",
         ],
       },
     ],

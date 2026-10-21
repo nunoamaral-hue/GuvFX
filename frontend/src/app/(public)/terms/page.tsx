@@ -103,7 +103,7 @@ const copy: Record<Lang, {
       {
         h: "11. Governing law and contact",
         p: [
-          "These terms are governed by [GOVERNING LAW — Sponsor to confirm], with disputes subject to [JURISDICTION — Sponsor to confirm]. Questions: support@guvfx.com.",
+          "These terms are governed by the laws of England and Wales, with disputes subject to the exclusive jurisdiction of the courts of England and Wales. Questions: support@guvfx.com.",
         ],
       },
     ],
@@ -184,7 +184,7 @@ const copy: Record<Lang, {
       {
         h: "11. 準拠法と連絡先",
         p: [
-          "本規約は[準拠法 — スポンサー確認待ち]に準拠し、紛争は[管轄 — スポンサー確認待ち]に服します。お問い合わせ：support@guvfx.com。",
+          "本規約はイングランド及びウェールズの法律に準拠し、紛争はイングランド及びウェールズの裁判所の専属管轄に服します。お問い合わせ：support@guvfx.com。",
         ],
       },
     ],
