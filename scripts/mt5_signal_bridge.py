@@ -1939,7 +1939,12 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
             positions = mt5.positions_get()
 
         if positions is None:
-            positions = ()
+            # positions_get() returning None is a FAILURE, not a flat account (ADR-0051 BLOCKER-1).
+            # Masking it as an empty list would let a read error be misread downstream as "all
+            # positions closed" and fabricate closes. A genuine flat account returns an empty TUPLE
+            # from a SUCCESSFUL call; None means the query failed. Report it as an error so the
+            # read-only observer fails closed and never advances its baseline. Still a pure read.
+            return {"ok": False, "error": "positions_get_failed", "detail": str(mt5.last_error())}
 
         pos_list = []
         for p in positions:
@@ -1954,6 +1959,15 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
                 "profit": p.profit,
                 "magic": p.magic,
                 "comment": p.comment,
+                # ADDITIVE (ADR-0051 copier observer): protective levels + position timing/identity so the
+                # read-only master observer can diff SL/TP changes and correlate positions. PURE READ — these
+                # are attributes of the position object already fetched; no extra MT5 call, no mutation. MT5
+                # encodes "no level" as 0.0. getattr-guarded so an older MT5 object shape cannot break the read.
+                "sl": getattr(p, "sl", None),
+                "tp": getattr(p, "tp", None),
+                "time": getattr(p, "time", None),
+                "time_update": getattr(p, "time_update", None),
+                "identifier": getattr(p, "identifier", None),
             })
 
         # Return the OBSERVED session identity alongside the positions so the backend read firewall can bind

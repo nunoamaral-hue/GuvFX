@@ -1,18 +1,87 @@
 # NEXT — Priorities (keep this list short)
 
-## ★★★ WITHDRAWAL V1 — REMAINING ENGINEERING COMPLETE (2026-10-13)
-All sample-independent engineering is DONE and DARK (PR1 #487 identity verification/binding — MERGED+DEPLOYED+CERTIFIED;
-PR2 #488 Withdrawals UX, PR3 #489 BrokerProfile↔catalogue + IS6 auth, PR4 #490 dual-broker readiness + §7 classifier
-architecture — MERGED, DARK). See the 2026-10-13 STATUS entry.
-**The remaining items are NOT engineering — they are Sponsor/human acts (GuvFX never initiates/confirms a transaction):**
-1. **Arm continuous dual-broker ingestion** per `docs/WITHDRAWAL_V1_DUAL_BROKER_ACTIVATION.md` (verify with the read-only
-   `withdrawal_ingest_readiness` command → CAPTURE-READY, then set `BROKER_INTELLIGENCE_INGEST_ENABLED=1` + schedule
-   `run_mailbox_ingest`). Captures authenticated dual-broker mail as immutable evidence; a positive classifier is NOT
-   required to capture (UNKNOWN-category evidence is preserved, never misclassified).
-2. **A genuine external withdrawal** (IS6 USD 10 and/or TradersWay), Sponsor-initiated, to certify the positive
-   `EXTERNAL_WITHDRAWAL` classifier — until one exists, parsers emit only DEPOSIT/INTERNAL_TRANSFER/UNKNOWN and **0
-   `Withdrawal` rows surface** (expected).
-3. **IS6/acct47 identity onboarding** (PR-C; separate authorization) — then the reusable verify/bind capability can bind it.
+## ★★★ MT5 MASTER/FOLLOWER COPIER — backend foundation ENGINEERING COMPLETE + DARK (2026-10-20, PR #528)
+Packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0; PD scope GO = DARK observer-first; ADR-0051).
+`trade_copier` app: **PR A** read-only master observer + append-only event ledger (+additive bridge sl/tp
+read field); **PR B** follower config + replication **intent** engine (sizing/symbol-map/SL-TP translation/
+idempotency) that creates **ZERO ExecutionJobs**. All DARK (default-OFF flags); `trade_copier` 64 tests +
+full regression **6188 OK**. PR #528 open, auto-merge OFF, **merge gated on governance ratification**;
+**Activation NO-GO**; no prod deploy/migration. **LIVE follower execution NOT authorized (RED); LIVE
+follower close/SL-TP has NO bridge path (demo-locked).** Monday demo = LIVE master read-only observation +
+DEMO/shadow followers, clearly labelled (packet §15 fallback) — a genuine LIVE-money copy demo is NO-GO.
+**One bounded next action:** build **B-exec** — the gated DEMO `ExecutionJob` creation from recorded
+intents (enqueue-only, DEMO followers only, LIVE blocked) — then PR C (Copy Trading UX) and PR D
+(cross-broker cert + real-MT5 DEMO rehearsal; infra reachable: VPS + bridge :8788 up 2026-10-20).
+Detail: `docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md`, `docs/ADRs/0051-mt5-master-follower-copier.md`.
+## ★★★ BROKER INTELLIGENCE CUSTOMER PILOT — ENGINEERING COMPLETE + DARK-MERGED, ACTIVATION NO-GO (2026-10-20, main `8125770f`)
+Seven DARK PRs (#522–#527) complete the multi-account customer subsystem (§2–§6) + public privacy posture. Report:
+`docs/GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_REPORT.md`. All flags default OFF; no prod migration/activation. The
+genuine TradersWay external-withdrawal pilot is **BLOCKED on the raw genuine RFC822 evidence** (not in repo; not
+fabricated — the parser has a structural no-prose→EXTERNAL invariant) and on operator certification
+(`CERTIFIED_BROKERS` empty). **One bounded next action:** the Sponsor/ops provide the genuine withdrawal RFC822 (or
+run `extract_sanitised_fixture` on the production blob) so the EXTERNAL_WITHDRAWAL classifier can be certified against
+genuine evidence — every other §6 step is gated behind that. Activation (public metrics, routing/attribution/
+consent flags) remains PM/Sponsor-gated behind genuine data + scoring/consent governance + migration-first deploy.
+## ★★★ WV1 BOARD-DEMO CRITICAL PATH — DELIVERED + DARK-MERGED, PRODUCTION NO-GO/GATED (2026-10-20, main `2d6c3f1a`)
+Four DARK PRs (#530–#533) make Withdrawal Intelligence a functioning, visible demo: certified external-withdrawal
+parser; owner-attributed/account-UNRESOLVED schema+correlation (ADR-0050, mig 0016); owner-scoped member API+UI;
+isolated board-demo env (seed + demo-visible flag + env plumbing). **The genuine-evidence blocker is RESOLVED** — the
+pilot pair IS in the prod evidence store (authenticated, 33m01s, owner-29/account-UNRESOLVED) and the parser is
+certified against it (read-only, RULE-11). Report `docs/GUVFX_WV1_FRIDAY_BOARD_DEMO_REPORT.md`; runbook
+`docs/WV1_BOARD_DEMO_RUNBOOK.md`. **One bounded next action:** run the Board demo per the runbook on the isolated demo
+DB (Monday 2026-10-26). Production activation stays human-gated: **G1** prod migration 0011→0016 NO-GO until off-host
+DB-recovery verified restore; **G2** production certification needs a genuine Sponsor-initiated withdrawal observed
+live (GuvFX never initiates/confirms/cancels); **G3** Google OAuth publish; **G4** confirm the WAYOND preview surface.
+
+## ★★★ T1 SOURCE-AWARE IDENTITY — MERGED, NOT DEPLOYED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED` (2026-10-13, PR #495)
+`T1_IMPLEMENTATION_COMPLETE` + `T1_CERTIFIED_IN_TESTS` + `T1_MERGED` (`main` `48db801`, CI 10/10). DARK-deployment
+readiness assessed (read-only prod inspection + isolated rehearsal): **GO conditional on a controlled maintenance
+window** — mixed-version is UNSAFE so deploy = stop listener → migrate → recreate backend+listener (watermark
+catch-up; flag stays OFF). Runbook + report: `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`,
+`docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`.
+**CATCH-UP COMPLETENESS (readiness HIGH-1) — code correction DONE + certified DARK (R1+R2, 2026-10-14, PR #497).**
+`catch_up` paginates beyond 200 and resumes from a durable per-provider CHECKPOINT (migration **0012**,
+watermark-backfilled, DARK — path now `0009→0010→0011→0012`); bounds pages/wall-clock/flood-wait. **R2:** the
+checkpoint is the highest SAFELY-ACCOUNTED boundary — never advances past the earliest unaccounted (ignored/
+non-genuine) retrieval; FloodWait rejects oversized server waits (no premature retry); migration 0012 init is gated by
+the read-only `reconcile_catchup_checkpoint --gate` (DB can't prove historical completeness). Two renewed adversarial
+reviews: R1 4 + R2 3 confirmed defects fixed + re-verified. **PR #497 MERGED to `main` (`ac4f6b4`, squash, PD-authorized,
+CI 10/10) 2026-10-14 — still DARK, NOT deployed, migration 0012 NOT applied to prod.** Overall production DARK-deployment
+remains **NO-GO**, gated by **HIGH-2 (production DB recovery)** — now being addressed by the DB Recovery Foundation below.
+One bounded next action: **progress the DB Recovery Foundation → then PD governs production DARK deployment separately.**
+
+## ★★★ DB RECOVERY FOUNDATION — ENGINEERING+DESIGN DONE, ACTIVATION NO-GO (2026-10-14, DARK; R3)
+Addresses HIGH-2. Design + certified DARK tooling (`docs/DB_RECOVERY_FOUNDATION.md`, `ops/recovery/`, isolated cert
+**97/97** = 64 recovery + 20 provisioner + 13 cleanup, least-privilege role). **R3 correction (final bounded safety):** the
+privileged provisioner `tests/setup_isolated_cluster.sh` now `initdb`s its OWN dedicated ephemeral cluster (private
+socket, no TCP) instead of doing DDL against a shared cluster; setup AND teardown require the production id and act
+only on the stamped ephemeral dir they own; `tests/certify_provisioner.sh` (20 cases) certifies the trust
+boundary. **R3 CLOSEOUT (two harness-safety MEDIUMs):** subshell-safe cleanup tracking via `tests/eph_tracking.sh`
+(a `$(mktroot)` subshell no longer loses the trap's root list) + `tests/certify_cleanup.sh` (6); teardown now
+**verifies the postmaster stopped before any `rm`** (refuse + preserve evidence otherwise). R2 (retained): independent harness attestation; per-database restore-target authorization; encrypted-archive
+FORMAT verification; `--gate` vs `--gate-usable`; enforceable `ulimit -f` ceiling. PR #498 DARK,
+NOT merged, auto-merge OFF. **`PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RESTORE_TESTED` BLOCKED.** Remaining Sponsor decisions (none done here):
+(1) provision **off-host** storage (NAS/object store); (2) resolve the **root FS 96%** P0 (expand / governed prune of
+~1.7 GB stale dumps); (3) authorize an automated backup schedule + its passphrase secret; (4) decide if sub-hour RPO
+(→ PITR) is required; (5) OVH snapshots for host-loss DR; (6) optional `data_checksums` + audit-retention policy.
+**Do NOT** create/run a production backup or restore, change PITR/WAL/DB config, or recreate containers.
+**Do NOT** deploy, apply prod migrations, switch the Telegram channel, reset the watermark, restart the listener, or
+change any flag. The Telegram **source switch remains a separate, future Sponsor-authorised cutover packet**
+(`docs/T1_SOURCE_AWARE_IDENTITY.md`: reset watermark via `onboard_provider --reset-watermark`; set
+`SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED=1`; ONE continuous repurposed provider).
+
+
+## ★★★ WITHDRAWAL V1 — ENGINEERING COMPLETE; CONTINUOUS INGESTION LIVE; EVIDENCE-BLOCKED on the positive classifier (2026-10-13)
+All engineering DONE and DARK (PR1 #487 … PR4 #490, #493 — MERGED+DEPLOYED). **Superseded/completed next-actions
+corrected:** continuous read-only **dual-broker ingestion is LIVE + CERTIFIED** (`BROKER_INTELLIGENCE_INGEST_ENABLED=1`
+in backend-only `broker_intel.env`; systemd `guvfx-broker-ingest.timer`, 5-min flock; `DUAL_BROKER_CONTINUOUS_INGESTION_PASS`),
+and **IS6/acct47 broker identity is already BOUND** (id=2). Do NOT re-arm ingestion or re-run that onboarding.
+**The ONE remaining item is a Sponsor/human act — GuvFX never initiates/confirms a transaction:**
+1. **A genuine external withdrawal** (IS6 USD 10 and/or TradersWay), Sponsor-initiated, to certify the positive
+   `EXTERNAL_WITHDRAWAL` classifier. Withdrawal V1 **remains EVIDENCE-BLOCKED** for positive external-withdrawal
+   classification until one exists: parsers emit only DEPOSIT/INTERNAL_TRANSFER/UNKNOWN and **0 `Withdrawal` rows
+   surface** (expected). Do not alter `BROKER_INTELLIGENCE_INGEST_ENABLED`, the 5-min timer, or enable withdrawal
+   correlation / customer-facing withdrawal UI.
 
 ## ★★ CONSOLIDATED PACKET (Sponsor, 2026-10-08) — P0 = Withdrawal Intelligence V1, TradersWay primary pilot
 **Immediate target: `TRADERSWAY_WITHDRAWAL_PILOT_READY`** — then STOP and ask the Sponsor to perform a genuine external

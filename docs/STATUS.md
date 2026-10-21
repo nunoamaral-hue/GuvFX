@@ -14,6 +14,286 @@
 
 ## Execution workstream log
 
+- **2026-10-20 - MT5 MASTER/FOLLOWER COPIER — backend foundation (PR #528, DARK, merge-gated).** New
+  `trade_copier` app (ADR-0051; packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING`). **PR A** master
+  observer + append-only event ledger (read-only; durable `MasterObservationPoll`/`MasterPositionSnapshot`
+  incl. sl/tp, `MasterEvent` diff ledger; reuses the snapshot identity firewall, fail-closed, first-poll
+  baseline-only) + one additive read-only bridge field (`fetch_positions` now returns sl/tp/time/identifier).
+  **PR B** follower config (`CopierFollower` + audit, `CopierSymbolMap`, `CopierReplication`) + a replication
+  **intent** engine that records what it would copy (sizing modes FIXED/MULTIPLIER/BALANCE/RISK with
+  broker min/step/max; SL/TP translation; verified-only cross-broker symbols; idempotent per
+  `(master_event, follower)`; cross-user/self-follow rejected) and creates **ZERO ExecutionJobs**.
+  Everything DARK behind default-OFF flags (`COPIER_ENABLED`/`COPIER_OBSERVER_ENABLED`/`COPIER_REPLICATION_ENABLED`);
+  no `order_send`; execution LIVE wall + demo-only close/modify handlers untouched; LIVE follower execution
+  NOT authorized (RED). Tests: `trade_copier` 64 green; full backend regression **Ran 6188 OK (skipped=1)**.
+  **Activation GO/NO-GO: NO-GO.** No prod deploy/migration. Remaining: B-exec (gated DEMO ExecutionJob
+  creation), PR C (Copy Trading UX), PR D (cross-broker cert + demo rehearsal). See
+  `docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md`.
+- **2026-10-20 - WV1 BOARD-DEMO CRITICAL PATH — DELIVERED (P0, all DARK; main `2d6c3f1a`).** Withdrawal Intelligence
+  is now a FUNCTIONING, VISIBLE demonstration (verified live on an isolated demo DB; screenshots in
+  `docs/wv1_demo_evidence/`). Four DARK PRs: **#530** certified TradersWay external-withdrawal parser (`0f2b4730`);
+  **#531** owner-attributed, account-optional Withdrawal schema + correlation (ADR-0050, migration **0016**;
+  `983561ab`); **#532** owner-scoped member API + "Account unresolved" UI + public-aggregation guard (`ece05793`);
+  **#533** board-demo env — labelled synthetic seed + demo-visible flag + additive env CORS/CSRF + JWT-cookie config
+  + runbook + report (`2d6c3f1a`). §2 genuine evidence certified read-only (authenticated pilot pair, 33m01s,
+  **owner-29 / account-UNRESOLVED**; nothing exfiltrated). The genuine owner-attributed/account-UNRESOLVED withdrawal
+  flows parser→correlation→owner-scoped API→UI and renders under a DEMONSTRATION banner. 672/672 backend; FE build
+  green; each PR adversarially reviewed (confirmed defects fixed incl. a HIGH correlation double-count). **Production
+  unchanged** (schema 0010; all flags OFF; member API 404; settings.py byte-identical with env unset). Report:
+  `docs/GUVFX_WV1_FRIDAY_BOARD_DEMO_REPORT.md`; runbook: `docs/WV1_BOARD_DEMO_RUNBOOK.md`. Human gates (unchanged):
+  prod migration NO-GO (off-host DB-recovery), production certification needs a genuine Sponsor-initiated withdrawal
+  (GuvFX never initiates/confirms/cancels). NOTE: this supersedes the customer-pilot "blocked on raw RFC822" line —
+  the genuine evidence WAS present in the prod evidence store and the parser is certified against it (RULE-11).
+
+- **2026-10-20 - BROKER INTELLIGENCE CUSTOMER PILOT COMPLETION (P0, DARK; main `8125770f`).** Seven coherent DARK
+  squash-merges on baseline `6554290`: #522 public INSUFFICIENT_DATA leak fix + anon throttle (§6a, `dc6e43f`); #523
+  minority k-anon + participation-consent (§6b, `1883e76`); #524 multi-mailbox OAuth + PG concurrency proof (§3,
+  `4365724`); #525 account-level broker-email contact API + EN/JA Withdrawal Monitoring UI (§4, `5b20983`); #526
+  contact-scoped attribution (§5, `fa0f15f`); #527 routing-evidence requirement (§2, `8125770f`). All flags default
+  OFF (404/no-op/byte-identical); no prod migration applied, no activation, no publication, no financial/trading
+  action. Adversarial review on every substantive PR fixed real defects pre-merge (a HIGH cross-user identity
+  takeover in #525; a cosmetic-suppression privacy defect in #523). Backend `broker_intelligence` 594 +
+  `broker_public` 22 green. **Genuine TradersWay external-withdrawal pilot certification is BLOCKED on the raw genuine
+  RFC822 (not in repo; not fabricated)** — see `docs/GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_REPORT.md`. **Activation
+  GO/NO-GO: NO-GO** (gated on genuine certified data + consent/scoring governance + migration-first deploy).
+
+- **2026-10-14 - DB RECOVERY FOUNDATION REPOSITORY CLOSEOUT (PR #498, DARK; merge-gated).** PD accepted
+  through `c2ebfa1` (93/93) + authorized a governed squash merge on gate-pass. One final shutdown-status
+  correction: `pg_ctl status` returns 0=running, **3=stopped**, **4=inaccessible/unspecified**,
+  other=error — the cleanup previously treated ANY non-zero as "stopped", so an exit 4/error could permit
+  deleting a possibly-live/unknown cluster. **Fix:** delete ONLY on a positive exit `3`; 0 and any other
+  code refuse + preserve (data dir/stamp/state) + non-zero + safe retry. Shared `rec_pg_confirmed_stopped`
+  (lib.sh) + `eph_pg_confirmed_stopped` (eph_tracking.sh), applied in `eph_safe_remove_root`, setup
+  `--down`, and `cleanup_up`. Tests A(0)→refuse, B/E(3)→permit+retry, C(4)→refuse, D(error)→refuse,
+  F main unchanged; provisioner test 19 = `--down` refuses on status 4. **Re-certified 97/97** (64
+  recovery + 20 provisioner + 13 cleanup). Adversarial review ran. `certify.sh`/`lib.sh` backup/verify/
+  restore/audit UNCHANGED. PR #499 (CI deflake) independent, A–E committed. **MERGE authorized on gate-pass
+  (auto-merge OFF).** **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION FINAL CERTIFICATION (PR #498, DARK, HOLD).** PD accepted through
+  `915a872` (89/89); two bounded TEST-HARNESS fixes. **MEDIUM-A (non-vacuous):** the self-test hook did
+  `up ... || true`, so a silent startup failure could let `certify_cleanup.sh` pass cleanup for a
+  postmaster that never ran → the hook now REQUIRES a confirmed-RUNNING postmaster (pg_ctl status +
+  sysid==offline) and records `running=1`+sysid; `certify_cleanup.sh` gates on that evidence and adds a
+  negative (forced start-failure → `running=0`). **MEDIUM-B (cert cleanup safety):** `certify_cleanup.sh`'s
+  own EXIT trap raw-`rm`'d after an unverified stop → new shared `eph_safe_remove_root` (stop + verify
+  `pg_ctl status` before rm; leave + non-zero on unconfirmed shutdown) is used by the trap and tested
+  (failed-shutdown preserves the dir; safe retry removes it). **Re-certified 93/93** (64 recovery + 18
+  provisioner + 11 cleanup). Focused adversarial review ran. `certify.sh`/`lib.sh`/backup/verify/restore/
+  audit/`setup_isolated_cluster.sh` UNCHANGED. **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R3 CLOSEOUT (PR #498, DARK, HOLD).** PD accepted the R3
+  architecture (head `3bafb6d`, 80/80); two bounded harness-safety MEDIUMs. **MEDIUM-A:** the provisioner
+  test harness tracked ephemeral roots in a shell var set inside a `$(mktroot)` **subshell**, so the
+  cleanup trap saw nothing on an abnormal exit → fixed with a file-based shared helper
+  (`tests/eph_tracking.sh`, established+exported in the PARENT at source time); new
+  `tests/certify_cleanup.sh` (7) proves — end-to-end against the real harness — tracking survives the subshell and
+  the trap cleans an abnormal exit (main + unrelated dirs untouched). **MEDIUM-B:** `--down` did
+  `pg_ctl stop || true` then unconditional `rm -rf` → now **verifies the postmaster stopped before any
+  rm**, else refuses + preserves data dir/stamp/state + exits non-zero (same protection in the
+  failed-setup cleanup); new provisioner tests 17/18 (stop-failure via a shim → refuse+preserve; real
+  retry succeeds). **Re-certified 93/93** (64 recovery + 18 provisioner + 11 cleanup). Focused adversarial
+  review ran. `certify.sh`/`lib.sh`/backup/verify/restore/audit UNCHANGED. **Activation GO/NO-GO: NO-GO.**
+  No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R3 CORRECTION (PR #498, DARK, HOLD).** PD accepted R2; one
+  remaining HIGH on the privileged provisioning/teardown script. **Fix:** `tests/setup_isolated_cluster.sh`
+  now `initdb`s its OWN dedicated ephemeral cluster (private data dir/socket, no TCP) instead of doing
+  privileged DDL against a shared cluster — disposability is intrinsic (fresh `system_identifier`), the
+  only CREATE ROLE/DB run inside that cluster, and `--down` stops + removes ONLY the files it created
+  (ownership-stamp + offline `pg_controldata` sysid gated). `GUVFX_RECOVERY_PRODUCTION_CLUSTER_ID` is
+  MANDATORY on setup AND teardown; libpq/PGSERVICE neutralised; failed setup cleans up only its own
+  paths; a placeholder prod id authorizes nothing. New `tests/certify_provisioner.sh` (16 cases) proves
+  the trust boundary; recovery `certify.sh` (64) still passes on the ephemeral cluster. **Re-certified
+  80/80** (64 recovery + 16 provisioner). Focused adversarial review ran. Milestones:
+  `TOOLING_CERTIFIED_IN_TESTS` + `PRIVILEGED_PROVISIONING_CERTIFIED` + `RECOVERY_DESIGN_CERTIFIED` PASS;
+  `PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RECOVERY_VERIFIED` / `T1_PRODUCTION_DARK_DEPLOYMENT_READY`
+  BLOCKED. Local PG 17 synthetic only. **Activation GO/NO-GO: NO-GO.** No prod/shared-cluster change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R2 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted R1; raised
+  2 HIGH + 2 MEDIUM + §6, all fixed + re-certified **64/64** (least-privilege role). **HIGH-1** the
+  certification harness can no longer manufacture its own isolation: independent attestation
+  (`tests/attest_isolated.sh`) runs before any mutation (mandatory prod denylist; operator-attested id ==
+  live sysid, never derived; pre-existing marker it did NOT create; non-superuser role; loopback-only),
+  provisioned out-of-band by `tests/setup_isolated_cluster.sh`; harness runs as the non-superuser role;
+  cleanup drops only owned DBs. **HIGH-2** per-DATABASE restore-target authorization
+  (`rec_require_authorized_target_db`: exact allowlist + current_database==PGDATABASE + non-admin/non-prod
+  + non-superuser owner), re-asserted before the atomic restore — cluster isolation alone is not
+  sufficient. **MEDIUM-1** encrypted verify STREAMS `gpg|pg_restore --list` (archive-format, not just
+  decryptability). **MEDIUM-2** `--gate` inventory-only vs `--gate-usable` (mandatory integrity, fail
+  closed on corruption); runbook requires `--gate-usable`. **§6** capacity = conservative ESTIMATE +
+  enforceable `ulimit -f` ceiling (ENOSPC-safe, no incomplete artifact certified); writer-between-
+  preflight-and-execute detected. Renewed adversarial review ran (Workflow). Milestones distinguished:
+  `TOOLING_CERTIFIED_IN_TESTS` + `RECOVERY_DESIGN_CERTIFIED` PASS; `PRODUCTION_BACKUP_ACTIVE` /
+  `PRODUCTION_RECOVERY_VERIFIED` / `T1_PRODUCTION_DARK_DEPLOYMENT_READY` BLOCKED. Local PG 17 synthetic
+  only (PG 15/Linux parity = Sponsor follow-up). **Activation GO/NO-GO: NO-GO.** No prod change.
+
+- **2026-10-14 - DB RECOVERY FOUNDATION R1 CORRECTIONS (PR #498, DARK, HOLD).** PD accepted the
+  architecture; raised 4 HIGH + 2 MEDIUM, all fixed + re-certified **41/41**. **HIGH-1/4** authoritative
+  target identity = live `system_identifier` vs operator-attested isolated cluster (a class label can no
+  longer permit a production mutation; harness requires `GUVFX_RECOVERY_ATTEST_ISOLATED=1`). **HIGH-2**
+  clean-target restore: verified-EMPTY only, `--force`/`--clean` removed. **HIGH-3** backup STREAMS
+  `pg_dump|gpg` (no plaintext on disk) → temp → integrity → atomic finalize → metadata-last. **MEDIUM-1**
+  audit `--verify-integrity --gate` (presence ≠ integrity). **MEDIUM-2** conservative capacity + reserved
+  free floor. Renewed adversarial review pending/clean. Milestones distinguished: `TOOLING_CERTIFIED_IN_TESTS`
+  + `RECOVERY_DESIGN_CERTIFIED` PASS; `PRODUCTION_BACKUP_ACTIVE` / `PRODUCTION_RECOVERY_VERIFIED` /
+  `T1_PRODUCTION_DARK_DEPLOYMENT_READY` BLOCKED. Certified local PG 17 only (PG 15/Linux parity = Sponsor
+  follow-up; Docker unavailable here). **Activation GO/NO-GO: NO-GO.** No prod change.
+
+- **2026-10-14 - PRODUCTION DATABASE RECOVERY FOUNDATION — ENGINEERING + DESIGN (DARK; NO prod change).**
+  `T1_SOURCE_AWARE_IDENTITY_MERGED` + `T1_TELEGRAM_CATCHUP_MERGED` (PR #497 squash `ac4f6b4`) +
+  `T1_ENGINEERING_CERTIFIED_IN_TESTS`; `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.
+  **`DATABASE_RECOVERY_FOUNDATION_IN_PROGRESS`.** Addresses the remaining HIGH-2 blocker.
+  - **Gate A (read-only, verified 2026-10-14):** PostgreSQL 15.15 single OVH VPS; DB `guvfx` = 2835 MB
+    (**core_auditevent 2237 MB / 79%** — bulk is audit/health telemetry; financial/trading tables tiny).
+    **No PITR** (`archive_mode=off`), **no automated backup** (only 104 ad-hoc `pg_dump` ~1.7 GB on-host),
+    `data_checksums=off`; durability on (fsync/full_page_writes/synchronous_commit). **P0 risk: root FS
+    96% full (9.2 GB free)** — DB + all backups share one FS; no off-host storage.
+  - **Design (Gates B–D, G, I):** RPO/RTO per scenario (host/storage-loss + full DR declared BLOCKED;
+    zero-data-loss NOT asserted). Recommended = encrypted logical backups + **off-host** replication +
+    forward-fix/migration-reverse as routine rollback (never a full rewind) + OVH snapshots for host-loss
+    DR; PITR only if a sub-hour RPO is required. `docs/DB_RECOVERY_FOUNDATION.md`.
+  - **DARK tooling (Gate E):** `ops/recovery/` (backup/verify/restore/audit) — dry-run default, fail-closed,
+    never targets production. **Isolated certification (Gate F/H): 41/41 PASS** (backup→verify→restore→
+    reconcile incl. encrypted + referential integrity + immutable-audit md5 + fail-closed matrix);
+    evidence `ops/recovery/tests/CERTIFICATION_EVIDENCE.txt`.
+  - **Milestones:** `ENGINEERING_READY` PASS, `RECOVERY_DESIGN_CERTIFIED` PASS, `PRODUCTION_BACKUP_ACTIVE`
+    **BLOCKED**, `PRODUCTION_RESTORE_TESTED` **BLOCKED** (synthetic only), `T1_PRODUCTION_DARK_DEPLOYMENT_READY`
+    **BLOCKED**. **GO/NO-GO for activation: NO-GO** (no off-host backup; FS 96%). All DARK; no prod backup/
+    restore/PITR/config change performed.
+
+- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — R2 CORRECTIONS (PR #497 — MERGED to main `ac4f6b4`, DARK).**
+  PD accepted the R1 architecture and raised 3 findings; all fixed on the same PR, plus 3 confirmed by a renewed
+  8-dimension adversarial review (then re-verified, all resolved, no regressions). Still DARK — no deploy/migration/
+  Telegram change/watermark reset; flag OFF.
+  - **HIGH — checkpoint skipped an earlier unaccounted message.** The R1 genuine-only guard still let a LATER genuine
+    id advance the checkpoint PAST an earlier non-genuine/ignored id (→ silent loss once re-armed). Fix: the durable
+    checkpoint is now the highest SAFELY-ACCOUNTED boundary — it never advances to/past the pass's EARLIEST
+    unaccounted retrieval (`res.unaccounted_floor`); a later genuine id can't mask an earlier unaccounted one. New
+    `retrieval_position` / `durably_complete` observability; may still cross legitimate numbering gaps.
+  - **MEDIUM — FloodWait rate-limit compliance.** `_floodwait` now honours the FULL server-requested wait and
+    REJECTS (fail-closed → INCOMPLETE) any wait exceeding the permitted single-wait or the deadline — never
+    shortens-and-retries early.
+  - **§6 — production checkpoint-init safety.** Corrected migration 0012's unsupported "uncontaminated watermark"
+    assertion; added read-only `reconcile_catchup_checkpoint` (fail-closed `--gate`, `--json`) as the mandatory
+    pre-deploy reconciliation gate (DB evidence can't prove historical completeness — Telegram ids non-contiguous).
+  - **Renewed adversarial review → 3 confirmed fixed + re-verified:** (1, MEDIUM) `SignalUpdate` crash double-create →
+    `_record_update` now idempotent per `(provider, chat, message, edited)`; concurrent-race unique constraint is a
+    KNOWN_ISSUES follow-up (DARK consumer). (2, LOW) `--gate` fail-open on empty match → fails closed. (3, LOW)
+    genuineness proxy counted chat-refusal rows → uses `non_genuine=False` post-0011. One rejected (unreachable).
+  - Tests: catch-up matrix 48→64 (Scenarios A–E, FloodWait R2, reconciliation gate, adversarial-fix regressions).
+    Full backend suite **OK**. PR #497 DARK, auto-merge OFF; readiness still **NO-GO** (HIGH-2 DB recovery, Sponsor).
+
+- **2026-10-14 - T1 TELEGRAM CATCH-UP COMPLETENESS — HARDENED + R1 CORRECTIONS (PR #497, DARK, auto-merge OFF).**
+  Resolves the readiness **HIGH-1 code** blocker: `WayondListener.catch_up` is now bounded, resumable and
+  observable. No deploy, no migration applied to prod, no Telegram change, no watermark reset; flag OFF.
+  - **Pagination beyond 200 (no abandonment)** + an explicit per-provider status `COMPLETE` / `INCOMPLETE_CEILING`
+    / `INCOMPLETE_ERROR` (never a false COMPLETE); bounded page size/count, wall-clock budget, and deadline-aware
+    flood-wait.
+  - **Durable resume CHECKPOINT** `catchup_checkpoint_message_id` (migration **0012**, backfilled from the watermark
+    → first-deploy behaviour unchanged, DARK), distinct from the contaminable watermark (telethon.sync dispatches
+    live events during the synchronous pass, which can advance the watermark). The checkpoint advances ONLY past
+    GENUINE acquisitions, monotonically. `onboard_provider --reset-watermark` + the admin chat-lock key off the
+    checkpoint; reset clears both.
+  - **Renewed adversarial review (8 dimensions → adversarial verify): 4 confirmed defects fixed + re-verified** —
+    (A, triple-confirmed) checkpoint must not advance past non-genuine `DROPPED_NOT_ARMED` rows (else a paused→armed
+    provider loses an in-window signal); (B) a live-handler acquisition during the pass was mis-counted new; (C)
+    flood-wait sleeps were not deadline-aware; (D) shared-chat providers could double-run. Both rejected findings
+    were unreachable in production.
+  - Tests: 48-case catch-up matrix (persisted-state crash/concurrency, bounded resources, completeness reporting,
+    adversarial regressions 45–48) + migration 0012 backfill test. Full backend suite **5850 OK (skipped=1)**.
+    Branch merged `main` (#496). Runbook + readiness updated (migration path now `0009→0010→0011→0012`; HIGH-1 code
+    blocker resolved; §catch-up operational contract added).
+  - **Overall DARK-deployment readiness still NO-GO:** HIGH-2 (production DB recovery — no PITR/auto-backup) remains
+    BLOCKED (separate Sponsor dependency). PR #497 DARK, auto-merge OFF, no merge without PD acceptance.
+
+- **2026-10-13 - T1 SOURCE-AWARE IDENTITY — MERGED + DARK-DEPLOYMENT READINESS ASSESSED. `T1_PRODUCTION_DEPLOYMENT_NOT_AUTHORIZED`.**
+  Current authoritative T1 state (supersedes the "MERGE HOLD" wording in the historical entries below, which are
+  preserved as engineering evidence):
+  - `T1_IMPLEMENTATION_COMPLETE` ✓ · `T1_CERTIFIED_IN_TESTS` ✓ (full backend 5801 OK) · `T1_MERGED` ✓
+    (PR #495 squash-merged to `main` `48db801`; CI 10/10; PD merge authorization).
+  - **NOT deployed to production.** Host `/home/ubuntu/guvfx-app` is still at `a474f79` (pre-T1); prod `signal_intake`
+    migrations are at `0009` (0010/0011 pending); `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` is OFF.
+  - **DARK-deployment readiness (read-only inspection + isolated rehearsal; R1 corrections):** **NO-GO / BLOCKED.**
+    Mixed-version is UNSAFE (`non_genuine` + approval `chat_id` are NOT NULL, no DB default), so deploy needs a
+    controlled maintenance window (stop listener → migrate → recreate backend+listener, flag stays OFF); migration
+    rehearsed at prod scale (~0.84 s; 857 backfilled / 6 blank / 121 `DROPPED_NOT_ARMED`→`non_genuine`). **Two HIGH
+    blockers (PD R1):** (1) `T1_TELEGRAM_CATCHUP_COMPLETENESS` — `catch_up` abandons a backlog > 200 and drops
+    >600 s-aged signals to STALE (bounded runtime code correction required); (2) `T1_DATABASE_RECOVERY` — no
+    PITR/auto-backup (only a last-resort full dump; prerequisite dump unauthorized). Reversal is bounded
+    (`REVERSIBLE_WITH_EXISTING_DATA` now, 0/0 conflicts; fails once coexistence forms). Listener recreation contract
+    + writer isolation (listener is the sole writer) certified. Runbook + full matrix:
+    `docs/T1_PRODUCTION_DARK_DEPLOYMENT_RUNBOOK.md`, `docs/T1_PRODUCTION_DARK_DEPLOYMENT_READINESS.md`. Index-name
+    drift confirmed **harmless** to the deploy.
+  - **Separately gated, NOT advanced:** `T1_PRODUCTION_DARK_DEPLOYMENT`, `T1_LIVE_SOURCE_VERIFICATION`,
+    `T1_TELEGRAM_SOURCE_CUTOVER`, `T1_PRODUCTION_CERTIFICATION`. Next = PD issues a separate production DARK
+    deployment packet.
+
+- **2026-10-13 - T1 R2 CORRECTIONS (PR #495, DARK, MERGE HOLD pending Programme Director re-acceptance).**
+  PD accepted R1 and raised R2: two more identity-safety gaps + a migration rollback-test enhancement; all fixed on
+  the same PR, plus one MEDIUM from a renewed R2 adversarial certification. Still DARK — no deploy, switch, watermark
+  reset, listener restart, or trading-authority change.
+  - **HIGH-A non-armed acquisition poisoning** → generalised the partition flag `chat_identity_refused` →
+    **`non_genuine`** (True for a chat-refusal OR a `DROPPED_NOT_ARMED`). A disabled-source drop now lives in its own
+    partition, so a re-armed genuine same-id message is an independent genuine acquisition; migration `0011`
+    backfills historical `DROPPED_NOT_ARMED` rows. Tests 53 (PAUSED→DROP→REARM→FRESH→REPLAY) / 54.
+  - **HIGH-B blank-chat command cross-channel** → `provider_commands_engine.resolve_target_plan` is now always
+    chat-scoped and **fails closed** on a blank/unresolved `command.chat_id` (`unresolved_chat_identity` → REJECTED,
+    no job). `R2CommandChatIsolationTests` (7 cases incl. downstream-flag end-to-end). Engine remains DARK.
+  - **MEDIUM historical rollback coverage** → `MigrationExecutor` test now uses populated relationships (association
+    + content preserved across forward→rollback→reapply) + a documented cross-channel rollback-limit test.
+  - **R2 cert MEDIUM (lifecycle sweep)** → the edit/amendment path bypassed the acquisition staleness window (a STALE
+    signal could be resurrected into a fresh approval via an edit). Fixed: the amendment re-applies
+    `acquisition_window_seconds` alongside parser-expiry (tests 55 / 56). Hypotheses A–D held (no findings).
+  - Commit `c0c9e9c`. Full backend suite **5801 OK (skipped=1)**. CI re-runs on push; auto-merge OFF; awaiting PD re-acceptance.
+
+- **2026-10-13 - T1 R1 CORRECTIONS (PR #495, DARK, MERGE HOLD pending Programme Director re-acceptance).**
+  PD engineering review of PR #495 (CI 10/10) returned 3 HIGH + 2 AMBER; all corrected on the same PR, plus 2
+  MEDIUM from a renewed 8-dimension adversarial review (both closed). Still DARK — no deploy, no channel switch, no
+  watermark reset, no listener restart, no trading-flag/authority change.
+  - **HIGH-1 fail-open trust boundary** → `_chat_identity_refusal` refuses an ARMED provider with no configured chat
+    (`provider_chat_unconfigured`); non-armed states DROP via the arm gate. Config-drift covered. The edit/amendment
+    path is also arm-gated now (renewed-review finding — a paused provider's edit can no longer surface an approval).
+  - **HIGH-2 quarantine-id poisoning across cutover** → `AcquiredMessage.chat_identity_refused` (migration 0011)
+    partitions the unique key `(provider, chat_id, message_id, chat_identity_refused)`, so a refusal row and a later
+    genuine row coexist; a pre-cutover refusal can never suppress a genuine post-cutover message. Immutable evidence,
+    never promoted, refusals idempotent.
+  - **HIGH-3 downstream plan collisions** → `execution/signal_planning` carries `approval.chat_id` behind
+    `SIGNAL_INTAKE_CHAT_AWARE_DOWNSTREAM_ENABLED` (default OFF = byte-identical; ON = distinct channels distinct, no
+    new orders/authority).
+  - **AMBER-1 historical migration** → 0010 backfill is now EVIDENCE-BASED (linked `AcquiredMessage.chat_id`, never
+    mutable provider metadata; unresolved left `''`; ledgers never mutated); certified by a populated
+    `MigrationExecutor` test over 0009→0010→0011 incl. rollback.
+  - **AMBER-2 cutover contradiction** → resolved: ONE continuous, repurposed provider (ownership/watermark/rollback
+    documented in `docs/T1_SOURCE_AWARE_IDENTITY.md`).
+  - **Renewed-review MEDIUM** → admin `telegram_chat_id` edit bypassed the watermark guard → locked in
+    `SignalProviderAdmin` once a watermark exists (forces the guarded `onboard_provider --reset-watermark` path).
+  - Tests: +19 (matrix, downstream flag off/on, historical migration, admin guard). **Full backend suite 5789 OK
+    (skipped=1).** Commit `0db228d`. CI re-runs on push; auto-merge OFF; awaiting PD re-acceptance before merge.
+
+- **2026-10-13 - T1 SOURCE-AWARE TELEGRAM MESSAGE IDENTITY & DEDUP (PR #495, DARK, not deployed).**
+  Fixed the structural defect where the acquisition ledger keyed on `(provider, message_id)` and the approval on
+  `(source, message_id)` — but Telegram `message_id` is **chat-scoped**, so after a future channel switch a new-chat
+  message would collide with a historical old-chat message of the same id and be silently lost (dedup) / fail to
+  create an approval. Canonical identity is now **`(provider/source, chat_id, message_id)`**.
+  - **models**: uniqueness → `(provider, chat_id, message_id)` on `AcquiredMessage` + `ProviderCommand`;
+    `(source, chat_id, message_id)` on `PendingSignalApproval` (new `chat_id` field). `chat_id` already existed as a
+    stored non-key column on the first three.
+  - **migration 0010**: additive field + deterministic, non-destructive backfill (chat from the linked provider;
+    `''` where no provider — never fabricated) + the new constraints. The new key is a strict superset of the old,
+    so no `AddConstraint` can fail on existing data and no channel switch is needed for validity.
+  - **acquisition/services**: chat-scoped dedup/race/reply-link/command-key/amendment/intake dedup; a fail-closed
+    chat-identity guard (`chat_identity_mismatch`/`_missing`) inert on live/test paths (never advances the watermark;
+    gated on the edit path too).
+  - **onboard_provider**: fail-closed guard refusing a chat switch that would strand the chat-blind catch-up
+    watermark floor, unless `--reset-watermark` is given (operator cutover control — NOT invoked).
+  - **DARK**: execution read-path byte-for-byte unchanged (`chat_id` NOT written into `raw_payload`; no execution code
+    reads the new field). Tests: new 46-case matrix; `signal_intake` 206, `execution`+`reliability` 1388, **full
+    backend 5770 OK (skipped=1)**. Mandatory 4-reviewer adversarial review: core sound; 1 HIGH (watermark floor) + 1
+    LOW (amendment guard) fixed in-PR; 2 LOW migration-governance caveats documented (Amber). Cutover prerequisites
+    (watermark reset + repoint `signal_planning` at `approval.chat_id`) in `docs/T1_SOURCE_AWARE_IDENTITY.md` — a
+    separate future packet.
+
 - **2026-10-13 - WITHDRAWAL INTELLIGENCE V1 — REMAINING ENGINEERING (4 governed DARK PRs). All sample-independent engineering COMPLETE.**
   Corrected the dependency register against production (read-only): the Gmail mailbox is CONNECTED (OAuth NOT
   outstanding); a MANUAL `BrokerEmailIdentity` binding (TradersWay/acct46/user29 VERIFIED) already exists — what was
