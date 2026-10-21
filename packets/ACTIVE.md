@@ -13,6 +13,24 @@
   v0.52*) is authoritative** for the full lifecycle. See
   [`docs/PROGRAMME_STATE.md`](../docs/PROGRAMME_STATE.md).
 
+## Registered workstream — MT5 Master/Follower Copier (DARK, observer‑first)
+
+- **Packet:** `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0, Programme Director,
+  2026‑10‑20). **Authority:** Programme Director scope GO for **DARK engineering only**;
+  LIVE follower execution NOT authorized (separate Sponsor + Security GO). Decision +
+  boundaries recorded in [`docs/ADRs/0051-mt5-master-follower-copier.md`](../docs/ADRs/0051-mt5-master-follower-copier.md);
+  day‑1 capability map in [`docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md`](../docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md).
+- **Scope:** new governed strategy source → existing guarded execution path. PR A master
+  observer + ledger (read‑only) · PR B follower config + replication (enqueue‑only
+  SHADOW→DEMO) · PR C Copy Trading UX · PR D cross‑broker cert + demo rehearsal.
+- **Branch:** isolated worktree `worktree-mt5-copier-foundation` off latest canonical
+  `main` (`5b209833`, 2026‑10‑20). New Django app, own migration sequence — no collision
+  with the Withdrawal/BI stream.
+- **Hard boundaries:** no `order_send` from Django; demo‑only close/SL‑TP bridge
+  protections unmodified; the five‑layer LIVE wall + kill switch unchanged; no production
+  deploy/migration; DARK flag default OFF. If repository governance requires a separate
+  recorded architecture ratification before merge, satisfy it before merging.
+
 ## Active work in THIS repository (Claude-as-PM improvement backlog)
 
 Bounded, additive, behaviour-preserving documentation + tooling to make the
