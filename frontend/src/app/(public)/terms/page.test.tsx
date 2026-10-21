@@ -27,8 +27,10 @@ describe("public /terms", () => {
     // contractual facts not invented — flagged for Sponsor review
     expect(screen.getByTestId("terms-draft-notice").textContent).toMatch(/draft pending legal review/i);
     expect(screen.getAllByText(/GOVERNING LAW — Sponsor to confirm/).length).toBeGreaterThan(0);
-    // operator wording resolved (sole trader); residential address is NOT published
-    expect(screen.getAllByText(/Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX/).length).toBeGreaterThan(0);
+    // corporate operator resolved; personal/residential wording must NOT be published
+    expect(screen.getAllByText(/Virtus Logic UK Ltd/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/13318959/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Nuno Rodolfo Ferreira Do Amaral/)).toBeNull();
     expect(screen.getAllByText(/support@guvfx\.com/).length).toBeGreaterThan(0);
   });
 

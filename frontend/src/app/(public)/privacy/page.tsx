@@ -15,9 +15,12 @@ import { LegalFooter } from "@/components/LegalFooter";
  *   - Broker/withdrawal events are extracted deterministically (no human reads email, no LLM).
  *   - Owner-scoped: a member only ever sees their own data.
  *
- * DRAFT: bracketed [ ... — Sponsor to confirm] fields are unresolved legal/business facts.
- * No legal entity name, company number, address or regulator is invented. Do not merge/deploy
- * until the bracketed fields are resolved and legal review is complete.
+ * DRAFT: the operator / data-controller identity (Virtus Logic UK Ltd, company no. 13318959, its
+ * registered office, and the data controller) is the Sponsor-confirmed company information, applied on
+ * the Sponsor's explicit instruction; independent Companies House confirmation is recommended before
+ * publication. All OTHER legal/business facts remain bracketed [ ... — Sponsor to confirm] and are not
+ * invented. Do not merge/deploy until those bracketed fields are resolved and legal review is complete.
+ * A residential address is never published here.
  */
 type Section = { h: string; p: string[] };
 
@@ -49,7 +52,7 @@ const copy: Record<Lang, {
       {
         h: "1. Who we are",
         p: [
-          "GuvFX is operated by Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX, of [BUSINESS CONTACT / SERVICE ADDRESS — Sponsor to confirm], and is available at guvfx.com. The data controller is [DATA CONTROLLER — Sponsor to confirm]. You can contact us at support@guvfx.com.",
+          "GuvFX is operated by Virtus Logic UK Ltd (trading as GuvFX), a company registered in England and Wales under company number 13318959, whose registered office is Airport Business Centre, 10 Thornbury Road, Plymouth, England, PL6 7PP. GuvFX is available at guvfx.com. The data controller for personal data processed through GuvFX is Virtus Logic UK Ltd; privacy and data-protection enquiries may be sent to support@guvfx.com.",
         ],
       },
       {
@@ -57,8 +60,8 @@ const copy: Record<Lang, {
         p: [
           "Withdrawal Intelligence is optional and operates only if you explicitly connect a supported email account.",
           "Scope requested: read-only Gmail access only — https://www.googleapis.com/auth/gmail.readonly. We never request permission to send, delete or modify your email, and we do not request any other Google data (no Drive, Contacts or Calendar).",
-          "What we read: emails from recognised brokers (a sender allowlist) that pass email authentication. We use them to detect your broker funding and withdrawal events and to summarise your withdrawal activity.",
-          "How we process it: processing is deterministic and automated. No GuvFX employee reads your email, and no large language model or other AI processes your email content. We derive specific, structured facts from each message; the original broker email is retained as described in section 3 (we do not discard it).",
+          "What we read: we read emails from recognised brokers (a sender allowlist). We derive funding and withdrawal events only from messages that also pass email authentication; a message from a recognised broker that fails authentication is retained as evidence but produces no event. We use the derived events to summarise your withdrawal activity.",
+          "How we process it: processing is deterministic and automated. As part of this feature's automated processing, no GuvFX employee reads your email, and no large language model or other AI processes your email content (the limited exceptions in which a human may access data are described below under Limited Use). We derive specific, structured facts from each message; the original broker email is retained as described in section 3 (we do not discard it).",
         ],
       },
       {
@@ -139,7 +142,7 @@ const copy: Record<Lang, {
       {
         h: "1. 事業者について",
         p: [
-          "GuvFXはNuno Rodolfo Ferreira Do Amaral（「GuvFX」の屋号で事業を営む個人事業主）が運営し（所在地：[事業連絡先／送達先住所 — スポンサー確認待ち]）、guvfx.comで提供されます。データ管理者は[データ管理者 — スポンサー確認待ち]です。お問い合わせは support@guvfx.com までご連絡ください。",
+          "GuvFXは、イングランド・ウェールズで登録された会社番号13318959のVirtus Logic UK Ltd（「GuvFX」の屋号で事業を行う）が運営します。登記上の事務所は Airport Business Centre, 10 Thornbury Road, Plymouth, England, PL6 7PP です。GuvFXはguvfx.comで提供されます。GuvFXで処理される個人データの管理者はVirtus Logic UK Ltdであり、プライバシーおよびデータ保護に関するお問い合わせは support@guvfx.com までお送りください。",
         ],
       },
       {
@@ -147,8 +150,8 @@ const copy: Record<Lang, {
         p: [
           "出金インテリジェンスは任意であり、対応するメールアカウントをご自身で明示的に連携した場合にのみ動作します。",
           "要求する権限：読み取り専用のGmailアクセスのみ（https://www.googleapis.com/auth/gmail.readonly）。メールの送信・削除・変更の権限を求めることは一切なく、その他のGoogleデータ（Drive、連絡先、カレンダー等）も要求しません。",
-          "読み取る対象：メール認証を通過した、認識済みブローカー（送信元許可リスト）からのメールです。これらを用いて、ブローカーの入金・出金イベントを検出し、お客様の出金アクティビティを要約します。",
-          "処理方法：処理は決定論的かつ自動的です。GuvFXの従業員がメールを読むことはなく、大規模言語モデルその他のAIがメール本文を処理することもありません。各メッセージから特定の構造化された事実を抽出します。元のブローカーメールは第3項に記載のとおり保持します（破棄しません）。",
+          "読み取る対象：認識済みブローカー（送信元許可リスト）からのメールです。入金・出金イベントは、メール認証にも合格したメッセージからのみ導出します。認識済みブローカーからのメールであっても認証に失敗したものは、証跡として保持しますがイベントは生成しません。導出したイベントを用いて、お客様の出金アクティビティを要約します。",
+          "処理方法：処理は決定論的かつ自動的です。本機能の自動処理においては、GuvFXの従業員がメールを読むことはなく、大規模言語モデルその他のAIがメール本文を処理することもありません（人間がデータにアクセスし得る限定的な例外は、下記の「限定使用」に記載します）。各メッセージから特定の構造化された事実を抽出します。元のブローカーメールは第3項に記載のとおり保持します（破棄しません）。",
         ],
       },
       {

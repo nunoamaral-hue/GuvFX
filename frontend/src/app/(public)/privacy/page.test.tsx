@@ -37,10 +37,10 @@ describe("public /privacy policy", () => {
     // unresolved legal fields are clearly flagged for Sponsor review, not invented
     expect(screen.getByTestId("privacy-draft-notice").textContent).toMatch(/draft pending legal review/i);
     expect(screen.getAllByText(/Sponsor to confirm/).length).toBeGreaterThan(0);
-    // operator wording resolved (sole trader); business/service address stays unresolved — a residential
-    // address must never be published here.
-    expect(screen.getAllByText(/Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/BUSINESS CONTACT \/ SERVICE ADDRESS — Sponsor to confirm/).length).toBeGreaterThan(0);
+    // corporate operator + data controller resolved; personal/residential wording must NOT be published
+    expect(screen.getAllByText(/Virtus Logic UK Ltd/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/13318959/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Nuno Rodolfo Ferreira Do Amaral/)).toBeNull();
   });
 
   it("localizes to Japanese", () => {

@@ -9,10 +9,11 @@ import { LegalFooter } from "@/components/LegalFooter";
  * Public Terms of Service (/terms) — accessible without authentication.
  *
  * Review-ready DRAFT grounded in the real service (a strategy-management and broker/withdrawal
- * analytics platform with an optional read-only email connection). No contractual facts are
- * invented: legal entity, governing law, jurisdiction and liability wording are left as bracketed
- * [ ... — Sponsor to confirm] fields for Sponsor/legal completion. Do not merge/deploy until
- * resolved and reviewed.
+ * analytics platform with an optional read-only email connection). The operator identity (Virtus Logic
+ * UK Ltd, company no. 13318959, registered office) is the Sponsor-confirmed company information applied
+ * on the Sponsor's instruction. No OTHER contractual facts are invented: governing law, jurisdiction and
+ * liability wording are left as bracketed [ ... — Sponsor to confirm] fields for Sponsor/legal
+ * completion. Do not merge/deploy until resolved and reviewed.
  */
 type Section = { h: string; p: string[] };
 
@@ -40,7 +41,7 @@ const copy: Record<Lang, {
         h: "1. The service",
         p: [
           "GuvFX is a strategy-management and analytics platform. It includes Withdrawal Intelligence, an optional feature that reads your email read-only to detect your broker funding and withdrawal events and summarise your withdrawal activity.",
-          "GuvFX is operated by Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX. The service is currently offered on a limited/beta basis.",
+          "GuvFX is operated by Virtus Logic UK Ltd (trading as GuvFX), a company registered in England and Wales under company number 13318959, whose registered office is Airport Business Centre, 10 Thornbury Road, Plymouth, England, PL6 7PP. The service is currently offered on a limited/beta basis.",
         ],
       },
       {
@@ -121,7 +122,7 @@ const copy: Record<Lang, {
         h: "1. サービスについて",
         p: [
           "GuvFXは戦略管理・分析プラットフォームです。これには、メールを読み取り専用で参照し、ブローカーの入金・出金イベントを検出して出金アクティビティを要約する任意機能「出金インテリジェンス」が含まれます。",
-          "GuvFXはNuno Rodolfo Ferreira Do Amaral（「GuvFX」の屋号で事業を営む個人事業主）が運営します。本サービスは現在、限定／ベータとして提供されています。",
+          "GuvFXは、イングランド・ウェールズで登録された会社番号13318959のVirtus Logic UK Ltd（「GuvFX」の屋号で事業を行う）が運営します。登記上の事務所は Airport Business Centre, 10 Thornbury Road, Plymouth, England, PL6 7PP です。本サービスは現在、限定／ベータとして提供されています。",
         ],
       },
       {
