@@ -34,7 +34,7 @@ from django.utils import timezone
 from execution.models import ExecutionJob
 from trade_copier import diff
 from trade_copier.flags import copier_execute_demo_armed, copier_execute_enabled
-from trade_copier.models import CopierReplication, MasterEvent, ReplicationStatus
+from trade_copier.models import CopierFollower, CopierReplication, MasterEvent, ReplicationStatus
 from trade_copier.replication import (
     _broker_constraints,
     _cfg,
@@ -42,6 +42,7 @@ from trade_copier.replication import (
     validate_follower_binding,
 )
 from trade_copier.sizing import compute_follower_volume
+from trade_copier.symbols import resolve_follower_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,16 @@ def admit_open(replication: CopierReplication) -> tuple[bool, str]:
     constraints = _broker_constraints(acct, replication.follower_symbol)
     if not constraints.authoritative:
         return False, "constraints_not_authoritative"
+    # F3: the destination instrument must be ENABLED/ready — a disabled/unready symbol fails closed.
+    from execution.models import BrokerInstrument
+    if not BrokerInstrument.objects.filter(
+            account_id=acct.id, broker_symbol=replication.follower_symbol, enabled=True).exists():
+        return False, "instrument_not_ready"
+    # F2: re-verify the symbol mapping at PRODUCE time — a CopierSymbolMap revoked or changed since the
+    # intent was recorded fails closed (the stored follower_symbol is not trusted on its own).
+    sym = resolve_follower_symbol(follower.master.trading_account, event.symbol, acct)
+    if not sym.ok or sym.follower_symbol != replication.follower_symbol:
+        return False, "symbol_map_changed"
     return True, "ok"
 
 
@@ -187,8 +198,17 @@ def produce_one(replication: CopierReplication) -> dict:
             # P0-A re-check under the lock: the producer flag must still be on.
             if not copier_execute_enabled():
                 return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+            # F1 (P0-B): lock AND freshly re-read the follower ROW so a disable/rebind committed during
+            # promotion is seen and fails closed (the select_related relation alone would be a stale cache).
+            # Lock ONLY the follower row (of="self"); the nullable broker_server join cannot be FOR UPDATE'd.
+            fresh_follower = (CopierFollower.objects
+                              .select_for_update(of=("self",))
+                              .select_related("follower_account", "follower_account__broker_server",
+                                              "master__trading_account")
+                              .get(pk=locked.follower_id))
+            locked.follower = fresh_follower
             # P0-B: re-validate EVERYTHING on the locked row (follower/account/owner/binding/staleness/
-            # protection/fresh constraints) — a disable/rebind/supersede between preflight and write loses.
+            # protection/fresh constraints/symbol-map) — a disable/rebind/supersede/revoke loses.
             ok, reason = admit_open(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}

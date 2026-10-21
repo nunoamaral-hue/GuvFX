@@ -1,10 +1,12 @@
 """B-exec producer certification: flag gate, TOCTOU re-validation, payload contract, protection facts,
 SHADOW semantics, idempotency, inherited gates. DEMO-only; no order_send; no LIVE."""
+import threading
 from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.db import connection
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from execution.models import BrokerInstrument, ExecutionJob
@@ -30,11 +32,11 @@ ENABLED = dict(COPIER_ENABLED=True, COPIER_EXECUTE_ENABLED=True)
 class ProducerFixture(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="owner", email="o@x.invalid", password="x")
-        bs = BrokerServer.objects.create(broker_display_name="IS6", server_name="IS6Technologies-Demo",
-                                         environment="demo")
+        self.bs = BrokerServer.objects.create(broker_display_name="IS6", server_name="IS6Technologies-Demo",
+                                              environment="demo")
         self.master_acct = TradingAccount.objects.create(
             user=self.user, name="m", broker_name="IS6", account_number="1000001",
-            is_demo=True, is_active=True, broker_server=bs)
+            is_demo=True, is_active=True, broker_server=self.bs)
         self.master = CopierMaster.objects.create(trading_account=self.master_acct, observe_enabled=True)
         self.poll = MasterObservationPoll.objects.create(master=self.master, observed_at=timezone.now(),
                                                          read_at=timezone.now(), position_count=1)
@@ -47,10 +49,16 @@ class ProducerFixture(TestCase):
             poll=self.poll, position_ticket=1, symbol="XAUUSD", side="BUY", volume=Decimal("0.10"),
             sl=Decimal("1990"), tp=Decimal("2100"), price_open=Decimal("2000"))
 
-    def _follower(self, number="2000001", *, live=False, **cfg):
-        env = "live" if live else "demo"
-        srv = "TradersWay-Live" if live else f"IS6Technologies-Demo{number}"
-        fbs = BrokerServer.objects.create(broker_display_name="IS6", server_name=srv, environment=env)
+    def _follower(self, number="2000001", *, live=False, cross_broker=False, **cfg):
+        # DEMO followers share the master's broker server (same-broker -> symbol resolves to identity),
+        # so the F2 produce-time symbol-map re-verification passes without a CopierSymbolMap. A LIVE or
+        # explicit cross-broker follower gets its own broker server.
+        if live or cross_broker:
+            fbs = BrokerServer.objects.create(
+                broker_display_name="IS6", server_name=("TradersWay-Live" if live else f"Pepperstone-{number}"),
+                environment=("live" if live else "demo"))
+        else:
+            fbs = self.bs
         facct = TradingAccount.objects.create(
             user=self.user, name=f"f{number}", broker_name="IS6", account_number=number,
             is_demo=(not live), is_active=True, broker_server=fbs)
@@ -59,10 +67,10 @@ class ProducerFixture(TestCase):
         services.set_follower_enabled(f, True)
         return f
 
-    def _instrument(self, account, symbol="XAUUSD", authoritative=True):
+    def _instrument(self, account, symbol="XAUUSD", authoritative=True, enabled=True):
         meta = {"volume_min": 0.01, "volume_step": 0.01, "volume_max": 100} if authoritative else {"digits": 2}
         return BrokerInstrument.objects.create(account=account, broker_symbol=symbol, base_symbol=symbol,
-                                               enabled=True, metadata=meta)
+                                               enabled=enabled, metadata=meta)
 
     def _replication(self, follower, *, op="OPEN", sltp_ok=True, symbol="XAUUSD", vol="0.050",
                      sl="1990", tp="2100"):
@@ -132,6 +140,18 @@ class AdmissionTests(ProducerFixture):
         MasterEvent.objects.filter(pk=self.event.pk).update(observed_at=timezone.now() - timedelta(hours=2))
         rep = CopierReplication.objects.select_related("master_event").get(pk=rep.pk)  # reload the event
         self.assertEqual(admit_open(rep)[1], "stale_open_outside_window")
+
+    # F3 — instrument readiness
+    def test_instrument_not_ready_rejected(self):
+        f = self._follower()
+        self._instrument(f.follower_account, enabled=False)   # authoritative metadata but DISABLED
+        self.assertEqual(admit_open(self._replication(f))[1], "instrument_not_ready")
+
+    # F2 — symbol-map revocation / cross-broker re-verification at produce time
+    def test_cross_broker_without_verified_map_rejected_at_produce(self):
+        f = self._follower(number="2000050", cross_broker=True)   # different broker, no CopierSymbolMap
+        self._instrument(f.follower_account)
+        self.assertEqual(admit_open(self._replication(f))[1], "symbol_map_changed")
 
 
 class ProductionTests(ProducerFixture):
@@ -222,3 +242,68 @@ class ProductionTests(ProducerFixture):
         self._replication(f)
         self.assertEqual(produce_pending()["produced"], 0)
         self.assertEqual(ExecutionJob.objects.count(), 0)
+
+    # F4 — real serialization contract (ExecutionJobSerializer round-trip)
+    @override_settings(**ENABLED)
+    def test_job_serialization_contract(self):
+        from execution.serializers import ExecutionJobSerializer
+        f, rep = self._ready()
+        produce_one(rep)
+        data = ExecutionJobSerializer(ExecutionJob.objects.get()).data
+        self.assertEqual(data["job_type"], ExecutionJob.JobType.PLACE_ORDER_SHADOW)
+        p = data["payload"]
+        self.assertGreater(float(p["lots"]), 0)        # serialized lots is a parseable positive number
+        for key in ("symbol", "side", "is_demo", "max_lot", "comment", "signal_source"):
+            self.assertIn(key, p)
+
+
+class ConcurrentProducerTests(TransactionTestCase):
+    """F1/P0-B — a genuine two-connection concurrent produce proves the row lock yields ONE job."""
+
+    def _fixture(self):
+        user = User.objects.create_user(username="c", email="c@x.invalid", password="x")
+        bs = BrokerServer.objects.create(broker_display_name="IS6", server_name="IS6Technologies-Demo",
+                                         environment="demo")
+        macct = TradingAccount.objects.create(user=user, name="m", broker_name="IS6",
+                                              account_number="1000001", is_demo=True, is_active=True,
+                                              broker_server=bs)
+        master = CopierMaster.objects.create(trading_account=macct, observe_enabled=True)
+        poll = MasterObservationPoll.objects.create(master=master, observed_at=timezone.now(),
+                                                    read_at=timezone.now(), position_count=1)
+        event = MasterEvent.objects.create(
+            master=master, sequence=1, from_poll=poll, event_type=MasterEvent.EventType.OPEN,
+            position_ticket=1, symbol="XAUUSD", side="BUY", volume_before=Decimal("0"),
+            volume_after=Decimal("0.10"), volume_delta=Decimal("0.10"), observed_at=timezone.now())
+        MasterPositionSnapshot.objects.create(poll=poll, position_ticket=1, symbol="XAUUSD", side="BUY",
+                                              volume=Decimal("0.10"), sl=Decimal("1990"), tp=Decimal("2100"),
+                                              price_open=Decimal("2000"))
+        facct = TradingAccount.objects.create(user=user, name="f", broker_name="IS6",
+                                             account_number="2000001", is_demo=True, is_active=True,
+                                             broker_server=bs)
+        BrokerInstrument.objects.create(account=facct, broker_symbol="XAUUSD", base_symbol="XAUUSD",
+                                        enabled=True, metadata={"volume_min": 0.01, "volume_step": 0.01})
+        f = services.add_follower(master, facct, multiplier=Decimal("0.5"))
+        services.set_follower_enabled(f, True)
+        return CopierReplication.objects.create(
+            master_event=event, follower=f, requested_op="OPEN", status=ReplicationStatus.SHADOW_RECORDED,
+            target_volume=Decimal("0.050"), follower_symbol="XAUUSD", translated_sl=Decimal("1990"),
+            translated_tp=Decimal("2100"), sltp_translation_ok=True)
+
+    @override_settings(**ENABLED)
+    def test_concurrent_produce_one_creates_single_job(self):
+        rep_pk = self._fixture().pk
+        results = []
+
+        def worker():
+            try:
+                results.append(produce_one(CopierReplication.objects.get(pk=rep_pk)))
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(ExecutionJob.objects.count(), 1)              # row lock -> exactly one job
+        self.assertEqual(sum(1 for r in results if r.get("produced")), 1)
