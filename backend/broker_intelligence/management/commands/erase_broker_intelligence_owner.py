@@ -1,4 +1,4 @@
-"""Controlled owner-scoped ERASURE CLI (ADR-0051; GDPR/UK-GDPR Art 17). Staff/governance only; DARK by default.
+"""Controlled owner-scoped ERASURE CLI (ADR-0054; GDPR/UK-GDPR Art 17). Staff/governance only; DARK by default.
 
 This is deliberately NOT an HTTP endpoint. It is the ONLY operator surface for governed erasure and it fails
 closed: a dry-run PLAN must be produced first, and a real mutation needs the matching confirmation token, a

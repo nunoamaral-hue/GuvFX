@@ -122,7 +122,7 @@ class EvidenceStore:
     def delete_blob_file(self, blob) -> bool:
         """GOVERNED physical deletion of the raw bytes for ONE blob — the ONE place this store ever unlinks a
         published artifact (``put`` only ever unlinks a *tmp* file). This exists solely for the controlled,
-        owner-scoped erasure path (ADR-0051, GDPR Art 17) and must be called ONLY after the caller has
+        owner-scoped erasure path (ADR-0054, GDPR Art 17) and must be called ONLY after the caller has
         established that no lawful reference to the blob remains (no BrokerEvent / BrokerMessageObservation
         still points at it). It does NOT touch the DB — the caller removes the ``EvidenceBlob`` row inside the
         same governed transaction. Idempotent: a missing file returns False, never raises. The content-addressed

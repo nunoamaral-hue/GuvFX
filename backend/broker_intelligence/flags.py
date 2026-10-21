@@ -158,7 +158,7 @@ def broker_routing_evidence_required() -> bool:
 
 
 def broker_intelligence_erasure_enabled() -> bool:
-    """Master gate for the CONTROLLED OWNER-SCOPED ERASURE path (GDPR/UK-GDPR Art 17), per ADR-0051. DEFAULT OFF and
+    """Master gate for the CONTROLLED OWNER-SCOPED ERASURE path (GDPR/UK-GDPR Art 17), per ADR-0054. DEFAULT OFF and
     this is the ONLY switch that lets the governed erasure run at all: while OFF, ``execute_owner_erasure`` refuses
     and the per-session GUC that the DB immutability triggers consult is never set — so ordinary immutability
     (EvidenceBlob/BrokerEvent are never deletable) is completely unaffected. The plan (dry-run) is pure/testable

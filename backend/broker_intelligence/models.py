@@ -863,7 +863,7 @@ class BrokerMessageObservation(models.Model):
 
 
 class ErasureHold(models.Model):
-    """A legal/security HOLD that blocks controlled erasure for a data subject (ADR-0051). While an ``active`` hold
+    """A legal/security HOLD that blocks controlled erasure for a data subject (ADR-0054). While an ``active`` hold
     exists for the subject, ``execute_owner_erasure`` refuses (status HELD) so data required for fraud/AML/litigation
     or security evidence (e.g. a refused cross-user attribution) is never erased. Owner-level in this increment
     (record-level holds are a documented future refinement). This table is NOT evidence and carries no message
@@ -889,7 +889,7 @@ class ErasureHold(models.Model):
 
 
 class ErasureRequest(models.Model):
-    """A governed, owner-scoped erasure request (ADR-0051, GDPR/UK-GDPR Art 17). It is the explicit record that must
+    """A governed, owner-scoped erasure request (ADR-0054, GDPR/UK-GDPR Art 17). It is the explicit record that must
     exist before any erasure runs, carries the dry-run PLAN and the second-confirmation token, and records the OUTCOME
     — all as counts/ids only, NEVER deleted message content. It holds NO ForeignKey to the objects being erased (those
     ids live in the JSON plan/outcome), so the request survives the erasure it records. Not evidence; append-only in

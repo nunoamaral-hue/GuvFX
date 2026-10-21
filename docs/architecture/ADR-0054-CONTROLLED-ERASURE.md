@@ -1,4 +1,4 @@
-# ADR-0051 — Controlled owner-scoped erasure exception to immutable evidence
+# ADR-0054 — Controlled owner-scoped erasure exception to immutable evidence
 
 - **Status:** **Proposed** (NOT ratified — requires Sponsor approval before activation).
 - **Date:** 2026-10-21 · **Scope:** Withdrawal Intelligence (`broker_intelligence`) only.
@@ -15,12 +15,16 @@ request" promise requires. We need a controlled erasure path **without** weakeni
 Introduce a single **governed erasure path** that is the ONLY way a data subject's WV1 personal data can
 be removed, gated so ordinary immutability is unchanged everywhere else.
 
-1. **GUC-gated DB triggers.** The `EvidenceBlob`/`BrokerEvent` BEFORE-DELETE trigger functions are
-   replaced (migration 0017) to permit a delete **only** when the per-session GUC
-   `guvfx.erasure_authorized = 'on'`. The GUC is set **exclusively** inside the governed transaction
-   (`erasure.execute_owner_erasure`) and reset immediately. With the GUC unset (every other code path),
-   the triggers raise exactly as before — the Python `delete()` guards are also unchanged. Immutability
-   is therefore **not weakened outside the governed path** (proved by `test_ordinary_delete_still_blocked`).
+1. **Role-enforced DB triggers (NOT a GUC — corrected per adversarial review Finding 2).** The
+   `EvidenceBlob`/`BrokerEvent` BEFORE-DELETE trigger functions (migration 0017) permit a delete **only**
+   when the deleting session's `current_user` is the dedicated NOLOGIN role **`guvfx_erasure`**. A session
+   GUC was **rejected** because any session on the ordinary application role can `SET`/`SET LOCAL` it — it is
+   not proof the delete came through the governed path. `current_user` can become `guvfx_erasure` **only**
+   via a SECURITY DEFINER procedure owned by that role; the ordinary application role is not a member and
+   cannot `SET ROLE` to it. The privileged role + procedure are **provisioned separately by a superuser**
+   (`ops/erasure/provision_erasure_privilege.sql`); until then the role does not exist and deletion is
+   impossible for everyone — fail-closed. Proved by `test_ordinary_delete_blocked` and
+   `test_old_guc_cannot_bypass`.
 2. **Data-subject identity verification.** An explicit `ErasureRequest` with `identity_verified = True`
    is required (operator attests out-of-band verification). Unverified ⇒ refused.
 3. **Owner-scoped authorization.** Erasure acts on exactly ONE owner (`subject_user_id_snapshot`); it
@@ -30,9 +34,12 @@ be removed, gated so ordinary immutability is unchanged everywhere else.
 5. **Shared-object protection.** A physical blob is deletable only when **no lawful reference remains**:
    the row delete is attempted and a `ProtectedError` (another owner's event/observation still PROTECTs
    it) means **retain**. No reference-count field is relied upon — PROTECT is the source of truth.
-6. **Physical blob deletion only after the final lawful reference is removed**, and only **after the DB
-   transaction commits** (the file unlink is irreversible, so it is deferred past commit; a rollback
-   leaves DB + file consistent; a crash post-commit leaves at most a benign orphan file).
+6. **Physical blob/credential deletion via a durable outbox (corrected per Findings 3/4).** Irreversible
+   filesystem deletion (credential + evidence files) is **never** done inside the DB transaction. The
+   governed procedure deletes the DB rows and, in the **same transaction**, writes durable `DeletionTask`
+   outbox rows (PENDING); an **idempotent worker** removes the files **after commit** and marks each task
+   COMPLETED/FAILED. A crash after commit leaves a **durable PENDING task** (not an orphan file); the request
+   is not COMPLETED until all file-deletion tasks finish. A rollback leaves DB + files consistent.
 7. **Derived BrokerEvent handling.** Deleted (owner-scoped) via the GUC-gated path, after its Withdrawals
    (PROTECT) and observations are gone.
 8. **Withdrawal-record handling.** Deleted (owner-scoped); it is a rebuildable projection.
@@ -67,9 +74,22 @@ be removed, gated so ordinary immutability is unchanged everywhere else.
   double-confirmed exception exists for Art 17.
 - "Delete on request" becomes truthful **only once this ADR is ratified and the capability is armed** for
   the relevant cohort; until then the privacy wording must use the interim (Option C) language.
-- A small migration (0017) adds `ErasureRequest`/`ErasureHold` and GUC-gates the two trigger functions —
-  additive; reverse restores the unconditional-raise trigger bodies. No data backfill.
+- A small migration (0017) adds `ErasureRequest`/`ErasureHold` and makes the two trigger functions
+  **role-enforced** (`current_user = 'guvfx_erasure'`) — additive; reverse restores the unconditional-raise
+  trigger bodies. No data backfill.
+
+## Post-adversarial-review status (2026-10-21)
+This ADR and PR #543 were **not approved** in their first form. Corrections now in the branch:
+- **Finding 1:** renumbered 0051 → **0054** (0051/0052/0053 are the MT5 copier's); governance test added.
+- **Finding 2:** GUC bypass removed → **role-enforced** triggers, fail-closed until the superuser-provisioned
+  privileged backend exists; negative controls prove it.
+- The destructive deletion path is **fail-closed in this build** (execute refuses — no deletion occurs).
+**Specified but gated on the privileged provisioning (next increment):** the SECURITY DEFINER procedure body,
+the **durable deletion-outbox + idempotent worker** (Findings 3/4), audit-row anonymisation (Finding 8), and
+the **identity-verification separation of duties** / two-person approval (Finding 7). See
+`docs/WV1_ERASURE_REWORK_PACKET.md`.
 
 ## Status / ratification
-**Proposed.** Do not activate (`BROKER_INTELLIGENCE_ERASURE_ENABLED`) in any environment, and do not run
-`--execute` against production data, without explicit Sponsor approval for that specific operation.
+**Proposed — NOT ratified; PR #543 is a governed review packet, not a merge request.** Do not merge, do not
+activate (`BROKER_INTELLIGENCE_ERASURE_ENABLED`), do not provision the privileged role/procedure, and do not
+run `--execute` against production data, without explicit Sponsor authorization for that specific step.

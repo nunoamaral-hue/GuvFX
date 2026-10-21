@@ -51,18 +51,23 @@ class Migration(migrations.Migration):
                 'indexes': [models.Index(fields=['subject_user_id_snapshot', 'status'], name='broker_inte_subject_9b8aaf_idx')],
             },
         ),
-        # ADR-0051: GUC-GATED immutability. The EvidenceBlob/BrokerEvent BEFORE-DELETE trigger functions
-        # (migration 0002) now permit a delete ONLY when the per-session GUC `guvfx.erasure_authorized` = 'on' —
-        # set solely inside the governed erasure transaction (erasure.execute_owner_erasure) and reset immediately
-        # after. When the GUC is unset, current_setting(..., true) returns NULL (!= 'on'), so ordinary deletes and
-        # all ORM bulk/raw paths still RAISE exactly as before — immutability is unchanged outside the governed
-        # path. Reverse restores the unconditional-raise bodies from migration 0002. Idempotent (CREATE OR REPLACE);
-        # no backfill (functions only); no data change.
+        # ADR-0054 (post-adversarial-review): ROLE-ENFORCED immutability — NOT a forgeable GUC. The
+        # EvidenceBlob/BrokerEvent BEFORE-DELETE trigger functions (migration 0002) permit a delete ONLY when the
+        # DELETING SESSION'S current_user is the dedicated privileged role `guvfx_erasure`. A custom GUC was
+        # rejected because ANY session on the ordinary application role can `SET`/`SET LOCAL` it — it is not proof
+        # the delete came through the governed path. `current_user` can only become `guvfx_erasure` via a
+        # SECURITY DEFINER procedure owned by that NOLOGIN role (or a dedicated connection as it); the ordinary
+        # application role is NOT a member of `guvfx_erasure` and so cannot `SET ROLE` to it. Until that privileged
+        # backend is SEPARATELY PROVISIONED (superuser; see ops/erasure/provision_erasure_privilege.sql), the role
+        # does not exist, so `current_user` can never equal it and deletion of evidence/events is IMPOSSIBLE for
+        # every ordinary path — fail-closed. This migration is runnable by the non-superuser application role (it
+        # only CREATE OR REPLACEs functions the app role already owns); it creates no role and grants nothing.
+        # Reverse restores the unconditional-raise bodies from migration 0002. No backfill; no data change.
         migrations.RunSQL(
             sql=r"""
 CREATE OR REPLACE FUNCTION bi_evidenceblob_block_delete() RETURNS trigger AS $fn$
 BEGIN
-    IF current_setting('guvfx.erasure_authorized', true) = 'on' THEN
+    IF current_user = 'guvfx_erasure' THEN
         RETURN OLD;
     END IF;
     RAISE EXCEPTION 'EvidenceBlob is immutable raw evidence; DELETE is not allowed (quarantine, never destroy)';
@@ -71,7 +76,7 @@ $fn$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION bi_brokerevent_block_delete() RETURNS trigger AS $fn$
 BEGIN
-    IF current_setting('guvfx.erasure_authorized', true) = 'on' THEN
+    IF current_user = 'guvfx_erasure' THEN
         RETURN OLD;
     END IF;
     RAISE EXCEPTION 'BrokerEvent is append-only evidence; DELETE is not allowed (quarantine, never destroy)';
