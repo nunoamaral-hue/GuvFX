@@ -155,3 +155,14 @@ def broker_routing_evidence_required() -> bool:
     registered address) can be proven only once the delivery plane is populated. Arm this flag only after that is in
     place (or rely on direct_address). No execution/financial authority."""
     return _flag("BROKER_ROUTING_EVIDENCE_REQUIRED")
+
+
+def broker_intelligence_erasure_enabled() -> bool:
+    """Master gate for the CONTROLLED OWNER-SCOPED ERASURE path (GDPR/UK-GDPR Art 17), per ADR-0051. DEFAULT OFF and
+    this is the ONLY switch that lets the governed erasure run at all: while OFF, ``execute_owner_erasure`` refuses
+    and the per-session GUC that the DB immutability triggers consult is never set — so ordinary immutability
+    (EvidenceBlob/BrokerEvent are never deletable) is completely unaffected. The plan (dry-run) is pure/testable
+    regardless; this flag governs only whether a real mutation may be attempted, and even then only through the
+    staff/governance CLI with a verified owner, an explicit ErasureRequest and a second confirmation. It grants NO
+    execution/strategy/credential authority and never a financial action. Never exposed as a customer endpoint."""
+    return _flag("BROKER_INTELLIGENCE_ERASURE_ENABLED")

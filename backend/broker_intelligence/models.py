@@ -860,3 +860,67 @@ class BrokerMessageObservation(models.Model):
     def __str__(self) -> str:
         return (f"BrokerMessageObservation(owner={self.owner_id}, mbx={self.connected_mailbox_id}, "
                 f"pmid={self.provider_message_id[:24]}…, refetches={self.duplicate_count})")
+
+
+class ErasureHold(models.Model):
+    """A legal/security HOLD that blocks controlled erasure for a data subject (ADR-0051). While an ``active`` hold
+    exists for the subject, ``execute_owner_erasure`` refuses (status HELD) so data required for fraud/AML/litigation
+    or security evidence (e.g. a refused cross-user attribution) is never erased. Owner-level in this increment
+    (record-level holds are a documented future refinement). This table is NOT evidence and carries no message
+    content — only the subject reference, a reason category and who placed/released it."""
+
+    # SET_NULL + a durable id snapshot: the hold survives even if the User row is later removed, and the snapshot
+    # keeps the subject resolvable for audit. No message content is ever stored here.
+    subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="erasure_holds")
+    subject_user_id_snapshot = models.PositiveIntegerField(db_index=True)
+    reason = models.CharField(max_length=200)                      # a category/justification, never message content
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+    active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["subject_user_id_snapshot", "active"])]
+
+    def __str__(self) -> str:
+        return f"ErasureHold(subject={self.subject_user_id_snapshot}, active={self.active})"
+
+
+class ErasureRequest(models.Model):
+    """A governed, owner-scoped erasure request (ADR-0051, GDPR/UK-GDPR Art 17). It is the explicit record that must
+    exist before any erasure runs, carries the dry-run PLAN and the second-confirmation token, and records the OUTCOME
+    — all as counts/ids only, NEVER deleted message content. It holds NO ForeignKey to the objects being erased (those
+    ids live in the JSON plan/outcome), so the request survives the erasure it records. Not evidence; append-only in
+    spirit but not trigger-protected (it is operational metadata, not broker evidence)."""
+
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Requested (identity not yet verified)"
+        PLANNED = "PLANNED", "Dry-run plan produced; awaiting confirmation"
+        EXECUTED = "EXECUTED", "Erasure executed"
+        FAILED = "FAILED", "Erasure failed (rolled back)"
+        HELD = "HELD", "Blocked by an active legal/security hold"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="erasure_requests")
+    subject_user_id_snapshot = models.PositiveIntegerField(db_index=True)   # durable owner id (survives SET_NULL)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="+")                      # the staff/governance operator
+    reason = models.CharField(max_length=200, blank=True, default="")       # category/justification, never content
+    identity_verified = models.BooleanField(default=False)                  # verified data-subject identity gate
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.REQUESTED, db_index=True)
+    plan = models.JSONField(null=True, blank=True)                          # dry-run plan: counts + classified ids
+    confirm_token = models.CharField(max_length=64, blank=True, default="") # second-confirmation token (plan digest)
+    outcome = models.JSONField(null=True, blank=True)                       # execution result: counts only, no content
+    error = models.CharField(max_length=300, blank=True, default="")        # sanitised failure reason (no content)
+    created_at = models.DateTimeField(auto_now_add=True)
+    planned_at = models.DateTimeField(null=True, blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["subject_user_id_snapshot", "status"])]
+
+    def __str__(self) -> str:
+        return f"ErasureRequest(subject={self.subject_user_id_snapshot}, {self.status})"
