@@ -39,6 +39,7 @@
   "src/app/(app)/trading/live-trading/page.tsx",
   "src/app/(app)/trading/terminal-access/page.tsx",
   "src/app/(app)/trading/trade-history/page.tsx",
+  "src/app/(app)/withdrawal-intelligence/page.tsx",
   "src/app/(public)/brokers/[slug]/page.tsx",
   "src/app/(public)/brokers/case-study/page.tsx",
   "src/app/(public)/brokers/page.tsx",

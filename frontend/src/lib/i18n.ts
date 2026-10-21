@@ -210,6 +210,7 @@ const dictionary: Dictionary = {
   "nav.terminalAccess": { en: "Terminal Access", ja: "ターミナルアクセス" },
   "nav.tradeHistory": { en: "Trade History", ja: "取引履歴" },
   "nav.overview": { en: "Overview", ja: "概要" },
+  "nav.withdrawalIntelligence": { en: "Withdrawal Intelligence", ja: "出金インテリジェンス" },
   "nav.performance": { en: "Performance", ja: "パフォーマンス" },
   "nav.strategyMetrics": { en: "Strategy Metrics", ja: "戦略指標" },
   "nav.strategyLab": { en: "Strategy Lab", ja: "戦略ラボ" },
