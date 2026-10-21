@@ -1,7 +1,7 @@
 # 0053 — MT5 Copier: SL/TP set/change/remove → follower MODIFY lifecycle (DARK/DEMO)
 
 - Date: 2026-10-21
-- Status: Proposed (DARK engineering only; merge + activation are separate Sponsor gates)
+- Status: Accepted for DARK engineering (Sponsor-ratified 2026-10-21; DEMO arming, deployment and LIVE execution remain separate explicit gates)
 - Extends: [0051](0051-mt5-master-follower-copier.md), [0052](0052-mt5-copier-close-lifecycle.md)
 - Packet: `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` Workstream B (trade lifecycle), increment 2
 
@@ -70,5 +70,9 @@ non-terminal `MODIFY_POSITION`) creates no second job; SHADOW creates no job; ar
 
 ## Status / approval
 
-DARK engineering decision only. Merge of the implementing PR, ratification of this ADR, DEMO arming and any
-production step remain separate explicit Sponsor gates. `DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` = false.
+**Accepted for DARK engineering (Sponsor-ratified 2026-10-21).** The Sponsor approved the engineering
+decision: SL/TP operations require a MATCHED copier-owned follower ticket; symbol-only targeting is forbidden;
+SL removal or widening fails closed where it could weaken protection; supported risk-reducing modifications are
+DEMO-only and SHADOW-by-default. Merge does NOT authorize deployment, migration, arming or execution — those
+remain separate explicit Sponsor gates (PM owns lifecycle status). `DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED`
+= false.
