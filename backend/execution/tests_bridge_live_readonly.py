@@ -80,6 +80,25 @@ class BridgeLiveReadAllowed(SimpleTestCase):
         self.assertEqual(r["account_server"], "TradersWay-Live")
         m.order_send.assert_not_called()                         # a read never places an order
 
+    def test_fetch_positions_includes_sl_tp_for_copier_observer(self):
+        # ADR-0051: the read handler ADDITIVELY exposes sl/tp (+ time/identifier) so the read-only
+        # copier observer can diff protective-level changes. Still a PURE READ — no order_send.
+        p = _position()
+        p.sl = 1990.0
+        p.tp = 2100.0
+        p.time = 1_700_000_000
+        p.time_update = 1_700_000_050
+        p.identifier = 777
+        m = _fake(trade_mode=LIVE, positions=(p,))
+        self._install(m)
+        r = self.bridge.fetch_positions("")
+        self.assertTrue(r["ok"], r)
+        pos = r["positions"][0]
+        self.assertEqual(pos["sl"], 1990.0)
+        self.assertEqual(pos["tp"], 2100.0)
+        self.assertEqual(pos["identifier"], 777)
+        m.order_send.assert_not_called()                         # a read never places an order
+
     def test_fetch_positions_flat_live_returns_empty_ok_not_400(self):
         m = _fake(trade_mode=LIVE, positions=())
         self._install(m)
@@ -88,6 +107,17 @@ class BridgeLiveReadAllowed(SimpleTestCase):
         self.assertEqual(r["positions"], [])
         self.assertEqual(r["count"], 0)
         self.assertEqual(r["trade_mode"], LIVE)
+
+    def test_fetch_positions_none_is_error_not_flat(self):
+        # ADR-0051 BLOCKER-1: positions_get() returning None is a FAILURE, not a flat account. It must
+        # report an error (so the read-only observer fails closed) rather than masquerade as empty.
+        m = _fake(trade_mode=LIVE)
+        m.positions_get.return_value = None
+        self._install(m)
+        r = self.bridge.fetch_positions("")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "positions_get_failed")
+        m.order_send.assert_not_called()
 
     def test_fetch_deals_snapshot_allows_live_and_reports_trade_mode(self):
         m = _fake(trade_mode=LIVE, deals=())

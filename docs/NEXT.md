@@ -1,5 +1,27 @@
 # NEXT — Priorities (keep this list short)
 
+## ★★★ MT5 MASTER/FOLLOWER COPIER — backend foundation ENGINEERING COMPLETE + DARK (2026-10-20, PR #528)
+Packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0; PD scope GO = DARK observer-first; ADR-0051).
+`trade_copier` app: **PR A** read-only master observer + append-only event ledger (+additive bridge sl/tp
+read field); **PR B** follower config + replication **intent** engine (sizing/symbol-map/SL-TP translation/
+idempotency) that creates **ZERO ExecutionJobs**. All DARK (default-OFF flags); `trade_copier` 64 tests +
+full regression **6188 OK**. PR #528 open, auto-merge OFF, **merge gated on governance ratification**;
+**Activation NO-GO**; no prod deploy/migration. **LIVE follower execution NOT authorized (RED); LIVE
+follower close/SL-TP has NO bridge path (demo-locked).** Monday demo = LIVE master read-only observation +
+DEMO/shadow followers, clearly labelled (packet §15 fallback) — a genuine LIVE-money copy demo is NO-GO.
+**One bounded next action:** build **B-exec** — the gated DEMO `ExecutionJob` creation from recorded
+intents (enqueue-only, DEMO followers only, LIVE blocked) — then PR C (Copy Trading UX) and PR D
+(cross-broker cert + real-MT5 DEMO rehearsal; infra reachable: VPS + bridge :8788 up 2026-10-20).
+Detail: `docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md`, `docs/ADRs/0051-mt5-master-follower-copier.md`.
+## ★★★ BROKER INTELLIGENCE CUSTOMER PILOT — ENGINEERING COMPLETE + DARK-MERGED, ACTIVATION NO-GO (2026-10-20, main `8125770f`)
+Seven DARK PRs (#522–#527) complete the multi-account customer subsystem (§2–§6) + public privacy posture. Report:
+`docs/GUVFX_BROKER_INTELLIGENCE_CUSTOMER_PILOT_REPORT.md`. All flags default OFF; no prod migration/activation. The
+genuine TradersWay external-withdrawal pilot is **BLOCKED on the raw genuine RFC822 evidence** (not in repo; not
+fabricated — the parser has a structural no-prose→EXTERNAL invariant) and on operator certification
+(`CERTIFIED_BROKERS` empty). **One bounded next action:** the Sponsor/ops provide the genuine withdrawal RFC822 (or
+run `extract_sanitised_fixture` on the production blob) so the EXTERNAL_WITHDRAWAL classifier can be certified against
+genuine evidence — every other §6 step is gated behind that. Activation (public metrics, routing/attribution/
+consent flags) remains PM/Sponsor-gated behind genuine data + scoring/consent governance + migration-first deploy.
 ## ★★★ WV1 BOARD-DEMO CRITICAL PATH — DELIVERED + DARK-MERGED, PRODUCTION NO-GO/GATED (2026-10-20, main `2d6c3f1a`)
 Four DARK PRs (#530–#533) make Withdrawal Intelligence a functioning, visible demo: certified external-withdrawal
 parser; owner-attributed/account-UNRESOLVED schema+correlation (ADR-0050, mig 0016); owner-scoped member API+UI;

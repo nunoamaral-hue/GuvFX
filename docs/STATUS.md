@@ -14,6 +14,21 @@
 
 ## Execution workstream log
 
+- **2026-10-20 - MT5 MASTER/FOLLOWER COPIER — backend foundation (PR #528, DARK, merge-gated).** New
+  `trade_copier` app (ADR-0051; packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING`). **PR A** master
+  observer + append-only event ledger (read-only; durable `MasterObservationPoll`/`MasterPositionSnapshot`
+  incl. sl/tp, `MasterEvent` diff ledger; reuses the snapshot identity firewall, fail-closed, first-poll
+  baseline-only) + one additive read-only bridge field (`fetch_positions` now returns sl/tp/time/identifier).
+  **PR B** follower config (`CopierFollower` + audit, `CopierSymbolMap`, `CopierReplication`) + a replication
+  **intent** engine that records what it would copy (sizing modes FIXED/MULTIPLIER/BALANCE/RISK with
+  broker min/step/max; SL/TP translation; verified-only cross-broker symbols; idempotent per
+  `(master_event, follower)`; cross-user/self-follow rejected) and creates **ZERO ExecutionJobs**.
+  Everything DARK behind default-OFF flags (`COPIER_ENABLED`/`COPIER_OBSERVER_ENABLED`/`COPIER_REPLICATION_ENABLED`);
+  no `order_send`; execution LIVE wall + demo-only close/modify handlers untouched; LIVE follower execution
+  NOT authorized (RED). Tests: `trade_copier` 64 green; full backend regression **Ran 6188 OK (skipped=1)**.
+  **Activation GO/NO-GO: NO-GO.** No prod deploy/migration. Remaining: B-exec (gated DEMO ExecutionJob
+  creation), PR C (Copy Trading UX), PR D (cross-broker cert + demo rehearsal). See
+  `docs/MT5_COPIER_DAY1_CAPABILITY_MAP.md`.
 - **2026-10-20 - WV1 BOARD-DEMO CRITICAL PATH — DELIVERED (P0, all DARK; main `2d6c3f1a`).** Withdrawal Intelligence
   is now a FUNCTIONING, VISIBLE demonstration (verified live on an isolated demo DB; screenshots in
   `docs/wv1_demo_evidence/`). Four DARK PRs: **#530** certified TradersWay external-withdrawal parser (`0f2b4730`);
