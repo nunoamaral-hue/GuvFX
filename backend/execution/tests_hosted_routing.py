@@ -185,7 +185,7 @@ class MutationSurfaceStructuralTests(TestCase):
         JT = ExecutionJob.JobType
         # Every job type that reaches a real MT5 mutation MUST be in IDENTITY_PIN_JOB_TYPES.
         expected_mutation_types = {JT.OPEN_TRADE, JT.PLACE_ORDER, JT.PLACE_TEST_ORDER, JT.CLOSE_TRADE,
-                                   JT.MODIFY_POSITION}
+                                   JT.MODIFY_POSITION, JT.PARTIAL_CLOSE_TRADE}
         self.assertEqual(set(IDENTITY_PIN_JOB_TYPES), expected_mutation_types)
         # Deliberately-exempt (non-mutation / no-broker) types — documented so the exemption is conscious.
         exempt = {JT.TEST_CONNECTION, JT.SYNC_POSITIONS, JT.PLACE_ORDER_SHADOW}

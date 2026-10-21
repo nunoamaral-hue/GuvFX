@@ -122,6 +122,22 @@ def reconcile_one(replication: CopierReplication, *, fetch=_fetch_account_positi
             "reconciliation_status": replication.reconciliation_status}
 
 
+def read_follower_position(follower: CopierFollower, ticket: int, *, fetch=_fetch_account_positions):
+    """Read ONE follower position (by broker ticket) through the identity firewall. READ-ONLY.
+
+    Returns ``(ok, position_or_None, reason)`` where ``position`` is the live ``ObservedPosition`` (carrying
+    the authoritative CURRENT volume + symbol) for ``ticket``, or None when the read was refused/failed or
+    the ticket is no longer open. Used by the partial-close producer (authoritative current volume for the
+    proportional calc) and by remaining-volume reconciliation after a partial close. Never mutates."""
+    result = fetch(follower.follower_account)
+    if not result.ok:
+        return False, None, result.reason
+    for p in result.positions:
+        if int(p.ticket) == int(ticket):
+            return True, p, "ok"
+    return True, None, "ticket_not_open"
+
+
 def run_reconcile_pass(*, limit: int = 200, fetch=_fetch_account_positions) -> dict:
     """One reconciliation pass over enabled followers with unreconciled armed-DEMO OPENs. Gated + fail-closed."""
     if not copier_reconcile_enabled():

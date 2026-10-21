@@ -284,3 +284,27 @@ The master/follower lifecycle is not fully executable until follower CLOSE/MODIF
 - *Migration/rollback:* additive bridge handler behind a default‑OFF flag; rollback = disable flag + revert
   handler; no schema change on the critical path.
 - *Decision required:* Sponsor + Security GO before building or deploying the broadened bridge mutation.
+
+## Increment 3 — partial close (ADR-0055) — BUILT, DARK (2026-10-21)
+
+Status terms: `BUILT` / `CI_GREEN` once its PR certifies; `DARK_MERGED` only after a separate Sponsor GO;
+`DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` = false. Delivered under Sponsor Path-B authorization (code only;
+no deploy/migration/arming/execution/LIVE).
+
+- *Shipped:* distinct job type `PARTIAL_CLOSE_TRADE`; DEMO+HEDGING-only bridge primitive
+  `partial_close_position(ticket, volume, identity, expected_symbol)`; producer `produce_partial_close_one`
+  (+`admit_partial_close`) with a proportional reduction from the authoritative current follower volume
+  (fresh identity-firewalled read), SHADOW-by-default; migration `execution/0035` (choices only, not applied).
+- *Bridge is a DISTINCT operation:* explicit ticket + explicit partial volume; send-time re-read +
+  re-normalize; a SINGLE `order_send` (lost ACK → `order_send_none_unknown`, never retried); rejects
+  zero/negative/excessive/equal-full/below-min/sub-min-remainder/changed-symbol/unsupported-filling/identity;
+  NEVER falls back to a full close, different ticket or symbol; the legacy full-close path is unchanged; no
+  general-purpose arbitrary-position endpoint.
+- *Hedging/netting:* HEDGING certified; NETTING/EXCHANGE/unknown fail closed (`account_mode_not_certified`).
+- *Known unsupported (fail closed):* netting/exchange/unknown modes; below-min reduction/remainder (no
+  full-close substitution); unsupported filling modes; any position without a verified `CPY<id>` ticket; LIVE.
+- *Evidence:* `backend/execution/tests_bridge_partial_close.py` + `backend/trade_copier/tests_partial_close_producer.py`
+  (discriminating negative controls); governance `execution_entrypoints.json` + WP6 `EXE-14`.
+- *Runbook / DEMO rehearsal / rollback:* `docs/MT5_COPIER_PARTIAL_CLOSE_RUNBOOK.md`.
+- *Gated:* ADR-0055 ratification, merge, DEMO arming, any real partial close, deployment and LIVE remain
+  separate explicit Sponsor gates. Actual live availability = 0%.

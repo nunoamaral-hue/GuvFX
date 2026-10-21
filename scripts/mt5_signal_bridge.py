@@ -2108,6 +2108,157 @@ def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, An
         mt5.shutdown()
 
 
+def _normalize_volume_down(volume: float, step: float, vmin: float):
+    """Floor ``volume`` to the broker ``step`` grid (round DOWN so a copied partial close never reduces
+    MORE than the proportional intent). Returns the normalized volume (may be below ``vmin`` — the caller
+    fails closed on that). Pure; no MT5 I/O."""
+    import math
+    if step is None or step <= 0:
+        return None
+    # Floor to the step grid with a tiny epsilon so 0.0299999 from float error does not drop a whole step.
+    units = math.floor((volume / step) + 1e-9)
+    return round(units * step, 8)
+
+
+def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] = None,
+                           expected_symbol: str = None) -> Dict[str, Any]:
+    """Partially close an open position by an EXPLICIT ticket and EXPLICIT volume (ADR-0055). DEMO + HEDGING
+    accounts only. A DISTINCT operation from ``close_position``: it NEVER closes the full position, never
+    targets a different ticket/symbol, and never falls back to a full close. Structured reason codes.
+
+    Hard rails: unconditionally demo-locked (re-asserted at send time via ``verify_mutation_identity``);
+    HEDGING margin mode only (netting/exchange/unknown fail closed — a netting symbol has one merged net
+    position, so a per-ticket partial is ambiguous); the position is RE-READ at send time; the requested
+    volume is re-normalized with CURRENT symbol constraints and rejected if zero/negative/excessive/
+    equal-to-full/below-min, or if the remainder would fall below the broker minimum. A SINGLE ``order_send``
+    is attempted — a lost ACK returns ``order_send_none_unknown`` (needs reconciliation) and is NEVER blindly
+    retried (a retry could double-reduce). The legacy full-close path is untouched."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return {"ok": False, "error": "mt5_not_installed"}
+
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+    if not guarded_initialize(mt5, init_kwargs):
+        return {"ok": False, "error": "mt5_init_failed", "detail": str(mt5.last_error())}
+
+    try:
+        account_info = mt5.account_info()
+        if account_info is None:
+            return {"ok": False, "error": "account_info_failed"}
+        if account_info.trade_mode != 0:                     # 0 == demo; refuse real/contest
+            return {"ok": False, "error": "account_not_demo"}
+        # HEDGING only: per-ticket partial close is unambiguous. Netting/exchange/unknown fail closed.
+        if getattr(account_info, "margin_mode", None) != mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
+            return {"ok": False, "error": "account_mode_not_certified",
+                    "margin_mode": getattr(account_info, "margin_mode", None)}
+
+        try:
+            req_volume = float(volume)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "volume_invalid", "ticket": ticket}
+        if req_volume <= 0:
+            return {"ok": False, "error": "volume_non_positive", "ticket": ticket}
+
+        # Re-read the position at send time — the ticket alone is not authorisation.
+        positions = mt5.positions_get(ticket=ticket)
+        if positions is None:
+            return {"ok": False, "error": "positions_get_failed", "detail": str(mt5.last_error()),
+                    "ticket": ticket}
+        if len(positions) == 0:
+            return {"ok": False, "error": "position_not_found", "ticket": ticket}
+        pos = positions[0]
+
+        # Symbol must match the stored replication's follower symbol (never act on a changed symbol).
+        if expected_symbol is not None and str(pos.symbol) != str(expected_symbol):
+            return {"ok": False, "error": "symbol_changed", "ticket": ticket,
+                    "expected": expected_symbol, "actual": pos.symbol}
+
+        si = mt5.symbol_info(pos.symbol)
+        if si is None:
+            return {"ok": False, "error": "symbol_info_failed", "ticket": ticket, "symbol": pos.symbol}
+        vmin = float(getattr(si, "volume_min", 0) or 0)
+        vstep = float(getattr(si, "volume_step", 0) or 0)
+        if vstep <= 0 or vmin <= 0:
+            return {"ok": False, "error": "symbol_constraints_unavailable", "ticket": ticket}
+        # Unsupported filling mode fails closed (neither IOC nor FOK advertised).
+        fmode = int(getattr(si, "filling_mode", 0) or 0)
+        if not (fmode & 2 or fmode & 1):
+            return {"ok": False, "error": "unsupported_filling_mode", "ticket": ticket, "filling_mode": fmode}
+
+        cur_volume = float(pos.volume)
+        if req_volume >= cur_volume:
+            # Equal-or-greater than the whole position is a FULL close (or excessive) — never substitute it.
+            return {"ok": False, "error": "would_be_full_close", "ticket": ticket,
+                    "requested": req_volume, "current": cur_volume}
+
+        norm = _normalize_volume_down(req_volume, vstep, vmin)
+        if norm is None or norm <= 0:
+            return {"ok": False, "error": "rounds_to_zero", "ticket": ticket, "requested": req_volume}
+        if norm < vmin:
+            return {"ok": False, "error": "below_min_reduction", "ticket": ticket,
+                    "normalized": norm, "volume_min": vmin}
+        if norm >= cur_volume:
+            return {"ok": False, "error": "would_be_full_close", "ticket": ticket,
+                    "normalized": norm, "current": cur_volume}
+        remaining = round(cur_volume - norm, 8)
+        if remaining < vmin:
+            # No full-close substitution policy in this increment — a sub-min remainder fails closed.
+            return {"ok": False, "error": "remainder_below_min", "ticket": ticket,
+                    "remaining": remaining, "volume_min": vmin}
+
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if not tick:
+            return {"ok": False, "error": "tick_failed", "ticket": ticket, "symbol": pos.symbol}
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            close_type, close_price = mt5.ORDER_TYPE_SELL, tick.bid
+        else:
+            close_type, close_price = mt5.ORDER_TYPE_BUY, tick.ask
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": norm,                                  # the EXPLICIT partial volume — never pos.volume
+            "type": close_type,
+            "position": ticket,
+            "price": close_price,
+            "deviation": 20,
+            "magic": pos.magic,
+            "comment": "GUVFX_PCLOSE",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": _filling_for(pos.symbol),
+        }
+
+        # IDENTITY gate immediately before the mutation (demo + login/server pins). A hard mismatch rejects.
+        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
+        if not _idok:
+            return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails,
+                    "ticket": ticket}
+
+        # SINGLE order_send — a partial close is NEVER retried on an unknown result (would risk a second
+        # reduction). A lost ACK returns an explicit marker so the caller reconciles remaining volume first.
+        result = mt5.order_send(request)
+        if result is None:
+            return {"ok": False, "error": "order_send_none_unknown", "need_reconcile": True,
+                    "detail": str(mt5.last_error()), "ticket": ticket, "requested_volume": norm}
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info(f"[pclose] ticket={ticket} partial close {norm} of {cur_volume}: "
+                        f"order={result.order} deal={result.deal}")
+            return {"ok": True, "ticket": ticket, "partial": True,
+                    "close_order": result.order, "close_deal": result.deal, "close_price": result.price,
+                    "requested_volume": norm, "filled_volume": getattr(result, "volume", None),
+                    "expected_remaining": remaining}
+        return {"ok": False, "error": "partial_close_rejected", "retcode": result.retcode,
+                "comment": getattr(result, "comment", None), "ticket": ticket, "requested_volume": norm}
+
+    except Exception as e:
+        return {"ok": False, "error": "exception", "detail": str(e)}
+    finally:
+        mt5.shutdown()
+
+
 def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str, Any] = None) -> Dict[str, Any]:
     """WS-B AUTO-BREAKEVEN — move an OPEN position's stop-loss (and optionally keep its
     take-profit) via ``TRADE_ACTION_SLTP``. Demo accounts only. Never opens/closes a position:
