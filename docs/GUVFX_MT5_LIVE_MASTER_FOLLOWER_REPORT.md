@@ -1,14 +1,15 @@
 # GUVFX_MT5_LIVE_MASTER_FOLLOWER_REPORT
 
 > Packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0). Subsystem completion report.
-> Author: Claude (Principal Engineer). Date: 2026‑10‑20. **All work is DARK; no production deploy,
-> no LIVE execution, no real‑money order, no DEMO bridge mutation.** States per §19 are not conflated.
+> Author: Claude (Principal Engineer). Date: 2026‑10‑20; **final-head reconciliation 2026‑10‑21.**
+> **All work is DARK; no production deploy, no LIVE execution, no real‑money order, no DEMO bridge
+> mutation.** States per §19 are not conflated.
 
 ## 0. State summary (§19 taxonomy)
 
 | State | Status |
 |---|---|
-| `ENGINEERING_COMPLETE` | ✅ Observer (A) + follower‑intent (B) + four PD corrections + Copy Trading UX (C) + B‑exec DEMO producer |
+| `ENGINEERING_COMPLETE` | ◑ **scoped only** — Observer (A) + follower‑intent (B) + four PD corrections + Copy Trading UX (C) + B‑exec DEMO OPEN producer. **The workstream is NOT engineering-complete:** CLOSE/MODIFY lifecycle execution (needs follower-ticket tracking), config-write UI, and customer activation are not built (§20, §23). |
 | `DARK_MERGED` | ❌ none — PRs open, merge gated on ADR‑0051 ratification + final‑head CI; auto‑merge OFF |
 | `DEMO_CERTIFIED` | ❌ none — synthetic/unit certified; a real‑MT5 DEMO rehearsal is operator‑gated |
 | `LIVE_OBSERVATION_CERTIFIED` | ❌ none — read‑only firewall foundation exists; needs a real LIVE account rehearsal |
@@ -16,16 +17,27 @@
 | `PRODUCTION_DEPLOYED` | ❌ none |
 | `CUSTOMER_ACTIVATED` | ❌ none |
 
-## 1. Canonical main & PR SHAs
+## 1. Canonical main & PR SHAs (final-head reconciliation, 2026‑10‑21)
 
-- Canonical `main` at report: `48ecd20a` (reconciled into #528).
+- **Canonical `main`: `0802e423`** — WV1 board-demo workstream complete and merged into `main`
+  (final integration `e6117aab`, docs finalisation `0802e423`). The three copier PRs predated this head;
+  all three were reconciled onto it on 2026‑10‑21. **No WV1 commit was reverted, rebased away, or
+  overwritten;** reconciliation was merge-forward only (`e6117aab` and `0802e423` remain ancestors).
 - **PR #528** — backend foundation (branch `feat/mt5-copier-observer`): observer A, follower‑intent B,
-  blocker corrections B1–B4, B2 single‑flight. Head `235885b3` (merged latest main). **OPEN.**
+  blocker corrections B1–B4, B2 single‑flight. **Head `fd6c4006`** (merge of `origin/main` `0802e423`).
+  `mergeable: MERGEABLE`. CI run `39563423956`: `governance` / `market-data-foundation` /
+  `research-foundation` PASS; `backend` / `frontend` were still in progress at report time (see §15). **OPEN.**
 - **PR #535** — Copy Trading UX + read‑only API (branch `feat/mt5-copier-ux`, stacked on #528).
-  Head `530ce7ab`. **OPEN.**
-- **B‑exec** — DEMO ExecutionJob producer (branch `feat/mt5-copier-exec`, stacked on #528).
-  Head `85ba54eb`. **OPEN.**
-- No PR merged; no squash; auto‑merge OFF. Merge is gated on final‑head GitHub CI + ADR‑0051 ratification.
+  **Head `0beb5999`** (previous head `530ce7ab` carried the stale `AccountWithdrawalMonitoring.tsx`
+  that caused the `window is not defined` CI failure; see §16 F0). `mergeable: MERGEABLE`.
+  CI run `39563423762`: **`frontend` PASS (2m5s) — the failure is resolved at the exact head**;
+  `governance` / `market-data-foundation` / `research-foundation` PASS; `backend` in progress at report time. **OPEN.**
+- **B‑exec (PR #537)** — DEMO ExecutionJob producer (branch `feat/mt5-copier-exec`, stacked on #528).
+  Code head `3bb2e609` (independent-review hardening F1–F4, see §16); this report is the doc commit on
+  top, so the pushed branch head is that doc commit. Local full regression at `3bb2e609`:
+  **6296 tests OK (skipped=1)**. **OPEN.**
+- No PR merged; no squash; auto‑merge OFF. Merge is gated on final‑head GitHub CI (all five jobs green on
+  each exact head) + ADR‑0051 ratification + explicit human authorization.
 
 ## 2. Existing infrastructure & capacity findings
 
@@ -140,9 +152,26 @@ captured** (caught + fixed a hydration bug). 4 vitest tests, build + parity + es
 
 ## 15. CI & regression
 
-Full backend regression green on an isolated DB (`test_copier_ci`) at each step (latest: 6200+ tests OK,
-1 skipped). Frontend build + parity + eslint + 4 vitest green. GitHub CI runs on each PR head (final‑head
-CI is the authoritative merge gate; local runs are supplementary).
+**Local (supplementary):** full backend regression green on an isolated DB (`test_copier_ci`) at each step
+(latest #537-head run `3bb2e609`: full suite in progress at report time; prior green at 6200+ tests OK, 1
+skipped). Frontend build + parity + eslint + vitest green. The six `window.localStorage.clear is not a
+function` failures seen locally are pre-existing jsdom flakes present on `main`, **not** introduced here and
+**green in CI** (confirmed by #535 `frontend` PASS below); they are not the `window is not defined` defect.
+
+**GitHub CI — exact-head, authoritative merge gate:**
+
+| PR | Head | Run | backend | frontend | governance | market-data | research |
+|---|---|---|---|---|---|---|---|
+| #528 | `fd6c4006` | `39563423956` | in progress¹ | in progress¹ | ✅ | ✅ | ✅ |
+| #535 | `0beb5999` | `39563423762` | in progress¹ | **✅ (2m5s)** | ✅ | ✅ | ✅ |
+| #537 | `3bb2e609` | pending push² | — | — | — | — | — |
+
+¹ Backend/frontend jobs run longest; status captured mid-run on 2026‑10‑21. The authoritative gate is
+**all five green on each exact head** — this report must be refreshed with the final conclusions before merge.
+² #537 is pushed only after its local full regression completes green.
+
+The decisive result: **#535 `frontend` PASS at `0beb5999`** proves the `window is not defined` unmount defect
+(§16 F0) is resolved at the exact head, with the full frontend suite, not only copier tests.
 
 ## 16. Adversarial findings & resolutions
 
@@ -152,6 +181,25 @@ before the read + persist‑lock ownership discard); **B3** incomplete SL/TP (co
 same‑poll snapshot); **B4** guessed constraints / unknown opcode (unknown event rejected; structured
 `constraints_authoritative`/`sltp_translation_ok` flags). PR C UX: SHADOW ≠ success relabel, unmount guard,
 hydration fix.
+
+**F0 — #535 `window is not defined` CI failure (final-head reconciliation).** The `feat/mt5-copier-ux`
+branch predated canonical `main` `0802e423` and carried a stale `AccountWithdrawalMonitoring.tsx` without the
+WV1 mounted/unmount guard, so the full frontend suite threw `window is not defined` during async unmount in
+CI. **Resolution:** reconciled the stack forward onto `0802e423`, which brings main's canonical WV1 unmount
+fix (mountedRef, lines ~98–127) — **the WV1 guard was adopted, not weakened or replaced**. New head
+`0beb5999`; CI `frontend` now PASS (2m5s), full suite (§15). No WV1 report/runbook/evidence or commit
+(`e6117aab`, `0802e423`) was reverted or overwritten.
+
+**#537 B‑exec independent review (2026‑10‑21), reviewed against the actual diff — findings fixed with
+negative tests:** **F1** follower-disable race — `produce_one` now `select_for_update(of=("self",))` AND
+freshly re-reads the follower row inside the lock before re-running admission, so a follower disabled between
+intent and produce is rejected (not executed on a stale in-memory row). **F2** cross-broker symbol map not
+re-verified at produce time — admission re-resolves the follower symbol via `resolve_follower_symbol`; an
+unverified/absent map is rejected at produce, not only at intent. **F3** instrument readiness — produce
+re-checks `BrokerInstrument` enabled state; a disabled/absent instrument is rejected. **F4** job
+serialization contract — added `test_job_serialization_contract` pinning the emitted payload shape. All 22
+producer tests + 119 trade_copier/governance tests green locally; entrypoint drift guard + WP6 matrix updated
+for `trade_copier/execution_producer.py::produce_one`.
 
 **#537 B‑exec producer (PD Friday review), with negative tests:** **P0‑A** DARK flag bypass — `produce_one`
 now enforces `copier_execute_enabled()` at entry AND under the lock; mode captured once (flags‑OFF direct‑call
