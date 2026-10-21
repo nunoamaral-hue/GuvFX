@@ -25,11 +25,25 @@ is armed in the demo env (it labels every row "DEMONSTRATION"). The genuine pilo
 into the demo — the account-UNRESOLVED row is a **redacted reconstruction of its structure** (placeholder reference,
 no real token / address / account), so no real financial email leaves production (WV1 §2/§6).
 
+## 0. Prerequisites (check before you start)
+```bash
+# a) Ports 8000 (backend) and 3000 (frontend) must be free. If occupied by a PREVIOUS demo run, stop only that:
+lsof -nP -iTCP:8000 -sTCP:LISTEN ; lsof -nP -iTCP:3000 -sTCP:LISTEN     # expect no output
+# b) Know the DB role Django connects as — it must OWN the demo DB (see §1). It is backend/.env DB_USER (here: dev):
+grep -E '^DB_USER=' backend/.env
+```
+Do not kill a process you did not start for this demo. Production is never on these local ports.
+
 ## 1. Isolated database
 ```bash
 # From a shell with the demo DB credentials (NOT production). Uses the same Postgres as dev here; a hosted demo
 # uses its own instance.
-createdb guvfx_wv1_demo    # or: psql -d postgres -c 'CREATE DATABASE guvfx_wv1_demo;'
+# IMPORTANT (PostgreSQL 15+): the demo DB MUST be owned by the role Django connects as (backend/.env DB_USER),
+# or migrate fails with "permission denied for schema public" — PG15 restricts the public schema to the DB owner.
+DB_USER="$(grep -E '^DB_USER=' backend/.env | cut -d= -f2)"   # here: dev
+createdb -O "$DB_USER" guvfx_wv1_demo
+#   equivalently: psql -d postgres -c "CREATE DATABASE guvfx_wv1_demo OWNER $DB_USER;"
+#   (a bare `createdb guvfx_wv1_demo` makes the invoking OS user the owner; if that is NOT DB_USER, migrate fails.)
 ```
 
 ## 2. Demo environment variables
@@ -67,16 +81,46 @@ off, demo flag off) — so it can never run against production. It creates the d
 withdrawals, and runs the real correlation engine to project the owner-attributed/account-UNRESOLVED reconstruction
 (`correlation={'created': 1, 'completion_advanced': 1}`).
 
-## 4. Run
+## 4. Run (start the backend FIRST, confirm health, then the frontend)
 ```bash
-cd backend && .venv/bin/python manage.py runserver 0.0.0.0:8000      # demo env from step 2
+# 1) Backend — with the §2 demo env exported in this shell:
+cd backend && .venv/bin/python manage.py runserver 0.0.0.0:8000
+# Expected: "System check identified no issues" then "Starting development server at http://127.0.0.1:8000/".
+# It then runs in the foreground and logs one line per request — that is healthy, not an error. Leave it running.
+
+# 2) Health check (new shell) — confirm the backend answers BEFORE opening the frontend:
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/api/health/            # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/api/public/wtm-preview/  # expect 200 (armed)
+
+# 3) Frontend (new shell):
 cd frontend && npm run dev                                           # :3000, NEXT_PUBLIC_API_BASE from .env.local
 ```
 Set the demo member's password once (demo login): `manage.py shell` →
-`from django.contrib.auth import get_user_model as g; u=g().objects.get(username="demo-board"); u.set_password("<demo-pw>"); u.save()`.
+`from django.contrib.auth import get_user_model as g; u=g().objects.get(username="demo-board"); u.set_password("<demo-pw>"); u.save()`
+— share it out-of-band (password manager / secure channel); never commit or print it. Then log in at
+`http://localhost:3000/login` as `demo-board@example.invalid` and walk screens **A** `/accounts` → **B** `/profile`
+→ **C/E** `/dashboard` → **D** `/brokers/case-study` → **F** `/brokers/wtm`.
 
-## 5. Teardown
-`dropdb guvfx_wv1_demo` (and remove `frontend/.env.local`). Nothing in production changed.
+## 5. Teardown (clean shutdown — no orphans)
+```bash
+# Stop the servers you started: Ctrl-C each runserver/npm shell (or kill the PID). Then confirm nothing is left:
+lsof -nP -iTCP:8000 -sTCP:LISTEN ; lsof -nP -iTCP:3000 -sTCP:LISTEN     # expect no output
+pgrep -fl 'runserver 0.0.0.0:8000|next dev|next-server'                 # expect no output
+dropdb guvfx_wv1_demo                                                   # optional; keep it to re-rehearse
+rm -f frontend/.env.local
+```
+Nothing in production changed.
+
+## 6. Troubleshooting (from real rehearsal failures)
+| Symptom | Cause | Fix |
+|---|---|---|
+| `migrate` → `MigrationSchemaMissing: permission denied for schema public` | PG15 restricts the `public` schema to the DB owner; the demo DB was created owned by the OS user, not `DB_USER` | Recreate owned by the Django role: `dropdb guvfx_wv1_demo && createdb -O "$DB_USER" guvfx_wv1_demo` (§1) |
+| `runserver` → `Error: That port is already in use.` | A previous demo backend is still on :8000 | `lsof -ti:8000` then stop only that PID; re-run (§0) |
+| Backend process shows a **non-zero exit (e.g. 144 / 247)** after you stop or restart it | Expected: a long-running dev server was **terminated** (Ctrl-C / superseded / file-reload). It is not an application error | Ignore — confirm the server logged `200`s while running. Only investigate if it exited **before** serving any request |
+| Browser login fails / cookie not sent over `http://localhost` | `AUTH_COOKIE_SECURE`/`AUTH_COOKIE_DOMAIN` not set for the demo | Set `AUTH_COOKIE_SECURE=False`, `AUTH_COOKIE_DOMAIN=` (host-only), `AUTH_COOKIE_SAMESITE=Lax` (§2); login must return `Set-Cookie: guvfx_access …; HttpOnly; SameSite=Lax` with no `Secure`/`Domain` |
+| `/api/public/wtm-preview/` or `/api/public/case-study/` → `404` | The demo flag is unset (this is the correct DARK behaviour in prod) | Arm `BROKER_PUBLIC_WTM_PREVIEW_ENABLED=1` / `BROKER_PUBLIC_CASE_STUDY_ENABLED=1` in the demo shell only (§2) |
+| Withdrawal rows missing on `/dashboard` | Synthetic rows are gated | Arm `BROKER_WITHDRAWAL_UX_ENABLED=1` + `BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC=1` (§2) |
+| Hydration-mismatch warning in the browser console on the landing page `/` | Pre-existing cosmetic CTA animation class; unrelated to WV1 | Ignore — the WV1 screens (A–F) are unaffected |
 
 ## Guarantees
 - **Production untouched**: separate DB; prod `.env` leaves every WV1 flag + the CORS/CSRF demo vars unset, so
