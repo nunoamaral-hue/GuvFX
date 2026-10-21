@@ -51,6 +51,8 @@ urlpatterns = [
     path("api/wims/", include("wims.urls")),
     # WP6 Withdrawal Intelligence member API — DARK (404 while BROKER_WITHDRAWAL_UX_ENABLED is off).
     path("api/broker-intelligence/", include("broker_intelligence.urls")),
+    # ADR-0051 MT5 Copier read-only customer UI API — DARK (enabled:false/no rows while COPIER_UI_ENABLED off)
+    path("api/copy-trading/", include("trade_copier.urls")),
     path("health/", health),
     # Windows Agent MVP endpoints (direct wiring)
     path(
