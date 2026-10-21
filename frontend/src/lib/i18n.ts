@@ -961,6 +961,14 @@ const dictionary: Dictionary = {
     en: "Platform tools only — not financial advice.",
     ja: "本プラットフォームはツール提供のみで、投資助言ではありません。",
   },
+  "legal.privacy": {
+    en: "Privacy Policy",
+    ja: "プライバシーポリシー",
+  },
+  "legal.terms": {
+    en: "Terms of Service",
+    ja: "利用規約",
+  },
 
   // -----------------------------------------------------------------------------
   // Onboarding Checklist (Dashboard)

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { type Lang, t } from "@/lib/i18n";
 
 type LegalFooterProps = {
@@ -48,6 +49,25 @@ export function LegalFooter({ lang }: LegalFooterProps) {
       >
         {t(lang, "legal.footerLine2")}
       </p>
+      <nav
+        aria-label={t(lang, "legal.privacy")}
+        style={{
+          margin: "0.5rem 0 0",
+          display: "flex",
+          justifyContent: "center",
+          flexWrap: "wrap",
+          gap: "0.35rem 1rem",
+          fontSize: "0.7rem",
+          lineHeight: 1.6,
+        }}
+      >
+        <Link href="/privacy" style={{ color: "#7d93ad", textDecoration: "none" }}>
+          {t(lang, "legal.privacy")}
+        </Link>
+        <Link href="/terms" style={{ color: "#7d93ad", textDecoration: "none" }}>
+          {t(lang, "legal.terms")}
+        </Link>
+      </nav>
     </footer>
   );
 }
