@@ -1,7 +1,7 @@
 # 0052 — MT5 Copier: follower-ticket reconciliation + full-CLOSE lifecycle (DARK/DEMO)
 
 - Date: 2026-10-21
-- Status: Proposed (DARK engineering only; merge + activation are separate Sponsor gates)
+- Status: Accepted for DARK engineering (Sponsor-ratified 2026-10-21; DEMO arming, deployment and LIVE execution remain separate explicit gates)
 - Extends: [0051](0051-mt5-master-follower-copier.md) (MT5 copier, observer-first)
 - Packet: `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` Workstream B (trade lifecycle), increment 1
 
@@ -122,6 +122,10 @@ ticket.
 
 ## Status / approval
 
-DARK engineering decision only. Merge of the implementing PR, ratification of this ADR, arming of
-DEMO execution, and any production step remain separate explicit Sponsor gates (PM owns the
-lifecycle status). `DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` remain false.
+**Accepted for DARK engineering (Sponsor-ratified 2026-10-21).** The Sponsor approved the engineering
+decision: copier-owned follower tickets are established by exact `CPY<replication_id>` provenance
+reconciliation; ambiguous / absent / identity-refused matches fail closed; full CLOSE targets only a
+verified copier-owned follower ticket; symbol-only matching is prohibited; CLOSE is DEMO-only and
+SHADOW-by-default. Ratification and merge do NOT authorize DEMO arming, deployment or LIVE execution —
+those remain separate explicit Sponsor gates (PM owns lifecycle status). `DEMO_CERTIFIED` /
+`LIVE_EXECUTION_CERTIFIED` remain false.
