@@ -49,7 +49,7 @@ const copy: Record<Lang, {
       {
         h: "1. Who we are",
         p: [
-          "GuvFX is operated by [LEGAL ENTITY NAME — Sponsor to confirm] of [REGISTERED ADDRESS — Sponsor to confirm], and is available at guvfx.com. The data controller is [DATA CONTROLLER — Sponsor to confirm]. You can contact us at support@guvfx.com.",
+          "GuvFX is operated by Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX, of [BUSINESS CONTACT / SERVICE ADDRESS — Sponsor to confirm], and is available at guvfx.com. The data controller is [DATA CONTROLLER — Sponsor to confirm]. You can contact us at support@guvfx.com.",
         ],
       },
       {
@@ -139,7 +139,7 @@ const copy: Record<Lang, {
       {
         h: "1. 事業者について",
         p: [
-          "GuvFXは[法人名 — スポンサー確認待ち]（所在地：[登記上の住所 — スポンサー確認待ち]）が運営し、guvfx.comで提供されます。データ管理者は[データ管理者 — スポンサー確認待ち]です。お問い合わせは support@guvfx.com までご連絡ください。",
+          "GuvFXはNuno Rodolfo Ferreira Do Amaral（「GuvFX」の屋号で事業を営む個人事業主）が運営し（所在地：[事業連絡先／送達先住所 — スポンサー確認待ち]）、guvfx.comで提供されます。データ管理者は[データ管理者 — スポンサー確認待ち]です。お問い合わせは support@guvfx.com までご連絡ください。",
         ],
       },
       {

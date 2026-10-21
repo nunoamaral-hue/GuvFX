@@ -27,7 +27,8 @@ describe("public /terms", () => {
     // contractual facts not invented — flagged for Sponsor review
     expect(screen.getByTestId("terms-draft-notice").textContent).toMatch(/draft pending legal review/i);
     expect(screen.getAllByText(/GOVERNING LAW — Sponsor to confirm/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/LEGAL ENTITY NAME — Sponsor to confirm/).length).toBeGreaterThan(0);
+    // operator wording resolved (sole trader); residential address is NOT published
+    expect(screen.getAllByText(/Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/support@guvfx\.com/).length).toBeGreaterThan(0);
   });
 

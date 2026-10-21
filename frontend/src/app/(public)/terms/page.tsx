@@ -40,7 +40,7 @@ const copy: Record<Lang, {
         h: "1. The service",
         p: [
           "GuvFX is a strategy-management and analytics platform. It includes Withdrawal Intelligence, an optional feature that reads your email read-only to detect your broker funding and withdrawal events and summarise your withdrawal activity.",
-          "GuvFX is operated by [LEGAL ENTITY NAME — Sponsor to confirm]. The service is currently offered on a limited/beta basis.",
+          "GuvFX is operated by Nuno Rodolfo Ferreira Do Amaral, trading as GuvFX. The service is currently offered on a limited/beta basis.",
         ],
       },
       {
@@ -121,7 +121,7 @@ const copy: Record<Lang, {
         h: "1. サービスについて",
         p: [
           "GuvFXは戦略管理・分析プラットフォームです。これには、メールを読み取り専用で参照し、ブローカーの入金・出金イベントを検出して出金アクティビティを要約する任意機能「出金インテリジェンス」が含まれます。",
-          "GuvFXは[法人名 — スポンサー確認待ち]が運営します。本サービスは現在、限定／ベータとして提供されています。",
+          "GuvFXはNuno Rodolfo Ferreira Do Amaral（「GuvFX」の屋号で事業を営む個人事業主）が運営します。本サービスは現在、限定／ベータとして提供されています。",
         ],
       },
       {
