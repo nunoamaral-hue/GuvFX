@@ -11,9 +11,14 @@ demo-only flags armed only in that environment. Production stays at schema 0010 
 - **C/D — Withdrawal Monitoring + History** (`/dashboard`): the withdrawal panel + per-withdrawal history,
   including the **owner-attributed, account-UNRESOLVED** reconstruction (external Ethereum, request→completion
   **33m01s** apart) rendered with the distinct **"Account unresolved"** label and a **DEMONSTRATION DATA** banner.
-- **E — WAYOND preview**: the `Wayond WIM Strategy` marketplace card (`/strategies/marketplace`). (The public
-  broker directory `/brokers` is the separate cross-member aggregate surface; it stays `INSUFFICIENT_DATA` and is
-  not part of this member-facing demo.)
+- **D — Genuine evidence case study** (`/brokers/case-study`): the ONE real pilot withdrawal (TradersWay, Ethereum,
+  **$24.12**, request→completion **33m01s**, owner-attributed/account-UNRESOLVED, DKIM+SPF authenticated,
+  broker-reported completion only) — redacted, authenticated-on-production, clearly SEPARATE from the synthetic data.
+- **F — WAYOND Trader Match (WTM) preview** (`/brokers/wtm`): the broker-performance metrics page (authentic
+  `INSUFFICIENT_VERIFIED_DATA` state + a clearly-labelled SIMULATED scorecard — processing-time median/avg/p90,
+  histogram, lifecycle, broker filter — the GuvFX-evidence→aggregate→WTM flow, and source/methodology/privacy
+  badges). Reuses the DARK `broker_public` API; NOT a deployed WAYOND integration and publishes NO public rating.
+  (The `Wayond WIM Strategy` marketplace card at `/strategies/marketplace` is a separate, unrelated surface.)
 
 All withdrawal data is **`provenance=SYNTHETIC`** and only visible because `BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC`
 is armed in the demo env (it labels every row "DEMONSTRATION"). The genuine pilot evidence itself is **not** copied
@@ -45,6 +50,9 @@ AUTH_COOKIE_SAMESITE=Lax
 # WV1 demo surface (DARK in prod)
 BROKER_WITHDRAWAL_UX_ENABLED=1
 BROKER_WITHDRAWAL_DEMO_INCLUDE_SYNTHETIC=1
+BROKER_MAILBOX_STATUS_ENABLED=1          # screen B — connected email panel
+BROKER_PUBLIC_CASE_STUDY_ENABLED=1       # screen D — genuine evidence case study (/brokers/case-study)
+BROKER_PUBLIC_WTM_PREVIEW_ENABLED=1      # screen F — WAYOND Trader Match preview (/brokers/wtm)
 ```
 Frontend (`frontend/.env.local`): `NEXT_PUBLIC_API_BASE=http://localhost:8000`.
 
