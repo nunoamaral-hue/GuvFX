@@ -71,3 +71,13 @@ def copier_execute_demo_armed() -> bool:
     suppressed SHADOW jobs — DEMO followers ONLY. DEFAULT OFF. Arming is a separate operator-gated step:
     building the producer does NOT authorize arming it, and it never reaches a LIVE destination."""
     return copier_execute_enabled() and _flag("COPIER_EXECUTE_DEMO_ARMED")
+
+
+def copier_reconcile_enabled() -> bool:
+    """Gate for the follower-ticket reconciliation pass (ADR-0052). DEFAULT OFF, ANDed with the master gate.
+
+    Reconciliation is READ-ONLY: it reads a follower's live positions through the identity firewall and
+    records which broker ticket a copied OPEN produced (``CopierReplication.follower_ticket``). It never
+    places, closes or modifies an order. It is the prerequisite for any follower-position-targeting
+    lifecycle op (CLOSE/MODIFY), which must never act by symbol resemblance."""
+    return copier_enabled() and _flag("COPIER_RECONCILE_ENABLED")
