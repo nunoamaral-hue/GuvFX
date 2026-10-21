@@ -438,3 +438,187 @@ def produce_pending_closes(*, limit: int = 200) -> dict:
         except Exception as e:  # noqa: BLE001
             logger.exception("copier produce_pending_closes error on replication %s: %s", rep.id, e)
     return {"enabled": True, "armed": copier_execute_demo_armed(), "considered": considered, "produced": produced}
+
+
+# =============================================================================
+# SL/TP MODIFY producer (ADR-0053, Workstream B increment 2) — DEMO-only, SHADOW-by-default.
+# Master SL/TP set/change/remove -> follower MODIFY_POSITION of the VERIFIED copier-owned follower ticket.
+# Never by symbol. A stop is NEVER weakened silently: an SL removal or widening fails closed here (and the
+# bridge independently refuses an SL widen at send time).
+# =============================================================================
+
+def _sl_weakening_reason(event: MasterEvent) -> str | None:
+    """Return a reason when replicating THIS master SL change would WEAKEN the follower's downside
+    protection (so the producer fails closed). Only SL changes can weaken a stop; an SL_SET, an SL that
+    tightens (moves closer to entry), and every TP_* change are safe. Classified from the master event +
+    the authoritative same-poll entry — defense-in-depth to the bridge's refuse-widen backstop."""
+    et = event.event_type
+    if et == diff.SL_REMOVE:
+        return "sl_removal_not_auto_replicated"
+    if et == diff.SL_CHANGE:
+        new_sl = float(event.new_sl) if event.new_sl is not None else None
+        if new_sl is None or abs(new_sl) <= _EPS:
+            return "sl_removal_not_auto_replicated"          # a change-to-none is a removal
+        prev_sl = float(event.prev_sl) if event.prev_sl is not None else None
+        snap = _master_position_from_event(event)
+        entry = float(snap.price_open) if (snap is not None and _has(snap.price_open)) else None
+        if entry is None or prev_sl is None or abs(prev_sl) <= _EPS:
+            return "sl_change_unverifiable"                  # cannot prove it is not a weaken -> fail closed
+        if abs(entry - new_sl) > abs(entry - prev_sl) + _EPS:
+            return "sl_widening_not_auto_replicated"         # stop moved FURTHER from entry = more risk
+    return None
+
+
+def _modify_already_targets(acct_id: int, follower_ticket: int) -> bool:
+    """A non-terminal MODIFY_POSITION already targets this (account, ticket) -> don't duplicate."""
+    return ExecutionJob.objects.filter(
+        job_type=ExecutionJob.JobType.MODIFY_POSITION,
+        status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),
+        account_id=acct_id, payload__ticket=follower_ticket,
+    ).exists()
+
+
+def admit_modify(replication: CopierReplication) -> tuple[bool, int, str]:
+    """Fail-closed admission for producing a DEMO SL/TP MODIFY. Returns ``(ok, follower_ticket, reason)``.
+
+    Requires a VERIFIED copier-owned follower ticket (never by symbol) AND that the change does not weaken
+    the follower's stop. Safe to call before AND inside the lock."""
+    if replication.execution_job_id is not None:
+        return False, 0, "already_produced"
+    if replication.status != ReplicationStatus.SHADOW_RECORDED:
+        return False, 0, "not_shadow_intent"
+    if replication.requested_op != "MODIFY_SLTP":
+        return False, 0, "op_not_modify"
+    follower = replication.follower
+    if not follower.enabled:
+        return False, 0, "follower_disabled"
+
+    acct = follower.follower_account
+    try:
+        from trading.account_policy import is_demo_environment
+        if not is_demo_environment(acct):
+            return False, 0, "follower_not_demo"
+    except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
+        return False, 0, "environment_unresolved"
+    if not getattr(acct, "is_active", False):
+        return False, 0, "account_inactive"
+
+    ok, reason = validate_follower_binding(follower)   # cross-user/self-follow/binding, defense in depth
+    if not ok:
+        return False, 0, reason
+
+    # COMPLETE translated SL+TP required (BLOCKER-3: a MODIFY carries the whole desired state, not a delta).
+    if not replication.sltp_translation_ok:
+        return False, 0, "sltp_incomplete"
+
+    # A stop is NEVER weakened silently — an SL removal/widening fails closed (deferred capability).
+    wr = _sl_weakening_reason(replication.master_event)
+    if wr is not None:
+        return False, 0, wr
+
+    open_repl = _matched_open_for_close(replication)   # position-keyed (NOT symbol): the matched OPEN ticket
+    if open_repl is None or open_repl.follower_ticket is None:
+        return False, 0, "no_verified_follower_ticket"
+    ticket = int(open_repl.follower_ticket)
+
+    if _modify_already_targets(acct.id, ticket):
+        return False, 0, "modify_already_in_flight"
+    return True, ticket, "ok"
+
+
+def _modify_payload(replication, ticket, is_demo, execution_mode) -> dict:
+    event = replication.master_event
+    return {
+        "symbol": replication.follower_symbol or event.symbol,
+        "ticket": ticket,                                  # the VERIFIED follower position — never by symbol
+        "sl": (str(replication.translated_sl) if replication.translated_sl is not None else None),
+        "tp": (str(replication.translated_tp) if replication.translated_tp is not None else None),
+        "is_demo": is_demo,
+        "execution_mode": execution_mode,                  # 'SHADOW' is recorded intent only (no job)
+        "comment": f"CPYM{replication.id}",                # copier modify provenance
+        "signal_source": "copier",
+        "reason": "copier_master_sltp_modify",
+        "copier_replication_id": replication.id,
+    }
+
+
+def produce_modify_one(replication: CopierReplication) -> dict:
+    """Produce (at most) one SL/TP MODIFY for a single MODIFY_SLTP intent. Gated + idempotent + fail-closed.
+
+    SHADOW (not armed): record the decision on the replication row and create NO ExecutionJob. Armed DEMO:
+    create one ``MODIFY_POSITION`` job targeting the verified follower ticket. All admission re-run under the
+    lock (a stop weaken or a lost/rebound follower loses)."""
+    if not copier_execute_enabled():
+        return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+
+    ok, _ticket, reason = admit_modify(replication)       # cheap preflight (re-checked under the lock)
+    if not ok:
+        return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+    armed = copier_execute_demo_armed()
+    mode = "DEMO" if armed else "SHADOW"
+
+    try:
+        with transaction.atomic():
+            locked = (CopierReplication.objects
+                      .select_for_update()
+                      .select_related("follower", "master_event")
+                      .get(pk=replication.pk))
+            if not copier_execute_enabled():
+                return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+            fresh_follower = (CopierFollower.objects
+                              .select_for_update(of=("self",))
+                              .select_related("follower_account", "follower_account__broker_server",
+                                              "master__trading_account")
+                              .get(pk=locked.follower_id))
+            locked.follower = fresh_follower
+            ok, ticket, reason = admit_modify(locked)
+            if not ok:
+                return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            if not armed:
+                # SHADOW: no broker contact. Record the intended action on the row only.
+                locked.follower_ticket = ticket
+                locked.status = ReplicationStatus.SHADOW_JOB_RECORDED
+                locked.save(update_fields=["follower_ticket", "status", "updated_at"])
+                return {"replication_id": replication.id, "produced": True, "job_id": None,
+                        "armed": False, "follower_ticket": ticket,
+                        "status": ReplicationStatus.SHADOW_JOB_RECORDED}
+
+            acct = locked.follower.follower_account
+            job = ExecutionJob.objects.create(
+                account=acct, job_type=ExecutionJob.JobType.MODIFY_POSITION,
+                payload=_modify_payload(locked, ticket, is_demo=True, execution_mode=mode),
+                hosted_idempotency_key=f"copier-modify:{locked.pk}")
+            locked.execution_job = job
+            locked.follower_ticket = ticket
+            locked.status = ReplicationStatus.EXECUTION_REQUESTED
+            locked.save(update_fields=["execution_job", "follower_ticket", "status", "updated_at"])
+    except Exception as e:  # noqa: BLE001 — an inherited ExecutionJob.save() gate (or any error) must not
+        logger.warning("copier modify blocked for replication %s: %s", replication.id, type(e).__name__)
+        return {"replication_id": replication.id, "produced": False, "reason": f"gate:{type(e).__name__}"}
+
+    return {"replication_id": replication.id, "produced": True, "job_id": job.id,
+            "job_type": ExecutionJob.JobType.MODIFY_POSITION, "armed": True, "follower_ticket": ticket,
+            "status": ReplicationStatus.EXECUTION_REQUESTED}
+
+
+def produce_pending_modifies(*, limit: int = 200) -> dict:
+    """Produce MODIFYs for pending SHADOW_RECORDED MODIFY_SLTP intents on enabled followers. Gated + fail-closed."""
+    if not copier_execute_enabled():
+        return {"enabled": False, "produced": 0, "considered": 0}
+    qs = (CopierReplication.objects
+          .filter(status=ReplicationStatus.SHADOW_RECORDED, execution_job__isnull=True,
+                  requested_op="MODIFY_SLTP", follower__enabled=True)
+          .select_related("follower", "follower__follower_account", "master_event")
+          .order_by("id")[:limit])
+    produced = 0
+    considered = 0
+    for rep in qs:
+        considered += 1
+        try:
+            if produce_modify_one(rep).get("produced"):
+                produced += 1
+        except Exception as e:  # noqa: BLE001
+            logger.exception("copier produce_pending_modifies error on replication %s: %s", rep.id, e)
+    return {"enabled": True, "armed": copier_execute_demo_armed(), "considered": considered, "produced": produced}
