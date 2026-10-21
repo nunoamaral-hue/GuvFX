@@ -1,7 +1,8 @@
 # GUVFX_MT5_LIVE_MASTER_FOLLOWER_REPORT
 
 > Packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0). Subsystem completion report.
-> Author: Claude (Principal Engineer). Date: 2026‑10‑20; **final-head reconciliation 2026‑10‑21.**
+> Author: Claude (Principal Engineer). Date: 2026‑10‑20; final-head reconciliation 2026‑10‑21;
+> **#528 foundation governed-squash-merged to `main` 2026‑10‑21.**
 > **All work is DARK; no production deploy, no LIVE execution, no real‑money order, no DEMO bridge
 > mutation.** States per §19 are not conflated.
 
@@ -10,37 +11,37 @@
 | State | Status |
 |---|---|
 | `ENGINEERING_COMPLETE` | ◑ **scoped only** — Observer (A) + follower‑intent (B) + four PD corrections + Copy Trading UX (C) + B‑exec DEMO OPEN producer. **The workstream is NOT engineering-complete:** CLOSE/MODIFY lifecycle execution (needs follower-ticket tracking), config-write UI, and customer activation are not built (§20, §23). |
-| `DARK_MERGED` | ❌ none — PRs open, merge gated on ADR‑0051 ratification + final‑head CI; auto‑merge OFF |
+| `DARK_MERGED` | ◑ **#528 foundation only** — governed-squash-merged to `main` `1ca72fc3` (2026‑10‑21, flags default-OFF, no prod action). #535 UX + #537 B-exec rebased onto it; their final merge heads require exact-head CI re-certification + explicit authorization (auto‑merge OFF). |
 | `DEMO_CERTIFIED` | ❌ none — synthetic/unit certified; a real‑MT5 DEMO rehearsal is operator‑gated |
 | `LIVE_OBSERVATION_CERTIFIED` | ❌ none — read‑only firewall foundation exists; needs a real LIVE account rehearsal |
 | `LIVE_EXECUTION_CERTIFIED` | ⛔ **blocked (RED)** — no bridge close/modify path; arming reserved to Sponsor + Security |
 | `PRODUCTION_DEPLOYED` | ❌ none |
 | `CUSTOMER_ACTIVATED` | ❌ none |
 
-## 1. Canonical main & PR SHAs (final-head reconciliation, 2026‑10‑21)
+## 1. Canonical main & PR SHAs (post #528-merge, 2026‑10‑21)
 
-- **Canonical `main`: `0802e423`** — WV1 board-demo workstream complete and merged into `main`
-  (final integration `e6117aab`, docs finalisation `0802e423`). The three copier PRs predated this head;
-  all three were reconciled onto it on 2026‑10‑21. **No WV1 commit was reverted, rebased away, or
-  overwritten;** reconciliation was merge-forward only (`e6117aab` and `0802e423` remain ancestors).
-- **PR #528** — backend foundation (branch `feat/mt5-copier-observer`): observer A, follower‑intent B,
-  blocker corrections B1–B4, B2 single‑flight. **Head `fd6c4006`** (merge of `origin/main` `0802e423`).
-  `mergeable: MERGEABLE`. CI run `39563423956`: **all five jobs PASS** (backend 10m46s, frontend 2m19s,
-  governance, market-data, research — see §15). **OPEN.**
-- **PR #535** — Copy Trading UX + read‑only API (branch `feat/mt5-copier-ux`, stacked on #528).
-  **Head `0beb5999`** (previous head `530ce7ab` carried the stale `AccountWithdrawalMonitoring.tsx`
-  that caused the `window is not defined` CI failure; see §16 F0). `mergeable: MERGEABLE`.
-  CI run `39563423762`: **all five jobs PASS** — `frontend` PASS (2m5s) resolves the failure at the exact
-  head; backend 12m46s, governance, market-data, research (see §15). **OPEN.**
-- **B‑exec (PR #537)** — DEMO ExecutionJob producer (branch `feat/mt5-copier-exec`, stacked on #528).
-  **Code head `3bb2e609`** (independent-review hardening F1–F4, see §16). This completion report is itself
-  committed on top of the code, so the branch head advances by one doc commit per update; the exact current
-  head and its CI are always shown in the PR's own checks. Local full regression at `3bb2e609`:
-  **6296 tests OK (skipped=1)**. First all-green post-correction CI (on doc commit `e57d7704`):
-  run `39564585714`, **all five jobs PASS** (backend 8m52s, frontend 2m8s, governance, market-data,
-  research — see §15). **OPEN.**
-- No PR merged; no squash; auto‑merge OFF. Merge is gated on final‑head GitHub CI (all five jobs green on
-  each exact head) + ADR‑0051 ratification + explicit human authorization.
+- **Canonical `main`: `1ca72fc3`** — after the governed squash-merge of PR #528. WV1 history is preserved as
+  ancestors throughout (`e6117aab`, `0802e423`, and `d5e4f22e`/#539); no WV1 commit was reverted, rebased away,
+  or overwritten. Reconciliation lineage: #528 reconciled onto `0802e423`, then re-reconciled onto `d5e4f22e`
+  (docs-only WV1 #539; collision none — #528 never touches `docs/WV1_BOARD_DEMO_RUNBOOK.md`), pre-merge head
+  `aaf8e850`.
+- **PR #528** — backend foundation (observer A, follower‑intent B, corrections B1–B4, B2 single‑flight).
+  **MERGED** 2026‑10‑21 as governed squash `1ca72fc3` (single-parent; 35 files, +3321/-1; flags default-OFF;
+  no prod action). Pre-merge reconciled head `aaf8e850`, CI run `39568592209`: **5/5 PASS** (backend 10m42s,
+  frontend 2m6s, governance, market-data, research).
+- **PR #535** — Copy Trading UX + read‑only API (branch `feat/mt5-copier-ux`). **Rebased `--onto 1ca72fc3`**
+  → head `505cbb7c` (old head `0beb5999` retained for recovery). Diff vs `main` = 14 files/+829, the UX +
+  read-only API increment only; **no duplicate #528 commits**; `AccountWithdrawalMonitoring.tsx` (WV1)
+  untouched — canonical main version preserved. The `window is not defined` defect (§16 F0) stays resolved
+  because main now carries the canonical WV1 unmount guard. Exact-head CI re-certification pending on `505cbb7c`.
+- **B‑exec (PR #537)** — DEMO ExecutionJob producer (branch `feat/mt5-copier-exec`). **Rebased `--onto 1ca72fc3`**
+  → code (old head `d19bff52` retained for recovery). Diff vs `main` = 9 files/+930/-5, B-exec + governance
+  entries + this completion report only; **no duplicate #528 commits**. This report commits on top of the code,
+  so the branch head advances per doc update — the authoritative exact-head result is always the latest run in
+  the PR's own checks. Local full regression (pre-rebase, code unchanged by rebase): **6296 tests OK**.
+  Exact-head CI re-certification pending on the rebased head.
+- #528 merged; #535/#537 rebased and **not** merged. Their merges remain gated on exact-head CI re-cert +
+  ADR‑0051 approval path + explicit human authorization; auto‑merge OFF.
 
 ## 2. Existing infrastructure & capacity findings
 
