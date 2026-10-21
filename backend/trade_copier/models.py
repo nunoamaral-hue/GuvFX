@@ -350,9 +350,12 @@ class ReplicationStatus(models.TextChoices):
     SHADOW_RECORDED = "SHADOW_RECORDED", "Shadow intent recorded (no execution)"
     REJECTED = "REJECTED", "Rejected (eligibility/sizing/symbol)"
     SKIPPED = "SKIPPED", "Skipped (disabled / not applicable)"
-    # Reserved for the gated DEMO execution follow-up:
-    EXECUTION_REQUESTED = "EXECUTION_REQUESTED", "Execution requested (job created)"
-    EXECUTION_VERIFIED = "EXECUTION_VERIFIED", "Execution verified on follower"
+    # B-exec producer states (ADR-0051 PR C/B-exec P1): a SHADOW JOB is NOT an execution request —
+    # it is a suppressed, un-claimable job that sends no order. Only a real (armed DEMO) job becomes
+    # EXECUTION_REQUESTED, and only broker-result evidence may ever become EXECUTION_VERIFIED.
+    SHADOW_JOB_RECORDED = "SHADOW_JOB_RECORDED", "Shadow job recorded — no order sent"
+    EXECUTION_REQUESTED = "EXECUTION_REQUESTED", "Execution requested (real DEMO job created)"
+    EXECUTION_VERIFIED = "EXECUTION_VERIFIED", "Execution verified on follower (broker evidence)"
     EXECUTION_FAILED = "EXECUTION_FAILED", "Execution failed"
 
 
