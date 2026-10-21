@@ -25,17 +25,20 @@
   overwritten;** reconciliation was merge-forward only (`e6117aab` and `0802e423` remain ancestors).
 - **PR #528** — backend foundation (branch `feat/mt5-copier-observer`): observer A, follower‑intent B,
   blocker corrections B1–B4, B2 single‑flight. **Head `fd6c4006`** (merge of `origin/main` `0802e423`).
-  `mergeable: MERGEABLE`. CI run `39563423956`: `governance` / `market-data-foundation` /
-  `research-foundation` PASS; `backend` / `frontend` were still in progress at report time (see §15). **OPEN.**
+  `mergeable: MERGEABLE`. CI run `39563423956`: **all five jobs PASS** (backend 10m46s, frontend 2m19s,
+  governance, market-data, research — see §15). **OPEN.**
 - **PR #535** — Copy Trading UX + read‑only API (branch `feat/mt5-copier-ux`, stacked on #528).
   **Head `0beb5999`** (previous head `530ce7ab` carried the stale `AccountWithdrawalMonitoring.tsx`
   that caused the `window is not defined` CI failure; see §16 F0). `mergeable: MERGEABLE`.
-  CI run `39563423762`: **`frontend` PASS (2m5s) — the failure is resolved at the exact head**;
-  `governance` / `market-data-foundation` / `research-foundation` PASS; `backend` in progress at report time. **OPEN.**
+  CI run `39563423762`: **all five jobs PASS** — `frontend` PASS (2m5s) resolves the failure at the exact
+  head; backend 12m46s, governance, market-data, research (see §15). **OPEN.**
 - **B‑exec (PR #537)** — DEMO ExecutionJob producer (branch `feat/mt5-copier-exec`, stacked on #528).
-  Code head `3bb2e609` (independent-review hardening F1–F4, see §16); this report is the doc commit on
-  top, so the pushed branch head is that doc commit. Local full regression at `3bb2e609`:
-  **6296 tests OK (skipped=1)**. **OPEN.**
+  **Code head `3bb2e609`** (independent-review hardening F1–F4, see §16). This completion report is itself
+  committed on top of the code, so the branch head advances by one doc commit per update; the exact current
+  head and its CI are always shown in the PR's own checks. Local full regression at `3bb2e609`:
+  **6296 tests OK (skipped=1)**. First all-green post-correction CI (on doc commit `e57d7704`):
+  run `39564585714`, **all five jobs PASS** (backend 8m52s, frontend 2m8s, governance, market-data,
+  research — see §15). **OPEN.**
 - No PR merged; no squash; auto‑merge OFF. Merge is gated on final‑head GitHub CI (all five jobs green on
   each exact head) + ADR‑0051 ratification + explicit human authorization.
 
@@ -158,20 +161,23 @@ skipped). Frontend build + parity + eslint + vitest green. The six `window.local
 function` failures seen locally are pre-existing jsdom flakes present on `main`, **not** introduced here and
 **green in CI** (confirmed by #535 `frontend` PASS below); they are not the `window is not defined` defect.
 
-**GitHub CI — exact-head, authoritative merge gate:**
+**GitHub CI — exact-head, authoritative merge gate — ALL FIVE JOBS GREEN ON EACH HEAD (2026‑10‑21):**
 
 | PR | Head | Run | backend | frontend | governance | market-data | research |
 |---|---|---|---|---|---|---|---|
-| #528 | `fd6c4006` | `39563423956` | in progress¹ | in progress¹ | ✅ | ✅ | ✅ |
-| #535 | `0beb5999` | `39563423762` | in progress¹ | **✅ (2m5s)** | ✅ | ✅ | ✅ |
-| #537 | `3bb2e609` | pending push² | — | — | — | — | — |
+| #528 | `fd6c4006` | `39563423956` | ✅ 10m46s | ✅ 2m19s | ✅ | ✅ | ✅ |
+| #535 | `0beb5999` | `39563423762` | ✅ 12m46s | ✅ 2m5s | ✅ | ✅ | ✅ |
+| #537 | `e57d7704` | `39564585714` | ✅ 8m52s | ✅ 2m8s | ✅ | ✅ | ✅ |
 
-¹ Backend/frontend jobs run longest; status captured mid-run on 2026‑10‑21. The authoritative gate is
-**all five green on each exact head** — this report must be refreshed with the final conclusions before merge.
-² #537 is pushed only after its local full regression completes green.
+15/15 jobs passed. The #537 row's head `e57d7704` is the first all-green post-correction doc commit (atop
+code head `3bb2e609`); because this report commits on top of #537, its head advances by one doc commit per
+update, and each push re-runs CI with no code/test delta — the authoritative exact-head result for the
+current head is always the latest run in the PR's own checks.
 
 The decisive result: **#535 `frontend` PASS at `0beb5999`** proves the `window is not defined` unmount defect
-(§16 F0) is resolved at the exact head, with the full frontend suite, not only copier tests.
+(§16 F0) is resolved at the exact head, with the full frontend suite, not only copier tests. Green CI is a
+gate, **not** an authorization to merge — merge remains gated on ADR‑0051 ratification + explicit human
+authorization; auto‑merge OFF.
 
 ## 16. Adversarial findings & resolutions
 
