@@ -1,91 +1,74 @@
-# WV1 Controlled-Erasure — Governed Review Packet (adversarial-review corrections)
+# WV1 Controlled-Erasure — Governed Review Packet (adversarial-review corrections, round 3)
 
-- **Date:** 2026-10-21 · **PR #543** (branch `feat/wv1-controlled-erasure`). **A governed review packet, NOT
-  a merge request.** No ADR ratification, no merge, no production migration/erasure/deploy, no Console change.
+- **Date:** 2026-10-21 · **PR #543** (branch `feat/wv1-controlled-erasure`). **A governed review packet, NOT a
+  merge request.** No ADR ratification, no merge, no production migration/erasure/deploy, no Console change.
   MT5 Copy Trading untouched.
-- **Verified this turn:** 731 backend tests pass (incl. reworked erasure + governance), no migration drift,
-  secret scan clean.
+- **Verified this round (local, PostgreSQL):** `broker_intelligence` full suite **678 pass**; erasure +
+  governance **28 pass**; no migration drift in `broker_intelligence`/`core`; the erasure CLI parses.
+- **Standing boundary unchanged:** nothing provisioned, migrated, merged, flag-armed, or executed in production.
 
-## Why a packet, not a finished merge
-The correct Finding-2 fix is a **DB-enforced privilege boundary**, which requires a dedicated role +
-SECURITY DEFINER procedure that **only a superuser can provision** (the app role `guvfx`/`dev` is not a
-superuser and cannot create roles). Per your own directive, that provisioning is "separately authorized."
-So the destructive deletion backend cannot be fully built + verified without that authorized provisioning.
-This packet therefore **closes the critical vulnerability now (fail-closed)** and **specifies + stubs** the
-remaining backend for the provisioning-gated increment.
+## What changed since round 2 (the PD "NO-GO FOR PROVISIONING" disposition)
+The round-2 build fixed the GUC bypass (role-enforced triggers, fail-closed) but left eight blocking items. This
+round fixes the ones that can be built + verified WITHOUT the superuser provisioning, and corrects the design
+docs for the ones that genuinely require it. Specifically, the durable outbox + idempotent worker + two-person
+lifecycle are now **built and tested** (the PD required these before provisioning); the destructive DB procedure
++ the role/ownership boundary remain **specified + scripted** for the separately-authorized rehearsal.
 
 ## Finding-by-finding disposition
-| # | Finding | Status |
-|---|---|---|
-| 1 | ADR number collision (0051 = copier) | **FIXED** — renumbered to **ADR-0054** after full inventory (0051/0052/0053 are the copier's CLOSE/MODIFY); all code/doc refs updated; **governance test** added (`core/tests_adr_governance.py`) preventing new duplicates (documents the pre-existing 0049/0050 cross-series overlap). |
-| 2 | Unprivileged GUC bypass | **GUC bypass CLOSED (critical)** — triggers require `current_user = 'guvfx_erasure'` (migration 0017), not a forgeable GUC; **every ordinary DML DELETE (ORM/bulk/raw) is blocked**. Per a 2nd-round adversarial-review HIGH, the migration alone is **not a complete boundary against a FULLY-COMPROMISED app role** (it still OWNS the tables/functions → could TRUNCATE, or strip the triggers via DDL). Those OWNER-LEVEL vectors are closed by the **separate superuser provisioning**, which moves object **ownership** off the app role + REVOKEs DELETE/TRUNCATE. (A BEFORE-TRUNCATE trigger was rejected — owner bypasses it + it breaks Django test-flush.) Negative controls: `test_ordinary_delete_blocked`, `test_old_guc_cannot_bypass`. |
-| 3 | Irreversible credential deletion inside txn | **DESIGNED (gated)** — no file deletion inside the txn; a **durable `DeletionTask` outbox** + idempotent worker removes files **post-commit**; request not COMPLETED until all tasks finish. Execute is fail-closed in this build (no deletion). |
-| 4 | Post-commit crash window / orphan files | **DESIGNED (gated)** — every physical deletion is a durable outbox task; a crash leaves a PENDING task the worker completes (not an orphan). Recovery tests specified (crash→pending→worker completes→idempotent retry→missing-file handled→permission-failure retryable→request not "fully executed" while tasks remain). |
-| 5 | Observation-only evidence omitted | **FIXED** — the candidate set is the **union** of owner BrokerEvent **and** BrokerMessageObservation evidence refs; discriminating test `test_observation_only_blob_is_a_delete_candidate`. |
-| 6 | Concurrent execution | **IMPLEMENTED (control plane)** — execute takes `select_for_update` on the request + a per-subject `pg_advisory_xact_lock` + re-validates every gate under the lock; executable-status gate added. Full two-competing-process test runs in CI against the provisioned backend. |
-| 7 | Identity-verification assertion | **DESIGNED (gated)** — the one-boolean `--identity-verified` is being replaced by an auditable lifecycle with distinct **requester / verifier / approver / executor**, timestamps, method category, and (preferred) **two-person approval**; the same invocation cannot create+verify+execute. Interim: create and execute are separate invocations + a status gate. |
-| 8 | Retained audit personal data | **INVENTORIED + CLASSIFIED** — `WV1_AUDIT_PII_INVENTORY.md`: `BrokerEmailIdentityAudit.email`, `AuditEvent.ip_address`/`user_agent`, subject/account FKs and identifying JSON are personal data → **anonymise** (not blanket retain); DPIA + retention schedule updated. Anonymisation is part of the privileged backend. |
+| # | Finding | Status this round |
+|---|---------|-------------------|
+| 1 | Provisioning script references nonexistent `bi_*_block_truncate()` | **FIXED** — `ops/erasure/provision_erasure_privilege.sql` no longer references those functions (they never existed after the BEFORE-TRUNCATE design was dropped). The script now moves only the two real `block_delete` functions + the tables + sequences to the schema owner. A clean-PG15 run of the complete script is part of the DEFERRED rehearsal set (needs superuser). |
+| 2 | App role still owns tables / could be granted EXECUTE | **REDESIGNED** — the script establishes a least-privilege multi-role boundary: `guvfx_schema_owner` owns tables + trigger functions; the runtime `guvfx_app` has DML only (no DELETE/TRUNCATE, no ownership, no membership, **no EXECUTE on the procedure**); a SEPARATE `guvfx_erasure_exec` login (credential NOT in the web env) is the only EXECUTE grantee; `guvfx_erasure` (NOLOGIN) owns the SECURITY DEFINER procedure + is the trigger identity. Documented in the script header + ADR-0054 §1 + the matrix below. |
+| 3 | Irreversible file deletion inside the txn | **IMPLEMENTED (control plane + worker) + tested** — a durable `DeletionTask` outbox model (unique per `(request,kind,target_ref)`) + an idempotent `process_deletion_tasks()` worker that removes files **after commit**, treats a missing file as success, marks failures retryable, and advances the request to COMPLETED only when the outbox is drained. The governed procedure will enqueue tasks in the same txn as the row deletes (gated). Tests: `test_worker_removes_files_and_completes_request`, `test_worker_missing_file_is_success`, `test_worker_rerun_is_noop`. |
+| 4 | Post-commit crash window / weak readiness | **IMPLEMENTED + tested** — (a) crash safety: a committed PENDING task is durable; the worker completes it on the next run (not an orphan). (b) `privileged_backend_readiness()` now verifies the whole boundary: roles exist; procedure present with expected signature, SECURITY DEFINER, owner, pinned `search_path`; EXECUTE = executor only (not PUBLIC/app); tables owned by schema owner; app role not a member of any privileged role; app role lacks DELETE/TRUNCATE — any mismatch ⇒ NOT READY (fail-closed), returned with structured reasons. Tests: `test_readiness_reports_reasons_when_unprovisioned`, `test_execute_fails_closed_when_backend_unprovisioned`. |
+| 5 | Plan digest omitted observation evidence + credential drift | **IMPLEMENTED + tested** — (5a) candidate blob set is the UNION of owner BrokerEvent + BrokerMessageObservation evidence refs (`test_observation_only_blob_is_a_delete_candidate`); (5b) the TOCTOU token now includes stable sha256 digests of the owner's credential refs, so a re-auth invalidates the token even with unchanged id sets (`test_credential_ref_drift_invalidates_token`). |
+| 6 | Concurrent execution | **IMPLEMENTED (control plane)** — execute takes `select_for_update` on the request + a per-subject `pg_advisory_xact_lock` + re-validates every gate under the lock. The two-competing-process end-to-end test runs in the provisioned rehearsal (DEFERRED). |
+| 7 | One-boolean identity verification | **IMPLEMENTED + tested** — replaced by an auditable two-person lifecycle: distinct `requested_by` / `verified_by` / `approved_by` / `executed_by` with timestamps + a method category; `approve_request` enforces approver ≠ requester + a produced plan + verified identity + an approval expiry + revocation; execute re-checks approval validity under the lock. Tests: `test_self_approval_blocked`, `test_approve_requires_verified_identity`, `test_approve_requires_a_plan`, `test_revoked_approval_blocks`, `test_expired_approval_blocks`, `test_approver_equals_requester_blocks_exec`, `test_verify_then_plan_then_approve_happy_path`. |
+| 8 | Migration/ownership role model | **DESIGNED + scripted** — dedicated NOLOGIN `guvfx_schema_owner` owns the schema; `guvfx_migrate` (its member) runs migrations; runtime/executor/read-only are separate. Deploy + rollback outline in the script. Applying the ownership move needs superuser (DEFERRED rehearsal). |
+| 7-ADR | Stale "GUC" terminology in ADR | **FIXED** — removed "GUC-gated path", "GUC unset", "sets the GUC"; the remaining references only explain why a GUC was *rejected* or name the `test_old_guc_cannot_bypass` control. Added the five capability-status categories (IMPLEMENTED NOW / PROPOSED / NOT YET BUILT / REQUIRES PROVISIONING / PROHIBITED). |
 
-## 1. Corrected ADR number
-**ADR-0054** (`docs/architecture/ADR-0054-CONTROLLED-ERASURE.md`). 0051/0052/0053 belong to the MT5 copier.
+## Role / privilege / ownership matrix (Findings 2 + 8)
+| Role | Login | Owns | DELETE/TRUNCATE on evidence tables | EXECUTE `bi_governed_erase_owner` | Member of | Credential location |
+|------|-------|------|-----------------------------------|-----------------------------------|-----------|---------------------|
+| `guvfx_schema_owner` | no | evidence tables + `block_delete` fns + sequences | (owner) | no | — | n/a (NOLOGIN) |
+| `guvfx_migrate` | yes | — | via membership (migrations only) | no | `guvfx_schema_owner` | deploy secret store |
+| `guvfx_app` (runtime) | yes | nothing | **NO** (revoked) | **NO** | **none** | web/worker env |
+| `guvfx_erasure` | no | the SECURITY DEFINER procedure | DELETE (as trigger identity) | (owner) | — | n/a (NOLOGIN) |
+| `guvfx_erasure_exec` | yes | — | no | **yes (only grantee)** | none | governed-job secret store, **NOT** web env |
+| `guvfx_readonly` | yes | — | no | no | — | ops secret store |
 
-## 2. Database privilege design + threat model
-Role-enforced triggers (`current_user = 'guvfx_erasure'`); a NOLOGIN privileged role; a SECURITY DEFINER
-procedure (owned by that role, pinned `search_path`, fully-qualified, owner-scoped, ref-checked) as the ONLY
-path to `current_user = guvfx_erasure`; app role not a member → cannot `SET ROLE`. Full text + threat model:
-`ops/erasure/provision_erasure_privilege.sql` and ADR-0054 §1.
+## Readiness invariants re-checked before any execute (fail-closed)
+roles exist · procedure present · expected signature `(bigint, bytea)` · SECURITY DEFINER · owned by
+`guvfx_erasure` · pinned `search_path` · EXECUTE = `guvfx_erasure_exec` only (not PUBLIC, not app) · evidence
+tables owned by `guvfx_schema_owner` · app role not a member of any privileged role · app role lacks
+DELETE+TRUNCATE. Any failure ⇒ `privileged_backend_ready()` is False and execute refuses with sanitised reasons.
 
-## 3. Proof the ordinary application role cannot invoke the bypass
-`test_old_guc_cannot_bypass`: on the ordinary connection, `SET LOCAL "guvfx.erasure_authorized" = 'on'` then
-delete → **still raises** (the trigger ignores the GUC and checks `current_user`). `test_ordinary_delete_blocked`:
-bulk/ORM delete of EvidenceBlob/BrokerEvent → raises; rows persist. (Both run locally + CI.)
+## Build vs gated (honest split)
+- **IN THE BRANCH, TESTED (local + CI):** role-enforced immutability triggers; the fail-closed control plane;
+  the enhanced plan + token (observation union + credential-ref drift); the two-person SoD lifecycle; the durable
+  `DeletionTask` outbox + idempotent worker; the comprehensive readiness probe; 28 discriminating tests.
+- **NOT YET BUILT (design only; nothing deletes):** the physical-deletion step driven from inside the governed
+  procedure; audit-row anonymisation applied to live rows (classified in `WV1_AUDIT_PII_INVENTORY.md`).
+- **REQUIRES PRIVILEGED PROVISIONING (superuser, Sponsor-authorized, rehearsal first):** the role/ownership
+  boundary + the `bi_governed_erase_owner` procedure body, and the DB role-integration test set below.
 
-## 4. Durable deletion-outbox design
-`DeletionTask(request, kind∈{CREDENTIAL_FILE,EVIDENCE_FILE}, target_ref, status∈{PENDING,COMPLETED,FAILED},
-attempts, last_error, created_at, completed_at)`. The governed procedure writes tasks in the same txn as the
-row deletes; an idempotent worker removes files after commit, retries FAILED, and marks the request COMPLETED
-only when no PENDING/ FAILED tasks remain. Operator-visible states: DB-erased · external-pending · fully-erased ·
-failed-needs-intervention.
+## DEFERRED PostgreSQL-15 role-integration tests (need superuser; run in the rehearsal)
+provisioning runs clean + is idempotent · governed procedure is the ONLY delete path · app role + PUBLIC cannot
+EXECUTE it · only `guvfx_erasure_exec` can · spoofed caller gains no authority · TRUNCATE blocked by revocation ·
+trigger DISABLE/DROP denied to the app role · two competing executes → one terminal outcome · crash → durable
+PENDING task → worker completes · shared evidence retained · observation-only included · credential drift
+invalidates · audit PII anonymised in-procedure · future migrations still operational.
 
-## 5. Corrected identity-verification workflow
-Request received → identity verified (verifier id + timestamp + method category, no excess ID documents) →
-plan generated → independent approval (two-person) → execution (executor id) → completion review. `requested_by`,
-verifier and executor mandatory for real execution; one invocation cannot do all three.
+## Updated production-readiness (honest)
+- Erasure **capability ~55%**: control plane + security boundary design + outbox/worker + two-person lifecycle +
+  readiness are built and tested; the destructive DB procedure + ownership provisioning + audit anonymisation are
+  specified/scripted but unbuilt/unprovisioned, so **erasure is not yet operable**.
+- WV1 engineering overall unchanged (~95% feature; erasure is additive and DARK).
+- Production-readiness **~55%** (the erasure gap + prior recovery / log-retention / DPA / DPIA gaps). Live-user
+  availability **0%**.
 
-## 6. Complete evidence-reference inventory
-Inbound PROTECT references to `EvidenceBlob`: `BrokerEvent.evidence`, `BrokerMessageObservation.evidence`.
-Owner-scoped evidence relationships: `BrokerEvent.owner`, `BrokerMessageObservation.owner`,
-`ConnectedMailbox.user`→credential file, `BrokerEmailIdentity.user`. A blob is physically removable only when
-**no** inbound PROTECT reference remains (any owner). The plan now unions event + observation candidates.
-
-## 7. Audit-personal-data inventory
-`WV1_AUDIT_PII_INVENTORY.md` — field-level classification (Delete / Anonymise / Retain-under-basis /
-Retain-with-expiry) for `BrokerEmailIdentityAudit`, `TradingAccountBrokerContactAudit`, `BrokerProfileAudit`,
-`core.AuditEvent`.
-
-## 8. New tests + negative controls
-`broker_intelligence/tests_erasure.py` (15, pass): dry-run purity, observation-only candidate, shared-blob
-retention classification, all validation gates (flag/status/identity/hold/token), fail-closed on unprovisioned
-backend, and the Finding-2 negative controls. `core/tests_adr_governance.py` (3, pass): ADR uniqueness +
-0054-not-0051 + non-vacuous. Gated backend tests (outbox crash/restart, concurrency, audit anonymisation) run
-in CI against the provisioned backend — specified here.
-
-## 9. Exact-head CI
-Pushed to PR #543; CI runs on the corrected head (reported separately; backend ~10 min).
-
-## 10. Remaining risks
-Destructive deletion is **not yet implemented** (gated on superuser provisioning) — so erasure is not yet
-operable; the outbox/worker, audit anonymisation and two-person workflow are designed but unbuilt; the
-provisioning SQL function body is DRAFT and must be rehearsed before use.
-
-## 11. Updated production-readiness
-Erasure **capability: ~40%** (control plane + security boundary done; destructive backend gated). WV1
-engineering overall unchanged (~95% feature; erasure is additive). Production-readiness **~55%** (the erasure
-gap + prior recovery/log/DPA/DPIA gaps). Live-user availability **0%**.
-
-## 12. Governed review packet — approval requests
-- Review the corrected design (this packet + ADR-0054).
-- Authorize (separately) the **superuser provisioning** of `guvfx_erasure` + the SECURITY DEFINER procedure in
-  a **rehearsal** environment so the destructive backend + outbox + concurrency + audit-anonymisation can be
-  built and fully tested.
-- Keep PR #543 **DRAFT/DARK**, unratified, unmerged. Do not activate the flag or run `--execute` against prod.
+## Approval requests (unchanged)
+- Review the corrected design (this packet + ADR-0054 + the provisioning script).
+- Authorize (separately) the **superuser provisioning in a REHEARSAL database** so the destructive procedure +
+  the role-integration test set can be built and run.
+- Keep PR #543 **DRAFT/DARK**, unratified, unmerged; do not arm the flag or run `--execute` against production.

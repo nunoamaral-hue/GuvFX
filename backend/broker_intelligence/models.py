@@ -897,8 +897,10 @@ class ErasureRequest(models.Model):
 
     class Status(models.TextChoices):
         REQUESTED = "REQUESTED", "Requested (identity not yet verified)"
-        PLANNED = "PLANNED", "Dry-run plan produced; awaiting confirmation"
-        EXECUTED = "EXECUTED", "Erasure executed"
+        PLANNED = "PLANNED", "Dry-run plan produced; awaiting independent approval"
+        APPROVED = "APPROVED", "Independently approved (two-person); ready to execute"
+        EXECUTED = "EXECUTED", "Erasure executed (DB rows removed)"
+        COMPLETED = "COMPLETED", "Fully erased (all file-deletion outbox tasks drained)"
         FAILED = "FAILED", "Erasure failed (rolled back)"
         HELD = "HELD", "Blocked by an active legal/security hold"
         CANCELLED = "CANCELLED", "Cancelled"
@@ -919,8 +921,63 @@ class ErasureRequest(models.Model):
     planned_at = models.DateTimeField(null=True, blank=True)
     executed_at = models.DateTimeField(null=True, blank=True)
 
+    # --- Two-person separation-of-duties lifecycle (ADR-0054 Finding 7) -------------------------------------
+    # Four DISTINCT roles are recorded with timestamps so no single invocation can create + verify + approve +
+    # execute. ``requested_by`` (above) is the operator who raised the request. The VERIFIER attests the
+    # data-subject's identity was checked out-of-band (method category only, never ID documents). The APPROVER
+    # independently authorises execution and MUST differ from the requester (enforced in the control plane). The
+    # EXECUTOR is recorded at execution. Approval can carry an expiry and be revoked; a revoked/expired approval
+    # fails closed. These are operational metadata — no message content.
+    verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verification_method = models.CharField(max_length=60, blank=True, default="")   # category, e.g. "signed-request"
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_expires_at = models.DateTimeField(null=True, blank=True)
+    approval_revoked = models.BooleanField(default=False)
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+
     class Meta:
         indexes = [models.Index(fields=["subject_user_id_snapshot", "status"])]
 
     def __str__(self) -> str:
         return f"ErasureRequest(subject={self.subject_user_id_snapshot}, {self.status})"
+
+
+class DeletionTask(models.Model):
+    """Durable FILE-deletion OUTBOX (ADR-0054 Findings 3/4). Irreversible filesystem deletion (encrypted
+    credential files, content-addressed evidence files) is NEVER done inside the governed DB transaction. The
+    governed procedure deletes the DB rows and, in the SAME transaction, writes PENDING tasks here; an idempotent
+    worker removes the files AFTER commit and marks each task COMPLETED/FAILED. A crash after commit therefore
+    leaves a durable PENDING task (not an orphan file); the ``ErasureRequest`` is only COMPLETED once no
+    PENDING/FAILED tasks remain. Carries only a target reference (a sha256/credential-ref pointer), never content."""
+
+    class Kind(models.TextChoices):
+        CREDENTIAL_FILE = "CREDENTIAL_FILE", "Encrypted OAuth credential file"
+        EVIDENCE_FILE = "EVIDENCE_FILE", "Content-addressed evidence blob file"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending (file not yet removed)"
+        COMPLETED = "COMPLETED", "Completed (file removed or already absent)"
+        FAILED = "FAILED", "Failed (retryable)"
+
+    request = models.ForeignKey(ErasureRequest, on_delete=models.PROTECT, related_name="deletion_tasks")
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    target_ref = models.CharField(max_length=128)             # sha256 (evidence) or credential_ref — a pointer, no content
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=300, blank=True, default="")   # sanitised, no content
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "kind"])]
+        # A given (request, kind, target_ref) is written once — idempotent re-plans do not duplicate work.
+        constraints = [models.UniqueConstraint(fields=["request", "kind", "target_ref"],
+                                               name="uniq_deletiontask_request_kind_target")]
+
+    def __str__(self) -> str:
+        return f"DeletionTask(req={self.request_id}, {self.kind}, {self.status})"

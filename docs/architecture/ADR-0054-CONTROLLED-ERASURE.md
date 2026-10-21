@@ -46,24 +46,30 @@ be removed, gated so ordinary immutability is unchanged everywhere else.
    outbox rows (PENDING); an **idempotent worker** removes the files **after commit** and marks each task
    COMPLETED/FAILED. A crash after commit leaves a **durable PENDING task** (not an orphan file); the request
    is not COMPLETED until all file-deletion tasks finish. A rollback leaves DB + files consistent.
-7. **Derived BrokerEvent handling.** Deleted (owner-scoped) via the GUC-gated path, after its Withdrawals
-   (PROTECT) and observations are gone.
+7. **Derived BrokerEvent handling.** Deleted (owner-scoped) via the role-enforced governed path (inside the
+   SECURITY DEFINER procedure running as `guvfx_erasure`), after its Withdrawals (PROTECT) and observations
+   are gone.
 8. **Withdrawal-record handling.** Deleted (owner-scoped); it is a rebuildable projection.
 9. **Credential & mailbox deletion.** The encrypted token file is destroyed (`credential_store.delete_token`)
    and the `ConnectedMailbox` row deleted.
 10. **Audit metadata without deleted content.** The `ErasureRequest` records who/when/scope/counts/outcome
-    — **never** message content (proved by `test_audit_record_has_no_deleted_content`). The append-only
-    identity/contact audit tables (which hold no message body) are **retained** (SET_NULL back-refs).
+    — **never** message content (by construction: only counts/ids live in its JSON plan/outcome). The
+    end-to-end audit-content assertion runs in the provisioned rehearsal (gated). The append-only
+    identity/contact audit tables (which hold no message body) are **retained** (SET_NULL back-refs); the
+    personal-data fields they DO hold are classified for anonymisation in `WV1_AUDIT_PII_INVENTORY.md`.
 11. **Legal & security holds.** An active `ErasureHold` for the subject blocks erasure (status HELD).
     Owner-level in v1; record-level holds are a documented future refinement.
 12. **Backup-expiry handling.** Encrypted backups are immutable snapshots; erased data persists in them
     until they expire (the retention schedule states the max residual window) and erasure must be
     re-applied to any restored copy. (No production backup exists yet.)
 13. **Failure recovery.** The mutation is atomic (all-or-nothing); a failure rolls the DB back and records
-    a sanitised FAILED status **outside** the rolled-back transaction (proved by
-    `test_partial_failure_is_recoverable`). Physical files are untouched on failure.
-14. **Idempotency.** An already-EXECUTED request is refused; a fresh request for a now-empty owner is a
-    zero-count no-op (proved by `test_repeated_execution_is_safe`).
+    a sanitised FAILED status **outside** the rolled-back transaction. Physical files are untouched on failure
+    (no outbox task is drained until after commit). The rollback end-to-end test runs in the provisioned
+    rehearsal (gated).
+14. **Idempotency.** An already-EXECUTED/COMPLETED request is refused (status gate); a fresh request for a
+    now-empty owner is a zero-count no-op; the outbox worker is idempotent (missing file ⇒ success,
+    `test_worker_missing_file_is_success`, `test_worker_rerun_is_noop`). The end-to-end repeat-execution test
+    runs in the provisioned rehearsal (gated).
 15. **Concurrency / TOCTOU.** The dry-run produces a confirmation token (digest of the owner-scoped object
     set); execute recomputes it from live state and requires a match, so a state change between plan and
     execute aborts (`test_wrong_token_blocks`).
@@ -71,29 +77,63 @@ be removed, gated so ordinary immutability is unchanged everywhere else.
     default (`BROKER_INTELLIGENCE_ERASURE_ENABLED`), with a dry-run plan + a second confirmation. **Never**
     an HTTP/customer endpoint.
 17. **Separation of ordinary deletion vs governed erasure, and no mass/cross-user deletion.** Ordinary app
-    code can never delete evidence/events (GUC unset). The governed path requires the flag + a verified
-    request + a matching token + no hold, acts on exactly one owner, and sets the GUC only around its own
-    deletes.
+    code can never delete evidence/events — the role-enforced BEFORE-DELETE triggers block every ordinary
+    DML DELETE (ORM/bulk/raw), because the app role is not `guvfx_erasure`. The governed path requires the
+    flag + a verified request + a matching token + no hold, acts on exactly one owner, and runs its deletes
+    only inside the SECURITY DEFINER procedure (where `current_user` is `guvfx_erasure`).
 
 ## Consequences
 - The immutability invariant is preserved for all non-governed code; a narrow, audited, flag-gated,
   double-confirmed exception exists for Art 17.
 - "Delete on request" becomes truthful **only once this ADR is ratified and the capability is armed** for
   the relevant cohort; until then the privacy wording must use the interim (Option C) language.
-- A small migration (0017) adds `ErasureRequest`/`ErasureHold` and makes the two trigger functions
-  **role-enforced** (`current_user = 'guvfx_erasure'`) — additive; reverse restores the unconditional-raise
-  trigger bodies. No data backfill.
+- Two additive migrations: **0017** adds `ErasureRequest`/`ErasureHold` and makes the two trigger functions
+  **role-enforced** (`current_user = 'guvfx_erasure'`); **0018** adds the two-person lifecycle fields +
+  the `DeletionTask` outbox. Both reverse cleanly (0017's reverse restores the unconditional-raise bodies). No
+  data backfill. Neither has been applied to production.
 
-## Post-adversarial-review status (2026-10-21)
-This ADR and PR #543 were **not approved** in their first form. Corrections now in the branch:
-- **Finding 1:** renumbered 0051 → **0054** (0051/0052/0053 are the MT5 copier's); governance test added.
-- **Finding 2:** GUC bypass removed → **role-enforced** triggers, fail-closed until the superuser-provisioned
-  privileged backend exists; negative controls prove it.
-- The destructive deletion path is **fail-closed in this build** (execute refuses — no deletion occurs).
-**Specified but gated on the privileged provisioning (next increment):** the SECURITY DEFINER procedure body,
-the **durable deletion-outbox + idempotent worker** (Findings 3/4), audit-row anonymisation (Finding 8), and
-the **identity-verification separation of duties** / two-person approval (Finding 7). See
-`docs/WV1_ERASURE_REWORK_PACKET.md`.
+## Post-adversarial-review status (2026-10-21, round 3)
+This ADR and PR #543 were **not approved** in their first or second form. Corrections now in the branch:
+- **Finding 1:** renumbered 0051 → **0054** (0051/0052/0053 are the MT5 copier's); governance test added. The
+  provisioning script's nonexistent `bi_*_block_truncate()` references are removed.
+- **Finding 2/8:** the app role no longer owns the evidence objects in the target design — a least-privilege
+  role boundary (`guvfx_schema_owner`, `guvfx_migrate`, `guvfx_app`, `guvfx_erasure`, `guvfx_erasure_exec`,
+  `guvfx_readonly`) is scripted; the app role has no DELETE/TRUNCATE, no membership, and no EXECUTE on the
+  procedure; a separate executor login (credential off the web runtime) is the sole EXECUTE grantee.
+- **Findings 3/4/5/6/7 (control plane):** now **built and tested** — the durable `DeletionTask` outbox +
+  idempotent worker, the comprehensive readiness probe, the observation-union + credential-ref-drift token, the
+  per-subject concurrency locks, and the two-person (requester/verifier/approver/executor) lifecycle with
+  approval expiry + revocation. 28 discriminating tests pass locally.
+- The destructive deletion path remains **fail-closed in this build** (execute refuses — no deletion occurs).
+**Still gated on the privileged provisioning (separately authorized rehearsal):** the SECURITY DEFINER
+procedure body, the role/ownership move, audit-row anonymisation applied to live rows, and the DB
+role-integration test set. See `docs/WV1_ERASURE_REWORK_PACKET.md`.
+
+## Capability status — five categories (what is true right now)
+To prevent any reader mistaking a design for a shipped control, every element of this ADR is placed in exactly
+one category. Nothing below "IMPLEMENTED NOW" can delete data in this build.
+
+- **IMPLEMENTED NOW (in the branch, tested locally + CI):**
+  - Role-enforced BEFORE-DELETE triggers — every ordinary DML DELETE of `EvidenceBlob`/`BrokerEvent` is
+    blocked (migration 0017); the trigger keys on `current_user = 'guvfx_erasure'`, not a forgeable GUC.
+  - The fail-closed control plane: pure dry-run PLAN (owner-scoped, union of event + observation evidence),
+    the TOCTOU confirmation token, and the `execute` gate (flag + executable-status + identity + hold + token
+    + readiness) — which **always refuses** in this build (no destructive deletion runs).
+  - The durable `DeletionTask` outbox model + the two-person `ErasureRequest` lifecycle fields
+    (requester/verifier/approver/executor + timestamps + method) and their separation-of-duties checks.
+  - Negative controls proving the boundary (`test_ordinary_delete_blocked`, `test_old_guc_cannot_bypass`).
+- **PROPOSED (this ADR — awaits Sponsor ratification):** the controlled-erasure exception itself, the
+  retention position it supports, and arming `BROKER_INTELLIGENCE_ERASURE_ENABLED` for any cohort.
+- **NOT YET BUILT (design only; no code deletes data):** the physical file-deletion worker body that drains
+  the outbox after commit, and audit-row anonymisation applied to live rows.
+- **REQUIRES PRIVILEGED PROVISIONING (superuser, separately authorized, rehearsal first):** the five/six-role
+  trust boundary (`guvfx_schema_owner`, `guvfx_migrate`, `guvfx_app`, `guvfx_erasure`, `guvfx_erasure_exec`,
+  `guvfx_readonly`), the ownership move off the app role, the DELETE/TRUNCATE revocations, and the
+  `bi_governed_erase_owner` SECURITY DEFINER procedure (`ops/erasure/provision_erasure_privilege.sql`).
+  Until provisioned, `privileged_backend_ready()` is false and `execute` fails closed.
+- **PROHIBITED in this build (no authorization sought here):** merging PR #543, ratifying this ADR, running
+  the provisioning script against production, running any migration against production, arming the flag, and
+  `--execute` against real data.
 
 ## Status / ratification
 **Proposed — NOT ratified; PR #543 is a governed review packet, not a merge request.** Do not merge, do not

@@ -1,79 +1,88 @@
 -- ADR-0054 — Privileged controlled-erasure backend provisioning.
 -- ============================================================================================
--- STATUS: DRAFT. SUPERUSER-ONLY. SEPARATELY AUTHORIZED. NOT a Django migration and NOT auto-run.
--- Apply ONLY in a rehearsal environment first, then (Sponsor-authorized) in production. Nothing in this
--- file deletes data. It establishes the database-enforced privilege boundary that makes governed erasure
--- possible; until it is applied, evidence/event deletion is IMPOSSIBLE for every ordinary path (the
--- migration-0017 triggers require current_user = 'guvfx_erasure', a role that does not yet exist).
+-- STATUS: DRAFT — PRODUCTION PROHIBITED. SUPERUSER-ONLY. SEPARATELY AUTHORIZED. NOT a Django migration.
+-- Nothing here deletes data. Apply ONLY to a DISPOSABLE PostgreSQL 15 REHEARSAL database first. Do not run
+-- against production, and do not grant the ordinary application role any erasure authority.
 --
--- THREAT MODEL (Finding 2 — why the ordinary application role cannot reproduce the bypass):
---   * The BEFORE-DELETE triggers on EvidenceBlob/BrokerEvent permit a delete ONLY when the deleting
---     session's current_user is 'guvfx_erasure'.
---   * The ordinary application role (e.g. 'guvfx') is NOT granted membership in 'guvfx_erasure' and is not a
---     superuser, so it CANNOT `SET ROLE guvfx_erasure`. A custom GUC is irrelevant — the triggers ignore it.
---   * The ONLY way current_user becomes 'guvfx_erasure' is executing the SECURITY DEFINER procedure below,
---     which is OWNED BY 'guvfx_erasure' (so it runs as that role regardless of caller) and whose body is
---     fixed, owner-scoped, ref-checked, fully-qualified, with a pinned search_path — the caller cannot make
---     it target an arbitrary owner/table.
---   * Therefore arbitrary SQL / `SET` / raw ORM on the ordinary role can delete nothing; only the governed
---     procedure can, and only for the owner it is asked to erase, recorded against the caller + request id.
--- ============================================================================================
+-- The destructive SECURITY DEFINER procedure body (§5) and the durable outbox/worker/2-person workflow are
+-- BUILT + TESTED SEPARATELY (see docs/WV1_ERASURE_REWORK_PACKET.md) and must pass review before this script is
+-- completed with the final body. §5 below is a reviewed TEMPLATE, intentionally not yet runnable.
+--
+-- ROLE / TRUST-BOUNDARY MODEL (Findings 2 + 8) — SEPARATE identities, least privilege:
+--   guvfx_schema_owner   NOLOGIN  owns the application tables + the ordinary (block_delete) trigger functions.
+--   guvfx_migrate        LOGIN    member of guvfx_schema_owner; the ONLY role that runs schema migrations.
+--   guvfx_app            LOGIN    web/worker RUNTIME. DML only (SELECT/INSERT/UPDATE); NO DELETE/TRUNCATE on the
+--                                 evidence tables; NO ownership; NO membership in any privileged role; NO EXECUTE
+--                                 on the destructive procedure.
+--   guvfx_erasure        NOLOGIN  OWNS the destructive SECURITY DEFINER procedure; this is the identity the
+--                                 BEFORE-DELETE triggers key on (current_user = 'guvfx_erasure'). Granted DELETE
+--                                 on the evidence tables. Not a login; reachable only via the procedure.
+--   guvfx_erasure_exec   LOGIN    the ONLY role granted EXECUTE on the destructive procedure. A SEPARATE credential
+--                                 that MUST NOT be present in the web/worker runtime environment — only the
+--                                 controlled erasure management command (run by governance) connects as it.
+--   guvfx_readonly       LOGIN    operational/audit read-only (SELECT only).
+-- Why this is safe (Finding 2): a compromised web process holds only guvfx_app, which cannot DELETE/TRUNCATE,
+-- cannot DDL the triggers (not the owner), is not a member of any privileged role (cannot SET ROLE), and has NO
+-- EXECUTE on the procedure. The procedure cannot be invoked from the web runtime at all. `current_user` becomes
+-- 'guvfx_erasure' ONLY inside the SECURITY DEFINER procedure (owned by it), invoked ONLY by guvfx_erasure_exec.
 
--- 1) Dedicated, NON-LOGIN privileged role. No password; cannot be connected to directly.
-CREATE ROLE guvfx_erasure NOLOGIN;
+-- 1) Roles (NOLOGIN privileged identities; LOGIN roles get credentials from the secret store, NEVER here).
+CREATE ROLE guvfx_schema_owner NOLOGIN;
+CREATE ROLE guvfx_erasure       NOLOGIN;
+-- LOGIN roles: set passwords out-of-band (\password or ALTER ROLE ... PASSWORD from a secret store), never in SQL.
+CREATE ROLE guvfx_migrate      LOGIN;    GRANT guvfx_schema_owner TO guvfx_migrate;
+CREATE ROLE guvfx_erasure_exec LOGIN;
+CREATE ROLE guvfx_readonly     LOGIN;
+-- <APPLICATION_ROLE> is the EXISTING runtime role (e.g. guvfx). It must NOT be a member of any role above.
 
--- 2) Least-privilege grants: the privileged role may DELETE the owner-scoped tables (the trigger ALSO
---    requires current_user = it) and INSERT durable file-deletion tasks. Nothing else.
-GRANT DELETE ON
-    broker_intelligence_withdrawal,
-    broker_intelligence_brokermessageobservation,
-    broker_intelligence_brokerevent,
-    broker_intelligence_evidenceblob,
-    broker_intelligence_connectedmailbox,
-    broker_intelligence_brokeremailidentity
-  TO guvfx_erasure;
--- GRANT INSERT ON broker_intelligence_deletiontask TO guvfx_erasure;   -- (after the outbox table ships)
+-- 2) Ownership: move the evidence tables + the (DELETE) trigger functions + sequences to the schema owner, so the
+--    runtime role can neither TRUNCATE nor DDL them. (Only the two block_delete functions exist — the BEFORE-TRUNCATE
+--    design was removed; do NOT reference bi_*_block_truncate, which do not exist.)
+ALTER TABLE broker_intelligence_evidenceblob OWNER TO guvfx_schema_owner;
+ALTER TABLE broker_intelligence_brokerevent  OWNER TO guvfx_schema_owner;
+ALTER FUNCTION bi_evidenceblob_block_delete() OWNER TO guvfx_schema_owner;
+ALTER FUNCTION bi_brokerevent_block_delete()  OWNER TO guvfx_schema_owner;
+ALTER SEQUENCE broker_intelligence_evidenceblob_id_seq OWNER TO guvfx_schema_owner;
+ALTER SEQUENCE broker_intelligence_brokerevent_id_seq  OWNER TO guvfx_schema_owner;
 
--- 2b) CLOSE THE OWNER-LEVEL TRUNCATE/DDL VECTORS (adversarial-review HIGH). The migration-only state blocks all
---     ordinary DML DELETE, but the application role still OWNS the two evidence tables + the trigger functions, so
---     a FULLY-COMPROMISED app role could TRUNCATE, DISABLE/DROP the triggers, or CREATE OR REPLACE the functions.
---     Moving OWNERSHIP off the app role removes that power; the app role keeps only the DML it needs for ingestion
---     (SELECT/INSERT/UPDATE), never DELETE/TRUNCATE. Replace <APPLICATION_ROLE> with the real app role.
-ALTER TABLE broker_intelligence_evidenceblob OWNER TO guvfx_erasure;
-ALTER TABLE broker_intelligence_brokerevent  OWNER TO guvfx_erasure;
-ALTER FUNCTION bi_evidenceblob_block_delete()   OWNER TO guvfx_erasure;
-ALTER FUNCTION bi_brokerevent_block_delete()    OWNER TO guvfx_erasure;
-ALTER FUNCTION bi_evidenceblob_block_truncate() OWNER TO guvfx_erasure;
-ALTER FUNCTION bi_brokerevent_block_truncate()  OWNER TO guvfx_erasure;
+-- 3) Runtime role privileges: DML for ingestion, never DELETE/TRUNCATE on the evidence tables.
+REVOKE DELETE, TRUNCATE ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent FROM PUBLIC;
 REVOKE DELETE, TRUNCATE ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent FROM <APPLICATION_ROLE>;
-GRANT SELECT, INSERT, UPDATE ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent TO <APPLICATION_ROLE>;
-GRANT USAGE, SELECT ON SEQUENCE broker_intelligence_evidenceblob_id_seq, broker_intelligence_brokerevent_id_seq
-      TO <APPLICATION_ROLE>;
--- OPERATIONAL CAVEAT: after ownership moves, future Django migrations that ALTER these two tables must run as a
--- role that owns them (guvfx_erasure or a superuser), not the ordinary app role. Factor this into the deploy runbook.
+GRANT  SELECT, INSERT, UPDATE ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent TO <APPLICATION_ROLE>;
+GRANT  USAGE, SELECT ON SEQUENCE broker_intelligence_evidenceblob_id_seq, broker_intelligence_brokerevent_id_seq
+       TO <APPLICATION_ROLE>;
 
--- 3) The governed SECURITY DEFINER procedure (findings 3/4/5/8). OWNED BY guvfx_erasure; the application
---    role is granted EXECUTE only. Body is authored with the durable deletion-outbox increment and must be
---    reviewed + rehearsed before use. Outline (DO NOT run until the outbox table + body are finalized):
+-- 4) Erasure identity privileges: guvfx_erasure may DELETE (the trigger also requires current_user = it) + write
+--    the durable outbox. It is NOT a login and is reachable only through the procedure.
+GRANT DELETE ON broker_intelligence_withdrawal, broker_intelligence_brokermessageobservation,
+                broker_intelligence_brokerevent, broker_intelligence_evidenceblob,
+                broker_intelligence_connectedmailbox, broker_intelligence_brokeremailidentity
+      TO guvfx_erasure;
+GRANT SELECT, INSERT, UPDATE ON broker_intelligence_deletiontask TO guvfx_erasure;
+GRANT SELECT, UPDATE ON broker_intelligence_erasurerequest TO guvfx_erasure;
+
+-- 5) The destructive SECURITY DEFINER procedure (TEMPLATE — final body built + tested separately; see packet).
+--    It takes ONLY an erasure-request id + a non-reusable confirmation value; derives owner/plan/approvals/
+--    separation-of-duties/hold state from DB rows (NEVER caller-supplied owner/requester/verifier/approver/caller);
+--    recomputes + compares the full plan digest; performs the owner-scoped deletion; anonymises audit PII; writes
+--    durable DeletionTask rows (files removed post-commit by the worker); records a non-PII result; and moves the
+--    request to its terminal state — all in one transaction. Then:
+--      ALTER FUNCTION bi_governed_erase_owner(bigint, bytea) OWNER TO guvfx_erasure;
+--      SET search_path (pinned inside the function): SET search_path = pg_catalog, public;
+--      REVOKE ALL ON FUNCTION bi_governed_erase_owner(bigint, bytea) FROM PUBLIC, <APPLICATION_ROLE>;
+--      GRANT EXECUTE ON FUNCTION bi_governed_erase_owner(bigint, bytea) TO guvfx_erasure_exec;   -- executor ONLY
+
+-- 6) Read-only operational role.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO guvfx_readonly;
+
+-- 7) Invariants the readiness check (erasure.privileged_backend_ready) re-verifies before any execute:
+--    SELECT NOT pg_has_role('<APPLICATION_ROLE>', 'guvfx_erasure',      'USAGE');   -- must be true (not a member)
+--    SELECT NOT pg_has_role('<APPLICATION_ROLE>', 'guvfx_erasure_exec', 'USAGE');   -- must be true
+--    SELECT NOT pg_has_role('<APPLICATION_ROLE>', 'guvfx_schema_owner', 'USAGE');   -- must be true
+--    -- plus: proc exists with the expected signature, SECURITY DEFINER, pinned search_path, owned by guvfx_erasure,
+--    --       EXECUTE granted to guvfx_erasure_exec only (no PUBLIC/app), tables owned by guvfx_schema_owner, app
+--    --       DELETE/TRUNCATE revoked, and the expected version/checksum marker — any mismatch => NOT READY.
 --
---    CREATE FUNCTION bi_governed_erase_owner(p_owner_id bigint, p_request_id bigint, p_caller text)
---      RETURNS jsonb
---      LANGUAGE plpgsql
---      SECURITY DEFINER
---      SET search_path = pg_catalog, public
---    AS $fn$
---    DECLARE ... BEGIN
---      -- owner-scoped deletes (fully qualified): withdrawals, observations, events;
---      -- candidate blobs = UNION of owner event + observation evidence refs (finding 5);
---      -- delete a blob row ONLY when no event/observation reference remains; INSERT a DeletionTask
---      --   (EVIDENCE_FILE, storage_key, PENDING) for each (finding 3/4 — files removed post-commit by the worker);
---      -- INSERT DeletionTask (CREDENTIAL_FILE, credential_ref, PENDING) per mailbox, then delete mailboxes;
---      -- ANONYMISE the subject's audit rows (email/subject_user/ip/user_agent/identifying JSON) — finding 8;
---      -- record p_caller + p_request_id; RETURN counts (no content).
---    END; $fn$;
---    ALTER FUNCTION bi_governed_erase_owner(bigint, bigint, text) OWNER TO guvfx_erasure;
---    REVOKE ALL ON FUNCTION bi_governed_erase_owner(bigint, bigint, text) FROM PUBLIC;
---    GRANT EXECUTE ON FUNCTION bi_governed_erase_owner(bigint, bigint, text) TO <APPLICATION_ROLE>;
---
--- 4) Confirm the ordinary application role is NOT a member of guvfx_erasure (it must not be):
---    SELECT pg_has_role('<APPLICATION_ROLE>', 'guvfx_erasure', 'MEMBER');  -- must be false
+-- ROLLBACK (rehearsal only): reverse ownership (ALTER ... OWNER TO <APPLICATION_ROLE>), re-GRANT, DROP the
+-- procedure, and DROP the created roles (REASSIGN OWNED / DROP OWNED first). Document the exact reverse in the
+-- deploy runbook before any production consideration (which remains PROHIBITED here).
