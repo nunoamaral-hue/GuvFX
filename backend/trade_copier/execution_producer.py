@@ -264,3 +264,177 @@ def produce_pending(*, limit: int = 200) -> dict:
         except Exception as e:  # noqa: BLE001
             logger.exception("copier produce_pending error on replication %s: %s", rep.id, e)
     return {"enabled": True, "armed": copier_execute_demo_armed(), "considered": considered, "produced": produced}
+
+
+# =============================================================================
+# Full-CLOSE producer (ADR-0052, Workstream B increment 1) — DEMO-only, SHADOW-by-default.
+# Master FULL_CLOSE -> follower FULL CLOSE of the VERIFIED copier-owned follower ticket. Never by symbol.
+# =============================================================================
+
+def _matched_open_for_close(close_replication: CopierReplication) -> CopierReplication | None:
+    """The reconciled OPEN intent whose follower position this CLOSE targets.
+
+    Resolved by the master POSITION identity (same master, same master position_ticket, same follower),
+    NEVER by symbol. Requires a MATCHED reconciliation and a concrete ``follower_ticket`` — an
+    unreconciled / AMBIGUOUS / missing OPEN yields None and the CLOSE fails closed."""
+    from trade_copier.reconcile import MATCHED
+    ev = close_replication.master_event
+    return (CopierReplication.objects
+            .filter(follower_id=close_replication.follower_id, requested_op="OPEN",
+                    reconciliation_status=MATCHED, follower_ticket__isnull=False,
+                    master_event__master_id=ev.master_id,
+                    master_event__position_ticket=ev.position_ticket)
+            .order_by("-id").first())
+
+
+def _close_already_targets(acct_id: int, follower_ticket: int) -> bool:
+    """A non-terminal CLOSE_TRADE already targets this (account, ticket) -> don't duplicate (idempotent).
+
+    Account-scoped: MT5 position tickets are unique per account, not globally."""
+    return ExecutionJob.objects.filter(
+        job_type=ExecutionJob.JobType.CLOSE_TRADE,
+        status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),
+        account_id=acct_id, payload__ticket=follower_ticket,
+    ).exists()
+
+
+def admit_close(replication: CopierReplication) -> tuple[bool, int, str]:
+    """Fail-closed admission for producing a DEMO full CLOSE. Returns ``(ok, follower_ticket, reason)``.
+
+    Safe to call before AND inside the lock. A CLOSE requires a VERIFIED copier-owned follower ticket;
+    there is no symbol fallback."""
+    if replication.execution_job_id is not None:
+        return False, 0, "already_produced"
+    if replication.status != ReplicationStatus.SHADOW_RECORDED:
+        return False, 0, "not_shadow_intent"
+    if replication.requested_op != "CLOSE":
+        return False, 0, "op_not_close"
+    follower = replication.follower
+    if not follower.enabled:
+        return False, 0, "follower_disabled"
+
+    acct = follower.follower_account
+    try:
+        from trading.account_policy import is_demo_environment
+        if not is_demo_environment(acct):
+            return False, 0, "follower_not_demo"
+    except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
+        return False, 0, "environment_unresolved"
+    if not getattr(acct, "is_active", False):
+        return False, 0, "account_inactive"
+
+    ok, reason = validate_follower_binding(follower)   # cross-user/self-follow/binding, defense in depth
+    if not ok:
+        return False, 0, reason
+
+    # The verified copier-owned follower ticket — the ONLY thing a CLOSE may act on.
+    open_repl = _matched_open_for_close(replication)
+    if open_repl is None or open_repl.follower_ticket is None:
+        return False, 0, "no_verified_follower_ticket"
+    ticket = int(open_repl.follower_ticket)
+
+    if _close_already_targets(acct.id, ticket):
+        return False, 0, "close_already_in_flight"
+    return True, ticket, "ok"
+
+
+def _close_payload(replication, ticket, is_demo, execution_mode) -> dict:
+    event = replication.master_event
+    return {
+        "symbol": replication.follower_symbol or event.symbol,
+        "ticket": ticket,                                  # the VERIFIED follower position — never by symbol
+        "is_demo": is_demo,
+        "execution_mode": execution_mode,                  # 'SHADOW' is recorded intent only (no job)
+        "comment": f"CPYC{replication.id}",                # copier close provenance
+        "signal_source": "copier",
+        "reason": "copier_master_full_close",
+        "copier_replication_id": replication.id,
+        "copier_open_replication_id": None,                # filled under the lock from the matched OPEN
+    }
+
+
+def produce_close_one(replication: CopierReplication) -> dict:
+    """Produce (at most) one CLOSE for a single FULL_CLOSE intent. Gated + idempotent + fail-closed.
+
+    SHADOW (not armed): record the decision on the replication row (``SHADOW_JOB_RECORDED``, intended
+    ``follower_ticket``) and create NO ExecutionJob. Armed DEMO: create one ``CLOSE_TRADE`` job targeting
+    the verified follower ticket and set ``EXECUTION_REQUESTED``. All admission is re-run under the lock."""
+    if not copier_execute_enabled():
+        return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+
+    ok, _ticket, reason = admit_close(replication)        # cheap preflight (re-checked under the lock)
+    if not ok:
+        return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+    armed = copier_execute_demo_armed()
+    mode = "DEMO" if armed else "SHADOW"
+
+    try:
+        with transaction.atomic():
+            locked = (CopierReplication.objects
+                      .select_for_update()
+                      .select_related("follower", "master_event")
+                      .get(pk=replication.pk))
+            if not copier_execute_enabled():
+                return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+            # Re-read + lock the follower row so a disable/rebind committed mid-flight is seen (fail closed).
+            fresh_follower = (CopierFollower.objects
+                              .select_for_update(of=("self",))
+                              .select_related("follower_account", "follower_account__broker_server",
+                                              "master__trading_account")
+                              .get(pk=locked.follower_id))
+            locked.follower = fresh_follower
+            ok, ticket, reason = admit_close(locked)
+            if not ok:
+                return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            open_repl = _matched_open_for_close(locked)
+            if not armed:
+                # SHADOW: no broker contact. Record the intended action on the row only (ADR-0052).
+                locked.follower_ticket = ticket
+                locked.status = ReplicationStatus.SHADOW_JOB_RECORDED
+                locked.reconciliation_status = (open_repl.reconciliation_status if open_repl else "")
+                locked.save(update_fields=["follower_ticket", "status", "reconciliation_status", "updated_at"])
+                return {"replication_id": replication.id, "produced": True, "job_id": None,
+                        "armed": False, "follower_ticket": ticket,
+                        "status": ReplicationStatus.SHADOW_JOB_RECORDED}
+
+            acct = locked.follower.follower_account
+            payload = _close_payload(locked, ticket, is_demo=True, execution_mode=mode)
+            payload["copier_open_replication_id"] = open_repl.id if open_repl else None
+            job = ExecutionJob.objects.create(
+                account=acct, job_type=ExecutionJob.JobType.CLOSE_TRADE,
+                payload=payload, hosted_idempotency_key=f"copier-close:{locked.pk}")
+            locked.execution_job = job
+            locked.follower_ticket = ticket
+            locked.status = ReplicationStatus.EXECUTION_REQUESTED
+            locked.save(update_fields=["execution_job", "follower_ticket", "status", "updated_at"])
+    except Exception as e:  # noqa: BLE001 — an inherited ExecutionJob.save() gate (or any error) must not
+        # sink the batch; the intent is left unpromoted (the atomic rolled back, no partial mutation).
+        logger.warning("copier close blocked for replication %s: %s", replication.id, type(e).__name__)
+        return {"replication_id": replication.id, "produced": False, "reason": f"gate:{type(e).__name__}"}
+
+    return {"replication_id": replication.id, "produced": True, "job_id": job.id,
+            "job_type": ExecutionJob.JobType.CLOSE_TRADE, "armed": True, "follower_ticket": ticket,
+            "status": ReplicationStatus.EXECUTION_REQUESTED}
+
+
+def produce_pending_closes(*, limit: int = 200) -> dict:
+    """Produce CLOSEs for pending SHADOW_RECORDED FULL_CLOSE intents on enabled followers. Gated + fail-closed."""
+    if not copier_execute_enabled():
+        return {"enabled": False, "produced": 0, "considered": 0}
+    qs = (CopierReplication.objects
+          .filter(status=ReplicationStatus.SHADOW_RECORDED, execution_job__isnull=True,
+                  requested_op="CLOSE", follower__enabled=True)
+          .select_related("follower", "follower__follower_account", "master_event")
+          .order_by("id")[:limit])
+    produced = 0
+    considered = 0
+    for rep in qs:
+        considered += 1
+        try:
+            if produce_close_one(rep).get("produced"):
+                produced += 1
+        except Exception as e:  # noqa: BLE001
+            logger.exception("copier produce_pending_closes error on replication %s: %s", rep.id, e)
+    return {"enabled": True, "armed": copier_execute_demo_armed(), "considered": considered, "produced": produced}
