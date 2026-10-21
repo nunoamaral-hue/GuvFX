@@ -12,7 +12,10 @@ Guard -> the test that FAILS if that guard is removed:
   executable-status gate (APPROVED)      -> test_non_executable_status_blocks, test_planned_but_unapproved_blocks
   verified identity                      -> test_unverified_identity_blocks
   two-person approval (approver!=req)    -> test_self_approval_blocked, test_approver_equals_requester_blocks_exec
+  two-person needs a recorded requester  -> test_approve_blocked_when_no_requester, test_execute_blocked_when_no_requester
+  no verifier overwrite after approval   -> test_verify_blocked_after_approval
   approval validity                      -> test_revoked_approval_blocks, test_expired_approval_blocks
+  outbox dead-letters a poison task      -> test_dead_letter_after_max_attempts
   legal/security hold                    -> test_legal_hold_blocks
   confirmation token (TOCTOU)            -> test_wrong_token_blocks
   credential-ref drift invalidates token -> test_credential_ref_drift_invalidates_token
@@ -191,6 +194,30 @@ class ControlledErasureControlPlaneTests(TestCase):
         with self.assertRaises(ErasureRefused):
             approve_request(req, self.approver)
 
+    def test_approve_blocked_when_no_requester(self):
+        """Round-3 adversarial HIGH: a request with NO recorded requester cannot be approved — the two-person
+        rule would otherwise be vacuous (approver != None short-circuits)."""
+        req = ErasureRequest.objects.create(
+            subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=None,
+            identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
+            plan={"x": 1}, confirm_token="t", status=ErasureRequest.Status.PLANNED)
+        with self.assertRaises(ErasureRefused):
+            approve_request(req, self.approver)
+        req.refresh_from_db()
+        self.assertEqual(req.status, ErasureRequest.Status.PLANNED)   # not advanced
+
+    def test_execute_blocked_when_no_requester(self):
+        """Even a contrived APPROVED row with no requester must refuse at execute (re-checked under the lock)."""
+        req = self._approved_request(self.a, requested_by=None)
+        with self.assertRaises(ErasureRefused):
+            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+
+    def test_verify_blocked_after_approval(self):
+        """Identity verification cannot be re-recorded once the request is APPROVED (no verifier overwrite)."""
+        req = self._approved_request(self.a)
+        with self.assertRaises(ErasureRefused):
+            verify_identity(req, self.executor, "tampered")
+
     # --- validation gates on execute (all refuse; nothing deleted) --------
     def test_flag_off_blocks(self):
         req = self._approved_request(self.a)
@@ -295,7 +322,22 @@ class ControlledErasureControlPlaneTests(TestCase):
         DeletionTask.objects.create(request=req, kind=DeletionTask.Kind.EVIDENCE_FILE, target_ref="1" * 64)
         process_deletion_tasks()
         again = process_deletion_tasks()
-        self.assertEqual(again, {"completed": 0, "failed": 0})
+        self.assertEqual(again, {"completed": 0, "failed": 0, "dead": 0})
+
+    def test_dead_letter_after_max_attempts(self):
+        """A poison task (unlink always errors) is retried then DEAD-lettered; the request moves to FAILED (not
+        COMPLETED and not a perpetual retry storm)."""
+        req = self._approved_request(self.a, status=ErasureRequest.Status.EXECUTED)
+        # A credential_ref containing '/' makes credential_store._path_for raise every attempt (poison task).
+        task = DeletionTask.objects.create(request=req, kind=DeletionTask.Kind.CREDENTIAL_FILE, target_ref="bad/ref")
+        for _ in range(5):
+            process_deletion_tasks()
+        task.refresh_from_db(); req.refresh_from_db()
+        self.assertEqual(task.status, DeletionTask.Status.DEAD)
+        self.assertGreaterEqual(task.attempts, 5)
+        self.assertEqual(req.status, ErasureRequest.Status.FAILED)       # needs intervention, never COMPLETED
+        # A further run does not resurrect the dead task.
+        self.assertEqual(process_deletion_tasks(), {"completed": 0, "failed": 0, "dead": 0})
 
     # --- Finding 2 negative controls: role-enforced immutability, GUC cannot bypass ---
     def test_ordinary_delete_blocked(self):

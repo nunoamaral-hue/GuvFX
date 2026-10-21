@@ -65,9 +65,13 @@ class Command(BaseCommand):
         if opts["create"]:
             if not opts["owner"]:
                 raise CommandError("--create requires --owner")
+            if not opts.get("operator"):
+                # The requester MUST be recorded or the two-person rule cannot be enforced at approval (round-3
+                # adversarial HIGH): a NULL requester would make the approver!=requester check vacuous.
+                raise CommandError("--create requires --operator <requester staff id> (two-person separation of duties)")
             if not User.objects.filter(pk=opts["owner"]).exists():
                 raise CommandError(f"no such user id={opts['owner']}")
-            operator = self._user_or_error(User, opts["operator"], "operator") if opts.get("operator") else None
+            operator = self._user_or_error(User, opts["operator"], "operator")
             req = ErasureRequest.objects.create(
                 subject_user_id=opts["owner"], subject_user_id_snapshot=opts["owner"],
                 requested_by=operator, reason=opts["reason"][:200],

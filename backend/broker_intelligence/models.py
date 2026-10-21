@@ -922,12 +922,13 @@ class ErasureRequest(models.Model):
     executed_at = models.DateTimeField(null=True, blank=True)
 
     # --- Two-person separation-of-duties lifecycle (ADR-0054 Finding 7) -------------------------------------
-    # Four DISTINCT roles are recorded with timestamps so no single invocation can create + verify + approve +
-    # execute. ``requested_by`` (above) is the operator who raised the request. The VERIFIER attests the
-    # data-subject's identity was checked out-of-band (method category only, never ID documents). The APPROVER
-    # independently authorises execution and MUST differ from the requester (enforced in the control plane). The
-    # EXECUTOR is recorded at execution. Approval can carry an expiry and be revoked; a revoked/expired approval
-    # fails closed. These are operational metadata — no message content.
+    # Four roles are RECORDED with timestamps. The ENFORCED two-person rule is: the APPROVER must differ from the
+    # ``requested_by`` requester, and a request with no recorded requester cannot be approved or executed (both
+    # checked in the control plane). ``requested_by`` (above) is the operator who raised the request. The VERIFIER
+    # attests the data-subject's identity was checked out-of-band (method category only, never ID documents) and
+    # can only be set before approval. The EXECUTOR is recorded by the provisioned backend at execution (execute
+    # is fail-closed in this build, so it is unset here). Approval carries an expiry and can be revoked; a
+    # revoked/expired approval fails closed. These are operational metadata — no message content.
     verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name="+")
     verified_at = models.DateTimeField(null=True, blank=True)
@@ -963,6 +964,7 @@ class DeletionTask(models.Model):
         PENDING = "PENDING", "Pending (file not yet removed)"
         COMPLETED = "COMPLETED", "Completed (file removed or already absent)"
         FAILED = "FAILED", "Failed (retryable)"
+        DEAD = "DEAD", "Dead-lettered (retry cap reached; needs operator intervention)"
 
     request = models.ForeignKey(ErasureRequest, on_delete=models.PROTECT, related_name="deletion_tasks")
     kind = models.CharField(max_length=20, choices=Kind.choices)

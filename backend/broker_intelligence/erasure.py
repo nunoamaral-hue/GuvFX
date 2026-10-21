@@ -42,6 +42,7 @@ _PROC_NAME = "bi_governed_erase_owner"
 _PROC_SIG = "bigint, bytea"                 # pg_get_function_identity_arguments form (request id, confirmation)
 _EVIDENCE_TABLES = ("broker_intelligence_evidenceblob", "broker_intelligence_brokerevent")
 _ADVISORY_NS = 0x6775                        # fixed namespace key for pg_advisory_xact_lock(ns, owner_id)
+_MAX_DELETION_ATTEMPTS = 5                   # a file-deletion task that fails this many times is dead-lettered
 
 
 class ErasureRefused(Exception):
@@ -208,6 +209,12 @@ def verify_identity(request: ErasureRequest, verifier, method: str) -> ErasureRe
     """Record out-of-band data-subject identity verification (lifecycle step 1; Finding 7). Stores the verifier,
     timestamp and a METHOD CATEGORY only (never ID documents). Separate invocation from approve/execute."""
     req = ErasureRequest.objects.select_for_update().get(pk=request.pk)
+    # Finding (round-3 adversarial): verification is only meaningful before approval; refuse to overwrite the
+    # recorded verifier once a plan has been approved or executed.
+    if req.status not in (ErasureRequest.Status.REQUESTED, ErasureRequest.Status.PLANNED):
+        raise ErasureRefused(f"cannot verify identity once request status is '{req.status}'")
+    if getattr(verifier, "pk", None) is None:
+        raise ErasureRefused("a verifier identity is required")
     req.identity_verified = True
     req.verified_by = verifier
     req.verified_at = timezone.now()
@@ -230,7 +237,11 @@ def approve_request(request: ErasureRequest, approver, *, approval_ttl_minutes: 
     approver_id = getattr(approver, "pk", None)
     if approver_id is None:
         raise ErasureRefused("an approver identity is required")
-    if req.requested_by_id is not None and approver_id == req.requested_by_id:
+    if req.requested_by_id is None:
+        # Finding (round-3 adversarial HIGH): without a recorded requester the two-person rule cannot be
+        # enforced, so approval must fail closed rather than vacuously pass.
+        raise ErasureRefused("two-person rule: no requester recorded; cannot enforce separation of duties")
+    if approver_id == req.requested_by_id:
         raise ErasureRefused("two-person rule: the approver must differ from the requester")
     now = timezone.now()
     req.approved_by = approver
@@ -259,7 +270,10 @@ def assert_erasure_allowed(request: ErasureRequest) -> int:
         raise ErasureRefused("the approval for this request has been revoked")
     if request.approval_expires_at is not None and request.approval_expires_at < timezone.now():
         raise ErasureRefused("the approval for this request has expired")
-    if request.requested_by_id is not None and request.approved_by_id == request.requested_by_id:
+    if request.requested_by_id is None:
+        # Finding (round-3 adversarial HIGH): a NULL requester makes the two-person check vacuous — fail closed.
+        raise ErasureRefused("two-person rule: no requester recorded; cannot enforce separation of duties")
+    if request.approved_by_id == request.requested_by_id:
         raise ErasureRefused("two-person rule violated: approver equals requester")
     owner_id = request.subject_user_id_snapshot
     if not owner_id:
@@ -302,15 +316,18 @@ def execute_owner_erasure(request: ErasureRequest, confirm_token: str, executor=
 def process_deletion_tasks(limit: int = 100) -> dict:
     """Idempotent FILE-deletion OUTBOX worker (ADR-0054 Findings 3/4). Runs AFTER the governed transaction has
     committed its row deletes + enqueued tasks. Drains PENDING/FAILED ``DeletionTask`` rows, removing each target
-    file: a missing/already-removed file is SUCCESS (idempotent); a removal error marks the task FAILED (retryable,
-    ``attempts`` incremented) and is retried on the next run. When a request's tasks are all COMPLETED and it is
-    EXECUTED, the request is advanced to COMPLETED. ``SELECT ... FOR UPDATE SKIP LOCKED`` lets concurrent workers
-    run without double-processing. In this build execute is fail-closed, so there are normally no tasks (no-op)."""
+    file: a missing/already-removed file is SUCCESS (idempotent); a removal error marks the task FAILED (retryable)
+    until ``_MAX_DELETION_ATTEMPTS``, after which it is DEAD-lettered (no retry storm). An EXECUTED request whose
+    outbox is fully drained is advanced to COMPLETED; if any task dead-lettered it is moved to FAILED instead
+    (a real file could not be removed, so erasure is incomplete — operator intervention). A crash after commit
+    leaves a durable PENDING task (not an orphan file). ``SELECT ... FOR UPDATE SKIP LOCKED`` lets concurrent
+    workers process disjoint tasks; the request row is locked BEFORE the drained-check so the last committer
+    observes the true task state (no completion race). In this build execute is fail-closed → normally a no-op."""
     from .credential_store import delete_token
     from .evidence import EvidenceStore
 
     store = EvidenceStore()
-    processed = {"completed": 0, "failed": 0}
+    processed = {"completed": 0, "failed": 0, "dead": 0}
     touched_request_ids: set[int] = set()
 
     with transaction.atomic():
@@ -322,33 +339,45 @@ def process_deletion_tasks(limit: int = 100) -> dict:
             task.attempts += 1
             try:
                 if task.kind == DeletionTask.Kind.EVIDENCE_FILE:
-                    store.delete_file_by_sha256(task.target_ref)       # missing => False, never raises
+                    removed = store.delete_file_by_sha256(task.target_ref)   # missing => False, never raises
                 elif task.kind == DeletionTask.Kind.CREDENTIAL_FILE:
-                    delete_token(task.target_ref)                      # missing => False, never raises
+                    removed = delete_token(task.target_ref)                  # missing => False (bad ref => raises)
                 else:
                     raise ValueError(f"unknown deletion task kind: {task.kind}")
                 task.status = DeletionTask.Status.COMPLETED
                 task.completed_at = timezone.now()
-                task.last_error = ""
+                task.last_error = "" if removed else "file already absent at processing time"
                 processed["completed"] += 1
             except Exception as exc:  # noqa: BLE001 — a failed unlink is retryable, never fatal to the worker.
-                task.status = DeletionTask.Status.FAILED
+                if task.attempts >= _MAX_DELETION_ATTEMPTS:
+                    task.status = DeletionTask.Status.DEAD
+                    processed["dead"] += 1
+                else:
+                    task.status = DeletionTask.Status.FAILED
+                    processed["failed"] += 1
                 task.last_error = str(exc)[:300]
-                processed["failed"] += 1
-                logger.warning("deletion task %s failed (attempt %s): %s", task.id, task.attempts, task.last_error)
+                logger.warning("deletion task %s -> %s (attempt %s): %s",
+                               task.id, task.status, task.attempts, task.last_error)
             task.save(update_fields=["status", "attempts", "completed_at", "last_error"])
             touched_request_ids.add(task.request_id)
 
-        # Advance any EXECUTED request whose outbox is fully drained to COMPLETED.
+        # Advance/flag each touched EXECUTED request. Lock the request row BEFORE reading the drained state so two
+        # concurrent workers serialize on it and whichever commits last sees every task (round-3 adversarial MED).
         for req_id in touched_request_ids:
-            remaining = DeletionTask.objects.filter(
-                request_id=req_id,
-                status__in=[DeletionTask.Status.PENDING, DeletionTask.Status.FAILED]).exists()
-            if not remaining:
-                req = ErasureRequest.objects.select_for_update().get(pk=req_id)
-                if req.status == ErasureRequest.Status.EXECUTED:
-                    req.status = ErasureRequest.Status.COMPLETED
-                    req.save(update_fields=["status"])
+            req = ErasureRequest.objects.select_for_update().get(pk=req_id)
+            if req.status != ErasureRequest.Status.EXECUTED:
+                continue
+            if DeletionTask.objects.filter(
+                    request_id=req_id,
+                    status__in=[DeletionTask.Status.PENDING, DeletionTask.Status.FAILED]).exists():
+                continue   # still retryable work to do
+            if DeletionTask.objects.filter(request_id=req_id, status=DeletionTask.Status.DEAD).exists():
+                req.status = ErasureRequest.Status.FAILED
+                req.error = "one or more file deletions dead-lettered; operator intervention required"[:300]
+                req.save(update_fields=["status", "error"])
+            else:
+                req.status = ErasureRequest.Status.COMPLETED
+                req.save(update_fields=["status"])
     return processed
 
 

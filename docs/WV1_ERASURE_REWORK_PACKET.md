@@ -3,9 +3,32 @@
 - **Date:** 2026-10-21 · **PR #543** (branch `feat/wv1-controlled-erasure`). **A governed review packet, NOT a
   merge request.** No ADR ratification, no merge, no production migration/erasure/deploy, no Console change.
   MT5 Copy Trading untouched.
-- **Verified this round (local, PostgreSQL):** `broker_intelligence` full suite **678 pass**; erasure +
-  governance **28 pass**; no migration drift in `broker_intelligence`/`core`; the erasure CLI parses.
+- **Verified this round (local, PostgreSQL):** `broker_intelligence` full suite pass; erasure + governance
+  **32 pass**; no migration drift in `broker_intelligence`/`core`; the erasure CLI parses.
 - **Standing boundary unchanged:** nothing provisioned, migrated, merged, flag-armed, or executed in production.
+
+## Independent adversarial review (round 3) + fixes
+A fresh independent reviewer tried to REFUTE the claims. It confirmed the headline claim — **no destructive
+deletion can occur in this build** (double-guarded: readiness gate + an unconditional refuse at the end of
+`execute_owner_erasure`; no row-deletion code exists in the module) — and found defects, now fixed:
+- **HIGH — two-person SoD vacuous when `requested_by` is NULL.** Both `approve_request` and
+  `assert_erasure_allowed` guarded the approver≠requester check with `requested_by_id is not None`, so a NULL
+  requester skipped it; `--operator` was optional. **Fixed:** both gates refuse when no requester is recorded;
+  `--create` now requires `--operator`. Tests: `test_approve_blocked_when_no_requester`,
+  `test_execute_blocked_when_no_requester`.
+- **MED — outbox completion race.** The drained-check read was not serialized by the request-row lock, so two
+  workers draining the last tasks could each skip completion, wedging the request in EXECUTED. **Fixed:** the
+  worker locks the `ErasureRequest` row BEFORE reading the drained state, so the last committer sees every task.
+- **MED — no dead-letter.** A poison task retried forever and blocked completion. **Fixed:** a retry cap
+  (`_MAX_DELETION_ATTEMPTS`) dead-letters the task (new `DeletionTask.DEAD`); a request with a DEAD task moves to
+  FAILED (operator intervention), never COMPLETED. Test: `test_dead_letter_after_max_attempts`.
+- **LOW — overclaims.** `executed_by` is not recorded in this (fail-closed) build and `verify_identity` had no
+  status guard. **Fixed:** docstrings corrected to what is enforced; `verify_identity` refuses once APPROVED/
+  EXECUTED (`test_verify_blocked_after_approval`).
+The reviewer also independently confirmed SOLID: readiness-probe transaction safety (no query raises in an
+unprovisioned DB; execute runs no further query after not-ready), token/TOCTOU completeness (only two PROTECT
+referencers to `EvidenceBlob`, both counted; credential-ref drift covered), the provisioning-SQL role model, and
+that the 32 tests are discriminating (not vacuous).
 
 ## What changed since round 2 (the PD "NO-GO FOR PROVISIONING" disposition)
 The round-2 build fixed the GUC bypass (role-enforced triggers, fail-closed) but left eight blocking items. This
