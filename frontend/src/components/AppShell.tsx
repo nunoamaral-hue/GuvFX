@@ -94,6 +94,7 @@ const navGroups: NavGroup[] = [
     defaultOpen: false,
     items: [
       { labelKey: "nav.overview", href: "/dashboard" },
+      { labelKey: "nav.withdrawalIntelligence", href: "/withdrawal-intelligence" },
       { labelKey: "nav.performance", href: "/dashboard/performance", soon: true },
       { labelKey: "nav.strategyMetrics", href: "/analytics/strategy-metrics" },
       { labelKey: "nav.strategyLab", href: "/analytics/strategy-lab" },
