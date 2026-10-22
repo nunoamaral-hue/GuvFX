@@ -4,6 +4,7 @@ Discriminating negative controls: an SL REMOVAL or WIDENING is NEVER auto-replic
 silently); a tightening SL / any TP change IS producible; a MODIFY is never targeted by symbol; the kill
 switch blocks an OPEN but NOT a (risk-reducing) MODIFY."""
 from decimal import Decimal
+from unittest import mock
 
 from django.test import override_settings
 from django.utils import timezone
@@ -159,6 +160,20 @@ class ProduceModifyTests(ModifyFixture):
         self.assertFalse(out["produced"])
         self.assertEqual(out["reason"], "modify_already_in_flight")
         self.assertEqual(ExecutionJob.objects.filter(job_type=ExecutionJob.JobType.MODIFY_POSITION).count(), 1)
+
+    @override_settings(**ARMED)
+    def test_stale_arming_flip_records_shadow_no_job(self):
+        """Cross-producer hardening — arming TRUE at preflight, FALSE at the in-lock decision => SHADOW, no job."""
+        f, rep = self._ready_modify()
+        with mock.patch("trade_copier.execution_producer.copier_execute_demo_armed",
+                        side_effect=[True, False]) as m:
+            out = produce_modify_one(rep)
+        self.assertEqual(m.call_count, 2)
+        self.assertTrue(out["produced"], out)
+        self.assertIsNone(out["job_id"])
+        self.assertEqual(ExecutionJob.objects.count(), 0)
+        rep.refresh_from_db()
+        self.assertEqual(rep.status, ReplicationStatus.SHADOW_JOB_RECORDED)
 
     @override_settings(**ARMED)
     def test_kill_switch_does_not_block_modify(self):

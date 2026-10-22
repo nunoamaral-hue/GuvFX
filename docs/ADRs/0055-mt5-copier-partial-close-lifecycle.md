@@ -145,10 +145,14 @@ merged producers; NOT changed in this PR to avoid scope-creep into merged code.
   recorded, NO blind retry), **`PCLOSE_TICKET_GONE` (ticket absent after a PARTIAL — a DIVERGENCE/operator
   exception, NEVER a silently-approved full close)**, `PCLOSE_RECON_UNAVAIL` (read refused — non-terminal,
   re-read later, never retry the send).
-- **NOT wired (required before DEMO certification):** the consumer that dispatches ONLY `PARTIAL_CLOSE_TRADE`
-  to the bridge primitive, and the automatic result→replication state transition driving `reconcile_partial_close`
-  after each send. No deployed worker claims `PARTIAL_CLOSE_TRADE` today. Until that consumer is built + armed,
-  no partial close reaches a broker.
+- **NOT wired (as of ADR-0055):** the consumer that dispatches ONLY `PARTIAL_CLOSE_TRADE` to the bridge
+  primitive, and the automatic result→replication state transition driving `reconcile_partial_close` after
+  each send.
+  - **UPDATE (superseded by [ADR-0056](0056-mt5-copier-partial-close-demo-consumer.md), Accepted 2026-10-22):**
+    the dedicated DEMO consumer (claim → authorize-send → single bridge call → complete), terminal job
+    bookkeeping, and the crash-safe read-only reconciliation sweep are now **built + merged DARK**. It still
+    requires a separate Sponsor grant (`partial_close_worker`) + `COPIER_EXECUTE_DEMO_ARMED` + the host worker
+    (`COPIER_PCLOSE_WORKER_ENABLED`, unprovisioned by default) before any partial close reaches a broker.
 
 ## Status / approval
 **Accepted for DARK engineering (Sponsor-ratified 2026-10-22.)** Acceptance covers the DARK design + foundations

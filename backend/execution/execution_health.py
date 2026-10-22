@@ -840,4 +840,12 @@ def sweep_execution_health(*, limit: int = 500) -> dict:
         result.update(detect_saturated_concurrency_gates(now))
     except Exception:  # pragma: no cover - defensive; alert-only must not break the sweep
         logger.exception("execution_health: concurrency-saturation detector failed")
+    # ADR-0056 F4 — recover partial-close jobs whose dedicated worker died after authorize-send/order_send.
+    # READ-ONLY authoritative re-read; never re-sends/requeues; INERT while the copier is DARK. Local import +
+    # own try/except so a copier-side error (or import) can never break the core execution-health sweep.
+    try:
+        from trade_copier.consumer import sweep_partial_close_reconcile
+        result["copier_pclose_reconcile"] = sweep_partial_close_reconcile(limit=limit)
+    except Exception:  # pragma: no cover - defensive; copier recovery must not break the sweep
+        logger.exception("execution_health: copier partial-close reconcile sweep failed")
     return result
