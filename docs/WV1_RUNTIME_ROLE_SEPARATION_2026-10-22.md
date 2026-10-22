@@ -96,11 +96,21 @@ STOP/GO + evidence + abort + rollback per stage as in the rollback table; T0 = s
 - Disk `/` at 90% (standing); single logical recovery point (re-take in-window); #552 + this PR not yet deployed.
 - SCRAM-verifier custody: verifiers are safe in SQL/logs, but the cleartext must come from the secret store.
 
-## 1 / 8 / 12 / 13 (filled after validation)
-- **1. New PR + head SHA:** PR #<fill> / head `<fill>` (branch `fix/runtime-role-separation`, base `feec863d`).
-- **8. Adversarial review:** `<fill>`.
-- **12. Production GO/NO-GO:** **NO-GO** — design + disposable rehearsal complete and proven; production awaits
-  PD review of this PR and separate, per-stage window authorization.
-- **13. Exact next Sponsor authorization:** review + (on GO) governed DARK merge of PR
-  `fix/runtime-role-separation`; **authorize no production change.** The subsequent first production-changing
-  action would be stage 1 (fresh recovery point) then stage 4 (`separate_runtime_role.sql`), each a separate GO.
+## 1 / 8 / 12 / 13
+- **1. New PR + head SHA:** **PR #554**, head **`3401062a`** (branch `fix/runtime-role-separation`, base
+  `feec863d`). HELD for Programme Director review — not self-merged (stopped at the governed review gate).
+- **8. Adversarial review:** independent 3-lens review (PostgreSQL privilege-escalation + ownership + holistic)
+  + synthesis — **no P0/P1**. Three P2/none items, two fixed before this head: (a) aggregates handled via
+  `ALTER AGGREGATE` (was `ALTER FUNCTION`; fail-closed, no aggregate in prod); (b) a C4 re-run guard added to
+  `separate_runtime_role.sql` (refuse if the governed proc already exists). The reviewer confirmed: enumeration
+  stays within the approved non-system schema and excludes extension/system objects; owned/identity sequences
+  ride their table; no blanket `REASSIGN OWNED`; the topology guard fails closed; `guvfx` is never demoted and a
+  superuser is always retained; `guvfx_app`/`guvfx_migrate` cannot escalate directly or transitively; the SCRAM
+  path has no cleartext/injection. Re-rehearsed after the fixes (happy path green; re-run guard REFUSES).
+- **12. Production GO/NO-GO:** **NO-GO** — design + faithful disposable rehearsal complete and proven, exact-head
+  CI green, adversarial review clean. Production awaits PD review of PR #554 and separate, per-stage window
+  authorization.
+- **13. Exact next Sponsor authorization:** review and (on GO) governed DARK merge of PR #554
+  (`fix/runtime-role-separation`); **authorize no production change.** The subsequent first production-changing
+  action would be stage 1 (fresh recovery point, read-only) then stage 4 (`separate_runtime_role.sql`), each a
+  separate Sponsor GO.
