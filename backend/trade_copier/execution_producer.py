@@ -831,6 +831,10 @@ def produce_partial_close_one(replication: CopierReplication, *, fetch=None) -> 
             acct = locked.follower.follower_account
             job = ExecutionJob.objects.create(
                 account=acct, job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE,
+                # ADR-0056 HIGH-1: snapshot the account's node so the dedicated consumer's node-authorization
+                # gate is satisfiable (every other seam snapshots it; the partial-close producer previously
+                # omitted it, leaving the job NULL-node and unroutable to a node-aware worker).
+                terminal_node_id=getattr(acct, "terminal_node_id", None),
                 payload=_partial_close_payload(locked, ticket, reduction, remaining, is_demo=True,
                                                execution_mode=mode),
                 hosted_idempotency_key=f"copier-pclose:{locked.pk}")

@@ -102,6 +102,47 @@ permission grant; the authorized node(s); the exact HEDGING **DEMO** master + fo
 the symbols; max position size + max aggregate exposure; the arming window; abort thresholds; the kill-switch
 operator. No account rehearsal, arming, deployment or migration occurs without that written approval.
 
+## Adversarial-review corrections (2026-10-22) — the endpoint implementation MUST close these
+
+An independent adversarial review of this design surfaced the following; the design is updated accordingly and
+the endpoint implementation is bound by them.
+
+- **HIGH-1 — node authorization must be satisfiable.** The partial-close producer previously emitted the job
+  with a NULL `terminal_node`, so a hosted node-authz gate (`job.terminal_node_id == account.terminal_node_id`)
+  could never match. **Fixed in this PR:** `produce_partial_close_one` now snapshots `terminal_node_id`. The
+  consumer's node-authz reuses the proven hosted entitlement (`authorize_hosted_claim` / `resolve_hosted_route`)
+  for hosted accounts; for a **legacy DEMO** follower (no hosted workspace) node-authz is not provided by that
+  helper, so the consumer MUST additionally bind the claim to the exact `account` owner + a dedicated
+  node/account allowlist (never a pass-through).
+- **HIGH-2 — least privilege must be enforced, not assumed.** A node+account-authorized `partial_close_worker`
+  could otherwise also poll the generic `next_job` and claim OPEN/CLOSE/MODIFY for its accounts (grants are
+  additive). The implementation MUST make the dedicated identity carry ONLY `partial_close_worker` with NO
+  generic-claim entitlement, AND the generic `next_job` MUST refuse an identity whose only grant is
+  `partial_close_worker` (serve it nothing) — so the dedicated worker can claim `PARTIAL_CLOSE_TRADE` only, and
+  nothing else can.
+- **HIGH-3 — no double-send on lost ACK / lease expiry.** Reaching `order_send` MUST durably take the job out
+  of every re-claimable / orphan-requeue path BEFORE the send (claim → RUNNING + lease, and
+  `PARTIAL_CLOSE_TRADE` is EXCLUDED from the RUNNING-orphan PENDING-requeue recovery). A lost ACK
+  (`PCLOSE_OUTCOME_UNKNOWN`) is resolved ONLY by an authoritative reconciliation read, never a re-dispatch;
+  re-arming after an unknown result requires a fresh governed decision.
+- **MEDIUM-4 — claim-time recheck is IN-LOCK.** The flag + arming recheck at claim occurs UNDER the claim row
+  lock (same invariant as the producer fix in this PR), before the lease is written; the pre-send bridge
+  recheck is the backstop.
+- **MEDIUM-5 — authoritative step, no default.** `reconcile_partial_close` now REQUIRES an explicit `step`
+  (the default was removed); the consumer MUST pass the follower's authoritative broker `volume_step`, never a
+  hard-coded default, so the tolerance cannot silently mis-classify a divergence as reconciled.
+- **MEDIUM-6 — CONTEST rejection is bridge-enforced.** `is_demo_environment` is binary (DEMO/LIVE) and does not
+  model CONTEST; CONTEST is caught fail-closed at the bridge (`trade_mode != 0`). The consumer relies on that
+  live `trade_mode` check for CONTEST (documented, not a consumer-side policy).
+- **MEDIUM-7 — legacy identity-pin derivation + backstop.** No shared helper derives login/server for a
+  non-hosted account (`identity_pin_for` returns `{}`). The consumer MUST derive them from the account's
+  durable binding (`account_number` + `broker_server.server_name`); safety is additionally backstopped by the
+  bridge forcing `require_identity_pin=True` and refusing the env fallback, so an omitted legacy pin fails
+  closed rather than trading under an env pin.
+- **LOW-8 — status field width.** `reconciliation_status` is `varchar(24)`; the longest new code
+  (`PCLOSE_DISPATCH_REFUSED`, 23) fits with 1 char headroom. The implementation MUST keep codes ≤24 or widen
+  the field by migration before adding longer codes.
+
 ## Status / approval
 DARK engineering design. The endpoint implementation, ADR ratification, DEMO arming, the dedicated worker
 grant, deployment and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` /

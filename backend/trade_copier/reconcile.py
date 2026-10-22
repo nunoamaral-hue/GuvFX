@@ -145,7 +145,7 @@ def read_follower_position(follower: CopierFollower, ticket: int, *, fetch=_fetc
     return True, None, "ticket_not_open"
 
 
-def reconcile_partial_close(replication: CopierReplication, intended_remaining, *, step: float = 0.01,
+def reconcile_partial_close(replication: CopierReplication, intended_remaining, *, step: float,
                             fetch=_fetch_account_positions) -> dict:
     """Post-send reconciliation for a produced partial close (ADR-0055). READ-ONLY; NO retry.
 
