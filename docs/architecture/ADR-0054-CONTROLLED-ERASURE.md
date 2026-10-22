@@ -225,10 +225,21 @@ Every element is placed in exactly one category, so no reader mistakes a design 
 - **DESIGNED but not implemented (none change the fail-closed stance):**
   - The operational-vs-security retention split for `core.AuditEvent`; record-level (vs owner-level) legal
     holds. Neither is required for owner erasure.
+- **MANDATORY PRECONDITION — least-privilege application identity (NOT merely a recommendation):** the ordinary
+  application runtime role MUST be `NOSUPERUSER`, `NOCREATEROLE`, `NOCREATEDB`, `NOBYPASSRLS`, and MUST NOT be a
+  member of — or able to `SET ROLE` to — `guvfx_erasure`, `guvfx_erasure_exec`, `guvfx_schema_owner`, or
+  `guvfx_migrate`. A superuser (or `BYPASSRLS`/`CREATEROLE`/`CREATEDB`) application role bypasses the REVOKEs
+  **and** the BEFORE-DELETE immutability triggers, making the entire erasure boundary cosmetic. This is enforced
+  in two places and fails closed: `erasure.privileged_backend_readiness()` returns NOT READY (so `execute`
+  refuses) and `ops/erasure/provision_erasure_privilege.sql` **refuses before any ownership change or procedure
+  creation** if the app role is privileged. Demotion of a currently-privileged production role to this posture is
+  a **separate, explicit production operation with its own rollback** — the provisioning script never demotes a
+  role automatically.
 - **REQUIRES PRIVILEGED PROVISIONING IN PRODUCTION (superuser, separately Sponsor-authorised):** running
   `ops/erasure/provision_erasure_privilege.sql` against production, creating the roles there, moving ownership,
-  and deploying the `guvfx_erasure_exec` credential into the governed job's environment. Until done,
-  `privileged_backend_ready()` is false in production and `execute` fails closed.
+  and deploying the `guvfx_erasure_exec` credential into the governed job's environment. Until done, **and until
+  the application role satisfies the mandatory least-privilege precondition above,** `privileged_backend_ready()`
+  is false in production and `execute` fails closed.
 - **PROHIBITED (no authorisation sought here):** merging PR #543, ratifying this ADR, running the provisioning
   or any migration against production, arming `BROKER_INTELLIGENCE_ERASURE_ENABLED`, processing any real user,
   deploying the executor credential to the web/worker runtime, and `--execute` against real data.

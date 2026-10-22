@@ -45,6 +45,7 @@ _EXECUTOR_ROLE = "guvfx_erasure_exec"       # NOLOGIN GROUP holding the sole EXE
                                             # short-lived operator LOGIN roles join it for one governed operation,
                                             # and the proc authenticates the human operator via session_user
 _SCHEMA_OWNER_ROLE = "guvfx_schema_owner"   # NOLOGIN; owns the evidence tables + ordinary trigger functions
+_MIGRATE_ROLE = "guvfx_migrate"             # LOGIN; member of the schema owner; performs schema migrations
 _EXECUTOR_ALIAS = "erasure_executor"        # Django DATABASES alias for the executor login (absent => fail-closed)
 _PROC_NAME = "bi_governed_erase_owner"
 _PROC_SCHEMA = "public"
@@ -186,7 +187,7 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                     reasons.append(f"executor session '{su}' is not a member of '{_EXECUTOR_ROLE}'")
 
             # (1) Required roles exist.
-            for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE):
+            for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE, _MIGRATE_ROLE):
                 if not _exists("SELECT 1 FROM pg_roles WHERE rolname = %s", [role]):
                     reasons.append(f"role '{role}' absent")
             roles_ok = not reasons
@@ -293,12 +294,35 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                 elif r[0] not in ("O", "A"):
                     reasons.append(f"trigger '{trg}' does not fire in an origin session (tgenabled='{r[0]}')")
 
-            # (7) App role: not a member of any privileged role; lacks DELETE/TRUNCATE on the evidence tables.
+            # (7) App role: LEAST PRIVILEGE. The ordinary runtime identity must carry NO elevated cluster
+            # attributes and must NOT be a member of — or able to SET ROLE to — any privileged role. A SUPERUSER
+            # (or BYPASSRLS / CREATEROLE / CREATEDB) application role would bypass the REVOKEs AND the
+            # BEFORE-DELETE immutability triggers entirely, making the whole erasure boundary cosmetic (P0 — the
+            # production superuser blocker). Each forbidden attribute/membership is an INDEPENDENT fail-closed
+            # reason so a probe pinpoints exactly which precondition is unmet.
+            cur.execute("SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls "
+                        "FROM pg_roles WHERE rolname = %s", [app_role])
+            attr = cur.fetchone()
+            if attr is None:
+                reasons.append(f"application role '{app_role}' not found")
+            else:
+                if attr[0]:
+                    reasons.append(f"application role '{app_role}' must be NOSUPERUSER "
+                                   "(a superuser bypasses the REVOKEs and the immutability triggers)")
+                if attr[1]:
+                    reasons.append(f"application role '{app_role}' must be NOCREATEROLE "
+                                   "(could grant itself into a privileged role)")
+                if attr[2]:
+                    reasons.append(f"application role '{app_role}' must be NOCREATEDB")
+                if attr[3]:
+                    reasons.append(f"application role '{app_role}' must be NOBYPASSRLS")
+            # Not a member of, and unable to SET ROLE to, ANY privileged role (incl. the migration role).
             if roles_ok:
-                for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE):
-                    cur.execute("SELECT pg_has_role(%s, %s, 'USAGE')", [app_role, role])
+                for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE, _MIGRATE_ROLE):
+                    cur.execute("SELECT pg_has_role(%s, %s, 'USAGE') OR pg_has_role(%s, %s, 'MEMBER')",
+                                [app_role, role, app_role, role])
                     if cur.fetchone()[0]:
-                        reasons.append(f"application role '{app_role}' must not be a member of '{role}'")
+                        reasons.append(f"application role '{app_role}' must not be a member of or able to assume '{role}'")
             for tbl in _EVIDENCE_TABLES:
                 for priv in ("DELETE", "TRUNCATE"):
                     cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, tbl, priv])

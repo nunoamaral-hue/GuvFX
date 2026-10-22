@@ -36,8 +36,9 @@ outcome; a crash leaves a durable PENDING task; audit PII is anonymised in-proce
 import shutil
 import tempfile
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import connection, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -475,3 +476,102 @@ class ControlledErasureControlPlaneTests(TestCase):
     # which moves object ownership to guvfx_schema_owner + REVOKEs DELETE/TRUNCATE from the app role — not by this
     # app-role migration. A trigger-level TRUNCATE block was rejected: an owner bypasses any trigger, and it breaks
     # Django's test flush. The migration here closes exactly the DML DELETE vectors the forgeable GUC once gated.
+
+
+class ReadinessAppRolePostureTests(TestCase):
+    """P0 superuser blocker: privileged_backend_readiness() must refuse whenever the ORDINARY application role
+    carries an elevated cluster attribute (SUPERUSER / CREATEROLE / CREATEDB / BYPASSRLS) or is a member of /
+    can assume a privileged role. Each forbidden condition is proven INDEPENDENTLY, with a positive control
+    (a clean least-privilege role produces NONE of these reasons), so the checks cannot pass vacuously.
+
+    Mechanism: these catalog checks evaluate the role NAMED by DATABASES['default']['USER']; the test creates a
+    role with a specific posture and points that name at it (the live connection stays the test superuser). Roles
+    are created in-transaction and removed on cleanup/rollback.
+    """
+    _PRIV = ("guvfx_schema_owner", "guvfx_erasure", "guvfx_erasure_exec", "guvfx_migrate")
+
+    def _mkrole(self, name, opts):
+        with connection.cursor() as cur:
+            cur.execute(f"DROP ROLE IF EXISTS {name}")
+            cur.execute(f"CREATE ROLE {name} {opts}")
+        self.addCleanup(self._drop, name)
+
+    def _drop(self, name):
+        with connection.cursor() as cur:
+            cur.execute(f"DROP ROLE IF EXISTS {name}")
+
+    def _readiness_as(self, rolename):
+        orig = settings.DATABASES["default"]["USER"]
+        settings.DATABASES["default"]["USER"] = rolename
+        try:
+            return privileged_backend_readiness()
+        finally:
+            settings.DATABASES["default"]["USER"] = orig
+
+    def _has(self, reasons, substr):
+        return any(substr in r for r in reasons)
+
+    # --- attribute checks (run regardless of provisioning state) ----------------------------------------
+    def test_refuses_superuser_app_role(self):
+        self._mkrole("relp_super", "NOLOGIN SUPERUSER")
+        ready, reasons = self._readiness_as("relp_super")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "must be NOSUPERUSER"), reasons)
+        # independence: the other attribute reasons must NOT be raised
+        for s in ("NOCREATEROLE", "NOCREATEDB", "NOBYPASSRLS"):
+            self.assertFalse(self._has(reasons, s), f"unexpected {s}: {reasons}")
+
+    def test_refuses_createrole_app_role(self):
+        self._mkrole("relp_cr", "NOLOGIN NOSUPERUSER CREATEROLE")
+        ready, reasons = self._readiness_as("relp_cr")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "NOCREATEROLE"), reasons)
+        self.assertFalse(self._has(reasons, "must be NOSUPERUSER"), reasons)
+
+    def test_refuses_createdb_app_role(self):
+        self._mkrole("relp_cd", "NOLOGIN NOSUPERUSER CREATEDB")
+        ready, reasons = self._readiness_as("relp_cd")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "NOCREATEDB"), reasons)
+        self.assertFalse(self._has(reasons, "NOCREATEROLE"), reasons)
+
+    def test_refuses_bypassrls_app_role(self):
+        self._mkrole("relp_br", "NOLOGIN NOSUPERUSER BYPASSRLS")
+        ready, reasons = self._readiness_as("relp_br")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "NOBYPASSRLS"), reasons)
+        self.assertFalse(self._has(reasons, "NOCREATEDB"), reasons)
+
+    def test_clean_app_role_raises_no_posture_reasons(self):
+        """Positive control: a least-privilege role triggers NONE of the attribute reasons (the DB is still
+        unprovisioned, so readiness is False for OTHER reasons — just not these)."""
+        self._mkrole("relp_clean", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        ready, reasons = self._readiness_as("relp_clean")
+        self.assertFalse(ready)
+        for s in ("must be NOSUPERUSER", "NOCREATEROLE", "NOCREATEDB", "NOBYPASSRLS", "able to assume"):
+            self.assertFalse(self._has(reasons, s), f"unexpected posture reason {s}: {reasons}")
+
+    # --- membership / assume checks (require the privileged roles to exist so roles_ok is True) ----------
+    def test_refuses_app_role_that_can_assume_a_privileged_role(self):
+        for rn in self._PRIV:
+            self._mkrole(rn, "NOLOGIN")
+        self._mkrole("relp_member", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        with connection.cursor() as cur:
+            cur.execute("GRANT guvfx_erasure TO relp_member")
+        ready, reasons = self._readiness_as("relp_member")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "able to assume 'guvfx_erasure'"), reasons)
+        # positive control: a clean role (not granted) raises NO assume reason for guvfx_erasure
+        self._mkrole("relp_nomember", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        _, reasons2 = self._readiness_as("relp_nomember")
+        self.assertFalse(self._has(reasons2, "able to assume 'guvfx_erasure'"), reasons2)
+
+    def test_refuses_app_role_member_of_migrate_role(self):
+        for rn in self._PRIV:
+            self._mkrole(rn, "NOLOGIN")
+        self._mkrole("relp_mig", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        with connection.cursor() as cur:
+            cur.execute("GRANT guvfx_migrate TO relp_mig")
+        ready, reasons = self._readiness_as("relp_mig")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "able to assume 'guvfx_migrate'"), reasons)
