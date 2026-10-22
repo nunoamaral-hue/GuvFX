@@ -4,6 +4,7 @@ Discriminating negative controls: a CLOSE is NEVER produced without a MATCHED co
 ticket; a same-symbol position on a DIFFERENT master ticket is NEVER closed (no symbol fallback); the
 kill switch blocks the paired OPEN but NOT a (risk-reducing) CLOSE; a duplicate produces no second job."""
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import override_settings
@@ -136,6 +137,20 @@ class ProduceCloseTests(CloseFixture):
         self.assertFalse(out["produced"])
         self.assertEqual(out["reason"], "close_already_in_flight")
         self.assertEqual(ExecutionJob.objects.filter(job_type=ExecutionJob.JobType.CLOSE_TRADE).count(), 1)
+
+    @override_settings(**ARMED)
+    def test_stale_arming_flip_records_shadow_no_job(self):
+        """Cross-producer hardening — arming TRUE at preflight, FALSE at the in-lock decision => SHADOW, no job."""
+        f, rep = self._ready_close()
+        with mock.patch("trade_copier.execution_producer.copier_execute_demo_armed",
+                        side_effect=[True, False]) as m:
+            out = produce_close_one(rep)
+        self.assertEqual(m.call_count, 2)
+        self.assertTrue(out["produced"], out)
+        self.assertIsNone(out["job_id"])
+        self.assertEqual(ExecutionJob.objects.count(), 0)
+        rep.refresh_from_db()
+        self.assertEqual(rep.status, ReplicationStatus.SHADOW_JOB_RECORDED)
 
     @override_settings(**ARMED)
     def test_kill_switch_does_not_block_close(self):

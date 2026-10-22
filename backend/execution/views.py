@@ -336,6 +336,11 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 )
                 if account_id:
                     audit_qs = audit_qs.filter(account_id=account_id)
+                # ADR-0055 (audit classification): a deliberately-unclaimable PARTIAL_CLOSE_TRADE is an
+                # UNSUPPORTED job type at this generic endpoint, NOT a node-routing violation. Exclude it
+                # from the wrong-node detection so it never emits a misleading NODE_WRONG_CLAIM (it is
+                # served only by its dedicated DEMO consumer path, never here).
+                audit_qs = audit_qs.exclude(job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE)
 
                 # Peek at the first excluded job (without locking) for
                 # audit context.  Do NOT expose its payload to the worker.

@@ -1,6 +1,7 @@
 """B-exec producer certification: flag gate, TOCTOU re-validation, payload contract, protection facts,
 SHADOW semantics, idempotency, inherited gates. DEMO-only; no order_send; no LIVE."""
 import threading
+from unittest import mock
 from datetime import timedelta
 from decimal import Decimal
 
@@ -223,6 +224,20 @@ class ProductionTests(ProducerFixture):
         produce_one(rep)
         produce_one(rep)
         self.assertEqual(ExecutionJob.objects.count(), 1)
+
+    @override_settings(**ARMED)
+    def test_stale_arming_flip_produces_shadow_not_real(self):
+        """Cross-producer hardening — arming TRUE at preflight, FALSE at the in-lock decision => a SUPPRESSED
+        PLACE_ORDER_SHADOW job, never a real PLACE_ORDER. A pre-lock-armed producer would fail this."""
+        f, rep = self._ready()
+        with mock.patch("trade_copier.execution_producer.copier_execute_demo_armed",
+                        side_effect=[True, False]) as m:
+            out = produce_one(rep)
+        self.assertEqual(m.call_count, 2)
+        self.assertEqual(out["job_type"], ExecutionJob.JobType.PLACE_ORDER_SHADOW)
+        self.assertEqual(ExecutionJob.objects.get().job_type, ExecutionJob.JobType.PLACE_ORDER_SHADOW)
+        rep.refresh_from_db()
+        self.assertEqual(rep.status, ReplicationStatus.SHADOW_JOB_RECORDED)
 
     @override_settings(**ARMED)
     def test_kill_switch_blocks_production_inherited(self):

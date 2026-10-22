@@ -185,10 +185,9 @@ def produce_one(replication: CopierReplication) -> dict:
     if not ok:
         return {"replication_id": replication.id, "produced": False, "reason": reason}
 
-    # Capture the mode ONCE; a flag flip mid-operation cannot change the produced job.
-    armed = copier_execute_demo_armed()
-    job_type = ExecutionJob.JobType.PLACE_ORDER if armed else ExecutionJob.JobType.PLACE_ORDER_SHADOW
-    mode = "DEMO" if armed else "SHADOW"
+    # Preflight ARM read is a HINT only; the AUTHORITATIVE value is re-read INSIDE the lock (below) so a flag
+    # flipped off between here and job creation yields a SHADOW job, never a stale mutation-capable one.
+    armed_preflight = copier_execute_demo_armed()
 
     try:
         with transaction.atomic():
@@ -213,6 +212,14 @@ def produce_one(replication: CopierReplication) -> dict:
             ok, reason = admit_open(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # AUTHORITATIVE in-lock ARM re-read — a flip-off after the preflight yields SHADOW, no real order.
+            armed = copier_execute_demo_armed()
+            job_type = ExecutionJob.JobType.PLACE_ORDER if armed else ExecutionJob.JobType.PLACE_ORDER_SHADOW
+            mode = "DEMO" if armed else "SHADOW"
+            if armed_preflight and not armed:
+                logger.info("copier OPEN replication %s: arming flipped off before the locked decision -> SHADOW",
+                            replication.id)
 
             acct = locked.follower.follower_account
             constraints = _broker_constraints(acct, locked.follower_symbol)
@@ -367,8 +374,7 @@ def produce_close_one(replication: CopierReplication) -> dict:
     if not ok:
         return {"replication_id": replication.id, "produced": False, "reason": reason}
 
-    armed = copier_execute_demo_armed()
-    mode = "DEMO" if armed else "SHADOW"
+    armed_preflight = copier_execute_demo_armed()         # HINT only; authoritative re-read is in-lock
 
     try:
         with transaction.atomic():
@@ -388,6 +394,13 @@ def produce_close_one(replication: CopierReplication) -> dict:
             ok, ticket, reason = admit_close(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # AUTHORITATIVE in-lock ARM re-read — a flip-off after the preflight yields SHADOW, no real order.
+            armed = copier_execute_demo_armed()
+            mode = "DEMO" if armed else "SHADOW"
+            if armed_preflight and not armed:
+                logger.info("copier CLOSE replication %s: arming flipped off before the locked decision -> SHADOW",
+                            replication.id)
 
             open_repl = _matched_open_for_close(locked)
             if not armed:
@@ -556,8 +569,7 @@ def produce_modify_one(replication: CopierReplication) -> dict:
     if not ok:
         return {"replication_id": replication.id, "produced": False, "reason": reason}
 
-    armed = copier_execute_demo_armed()
-    mode = "DEMO" if armed else "SHADOW"
+    armed_preflight = copier_execute_demo_armed()         # HINT only; authoritative re-read is in-lock
 
     try:
         with transaction.atomic():
@@ -576,6 +588,13 @@ def produce_modify_one(replication: CopierReplication) -> dict:
             ok, ticket, reason = admit_modify(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # AUTHORITATIVE in-lock ARM re-read — a flip-off after the preflight yields SHADOW, no real order.
+            armed = copier_execute_demo_armed()
+            mode = "DEMO" if armed else "SHADOW"
+            if armed_preflight and not armed:
+                logger.info("copier MODIFY replication %s: arming flipped off before the locked decision -> SHADOW",
+                            replication.id)
 
             if not armed:
                 # SHADOW: no broker contact. Record the intended action on the row only.
