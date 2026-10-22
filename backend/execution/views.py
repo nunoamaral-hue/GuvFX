@@ -280,11 +280,12 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         if not bool(perms.get("shadow_worker")):
             base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
 
-        # ADR-0055 endpoint guard: the copier partial-close job type has NO deployed consumer and its DEMO
-        # consumer is a separate, not-yet-built arming step. Exclude it UNCONDITIONALLY from the claim set so
-        # "no worker executes a partial close" is an ENFORCED endpoint property (not merely the emergent
-        # "nothing asks for it"), mirroring the PLACE_ORDER_SHADOW guard above. A dedicated consumer, when
-        # built + armed, will claim it through its own reviewed path — never this generic dispatch.
+        # ADR-0055/0056 endpoint guard: the copier partial-close job type is served ONLY by its dedicated,
+        # reviewed DEMO consumer (ADR-0056: /api/copy-trading/partial-close/{claim,authorize-send,complete}/),
+        # never this generic dispatch. Exclude it UNCONDITIONALLY from the claim set so "no generic worker
+        # executes a partial close" is an ENFORCED endpoint property (not merely the emergent "nothing asks
+        # for it"), mirroring the PLACE_ORDER_SHADOW guard above. (The dedicated consumer is built + merged
+        # DARK; it still requires a separate Sponsor grant + arming before any job reaches a broker.)
         base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE)
 
         # Determine routing mode for audit trail

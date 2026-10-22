@@ -1,7 +1,10 @@
 # 0056 — MT5 Copier: dedicated DEMO partial-close consumer + authoritative post-send reconciliation (DARK)
 
 - Date: 2026-10-22
-- Status: Proposed (DARK engineering design; a new mutation-DISPATCH surface — see "Why design-first")
+- Status: **Accepted** (Sponsor-ratified 2026-10-22 for ARCHITECTURE + IMPLEMENTATION + DARK CODE INTEGRATION
+  + DEMO-only execution DESIGN only — see "## Status / approval"). Acceptance does NOT authorize deployment,
+  worker credentials, worker permission grants, DEMO arming, broker mutation, account rehearsal or LIVE
+  execution; each remains a separate explicit Sponsor gate.
 - Extends: [0051](0051-mt5-master-follower-copier.md), [0055](0055-mt5-copier-partial-close-lifecycle.md)
 - ADR-0054 remains reserved for the Withdrawal workstream (untouched).
 - Packet: `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` Workstream B increment 3b
@@ -241,6 +244,10 @@ pre-send recheck, server-derived reconciliation inputs, and completion authoriza
   (drain in-flight jobs read-only after disarming; never sends).**
 
 ## Status / approval
-DARK engineering design + implementation. ADR ratification, DEMO arming, the dedicated worker grant,
-deployment and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` /
-`LIVE_EXECUTION_CERTIFIED` = false; actual live availability = 0%.
+**Accepted** (Sponsor-ratified 2026-10-22). Acceptance is scoped STRICTLY to: the architecture; the
+implementation; DARK code integration; and the DEMO-only execution design — and to the final trust boundary
+and resolved adversarial findings recorded above. Acceptance does NOT authorize deployment, worker credentials,
+worker permission grants, DEMO arming, broker mutation, account rehearsal or LIVE execution; each of those
+remains a separate explicit Sponsor gate. `DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` = false; the host
+worker is unprovisioned + inactive by default; no `partial_close_worker` identity exists outside tests; actual
+live availability = 0%.
