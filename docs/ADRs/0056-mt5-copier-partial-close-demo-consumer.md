@@ -30,22 +30,31 @@ NODE_WRONG_CLAIM), and the reconciliation-state foundations.
    -> replication intent (owner-scoped, SHADOW)           [trade_copier, DARK]
    -> producer admit + in-lock arm re-read                [backend, flags default-OFF]
    -> PARTIAL_CLOSE_TRADE job (armed DEMO only)            [NOT claimable at generic next_job]
-   == TRUST BOUNDARY: dedicated DEMO consumer endpoint ==  [NEW surface, this ADR]
-      gate: dedicated worker permission (partial_close_worker)
-      gate: node-aware + account-authorized worker (authorized_nodes)
-      gate: exact tenant/account route (job.account owner + workspace)
-      gate: re-check COPIER_ENABLED + COPIER_EXECUTE_ENABLED + COPIER_EXECUTE_DEMO_ARMED at claim
-      gate: DEMO env only; reject LIVE/CONTEST/unresolved; require HEDGING
-      gate: server-derived expected_login + expected_server present (fail closed if absent)
+   == TRUST BOUNDARY 1: dedicated CLAIM endpoint ==        [NEW surface, this ADR]
+      gate: dedicated worker permission (partial_close_worker); mixed generic grant refused
+      gate: node-aware + account-authorized worker (authorized_nodes, partial_close_account_id)
+      gate: exact tenant/account route (job.account owner + active node)
+      gate: re-check COPIER_ENABLED + COPIER_EXECUTE_ENABLED + COPIER_EXECUTE_DEMO_ARMED IN-LOCK at claim
+      gate: DEMO env only; reject LIVE/CONTEST/unresolved; server-derivable identity pin present
       row lock + lease; serves ONLY PARTIAL_CLOSE_TRADE; cannot claim OPEN/CLOSE/MODIFY/arbitrary
-   -> host worker re-checks arming immediately before the mutation
-   == TRUST BOUNDARY: bridge partial_close_position ==     [demo-locked, identity-pinned, ADR-0055]
-      re-read position, re-verify identity (login/server), re-normalize volume, SINGLE order_send
-   -> broker response -> authoritative post-send reconciliation (re-read remaining volume)
+      -> returns an ACKNOWLEDGMENT ONLY (job id + dispatch token); NO mutation instruction
+   == TRUST BOUNDARY 2: dedicated AUTHORIZE-SEND endpoint == [NEW surface, this ADR — F1]
+      the BACKEND (not the worker) re-reads ALL THREE feature flags + revalidates DEMO / follower /
+      account / node / account-route / replication / ticket / symbol / identity UNDER the job row lock,
+      fails closed on ANY change, persists a SINGLE-USE send nonce, and ONLY THEN releases the mutation
+      instruction (server-derived ticket / volume / symbol / identity pin). Never a second authorization.
+   -> host worker calls authorize-send, then performs the SINGLE bridge call with the issued instruction
+   == TRUST BOUNDARY 3: bridge partial_close_position ==   [demo-locked, identity-pinned, ADR-0055]
+      re-read position, RE-VERIFY MT5 identity (login/server) immediately before mutation, re-normalize
+      volume, SINGLE order_send (never retried)
+   -> broker response -> completion endpoint -> authoritative post-send reconciliation (re-read remaining
+      volume) -> TERMINAL job bookkeeping (SUCCESS / FAILED) ; a crashed worker -> background reconcile sweep
 ```
-Authority flows one way: the **server** derives identity + authorizes; the worker is least-privilege and may
-claim nothing but `PARTIAL_CLOSE_TRADE`; the bridge independently re-verifies. No customer-supplied identity
-authority at any hop.
+Authority flows one way and each hop checks ONLY what it can see: the **backend** holds the feature-flag +
+route + replication authority (claim and authorize-send re-check it in-lock — the worker cannot see a backend
+flag and is never described as checking one); the **worker** is least-privilege, may claim nothing but
+`PARTIAL_CLOSE_TRADE`, and only relays the server-issued instruction; the **bridge** independently re-verifies
+the MT5 account identity immediately before `order_send`. No customer-supplied identity authority at any hop.
 
 ## Identity-pin source (server-derived, never customer-supplied)
 
@@ -143,46 +152,68 @@ the endpoint implementation is bound by them.
   (`PCLOSE_DISPATCH_REFUSED`, 23) fits with 1 char headroom. The implementation MUST keep codes ≤24 or widen
   the field by migration before adding longer codes.
 
-## Implementation status (2026-10-22 — Sponsor GO FOR IMPLEMENTATION)
+## Implementation status (2026-10-22 — end-to-end completion, correction directive F1–F6)
 
-The consumer is now IMPLEMENTED in #546 per this spec (`backend/trade_copier/consumer.py` +
-`consumer_api.py`, endpoints under `/api/copy-trading/partial-close/{claim,complete}/`,
-`tests_consumer.py` + `tests_partial_close_claim_guard.py`). What remains before a DEMO run (each a separate
-Sponsor gate): granting a real `partial_close_worker` identity (none exists outside tests); the host-side
-worker that calls the bridge primitive; `COPIER_EXECUTE_DEMO_ARMED`; and the account rehearsal. ADR-0056 stays
-**Proposed** until the implementation passes review (Sponsor disposition). Nothing is deployed, armed or
-executed; the endpoints are reachable only by a (non-existent) granted worker with arming on.
+The consumer is now a GENUINELY END-TO-END, crash-safe dedicated DEMO partial-close consumer. Changed/added in
+#546: `backend/trade_copier/consumer.py`, `consumer_api.py`, `urls.py`, `scripts/mt5_partial_close_worker.py`,
+and `backend/execution/execution_health.py` (sweep wiring). Endpoints under
+`/api/copy-trading/partial-close/{claim,authorize-send,complete}/`. What remains before a DEMO run (each a
+separate Sponsor gate): granting a real `partial_close_worker` identity (none exists outside tests); arming
+`COPIER_EXECUTE_DEMO_ARMED`; enabling the host worker (`COPIER_PCLOSE_WORKER_ENABLED`, unprovisioned by
+default); and the account rehearsal. ADR-0056 stays **Proposed** until this implementation passes review
+(Sponsor disposition). Nothing is deployed, armed, executed, or granted.
 
-### Independent adversarial review of the implementation (2026-10-22)
+### Correction directive findings (F1–F6) — how each is closed
 
-Confirmed the safety floor closed (no double-send, no broker reach while DARK, worker-class mutual exclusivity,
-in-lock gates, fail-closed state machine). Findings handled:
+- **F1 — authoritative PRE-SEND arming check (`authorize_send`).** A dedicated single-use endpoint
+  `POST /api/copy-trading/partial-close/authorize-send/`. Under the job row lock it re-authenticates the
+  claiming worker, confirms ownership + RUNNING + the `dispatched` phase, RE-READS all three feature flags,
+  revalidates DEMO / follower / account / node / account-route / replication / ticket / symbol / identity,
+  fails closed on any change, persists a single-use send nonce + timestamp, and ONLY THEN releases the
+  mutation instruction. A second authorization for the same dispatch is refused (`already_authorized`). The
+  claim no longer returns the mutation instruction — it is an acknowledgment only. (The earlier, incorrect
+  claim that the host worker re-checks arming before the mutation is withdrawn: the WORKER cannot see a
+  backend flag; the BACKEND authorize-send endpoint performs the authoritative flag re-check, and the bridge
+  re-verifies MT5 identity.)
+- **F2 — the actual host worker (`scripts/mt5_partial_close_worker.py`).** Modern-creds-only; polls ONLY the
+  dedicated endpoints (no generic-endpoint knowledge); obtains the single-use authorization; calls ONLY
+  `partial_close_position` with the server-issued ticket/volume/symbol/identity; reports via the completion
+  endpoint; NEVER retries `order_send` on timeout/disconnect/lost-ACK/restart/uncertain result; redacts
+  credentials + account-sensitive values (login/server/secret) from logs; stops safely when any gate is
+  unavailable. UNPROVISIONED + INACTIVE by default (`COPIER_PCLOSE_WORKER_ENABLED` OFF); this PR creates no
+  credentials and grants no permission.
+- **F3 — terminal job bookkeeping.** After authoritative reconciliation the ExecutionJob is driven terminal:
+  reconciled → `SUCCESS`; divergent volume / ticket-gone / operator-review / dispatch-refused → `FAILED`;
+  read-unavailable stays `RUNNING` (recon-pending) for the sweep ONLY. No outcome returns the job to PENDING
+  or any re-send path; a reconciled job is never left indefinitely RUNNING and is not re-claimable.
+- **F4 — interrupted-reconciliation recovery (`sweep_partial_close_reconcile`, wired into the monitor chain).**
+  READ-ONLY: it re-reads the authoritative remaining volume with the server-derived ticket / intended / broker
+  step and finalizes a stranded job; it NEVER calls `order_send`, re-dispatches, or requeues; concurrency-safe
+  (`skip_locked`) + idempotent; escalates to operator review after a bounded number of unavailable reads. A job
+  that was claimed but never authorized (nothing sent) is failed without a read. Crash boundaries tested: after
+  claim-before-authorize, after authorize-before-bridge, after bridge-before-complete, after
+  completion-before-reconcile — none can cause a second broker send. INERT while the copier is DARK.
+- **F5 — completion lease + concurrency.** `_worker_lease_ok` is renamed `_completion_authorized` and
+  documented: lease expiry is DELIBERATELY not an authorization boundary after dispatch (the worker id +
+  dispatch token are the authority, completion is idempotent, and there is no re-send path — a dead worker's
+  job is resolved by the read-only sweep). Concurrent duplicate completions are serialised by the `completing`
+  phase + the in-lock recon state so only one transition reconciles; a duplicate returns the durable result.
+- **F6 — dedicated audit-event family.** `COPIER_PCLOSE_{CLAIM_ACCEPTED,CLAIM_REFUSED,SEND_AUTHORIZED,
+  SEND_AUTH_REFUSED,DISPATCH_ATTEMPTED,OUTCOME_UNKNOWN,RECONCILED,DIVERGENCE,OPERATOR_REVIEW,DISPATCH_REFUSED}`
+  via the fail-open `core.audit.log_event`. Metadata is safe identifiers + reason/status codes only (no
+  credentials, secrets or raw payloads; `_sanitize_metadata` is a backstop).
 
-- **HIGH (fixed) — reconciliation inputs are now SERVER-derived.** The first implementation took the tolerance
-  `step` AND the intended remaining from the worker's completion POST, so a worker could send a huge
-  `volume_step` and force a false `PCLOSE_RECONCILED`. `complete_partial_close` now derives the step from the
-  follower's authoritative broker instrument (`_broker_constraints(acct, symbol).lot_step`; non-authoritative
-  ⇒ `PCLOSE_OPERATOR_REVIEW`) and the intended remaining from the producer-stamped
-  `job.payload["expected_remaining"]`; any worker-supplied `volume_step` / `estimated_remaining` is ignored.
-  Regression-tested (`test_worker_supplied_step_and_remaining_ignored`).
-- **Identity-pin source (D1, reconciled text).** The implementation derives expected login/server UNIFORMLY
-  from the account's durable binding — `TradingAccount.account_number` + bound `broker_server.server_name` —
-  for hosted and non-hosted alike (not separately via `AccountProvisioning`). This is safe: a blank/unresolved
-  binding fails closed (`identity_pin_unresolved`), `require_identity_pin` is forced, and the unchanged #545
-  bridge re-verifies login/server before `order_send`.
-- **Mutual exclusivity (D2, reconciled text).** The guarantee that a `partial_close_worker` cannot claim
-  OPEN/CLOSE/MODIFY is the UNCONDITIONAL 403 at the generic `next_job` (before any claim) + the base-qs
-  exclusion — not the grant shape. `assert_dedicated_worker` additionally refuses a `shadow_worker` co-grant;
-  `authorized_nodes` is permitted (the dedicated worker needs node routing) and is harmless because next_job
-  refuses the identity regardless.
+### Reconciliation-input safety (carried from the prior review, still in force)
 
-### Known gap (not a DARK-merge blocker; required before DEMO certification)
-
-- **No background reconciliation for a post-dispatch worker crash.** If the host worker dies after `order_send`
-  and never calls `/complete`, the job stays `RUNNING` with `reconciliation_status=PCLOSE_RECON_PENDING`
-  indefinitely — safe (never re-dispatched/re-sent; orphan reclaimers are type-scoped away from
-  `PARTIAL_CLOSE_TRADE`), but the authoritative reconciliation is operator-manual. A background
-  reconcile-pending sweep (authoritative read, no re-send) is a follow-up required before DEMO certification.
+- The tolerance `step` is the follower's AUTHORITATIVE broker instrument step (`_broker_constraints(acct,
+  symbol).lot_step`; non-authoritative ⇒ `PCLOSE_OPERATOR_REVIEW`) and the intended remaining is the
+  producer-stamped `job.payload["expected_remaining"]`. Any worker-supplied `volume_step` /
+  `estimated_remaining` in the completion POST is IGNORED.
+- Identity pin is derived UNIFORMLY from the account's durable binding (`account_number` +
+  `broker_server.server_name`); blank/unresolved fails closed; `require_identity_pin` forced; the bridge
+  re-verifies login/server before `order_send`.
+- Mutual exclusivity rests on the UNCONDITIONAL 403 at the generic `next_job` + the base-qs exclusion, not the
+  grant shape; `assert_dedicated_worker` additionally refuses a `shadow_worker` co-grant.
 
 ## Status / approval
 DARK engineering design + implementation. ADR ratification, DEMO arming, the dedicated worker grant,

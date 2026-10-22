@@ -60,6 +60,33 @@ class PartialCloseClaimView(_DedicatedWorkerView):
         return Response(out, status=(204 if out.get("reason") == "no_jobs" else 409))
 
 
+class PartialCloseAuthorizeSendView(_DedicatedWorkerView):
+    """Single-use PRE-SEND authorization (ADR-0056 F1). The host worker calls this immediately before the
+    bridge mutation; the mutation instruction (ticket/volume/symbol/identity) is released ONLY on success,
+    after a fresh in-lock re-read of the three feature flags + full route/identity revalidation."""
+    def post(self, request):
+        try:
+            worker = self._auth(request)
+        except ClaimRefused as e:
+            return Response({"detail": e.reason}, status=403)
+        except PermissionDenied:
+            return Response({"detail": "invalid_worker_credentials"}, status=403)
+        perms = worker.worker_permissions or {}
+        account_id = perms.get("partial_close_account_id")
+        if account_id is None:
+            return Response({"detail": "no_account_route"}, status=403)
+        data = request.data or {}
+        try:
+            out = consumer.authorize_send(
+                worker, job_id=int(data.get("job_id")), dispatch_token=str(data.get("dispatch_token") or ""),
+                account_id=int(account_id), authorized_node_hostnames=worker_authorized_nodes(worker))
+        except ClaimRefused as e:
+            return Response({"detail": e.reason}, status=403)
+        except (TypeError, ValueError):
+            return Response({"detail": "bad_request"}, status=400)
+        return Response(out, status=200 if out.get("ok") else 409)
+
+
 class PartialCloseCompleteView(_DedicatedWorkerView):
     def post(self, request):
         try:
@@ -72,7 +99,8 @@ class PartialCloseCompleteView(_DedicatedWorkerView):
         try:
             out = consumer.complete_partial_close(
                 worker, job_id=int(data.get("job_id")), dispatch_token=str(data.get("dispatch_token") or ""),
-                bridge_result=data.get("bridge_result") or {})
+                bridge_result=data.get("bridge_result") or {},
+                send_nonce=(str(data.get("send_nonce")) if data.get("send_nonce") is not None else None))
         except ClaimRefused as e:
             return Response({"detail": e.reason}, status=403)
         except (TypeError, ValueError):

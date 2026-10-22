@@ -36,11 +36,25 @@ recorded, operator exception, NO blind retry); **`PCLOSE_TICKET_GONE` (ticket ab
 DIVERGENCE, NEVER a silently-approved full close)**; `PCLOSE_RECON_UNAVAIL` (read refused — non-terminal,
 re-read later).
 
-## Lifecycle status — implemented vs NOT wired
-Implemented + tested: producer, bridge primitive, post-send reconciliation transition. **NOT wired (required
-before DEMO certification):** the consumer that dispatches ONLY `PARTIAL_CLOSE_TRADE` to the bridge and drives
-`reconcile_partial_close` after each send. No deployed worker claims `PARTIAL_CLOSE_TRADE`; until that consumer
-is built + armed, no partial close reaches a broker.
+## Lifecycle status — implemented vs NOT armed (ADR-0056)
+Implemented + tested end-to-end (all DARK): producer; bridge primitive; the dedicated DEMO **consumer**
+(claim → **authorize-send** → single bridge call → complete), with the authoritative post-send reconciliation
++ TERMINAL job bookkeeping; the host-side **worker** (`scripts/mt5_partial_close_worker.py`); and the
+background **reconcile sweep** for a crashed worker. The flow:
+1. **claim** (`/api/copy-trading/partial-close/claim/`) — dedicated `partial_close_worker` only; in-lock gates;
+   marks the job RUNNING + leased; returns an ACK only (no mutation instruction).
+2. **authorize-send** (`/api/copy-trading/partial-close/authorize-send/`) — the BACKEND re-reads all three
+   flags + revalidates everything under the lock, persists a single-use nonce, and ONLY THEN releases the
+   ticket/volume/symbol/identity. This is the authoritative pre-send arming check; the worker cannot see a
+   backend flag.
+3. the worker performs the SINGLE `partial_close_position` call (never retried) and reports via **complete**.
+4. **complete** drives the reconciliation state machine + terminal job status (SUCCESS / FAILED / recon-pending).
+5. a worker that dies mid-flight is recovered READ-ONLY by `sweep_partial_close_reconcile` (never a re-send).
+
+**NOT done (each a separate Sponsor gate before any DEMO run):** granting a real `partial_close_worker`
+identity (none exists outside tests); arming `COPIER_EXECUTE_DEMO_ARMED`; enabling the worker
+(`COPIER_PCLOSE_WORKER_ENABLED`, unprovisioned by default); the account rehearsal. Until all four, no partial
+close reaches a broker.
 
 ## Hedging / netting support decision
 Certified for **HEDGING** accounts only (`margin_mode == RETAIL_HEDGING`). **NETTING, EXCHANGE and unknown
@@ -62,9 +76,15 @@ size; max aggregate exposure; test duration; abort thresholds; named kill-switch
    **no** ExecutionJob.
 5. Arm (`COPIER_EXECUTE_DEMO_ARMED`) for the approved window only; confirm exactly one `PARTIAL_CLOSE_TRADE`
    job with the partial volume + exact ticket.
-6. Drive the DEMO bridge `partial_close_position`; capture the broker response.
-7. Reconcile the actual remaining follower volume vs `expected_remaining`; record any divergence as an
-   operator-visible exception.
+6. Grant the dedicated `partial_close_worker` identity (modern creds; `authorized_nodes` +
+   `partial_close_account_id` for the DEMO follower only) and start the host worker
+   (`COPIER_PCLOSE_WORKER_ENABLED=1`, modern creds) on the approved node.
+7. The worker claims → authorize-send (backend re-reads the flags in-lock) → single `partial_close_position`
+   call → complete; capture the broker response and the dedicated audit events (`COPIER_PCLOSE_*`).
+8. Confirm the terminal job status (SUCCESS on reconciled; FAILED on divergence/ticket-gone) and that the
+   actual remaining follower volume reconciles against `expected_remaining`; record any divergence as an
+   operator-visible exception. If the worker is killed mid-flight, confirm the background sweep finalizes the
+   job READ-ONLY with no second send.
 Minimum evidence (secrets/account-sensitive values redacted): master op timestamp, observation event,
 replication decision, execution job, bridge response, follower remaining volume, reconciliation result,
 end-to-end latency, idempotency result, abort behaviour, screenshots.

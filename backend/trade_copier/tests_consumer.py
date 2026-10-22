@@ -9,13 +9,21 @@ from rest_framework.test import APIClient
 
 from execution.models import ExecutionJob, TerminalNode, WorkerIdentity
 from trade_copier import consumer, reconcile
-from trade_copier.consumer import ClaimRefused, assert_dedicated_worker, claim_partial_close, complete_partial_close
+from trade_copier.consumer import (
+    ClaimRefused,
+    assert_dedicated_worker,
+    authorize_send,
+    claim_partial_close,
+    complete_partial_close,
+)
 from trade_copier.diff import ObservedPosition
 from trade_copier.models import CopierReplication, MasterEvent, ReplicationStatus
 from trade_copier.observer import MasterReadResult
 from trade_copier.tests_execution_producer import ProducerFixture
 
 ARMED = dict(COPIER_ENABLED=True, COPIER_EXECUTE_ENABLED=True, COPIER_EXECUTE_DEMO_ARMED=True)
+# Enabled + execute on, but arming OFF — used to prove authorize-send fails closed when arming drops.
+DISARMED = dict(COPIER_ENABLED=True, COPIER_EXECUTE_ENABLED=True, COPIER_EXECUTE_DEMO_ARMED=False)
 NODE = "node-pc-1"
 NEXT_URL = "/api/execution/jobs/next/"
 CLAIM_URL = "/api/copy-trading/partial-close/claim/"
@@ -67,6 +75,16 @@ class ConsumerFixture(ProducerFixture):
     def _claim(self, worker):
         return claim_partial_close(worker, account_id=self.facct.id, authorized_node_hostnames=[NODE])
 
+    def _authorize(self, worker, claim_out):
+        return authorize_send(worker, job_id=claim_out["job_id"], dispatch_token=claim_out["dispatch_token"],
+                              account_id=self.facct.id, authorized_node_hostnames=[NODE])
+
+    def _dispatch_authorized(self, worker):
+        """Full dispatch: claim -> authorize-send. Returns (dispatch_token, send_nonce) for a completion."""
+        c = self._claim(worker)
+        a = self._authorize(worker, c)
+        return c["dispatch_token"], a["send_nonce"]
+
 
 # ── worker-class separation (points 1-2) ─────────────────────────────────────────────────────────────
 class WorkerClassTests(ConsumerFixture):
@@ -116,13 +134,14 @@ class WorkerClassTests(ConsumerFixture):
 # ── claim gates (points 3-6) ─────────────────────────────────────────────────────────────────────────
 class ClaimGateTests(ConsumerFixture):
     @override_settings(**ARMED)
-    def test_happy_claim_server_derived_pin(self):
+    def test_happy_claim_is_acknowledgment_only(self):
+        # The claim returns ONLY an ack — NO mutation instruction (ticket/volume/symbol/identity). Those are
+        # released solely by authorize_send (ADR-0056 F1), so arming dropped after claim can't reach the broker.
         out = self._claim(self._worker())
         self.assertTrue(out["ok"], out)
-        self.assertEqual(out["ticket"], 777)
-        self.assertEqual(out["identity"]["expected_login"], "2000001")        # from account_number
-        self.assertEqual(out["identity"]["expected_server"], "IS6Technologies-Demo")  # from broker_server
-        self.assertTrue(out["identity"]["require_identity_pin"])
+        self.assertEqual(out["phase"], consumer.PHASE_DISPATCHED)
+        for leaked in ("ticket", "volume", "expected_symbol", "identity"):
+            self.assertNotIn(leaked, out)
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, ExecutionJob.Status.RUNNING)
         self.rep.refresh_from_db()
@@ -191,6 +210,78 @@ class ClaimGateTests(ConsumerFixture):
         self.assertEqual(self._claim(self._worker())["reason"], "already_dispatched")
 
 
+# ── single-use pre-send authorization (FINDING 1) ─────────────────────────────────────────────────────
+class AuthorizeSendTests(ConsumerFixture):
+    @override_settings(**ARMED)
+    def test_authorize_releases_server_derived_instruction(self):
+        w = self._worker()
+        c = self._claim(w)
+        a = self._authorize(w, c)
+        self.assertTrue(a["ok"], a)
+        self.assertEqual(a["bridge_call"], "partial_close_position")
+        self.assertEqual(a["ticket"], 777)                                  # server-derived
+        self.assertEqual(a["identity"]["expected_login"], "2000001")        # from account_number
+        self.assertEqual(a["identity"]["expected_server"], "IS6Technologies-Demo")  # from broker_server
+        self.assertTrue(a["identity"]["require_identity_pin"])
+        self.assertTrue(a["send_nonce"])
+        self.job.refresh_from_db()
+        self.assertEqual((self.job.result or {}).get("phase"), consumer.PHASE_AUTHORIZED)
+
+    @override_settings(**ARMED)
+    def test_authorize_is_single_use(self):
+        w = self._worker()
+        c = self._claim(w)
+        self.assertTrue(self._authorize(w, c)["ok"])
+        second = self._authorize(w, c)                                      # second authorization refused
+        self.assertFalse(second["ok"])
+        self.assertEqual(second["reason"], "already_authorized")
+
+    def test_arming_dropped_after_claim_refuses_authorize_no_instruction(self):
+        """FINDING 1 — discriminating: claim succeeds while ARMED, arming is turned OFF, then authorize-send
+        is refused and NO mutation instruction is returned (so the host worker can never call the bridge)."""
+        w = self._worker()
+        with override_settings(**ARMED):
+            c = self._claim(w)
+            self.assertTrue(c["ok"])
+        with override_settings(**DISARMED):                                 # arming removed between claim+send
+            a = self._authorize(w, c)
+        self.assertFalse(a["ok"])
+        self.assertEqual(a["reason"], "flags_off")
+        for leaked in ("ticket", "volume", "expected_symbol", "identity", "send_nonce"):
+            self.assertNotIn(leaked, a)
+        self.job.refresh_from_db()
+        self.assertEqual((self.job.result or {}).get("phase"), consumer.PHASE_DISPATCHED)  # never authorized
+
+    @override_settings(**ARMED)
+    def test_authorize_wrong_worker_refused(self):
+        w = self._worker()
+        c = self._claim(w)
+        other = self._worker()
+        a = authorize_send(other, job_id=c["job_id"], dispatch_token=c["dispatch_token"],
+                           account_id=self.facct.id, authorized_node_hostnames=[NODE])
+        self.assertFalse(a["ok"])
+        self.assertEqual(a["reason"], "not_authorized")
+
+    @override_settings(**ARMED)
+    def test_authorize_requires_dispatched_phase(self):
+        # A job that never went through claim (no dispatch token) cannot be authorized.
+        w = self._worker()
+        a = authorize_send(w, job_id=self.job.id, dispatch_token="nope",
+                           account_id=self.facct.id, authorized_node_hostnames=[NODE])
+        self.assertFalse(a["ok"])
+        self.assertEqual(a["reason"], "not_authorized")
+
+    @override_settings(**ARMED)
+    def test_authorize_node_route_mismatch_refused(self):
+        w = self._worker()
+        c = self._claim(w)
+        self.node.status = TerminalNode.Status.OFFLINE          # node no longer active at authorize time
+        self.node.save(update_fields=["status"])
+        a = self._authorize(w, c)
+        self.assertFalse(a["ok"])
+        self.assertEqual(a["reason"], "node_route_mismatch")
+
+
 # ── lease / orphan recovery (point 6) ────────────────────────────────────────────────────────────────
 class LeaseOrphanTests(ConsumerFixture):
     @override_settings(**ARMED)
@@ -209,15 +300,18 @@ class LeaseOrphanTests(ConsumerFixture):
         self.assertEqual(self.job.status, ExecutionJob.Status.RUNNING)   # NOT requeued to PENDING / FAILED
 
 
-# ── completion authorization + state machine + reconciliation (points 9-11) ──────────────────────────
+# ── completion authorization + state machine + reconciliation + terminal bookkeeping (F3) ────────────
 class CompletionTests(ConsumerFixture):
     def _dispatch(self):
-        out = self._claim(self._worker_for_completion())
-        return out["dispatch_token"]
-
-    def _worker_for_completion(self):
+        """claim + authorize-send; stash the worker + nonce and return the dispatch token."""
         self._w = self._worker()
-        return self._w
+        token, self._nonce = self._dispatch_authorized(self._w)
+        return token
+
+    def _complete(self, worker, token, br, *, fetch=None, nonce=None):
+        return complete_partial_close(worker, job_id=self.job.id, dispatch_token=token, bridge_result=br,
+                                      send_nonce=nonce if nonce is not None else getattr(self, "_nonce", None),
+                                      fetch=fetch)
 
     @override_settings(**ARMED)
     def test_wrong_worker_cannot_complete(self):
@@ -235,28 +329,39 @@ class CompletionTests(ConsumerFixture):
         self.assertEqual(cm.exception.reason, "completion_not_authorized")
 
     @override_settings(**ARMED)
-    def test_done_reconciles(self):
-        token = self._dispatch()
-        br = {"ok": True, "mutated": True, "volume_step": 0.01, "estimated_remaining": 0.60}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(777, 0.60))
-        self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_RECONCILED)
+    def test_completion_requires_prior_authorization(self):
+        # Claim WITHOUT authorize-send, then attempt completion -> refused (no send was authorized).
+        w = self._worker()
+        c = self._claim(w)
+        with self.assertRaises(ClaimRefused) as cm:
+            complete_partial_close(w, job_id=c["job_id"], dispatch_token=c["dispatch_token"],
+                                   bridge_result={"ok": True, "mutated": True, "need_reconcile": True})
+        self.assertEqual(cm.exception.reason, "completion_requires_authorization")
 
     @override_settings(**ARMED)
-    def test_done_partial_reconciles(self):
+    def test_done_reconciles_job_terminal_success(self):
         token = self._dispatch()
-        br = {"ok": True, "mutated": True, "volume_step": 0.01, "estimated_remaining": 0.60}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(777, 0.50))     # broker left 0.50, intended 0.60
+        br = {"ok": True, "mutated": True, "need_reconcile": True}
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 0.60))
+        self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_RECONCILED)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ExecutionJob.Status.SUCCESS)      # FINDING 3 — terminal, not RUNNING
+        self.assertIsNotNone(self.job.finished_at)
+
+    @override_settings(**ARMED)
+    def test_done_partial_divergence_job_terminal_failed(self):
+        token = self._dispatch()
+        br = {"ok": True, "mutated": True, "need_reconcile": True}
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 0.50))   # broker left 0.50, intended 0.60
         self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_DIVERGENT_VOLUME)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ExecutionJob.Status.FAILED)       # FINDING 3 — terminal exception
 
     @override_settings(**ARMED)
     def test_lost_ack_reconciles_without_resend(self):
         token = self._dispatch()
-        br = {"ok": False, "error": "order_send_none_unknown", "need_reconcile": True,
-              "volume_step": 0.01, "estimated_remaining": 0.60}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(777, 0.60))
+        br = {"ok": False, "error": "order_send_none_unknown", "need_reconcile": True}
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 0.60))
         # Resolved only by an authoritative read; no second send (no order_send invoked anywhere here).
         self.assertIn(out["reconciliation"]["status"], (reconcile.PARTIAL_RECONCILED,
                                                          reconcile.PARTIAL_DIVERGENT_VOLUME))
@@ -264,27 +369,38 @@ class CompletionTests(ConsumerFixture):
     @override_settings(**ARMED)
     def test_reject_reconciles(self):
         token = self._dispatch()
-        br = {"ok": False, "error": "partial_close_rejected", "need_reconcile": True,
-              "volume_step": 0.01, "estimated_remaining": 0.60}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(777, 1.00))     # unchanged -> divergence from intended 0.60
+        br = {"ok": False, "error": "partial_close_rejected", "need_reconcile": True}
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 1.00))   # unchanged -> divergence from 0.60
         self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_DIVERGENT_VOLUME)
+
+    @override_settings(**ARMED)
+    def test_pre_send_refusal_is_dispatch_refused_no_reconcile(self):
+        # A bridge PRE-SEND refusal (no need_reconcile, not ok) -> dispatch-refused, FAILED, NO reconcile read.
+        token = self._dispatch()
+        def _no_read(_acct):
+            raise AssertionError("reconcile read must not run for a pre-send refusal")
+        br = {"ok": False, "error": "identity_rejected"}                    # no need_reconcile -> nothing sent
+        out = self._complete(self._w, token, br, fetch=_no_read)
+        self.assertEqual(out["status"], reconcile.PARTIAL_DISPATCH_REFUSED)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ExecutionJob.Status.FAILED)
 
     @override_settings(**ARMED)
     def test_missing_ticket_is_divergence(self):
         token = self._dispatch()
-        br = {"ok": True, "mutated": True, "volume_step": 0.01, "estimated_remaining": 0.60}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(None, 0))       # ticket gone
+        br = {"ok": True, "mutated": True, "need_reconcile": True}
+        out = self._complete(self._w, token, br, fetch=_fetch(None, 0))     # ticket gone
         self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_DIVERGENT_TICKET_GONE)
 
     @override_settings(**ARMED)
-    def test_recon_outage_retries_only_read(self):
+    def test_recon_outage_retries_only_read_job_stays_running(self):
         token = self._dispatch()
-        br = {"ok": True, "mutated": True, "volume_step": 0.01, "estimated_remaining": 0.60}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(None, 0, ok=False, reason="snapshot_identity_login_mismatch"))
+        br = {"ok": True, "mutated": True, "need_reconcile": True}
+        out = self._complete(self._w, token, br,
+                             fetch=_fetch(None, 0, ok=False, reason="snapshot_identity_login_mismatch"))
         self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_RECONCILE_UNAVAILABLE)  # non-terminal
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ExecutionJob.Status.RUNNING)      # stays for the background sweep
 
     @override_settings(**ARMED)
     def test_no_authoritative_step_is_operator_review(self):
@@ -293,30 +409,37 @@ class CompletionTests(ConsumerFixture):
         from execution.models import BrokerInstrument
         BrokerInstrument.objects.filter(account=self.facct).delete()
         token = self._dispatch()
-        br = {"ok": True, "mutated": True}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(777, 0.60))
+        br = {"ok": True, "mutated": True, "need_reconcile": True}
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 0.60))
         self.assertEqual(out["status"], reconcile.PARTIAL_OPERATOR_REVIEW)
         self.assertEqual(out["reason"], "authoritative_step_unavailable")
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ExecutionJob.Status.FAILED)
 
     @override_settings(**ARMED)
     def test_worker_supplied_step_and_remaining_ignored(self):
-        """FINDING 1 — a worker POSTing a huge tolerance + a matching 'remaining' cannot force a false
-        RECONCILED: the step is the authoritative instrument step and intended is the server-stamped payload,
-        so a real divergence is still caught."""
+        """FINDING (prior review) — a worker POSTing a huge tolerance + a matching 'remaining' cannot force a
+        false RECONCILED: the step is the authoritative instrument step and intended is the server-stamped
+        payload, so a real divergence is still caught."""
         token = self._dispatch()
-        br = {"ok": True, "mutated": True, "volume_step": 1e9, "estimated_remaining": 0.50}
-        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                     fetch=_fetch(777, 0.50))   # actual 0.50 vs server-intended 0.60
+        br = {"ok": True, "mutated": True, "need_reconcile": True, "volume_step": 1e9,
+              "estimated_remaining": 0.50}
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 0.50))   # actual 0.50 vs server-intended 0.60
         self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_DIVERGENT_VOLUME)
+
+    @override_settings(**ARMED)
+    def test_send_nonce_mismatch_refused(self):
+        token = self._dispatch()
+        with self.assertRaises(ClaimRefused) as cm:
+            self._complete(self._w, token, {"ok": True, "mutated": True, "need_reconcile": True},
+                           fetch=_fetch(777, 0.60), nonce="not-the-nonce")
+        self.assertEqual(cm.exception.reason, "send_nonce_mismatch")
 
     @override_settings(**ARMED)
     def test_duplicate_completion_idempotent(self):
         token = self._dispatch()
-        br = {"ok": True, "mutated": True, "volume_step": 0.01, "estimated_remaining": 0.60}
-        complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                               fetch=_fetch(777, 0.60))
-        again = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
-                                       fetch=_fetch(777, 0.60))
+        br = {"ok": True, "mutated": True, "need_reconcile": True}
+        self._complete(self._w, token, br, fetch=_fetch(777, 0.60))
+        again = self._complete(self._w, token, br, fetch=_fetch(777, 0.60))
         self.assertTrue(again["idempotent"])
         self.assertEqual(again["status"], reconcile.PARTIAL_RECONCILED)
