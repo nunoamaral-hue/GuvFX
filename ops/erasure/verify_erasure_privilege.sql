@@ -137,6 +137,16 @@ BEGIN
              AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls)) THEN
     problems := problems || 'app role can assume a role with an elevated attribute (SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS) -- transitive escalation'::text; END IF;
 
+  -- (7d) F-8: the runtime app role must OWN NOTHING in the application schema (ownership lives on the schema
+  -- owner; the app role operates via grants only). Catches a role that is still an object owner.
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+             WHERE n.nspname='public' AND c.relowner=(SELECT oid FROM pg_roles WHERE rolname=v_app)
+               AND c.relkind IN ('r','S','v','m','f','p')) THEN
+    problems := problems || 'app role owns relation(s) in public -- runtime role must own nothing'::text; END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='public' AND p.proowner=(SELECT oid FROM pg_roles WHERE rolname=v_app)) THEN
+    problems := problems || 'app role owns function(s) in public -- runtime role must own nothing'::text; END IF;
+
   -- (8) app role: no DELETE/TRUNCATE on evidence tables
   FOREACH r IN ARRAY ARRAY['broker_intelligence_evidenceblob','broker_intelligence_brokerevent'] LOOP
     IF has_table_privilege(v_app, r, 'DELETE') THEN problems := problems || format('app has DELETE on %s', r); END IF;

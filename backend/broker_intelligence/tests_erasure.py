@@ -558,8 +558,24 @@ class ReadinessAppRolePostureTests(TestCase):
         self._mkrole("relp_clean", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
         ready, reasons = self._readiness_as("relp_clean")
         self.assertFalse(ready)
-        for s in ("must be NOSUPERUSER", "NOCREATEROLE", "NOCREATEDB", "NOBYPASSRLS", "able to assume"):
+        for s in ("must be NOSUPERUSER", "NOCREATEROLE", "NOCREATEDB", "NOBYPASSRLS", "able to assume",
+                  "must own nothing"):
             self.assertFalse(self._has(reasons, s), f"unexpected posture reason {s}: {reasons}")
+
+    def test_refuses_app_role_that_owns_an_object(self):
+        # F-8: the runtime app role must own nothing in 'public'. A role that still owns an object -> NOT READY.
+        self._mkrole("relp_owner", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        with connection.cursor() as cur:
+            cur.execute("CREATE TABLE public._relp_owned_tbl (i int)")
+            cur.execute("ALTER TABLE public._relp_owned_tbl OWNER TO relp_owner")
+        self.addCleanup(lambda: self._exec("DROP TABLE IF EXISTS public._relp_owned_tbl"))
+        ready, reasons = self._readiness_as("relp_owner")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "must own nothing"), reasons)
+
+    def _exec(self, sql):
+        with connection.cursor() as cur:
+            cur.execute(sql)
 
     # --- membership / assume checks (require the privileged roles to exist so roles_ok is True) ----------
     def test_refuses_app_role_that_can_assume_a_privileged_role(self):

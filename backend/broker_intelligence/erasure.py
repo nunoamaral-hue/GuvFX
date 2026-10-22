@@ -336,6 +336,22 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
             if escalatable:
                 reasons.append(f"application role '{app_role}' can assume elevated role(s) {list(escalatable)} "
                                "— membership in a role with SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS")
+            # (7c) F-8: the runtime app role must OWN NOTHING in the application schema — ownership lives on
+            # guvfx_schema_owner and the runtime operates via grants only. A role that still owns objects could
+            # ALTER/DROP/disable them (incl. the immutability triggers' tables). (The bootstrap superuser is
+            # NEVER demoted in the accepted model; the runtime is a separate least-privilege role that owns nothing.)
+            cur.execute("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = 'public' AND c.relkind IN ('r','S','v','m','f','p') "
+                        "AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = %s)", [app_role])
+            owned_rel = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = 'public' AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = %s)",
+                        [app_role])
+            owned_fn = cur.fetchone()[0]
+            if owned_rel or owned_fn:
+                reasons.append(f"application role '{app_role}' must own nothing in 'public' "
+                               f"(owns {owned_rel} relation(s), {owned_fn} function(s)); ownership belongs to "
+                               f"'{_SCHEMA_OWNER_ROLE}'")
             for tbl in _EVIDENCE_TABLES:
                 for priv in ("DELETE", "TRUNCATE"):
                     cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, tbl, priv])

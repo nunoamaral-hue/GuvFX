@@ -42,6 +42,24 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \quit
 \endif
 
+-- F-8 topology guard: this IN-PLACE demotion is UNSAFE for a bootstrap / sole-superuser application role --
+-- demoting it would leave the cluster with no superuser, and a blanket REASSIGN OWNED would hit pinned system
+-- objects. If app_role is the bootstrap role (OID 10) or the only superuser, REFUSE and direct the operator to
+-- the bootstrap-safe ops/erasure/separate_runtime_role.sql (new least-privilege runtime role). This script
+-- remains valid ONLY for a NON-bootstrap, non-sole-superuser app role (e.g. a disposable test role).
+SELECT CASE WHEN
+      COALESCE((SELECT oid = 10 FROM pg_roles WHERE rolname = :'app_role'), false)
+   OR COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = :'app_role'), false)
+        AND (SELECT count(*) FROM pg_roles WHERE rolsuper) = 1
+   THEN 'true' ELSE 'false' END AS _app_is_bootstrap \gset
+\if :_app_is_bootstrap
+  \echo '*** REFUSED: app_role is the bootstrap role (OID 10) and/or the sole superuser. In-place demotion would'
+  \echo '    leave the cluster without a superuser and target pinned system objects. Use'
+  \echo '    ops/erasure/separate_runtime_role.sql (new least-privilege runtime role) instead. Rolling back.'
+  ROLLBACK;
+  \quit
+\endif
+
 -- Ordering guard (adversarial-review C4): refuse if erasure provisioning has ALREADY run (the governed
 -- procedure exists). Re-running the demotion after provisioning would re-GRANT the app role the broad
 -- DELETE/EXECUTE that provisioning revoked. Roll provisioning back (production_rollback_erasure.sql) first.
