@@ -106,9 +106,12 @@ def _trade_currencies_all_usd(ids, *, stage: str) -> bool:
     return not qs.filter(bad).exists()
 
 
-def _empty_metrics(total: int, basis: str, excluded) -> dict:
-    """Counts-only metrics with every MONETARY/classified field withheld — used when the realized figures cannot be
-    trusted as a single USD denomination (fail-closed: never emit a mixed-currency money number)."""
+def _empty_metrics(total, basis: str, excluded, *, state: str, reason, included_count: int) -> dict:
+    """Metrics with every MONETARY/classified field withheld — used when the realized figures cannot be trusted as
+    a single USD denomination (fail-closed: never emit a mixed-currency money number). ``total`` (trade count) is
+    kept when it is still meaningful (mixed-currency PARTIAL) and ``None`` when there is no USD-eligible account at
+    all (UNAVAILABLE) so the UI shows an explicit state, never a measured zero. ``state``/``reason`` are the
+    machine state + safe category code; ``included_count``/``excluded_count`` expose the account split."""
     return {
         "total_trades": total, "wins": None, "losses": None, "breakeven": None,
         "win_rate_pct": None, "profit_factor": None, "profit_factor_infinite": False,
@@ -116,6 +119,8 @@ def _empty_metrics(total: int, basis: str, excluded) -> dict:
         "max_drawdown_money": None,
         "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
         "basis": basis, "excluded_accounts": list(excluded),
+        "state": state, "reason": reason,
+        "included_count": included_count, "excluded_count": len(excluded),
     }
 
 
@@ -137,12 +142,21 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
     excluded = [a.id for a in non_usd]
     ids = [a.id for a in usd_accounts]
 
+    if not ids and excluded:
+        # Every eligible account was excluded (observed non-USD) and there is no vetted FX feed: the statistics
+        # cannot be expressed in USD at all. Return an explicit UNAVAILABLE state with EVERY field (including the
+        # trade count) withheld — NEVER measured zeros (the all-excluded dashboard bug reported 0 trades / $0 net /
+        # 0% win rate as if real). An empty scope (no accounts, nothing excluded) falls through to the 0-trade path.
+        return _empty_metrics(None, "PARTIAL", excluded, state=FX.STATE_UNAVAILABLE,
+                              reason=FX.CURRENCY_UNCONVERTIBLE, included_count=0)
+
     if not _trade_currencies_all_usd(ids, stage=stage):
         # Mixed trade currencies within the (USD-account) set: cannot classify or sum honestly -> counts only.
         cqs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
         if stage in ("LIVE", "TEST"):
             cqs = cqs.filter(source_stage=stage)
-        return _empty_metrics(cqs.count(), "PARTIAL", excluded)
+        return _empty_metrics(cqs.count(), "PARTIAL", excluded, state=FX.STATE_PARTIAL,
+                              reason=FX.CURRENCY_UNCONVERTIBLE, included_count=len(ids))
 
     qs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
     if stage in ("LIVE", "TEST"):
@@ -188,6 +202,9 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
         "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
         # basis is USD only when the whole scope is a single USD denomination; excluded non-USD accounts surfaced.
         "basis": ("USD" if not excluded else "PARTIAL"), "excluded_accounts": excluded,
+        "state": (FX.STATE_PARTIAL if excluded else FX.STATE_OK),
+        "reason": (FX.CURRENCY_UNCONVERTIBLE if excluded else None),
+        "included_count": len(ids), "excluded_count": len(excluded),
     }
 
 
@@ -207,6 +224,10 @@ def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=
     usd_accounts, non_usd = _partition_usd(accounts, observed_nonusd_ids)
     excluded = [a.id for a in non_usd]
     ids = [a.id for a in usd_accounts]
+    if not ids and excluded:
+        # All eligible accounts excluded (observed non-USD): no USD-eligible trade set -> withhold the number
+        # entirely (None), never a measured 0.0. (No accounts at all falls through to the honest empty 0.0 below.)
+        return None, "PARTIAL"
     if not _trade_currencies_all_usd(ids, stage=stage):
         return None, "PARTIAL"
     today = timezone.now().date()
@@ -323,7 +344,7 @@ def portfolio_open_pl(per_account, rate_source: FX.FxRateSource):
         agg.basis = "PARTIAL"
         for aid in stale_ids:
             agg.unconverted.append({"account_id": aid, "native": None, "native_currency": "",
-                                    "reason": "stale_read"})
+                                    "reason": "stale_read", "category": FX.STALE_OBSERVATION})
     return agg, stale_ids
 
 
