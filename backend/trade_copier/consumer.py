@@ -23,6 +23,7 @@ from execution.models import ExecutionJob
 from trade_copier import reconcile
 from trade_copier.flags import copier_enabled, copier_execute_demo_armed, copier_execute_enabled
 from trade_copier.models import CopierReplication, ReplicationStatus
+from trade_copier.replication import _broker_constraints
 
 logger = logging.getLogger(__name__)
 
@@ -224,16 +225,27 @@ def complete_partial_close(worker_identity, *, job_id: int, dispatch_token: str,
             post = reconcile.PARTIAL_SENT
         replication.reconciliation_status = post
         replication.save(update_fields=["reconciliation_status", "updated_at"])
+        # Capture the SERVER-derived reconciliation inputs UNDER the lock — the worker supplies NO authority
+        # over the comparison. Intended remaining is the producer-stamped payload value, never ``br``.
+        acct = replication.follower.follower_account
+        symbol = replication.follower_symbol
+        job_intended_remaining = (job.payload or {}).get("expected_remaining")
 
-    # Reconcile OUTSIDE the lock (authoritative read); the terminal state is written by reconcile_*.
-    step = br.get("volume_step")
-    if step is None:
-        # Authoritative step is mandatory (ADR-0056 MEDIUM-5) — without it we cannot safely compare.
+    # Reconcile OUTSIDE the lock (authoritative read); the terminal state is written by reconcile_*. The
+    # tolerance step comes from the follower's AUTHORITATIVE broker instrument (never ``br``, never a default)
+    # and the intended remaining from the server-stamped producer payload. Any worker-supplied
+    # ``volume_step`` / ``estimated_remaining`` in ``bridge_result`` is deliberately IGNORED.
+    constraints = _broker_constraints(acct, symbol)
+    if not constraints.authoritative or not constraints.lot_step or float(constraints.lot_step) <= 0:
         reconcile._set_recon(replication, reconcile.PARTIAL_OPERATOR_REVIEW)
-        return {"ok": False, "status": reconcile.PARTIAL_OPERATOR_REVIEW, "reason": "authoritative_step_missing"}
-    intended_remaining = br.get("estimated_remaining")
-    if intended_remaining is None:
-        intended_remaining = br.get("expected_remaining")
-    rec = reconcile.reconcile_partial_close(replication, intended_remaining, step=float(step), fetch=fetch) \
-        if fetch is not None else reconcile.reconcile_partial_close(replication, intended_remaining, step=float(step))
+        return {"ok": False, "status": reconcile.PARTIAL_OPERATOR_REVIEW,
+                "reason": "authoritative_step_unavailable"}
+    if job_intended_remaining is None:
+        reconcile._set_recon(replication, reconcile.PARTIAL_OPERATOR_REVIEW)
+        return {"ok": False, "status": reconcile.PARTIAL_OPERATOR_REVIEW,
+                "reason": "intended_remaining_unavailable"}
+    step = float(constraints.lot_step)
+    rec = (reconcile.reconcile_partial_close(replication, job_intended_remaining, step=step, fetch=fetch)
+           if fetch is not None
+           else reconcile.reconcile_partial_close(replication, job_intended_remaining, step=step))
     return {"ok": True, "post_send_state": post, "reconciliation": rec}

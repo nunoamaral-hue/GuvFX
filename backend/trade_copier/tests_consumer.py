@@ -43,7 +43,8 @@ class ConsumerFixture(ProducerFixture):
         self.job = ExecutionJob.objects.create(
             account=self.facct, job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE,
             status=ExecutionJob.Status.PENDING, terminal_node=self.node,
-            payload={"ticket": 777, "volume": "0.40", "symbol": "XAUUSD"})
+            # expected_remaining is the server-stamped producer value reconciliation compares against.
+            payload={"ticket": 777, "volume": "0.40", "symbol": "XAUUSD", "expected_remaining": "0.60"})
         self.pevent = MasterEvent.objects.create(
             master=self.master, sequence=4, from_poll=self.poll,
             event_type=MasterEvent.EventType.PARTIAL_CLOSE, position_ticket=1, symbol="XAUUSD", side="BUY",
@@ -91,9 +92,25 @@ class WorkerClassTests(ConsumerFixture):
         self.assertEqual(resp.status_code, 403)
 
     def test_legacy_token_refused_at_claim(self):
-        self._worker()
-        resp = APIClient().post(CLAIM_URL, {}, format="json", HTTP_X_WORKER_TOKEN="legacy-tok")
+        # Discriminating: send a legacy token ALONGSIDE valid modern creds. The legacy-token guard must fire
+        # FIRST (remove it and the modern creds would authenticate -> a different, non-403 outcome).
+        WorkerIdentity.objects.create(worker_id="pcw-legacy", worker_secret_hash=WorkerIdentity.hash_secret("s"),
+                                      status=WorkerIdentity.Status.ACTIVE,
+                                      worker_permissions={"partial_close_worker": True, "authorized_nodes": [NODE],
+                                                          "partial_close_account_id": self.facct.id})
+        resp = APIClient().post(CLAIM_URL, {}, format="json", HTTP_X_WORKER_TOKEN="legacy-tok",
+                                HTTP_X_WORKER_ID="pcw-legacy", HTTP_X_WORKER_SECRET="s")
         self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.data["detail"], "legacy_worker_token_refused")
+
+    @override_settings(**ARMED)
+    def test_inlock_account_route_mismatch_refused(self):
+        # Defense-in-depth: the in-lock admit refuses a found job whose account != the worker's authorized
+        # account, even though the claim query would not surface it (direct unit check).
+        ok, reason = consumer._admit_claim_locked(
+            self.job, self.rep, active_node_ids=[self.node.id], authorized_account_id=self.facct.id + 9999)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "account_route_mismatch")
 
 
 # ── claim gates (points 3-6) ─────────────────────────────────────────────────────────────────────────
@@ -183,8 +200,11 @@ class LeaseOrphanTests(ConsumerFixture):
         self.job.lease_expires_at = timezone.now() - timezone.timedelta(hours=1)   # expired
         self.job.save(update_fields=["lease_expires_at"])
         from execution import execution_health
-        # The monitor-chain reclaimers are type-scoped (SYNC/MODIFY/PLACE_ORDER); a partial close is untouched.
-        execution_health.reclaim_orphaned_sync_jobs(timezone.now())
+        now = timezone.now()
+        # ALL monitor-chain reclaimers are type-scoped (SYNC/MODIFY/PLACE_ORDER); none touches a partial close.
+        execution_health.reclaim_orphaned_sync_jobs(now)
+        execution_health.reclaim_orphaned_modify_jobs(now)
+        execution_health.reconcile_orphaned_place_orders(now)
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, ExecutionJob.Status.RUNNING)   # NOT requeued to PENDING / FAILED
 
@@ -267,12 +287,28 @@ class CompletionTests(ConsumerFixture):
         self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_RECONCILE_UNAVAILABLE)  # non-terminal
 
     @override_settings(**ARMED)
-    def test_missing_step_is_operator_review(self):
+    def test_no_authoritative_step_is_operator_review(self):
+        # Remove the authoritative broker instrument -> no server-derived step -> operator review (never a
+        # worker-supplied or default step).
+        from execution.models import BrokerInstrument
+        BrokerInstrument.objects.filter(account=self.facct).delete()
         token = self._dispatch()
-        br = {"ok": True, "mutated": True, "estimated_remaining": 0.60}   # NO volume_step
+        br = {"ok": True, "mutated": True}
         out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
                                      fetch=_fetch(777, 0.60))
         self.assertEqual(out["status"], reconcile.PARTIAL_OPERATOR_REVIEW)
+        self.assertEqual(out["reason"], "authoritative_step_unavailable")
+
+    @override_settings(**ARMED)
+    def test_worker_supplied_step_and_remaining_ignored(self):
+        """FINDING 1 — a worker POSTing a huge tolerance + a matching 'remaining' cannot force a false
+        RECONCILED: the step is the authoritative instrument step and intended is the server-stamped payload,
+        so a real divergence is still caught."""
+        token = self._dispatch()
+        br = {"ok": True, "mutated": True, "volume_step": 1e9, "estimated_remaining": 0.50}
+        out = complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token, bridge_result=br,
+                                     fetch=_fetch(777, 0.50))   # actual 0.50 vs server-intended 0.60
+        self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_DIVERGENT_VOLUME)
 
     @override_settings(**ARMED)
     def test_duplicate_completion_idempotent(self):

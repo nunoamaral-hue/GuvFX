@@ -153,6 +153,37 @@ worker that calls the bridge primitive; `COPIER_EXECUTE_DEMO_ARMED`; and the acc
 **Proposed** until the implementation passes review (Sponsor disposition). Nothing is deployed, armed or
 executed; the endpoints are reachable only by a (non-existent) granted worker with arming on.
 
+### Independent adversarial review of the implementation (2026-10-22)
+
+Confirmed the safety floor closed (no double-send, no broker reach while DARK, worker-class mutual exclusivity,
+in-lock gates, fail-closed state machine). Findings handled:
+
+- **HIGH (fixed) — reconciliation inputs are now SERVER-derived.** The first implementation took the tolerance
+  `step` AND the intended remaining from the worker's completion POST, so a worker could send a huge
+  `volume_step` and force a false `PCLOSE_RECONCILED`. `complete_partial_close` now derives the step from the
+  follower's authoritative broker instrument (`_broker_constraints(acct, symbol).lot_step`; non-authoritative
+  ⇒ `PCLOSE_OPERATOR_REVIEW`) and the intended remaining from the producer-stamped
+  `job.payload["expected_remaining"]`; any worker-supplied `volume_step` / `estimated_remaining` is ignored.
+  Regression-tested (`test_worker_supplied_step_and_remaining_ignored`).
+- **Identity-pin source (D1, reconciled text).** The implementation derives expected login/server UNIFORMLY
+  from the account's durable binding — `TradingAccount.account_number` + bound `broker_server.server_name` —
+  for hosted and non-hosted alike (not separately via `AccountProvisioning`). This is safe: a blank/unresolved
+  binding fails closed (`identity_pin_unresolved`), `require_identity_pin` is forced, and the unchanged #545
+  bridge re-verifies login/server before `order_send`.
+- **Mutual exclusivity (D2, reconciled text).** The guarantee that a `partial_close_worker` cannot claim
+  OPEN/CLOSE/MODIFY is the UNCONDITIONAL 403 at the generic `next_job` (before any claim) + the base-qs
+  exclusion — not the grant shape. `assert_dedicated_worker` additionally refuses a `shadow_worker` co-grant;
+  `authorized_nodes` is permitted (the dedicated worker needs node routing) and is harmless because next_job
+  refuses the identity regardless.
+
+### Known gap (not a DARK-merge blocker; required before DEMO certification)
+
+- **No background reconciliation for a post-dispatch worker crash.** If the host worker dies after `order_send`
+  and never calls `/complete`, the job stays `RUNNING` with `reconciliation_status=PCLOSE_RECON_PENDING`
+  indefinitely — safe (never re-dispatched/re-sent; orphan reclaimers are type-scoped away from
+  `PARTIAL_CLOSE_TRADE`), but the authoritative reconciliation is operator-manual. A background
+  reconcile-pending sweep (authoritative read, no re-send) is a follow-up required before DEMO certification.
+
 ## Status / approval
 DARK engineering design + implementation. ADR ratification, DEMO arming, the dedicated worker grant,
 deployment and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` /
