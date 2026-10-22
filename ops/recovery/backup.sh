@@ -62,7 +62,11 @@ srv_ver="$(rec_psql_scalar "show server_version" 2>/dev/null)" || rec_die "canno
 srv_num="$(printf '%s' "$srv_ver" | grep -oE '[0-9]+(\.[0-9]+)*' | head -1)"; srv_major="${srv_num%%.*}"
 dump_ver="$(pg_dump --version | grep -oE '[0-9]+(\.[0-9]+)*' | head -1)"; dump_major="${dump_ver%%.*}"
 rec_log "preflight: server=$srv_ver pg_dump=$dump_ver"
-[ "$dump_major" -ge "$srv_major" ] || rec_die "pg_dump major ($dump_major) < server major ($srv_major) -- a dump taken with an older client can be incomplete/incompatible"
+# Client/server MAJOR compatibility gate (supersedes the old 'dump_major >= srv_major' floor). For a
+# PRODUCTION recovery point this REQUIRES exact major parity BEFORE the dump -- a newer client can emit
+# statements the production-major restore target rejects (pg_dump 17's `transaction_timeout` broke a
+# strict PG15 restore). Overridable only via GUVFX_BACKUP_ALLOW_CLIENT_MAJOR_MISMATCH=1.
+rec_require_client_server_compat "$dump_major" "$srv_major" "$cls"
 
 db_bytes="$(rec_psql_scalar "select pg_database_size(current_database())")" || rec_die "cannot read database size"
 free_bytes="$(rec_free_bytes "$OUT_DIR" 2>/dev/null || rec_free_bytes "$(dirname "$OUT_DIR")")"
@@ -192,7 +196,10 @@ cat > "$meta" <<JSON
   "database": "${PGDATABASE:-}",
   "system_identifier": "$sysid",
   "server_version": "$srv_ver",
+  "server_major": "$srv_major",
   "pg_dump_version": "$dump_ver",
+  "pg_dump_major": "$dump_major",
+  "client_server_major_parity": $([ "$dump_major" = "$srv_major" ] && echo true || echo false),
   "dump_format": "custom(-Fc)",
   "wal_lsn": "$lsn",
   "artifact": "$(basename "$final")",
