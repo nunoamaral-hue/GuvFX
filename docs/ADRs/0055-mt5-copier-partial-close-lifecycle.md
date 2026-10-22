@@ -1,7 +1,7 @@
 # 0055 — MT5 Copier: partial-close lifecycle + DEMO-only partial-close bridge primitive (DARK)
 
 - Date: 2026-10-21
-- Status: Proposed (DARK engineering only; merge, ADR ratification, DEMO arming, deployment and LIVE all remain separate explicit Sponsor gates)
+- Status: Accepted for DARK engineering (Sponsor-ratified 2026-10-22; acceptance covers the DARK design + foundations ONLY — it does NOT certify DEMO execution, LIVE execution or customer availability; DEMO arming, deployment, the dedicated consumer and LIVE all remain separate explicit gates)
 - Extends: [0051](0051-mt5-master-follower-copier.md), [0052](0052-mt5-copier-close-lifecycle.md), [0053](0053-mt5-copier-sltp-modify.md)
 - ADR allocation note: ADR-0054 is reserved for *Withdrawal controlled erasure* (separate workstream) and is NOT used here.
 - Packet: `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` Workstream B (trade lifecycle), increment 3
@@ -151,6 +151,8 @@ merged producers; NOT changed in this PR to avoid scope-creep into merged code.
   no partial close reaches a broker.
 
 ## Status / approval
-DARK engineering decision only. Merge, ADR-0055 ratification, DEMO arming, deployment, any real partial close
-and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` = false;
+**Accepted for DARK engineering (Sponsor-ratified 2026-10-22.)** Acceptance covers the DARK design + foundations
+ONLY. It does NOT certify DEMO execution, LIVE execution or customer availability. A real partial close further
+requires the dedicated DEMO consumer (not yet built), DEMO arming, deployment, account rehearsal and the LIVE
+gates — each a separate explicit Sponsor decision. `DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` = false;
 actual live availability = 0%.
