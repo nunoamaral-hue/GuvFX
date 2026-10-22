@@ -1,4 +1,4 @@
--- ADR-0054 — PRODUCTION application-role DEMOTION to least privilege (mandatory precondition).
+-- ADR-0054 -- PRODUCTION application-role DEMOTION to least privilege (mandatory precondition).
 -- ============================================================================================================
 -- SUPERUSER-ONLY. SEPARATELY SPONSOR-AUTHORISED. Run BEFORE ops/erasure/provision_erasure_privilege.sql.
 -- This is the separate, explicit demotion the provisioning script deliberately refuses to perform itself.

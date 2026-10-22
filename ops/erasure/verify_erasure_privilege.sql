@@ -116,7 +116,7 @@ BEGIN
   IF has_table_privilege('guvfx_erasure', 'broker_intelligence_erasureexecutiongrant', 'INSERT') THEN
     problems := problems || 'guvfx_erasure has INSERT on the execution-grant table'::text; END IF;
 
-  -- (7) app role: LEAST PRIVILEGE — no elevated cluster attribute; not a member of / able to assume any
+  -- (7) app role: LEAST PRIVILEGE -- no elevated cluster attribute; not a member of / able to assume any
   -- privileged role (incl. guvfx_migrate). A SUPERUSER/BYPASSRLS/CREATEROLE/CREATEDB app role would bypass the
   -- REVOKEs and the immutability triggers (P0 production superuser blocker). Mirrors privileged_backend_readiness.
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=v_app AND rolsuper) THEN

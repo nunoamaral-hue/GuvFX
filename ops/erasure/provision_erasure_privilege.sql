@@ -67,11 +67,11 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \quit
 \endif
 
--- Precondition (P0 — production superuser blocker): the application runtime role MUST already be least
+-- Precondition (P0 -- production superuser blocker): the application runtime role MUST already be least
 -- privilege. If it carries ANY elevated cluster attribute (SUPERUSER / CREATEROLE / CREATEDB / BYPASSRLS), a
 -- session on it would bypass the REVOKEs AND the BEFORE-DELETE immutability triggers, so this provisioning
 -- would install a COSMETIC boundary. Refuse BEFORE any ownership change or procedure creation. Demotion to the
--- least-privilege posture is a SEPARATE, explicit production operation with its own rollback — this script
+-- least-privilege posture is a SEPARATE, explicit production operation with its own rollback -- this script
 -- NEVER demotes a role automatically.
 SELECT CASE WHEN EXISTS (
   SELECT 1 FROM pg_roles

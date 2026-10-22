@@ -1,4 +1,4 @@
--- ADR-0054 — ROLLBACK of ops/erasure/demote_app_role.sql (restore the PRIOR application-role posture).
+-- ADR-0054 -- ROLLBACK of ops/erasure/demote_app_role.sql (restore the PRIOR application-role posture).
 -- ============================================================================================================
 -- SUPERUSER-ONLY. SEPARATELY SPONSOR-AUTHORISED. Use ONLY to revert a demotion that has NOT yet been followed
 -- by erasure provisioning (if provisioning has run, roll that back first with production_rollback_erasure.sql).
