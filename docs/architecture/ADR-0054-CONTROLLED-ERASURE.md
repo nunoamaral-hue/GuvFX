@@ -235,6 +235,14 @@ Every element is placed in exactly one category, so no reader mistakes a design 
   creation** if the app role is privileged. Demotion of a currently-privileged production role to this posture is
   a **separate, explicit production operation with its own rollback** — the provisioning script never demotes a
   role automatically.
+- **PER-OPERATOR EXECUTOR LOGIN LIFECYCLE (F-5, mandatory convention):** each short-lived executor login (a
+  member of the NOLOGIN `guvfx_erasure_exec` group) MUST be named `guvfx_erx_<suffix>` and MUST carry a hard
+  `VALID UNTIL` expiry. The prefix is enforced fail-closed by `broker_intelligence.erasure_operators` and the
+  `manage.py mint_erasure_operator` command (a non-conforming name is refused before any DB change); it is
+  required because `ops/erasure/production_rollback_erasure.sql` removes execute authority by dropping exactly
+  `guvfx_erx_%` — a login minted outside the convention would survive rollback with EXECUTE intact. Deletion:
+  `mint_erasure_operator --suffix <s> --revoke` after use, and wholesale by the rollback script. The operator
+  password is supplied out of band (env/secret store), never on argv or in logs, and expires via `VALID UNTIL`.
 - **REQUIRES PRIVILEGED PROVISIONING IN PRODUCTION (superuser, separately Sponsor-authorised):** running
   `ops/erasure/provision_erasure_privilege.sql` against production, creating the roles there, moving ownership,
   and deploying the `guvfx_erasure_exec` credential into the governed job's environment. Until done, **and until
