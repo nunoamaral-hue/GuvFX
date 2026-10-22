@@ -116,7 +116,7 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')
   LOOP
     EXECUTE format('ALTER %s %I.%I(%s) OWNER TO %I',
-      CASE WHEN r.prokind='p' THEN 'PROCEDURE' ELSE 'FUNCTION' END,
+      CASE WHEN r.prokind='p' THEN 'PROCEDURE' WHEN r.prokind='a' THEN 'AGGREGATE' ELSE 'FUNCTION' END,
       current_setting('x.schema'), r.proname, r.args, current_setting('x.boot'));
   END LOOP;
 END

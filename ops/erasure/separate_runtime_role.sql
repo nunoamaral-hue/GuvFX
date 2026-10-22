@@ -89,6 +89,19 @@ SELECT CASE WHEN
   \quit
 \endif
 
+-- Ordering guard (adversarial-review C4): refuse if erasure provisioning has ALREADY run (the governed
+-- procedure exists). Re-running the separation then re-GRANTs the app role broad DELETE on ALL TABLES (incl.
+-- the evidence tables) and EXECUTE on ALL FUNCTIONS (incl. the governed proc) that provisioning revoked. Roll
+-- provisioning back (production_rollback_erasure.sql) before any re-run.
+SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE p.proname='bi_governed_erase_owner' AND n.nspname='public') THEN 'true' ELSE 'false' END AS _provisioned \gset
+\if :_provisioned
+  \echo '*** REFUSED: erasure provisioning has already run (bi_governed_erase_owner present). Re-running the'
+  \echo '    separation would re-open broad grants provisioning revoked. Roll provisioning back first. Rolling back.'
+  ROLLBACK;
+  \quit
+\endif
+
 -- pgcrypto (used by the erasure procedure later; harmless here, idempotent).
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -184,7 +197,7 @@ BEGIN
                       WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')
   LOOP
     EXECUTE format('ALTER %s %I.%I(%s) OWNER TO guvfx_schema_owner',
-                   CASE WHEN r.prokind='p' THEN 'PROCEDURE' ELSE 'FUNCTION' END,
+                   CASE WHEN r.prokind='p' THEN 'PROCEDURE' WHEN r.prokind='a' THEN 'AGGREGATE' ELSE 'FUNCTION' END,
                    current_setting('x.schema'), r.proname, r.args);
     n := n + 1;
   END LOOP;
