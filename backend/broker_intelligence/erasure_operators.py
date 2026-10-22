@@ -29,7 +29,12 @@ def scram_sha256_verifier(password: str, *, iterations: int = 4096) -> str:
     """Compute a PostgreSQL SCRAM-SHA-256 password verifier from a cleartext password (RFC 5802 / PG storage
     format). The verifier is what gets sent in ``CREATE ROLE ... PASSWORD '<verifier>'`` so the CLEARTEXT never
     enters a SQL statement and therefore cannot leak to the PostgreSQL server log on a statement error or under
-    ``log_statement=ddl/all``. The verifier is a salted hash and is NOT reversible to the password."""
+    ``log_statement=ddl/all``. The verifier is a salted hash and is NOT reversible to the password.
+
+    Note: SASLprep (RFC 4013) normalization is NOT applied; the password is hashed as UTF-8 bytes. This matches
+    PostgreSQL byte-for-byte for ASCII / typical env-supplied operator passwords (and PG itself falls back to the
+    raw password when SASLprep fails), so it is not an auth-failure risk here; a password relying on SASLprep
+    mapping of non-ASCII codepoints could differ."""
     salt = os.urandom(16)
     salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()

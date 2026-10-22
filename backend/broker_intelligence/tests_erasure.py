@@ -491,13 +491,14 @@ class ReadinessAppRolePostureTests(TestCase):
     _PRIV = ("guvfx_schema_owner", "guvfx_erasure", "guvfx_erasure_exec", "guvfx_migrate")
 
     def setUp(self):
-        # These checks require the test DB login to create/drop roles. On a least-privilege test cluster, skip
-        # rather than ERROR (evidence-rule portability); on a superuser CI DB they run.
+        # These checks CREATE ROLE ... SUPERUSER (to exercise the superuser/transitive posture), which requires
+        # the test DB login to be an actual SUPERUSER. On any less-privileged test cluster, skip rather than
+        # ERROR (evidence-rule portability); on a superuser CI DB they run.
         with connection.cursor() as cur:
-            cur.execute("SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname=current_user")
+            cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
             row = cur.fetchone()
         if not (row and row[0]):
-            self.skipTest("test DB role lacks CREATEROLE/SUPERUSER; readiness-posture checks verified elsewhere")
+            self.skipTest("test DB role is not SUPERUSER; readiness-posture checks verified on a superuser DB")
 
     def _mkrole(self, name, opts):
         with connection.cursor() as cur:
