@@ -102,6 +102,20 @@ BEGIN
   IF has_schema_privilege(v_app, 'public', 'CREATE') THEN
     problems := problems || 'app role has CREATE on schema public'::text; END IF;
 
+  -- (6c) execution-grant table (P0 executor trust anchor): off the app role; app has no privilege; PUBLIC none;
+  -- guvfx_erasure consume-only (no INSERT).
+  IF (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='broker_intelligence_erasureexecutiongrant')
+       IS DISTINCT FROM 'guvfx_schema_owner' THEN
+    problems := problems || 'execution-grant table not owned by guvfx_schema_owner'::text; END IF;
+  FOREACH r IN ARRAY ARRAY['SELECT','INSERT','UPDATE','DELETE'] LOOP
+    IF has_table_privilege(v_app, 'broker_intelligence_erasureexecutiongrant', r) THEN
+      problems := problems || format('app has %s on the execution-grant table', r); END IF;
+  END LOOP;
+  IF has_table_privilege('public', 'broker_intelligence_erasureexecutiongrant', 'SELECT') THEN
+    problems := problems || 'PUBLIC has SELECT on the execution-grant table'::text; END IF;
+  IF has_table_privilege('guvfx_erasure', 'broker_intelligence_erasureexecutiongrant', 'INSERT') THEN
+    problems := problems || 'guvfx_erasure has INSERT on the execution-grant table'::text; END IF;
+
   -- (7) app role: not a member of privileged roles
   FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec'] LOOP
     IF pg_has_role(v_app, r, 'USAGE') THEN problems := problems || format('app role is a member of %s', r); END IF;

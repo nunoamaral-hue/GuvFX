@@ -89,15 +89,17 @@ _grant_fail=0
 while IFS='|' read -r _tag uname reqid opid state; do
   reqid="$(echo "$reqid" | tr -d '[:space:]')"; opid="$(echo "$opid" | tr -d '[:space:]')"
   state="$(echo "$state" | tr -d '[:space:]')"
+  cons="NULL"
   case "$state" in
-    none)    log "grant: $uname req=$reqid state=none (no grant)"; continue;;
-    expired) exp="now() - interval '1 hour'"; rev="false"; op="$opid";;
-    revoked) exp="now() + interval '1 hour'"; rev="true";  op="$opid";;
-    wrongop) exp="now() + interval '1 hour'"; rev="false"; op="$WRONGOP_ID";;
-    *)       exp="now() + interval '1 hour'"; rev="false"; op="$opid";;
+    none)     log "grant: $uname req=$reqid state=none (no grant)"; continue;;
+    expired)  exp="now() - interval '1 hour'"; rev="false"; op="$opid";;
+    revoked)  exp="now() + interval '1 hour'"; rev="true";  op="$opid";;
+    wrongop)  exp="now() + interval '1 hour'"; rev="false"; op="$WRONGOP_ID";;
+    consumed) exp="now() + interval '1 hour'"; rev="false"; op="$opid"; cons="now()";;
+    *)        exp="now() + interval '1 hour'"; rev="false"; op="$opid";;
   esac
   if docker exec "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d "$DBNAME" -c \
-    "INSERT INTO broker_intelligence_erasureexecutiongrant(request_id, db_session_user, operator_id, expires_at, revoked, consumed_at, created_at) VALUES ($reqid, 'guvfx_erx_rh', $op, $exp, $rev, NULL, now());" </dev/null >/dev/null 2>"$WORK/grant_err"; then
+    "INSERT INTO broker_intelligence_erasureexecutiongrant(request_id, db_session_user, operator_id, expires_at, revoked, consumed_at, created_at) VALUES ($reqid, 'guvfx_erx_rh', $op, $exp, $rev, $cons, now());" </dev/null >/dev/null 2>"$WORK/grant_err"; then
     log "grant: $uname req=$reqid state=$state op=$op OK"
   else
     log "grant: $uname req=$reqid state=$state op=$op FAILED: $(cat "$WORK/grant_err")"; _grant_fail=1

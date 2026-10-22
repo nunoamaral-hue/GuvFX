@@ -33,7 +33,8 @@ EV = "EVIDENCE"
 # per-operator login + a grant in that state for each). 'valid' => a good single-use grant; 'none' => no grant.
 GRANT_SUBJECTS = {
     "rh-subject": "valid", "rh-hold": "valid", "rh-drift": "valid", "rh-poison": "valid", "rh-conc": "valid",
-    "rh-nogrant": "none", "rh-expired": "expired", "rh-revoked": "revoked", "rh-wrongop": "wrongop",
+    "rh-lockc": "valid", "rh-nogrant": "none", "rh-expired": "expired", "rh-revoked": "revoked",
+    "rh-wrongop": "wrongop", "rh-consumed": "consumed",
 }
 
 
@@ -184,15 +185,16 @@ class Command(BaseCommand):
         self._build_approved(poison_subj, "poison")
 
         # Grant-negative subjects (minimal data; the proc refuses at the grant check before any deletion).
-        for uname in ("rh-nogrant", "rh-expired", "rh-revoked", "rh-wrongop"):
+        for uname in ("rh-nogrant", "rh-expired", "rh-revoked", "rh-wrongop", "rh-consumed"):
             s = self._seed_owner(uname)
             Withdrawal.objects.create(owner=s)
             self._build_approved(s, uname.replace("rh-", ""))
         self._seed_owner("rh-wrongop-other")   # the 'wrong operator' the wrongop grant will map to
 
-        conc = self._seed_owner("rh-conc")
-        Withdrawal.objects.create(owner=conc)
-        self._build_approved(conc, "conc")
+        for uname in ("rh-conc", "rh-lockc"):
+            s = self._seed_owner(uname)
+            Withdrawal.objects.create(owner=s)
+            self._build_approved(s, uname.replace("rh-", ""))
 
         self._ok("03-lifecycle-approved", "all scenario requests APPROVED with assigned executors")
 
@@ -240,6 +242,11 @@ class Command(BaseCommand):
         self._expect_refused("33-wrong-operator-grant-refused",
                              lambda: erasure.execute_owner_erasure(_req("rh-wrongop"), _req("rh-wrongop").confirm_token),
                              needle="assigned executor")
+        # A single-use grant that is already CONSUMED is refused even though the request is still APPROVED (so
+        # this proves single-use at the GRANT layer, not merely the status gate).
+        self._expect_refused("34-consumed-grant-refused",
+                             lambda: erasure.execute_owner_erasure(_req("rh-consumed"), _req("rh-consumed").confirm_token),
+                             needle="grant")
 
         # Hold + token-drift (proc-side).
         hreq = _req("rh-hold")
@@ -301,6 +308,7 @@ class Command(BaseCommand):
 
         self._ingestion_race_check(store)
         self._concurrency_check()
+        self._lock_contention_check()
 
     def _ingestion_race_check(self, store):
         """P0 #2 — after erasure deletes + disconnects the mailbox under the owner lock, a subsequent ingestion
@@ -316,7 +324,8 @@ class Command(BaseCommand):
         # Baseline: a normal ingest writes evidence for this owner (synthetic provenance; mailbox current).
         before = EvidenceBlob.objects.count()
         ingestion.ingest_message(msg, store=store, owner_user=owner, connected_mailbox=mbx)
-        self._assert("40-ingest-baseline-writes", EvidenceBlob.objects.count() >= before)
+        self._assert("40-ingest-baseline-writes", EvidenceBlob.objects.count() == before + 1,
+                     "a valid-mailbox ingest stored exactly one evidence blob (falsifiable positive control)")
         # Simulate erasure disconnect: delete the mailbox (as the proc would, under the lock). A stale in-memory
         # mbx object now refers to a removed row -> the next ingest refuses and writes nothing new.
         stale = ConnectedMailbox.objects.get(pk=mbx.pk)
@@ -360,3 +369,42 @@ class Command(BaseCommand):
         t1.start(); t2.start(); t1.join(); t2.join()
         self._assert("21-concurrency-one-winner",
                      sum(1 for v in results.values() if v == "ok") == 1, f"results={results}")
+
+    def _lock_contention_check(self):
+        """P0 #2 serialization: a holder takes the per-owner erasure advisory lock in its own transaction; a
+        concurrent governed execute for the SAME owner must BLOCK in the procedure until the holder releases.
+        Proven by ORDER: the executor only completes AFTER the holder releases (not flaky timing)."""
+        import time
+        from django.db import connections as _conns, transaction as _txn
+        from broker_intelligence.erasure_lock import OWNER_ERASURE_LOCK_NS
+        req = ErasureRequest.objects.filter(subject_user__username="rh-lockc",
+                                            status=ErasureRequest.Status.APPROVED).latest("id")
+        owner_id = req.subject_user_id_snapshot
+        order, ready, proceed = [], threading.Event(), threading.Event()
+
+        def holder():
+            try:
+                with _txn.atomic():
+                    with _conns["default"].cursor() as cur:
+                        cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", [OWNER_ERASURE_LOCK_NS, int(owner_id)])
+                    order.append("holder-acquired"); ready.set()
+                    proceed.wait(timeout=15); time.sleep(0.8)
+                    order.append("holder-releasing")   # committed (lock released) right after this append
+            finally:
+                _conns["default"].close()
+
+        def executor():
+            try:
+                ready.wait(timeout=15); proceed.set(); time.sleep(0.2)
+                erasure.execute_owner_erasure(req, req.confirm_token)
+                order.append("executor-done")
+            except Exception as exc:  # noqa: BLE001
+                order.append(f"executor-failed:{str(exc).splitlines()[0][:50]}")
+            finally:
+                _conns["default"].close(); _conns[erasure.erasure_executor_alias()].close()
+
+        th, te = threading.Thread(target=holder), threading.Thread(target=executor)
+        th.start(); te.start(); th.join(); te.join()
+        ok = ("executor-done" in order and "holder-releasing" in order
+              and order.index("holder-releasing") < order.index("executor-done"))
+        self._assert("43-execute-waits-for-owner-lock", ok, f"order={order}")

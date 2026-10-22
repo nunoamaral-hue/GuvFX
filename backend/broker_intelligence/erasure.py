@@ -50,6 +50,7 @@ _PROC_SIG = "bigint, text"                  # (request_id, confirmation_token) �
 _PROC_VERSION = "ADR-0054/erasure-proc/v2"  # version marker stored as the function COMMENT; readiness pins it
 _PROC_SEARCH_PATH = "pg_catalog, public"    # exact pinned search_path (not merely "some setting present")
 _EVIDENCE_TABLES = ("broker_intelligence_evidenceblob", "broker_intelligence_brokerevent")
+_GRANT_TABLE = "broker_intelligence_erasureexecutiongrant"   # executor trust anchor — must be off the app role
 _EVIDENCE_SEQUENCES = ("broker_intelligence_evidenceblob_id_seq", "broker_intelligence_brokerevent_id_seq")
 _TRIGGER_FUNCTIONS = ("bi_evidenceblob_block_delete", "bi_brokerevent_block_delete")
 _DELETE_TRIGGERS = ("bi_evidenceblob_no_delete", "bi_brokerevent_no_delete")
@@ -299,6 +300,28 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                     cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, tbl, priv])
                     if cur.fetchone()[0]:
                         reasons.append(f"application role '{app_role}' must not have {priv} on '{tbl}'")
+
+            # (7b) Execution-grant table (the P0 executor trust anchor): owned by the schema owner, the app role
+            # has NO privilege on it (cannot forge a grant), PUBLIC has none, and guvfx_erasure may only
+            # SELECT/UPDATE (consume) — never INSERT a grant. A later migration/GRANT that re-opens app access
+            # must flip readiness to NOT READY.
+            cur.execute("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = %s", [_GRANT_TABLE])
+            gr = cur.fetchone()
+            if gr is None:
+                reasons.append(f"execution-grant table '{_GRANT_TABLE}' absent")
+            elif gr[0] != _SCHEMA_OWNER_ROLE:
+                reasons.append(f"execution-grant table not owned by '{_SCHEMA_OWNER_ROLE}' (owner '{gr[0]}')")
+            for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, _GRANT_TABLE, priv])
+                if cur.fetchone()[0]:
+                    reasons.append(f"application role must not have {priv} on the execution-grant table")
+            cur.execute("SELECT has_table_privilege('public', %s, 'SELECT')", [_GRANT_TABLE])
+            if cur.fetchone()[0]:
+                reasons.append("PUBLIC must not have SELECT on the execution-grant table")
+            if roles_ok:
+                cur.execute("SELECT has_table_privilege(%s, %s, 'INSERT')", [_PRIVILEGED_ROLE, _GRANT_TABLE])
+                if cur.fetchone()[0]:
+                    reasons.append("guvfx_erasure must not have INSERT on the execution-grant table (consume-only)")
 
             # (8) Required migrations applied (exact names — a differently-named 00NN_* must not false-pass).
             for mig in _REQUIRED_MIGRATIONS:

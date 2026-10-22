@@ -3,11 +3,14 @@
 > **Round 5 (P0 closure).** This rehearsal now also proves the NON-FORGEABLE executor (the human executor is
 > resolved from the DB-authenticated `session_user` via a single-use `ErasureExecutionGrant`, never a caller
 > argument) and the ingestion/erasure race closure (the per-owner advisory lock + mailbox-generation recheck).
-> New evidence lines: `06-app-cannot-touch-grants`, `30/31/32/33` (no-grant / expired / revoked / wrong-operator
-> refusals), `12-executor-from-session` (`executed_by` = the grant operator = the assigned executor), and
-> `40/41/42` (ingestion baseline writes, then refuses after the mailbox is removed / after a reconnect bumps the
-> generation). `guvfx_erasure_exec` is now a NOLOGIN GROUP; the executor connects as a distinct short-lived
-> member login. Latest run: `REHEARSAL: ALL EVIDENCE PASS`.
+> New evidence lines: `06-app-cannot-touch-grants`, `30/31/32/33/34` (no-grant / expired / revoked /
+> wrong-operator / consumed-single-use refusals), `12-executor-from-session` (`executed_by` = the grant operator =
+> the assigned executor), `40` (falsifiable positive control: a valid-mailbox ingest stores exactly one blob),
+> `41/42` (ingestion refuses after the mailbox is removed / after a reconnect bumps the generation), and
+> `43-execute-waits-for-owner-lock` (the governed execute BLOCKS on the per-owner advisory lock until a holder
+> releases — serialization under contention). `guvfx_erasure_exec` is now a NOLOGIN GROUP; the executor connects
+> as a distinct short-lived member login. The readiness probe + `verify` now also pin the execution-grant table
+> (owned off the app role; app has no privilege; `guvfx_erasure` consume-only). Latest run: `ALL EVIDENCE PASS`.
 
 - **Date:** 2026-10-22 · Driver: `ops/erasure/rehearse_erasure.sh` · **Synthetic data only; disposable
   container (`postgres:15`), newly-generated disposable credentials, no prod connectivity, no NAS, no OAuth, no

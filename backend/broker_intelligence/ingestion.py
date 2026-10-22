@@ -107,7 +107,7 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
             fresh = ConnectedMailbox.objects.filter(pk=connected_mailbox.id).first()
             if (fresh is None or fresh.status == ConnectedMailbox.Status.REVOKED
                     or fresh.user_id != owner_lock_id
-                    or fresh.generation != getattr(connected_mailbox, "generation", fresh.generation)):
+                    or fresh.generation != getattr(connected_mailbox, "generation", -1)):
                 logger.info("broker_intelligence ingest: mailbox removed/disconnected/regenerated for this owner "
                             "under the erasure lock — stale write refused (no evidence stored)")
                 return None
