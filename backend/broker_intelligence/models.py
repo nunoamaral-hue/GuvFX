@@ -420,6 +420,11 @@ class ConnectedMailbox(models.Model):
     last_error_http_status = models.PositiveSmallIntegerField(null=True, blank=True)  # safe Gmail HTTP status, if any
     last_error_at = models.DateTimeField(null=True, blank=True)                  # when the last failure was recorded
     consecutive_failures = models.PositiveIntegerField(default=0)                # resets to 0 on a successful pass
+    # ADR-0054 P0 (ingestion/erasure race): a durable generation bumped on every (re)connect. An in-flight
+    # ingestion pass captures the generation of the mailbox it is processing; under the per-owner erasure lock it
+    # re-reads the row and refuses its write if the row is gone (erased), REVOKED, owner-mismatched, or the
+    # generation advanced (a reconnect) — so a stale pass cannot revive data after erasure + reconnection.
+    generation = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -860,3 +865,178 @@ class BrokerMessageObservation(models.Model):
     def __str__(self) -> str:
         return (f"BrokerMessageObservation(owner={self.owner_id}, mbx={self.connected_mailbox_id}, "
                 f"pmid={self.provider_message_id[:24]}…, refetches={self.duplicate_count})")
+
+
+class ErasureHold(models.Model):
+    """A legal/security HOLD that blocks controlled erasure for a data subject (ADR-0054). While an ``active`` hold
+    exists for the subject, ``execute_owner_erasure`` refuses (status HELD) so data required for fraud/AML/litigation
+    or security evidence (e.g. a refused cross-user attribution) is never erased. Owner-level in this increment
+    (record-level holds are a documented future refinement). This table is NOT evidence and carries no message
+    content — only the subject reference, a reason category and who placed/released it."""
+
+    # SET_NULL + a durable id snapshot: the hold survives even if the User row is later removed, and the snapshot
+    # keeps the subject resolvable for audit. No message content is ever stored here.
+    subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="erasure_holds")
+    subject_user_id_snapshot = models.PositiveIntegerField(db_index=True)
+    reason = models.CharField(max_length=200)                      # a category/justification, never message content
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+    active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["subject_user_id_snapshot", "active"])]
+
+    def __str__(self) -> str:
+        return f"ErasureHold(subject={self.subject_user_id_snapshot}, active={self.active})"
+
+
+class ErasureRequest(models.Model):
+    """A governed, owner-scoped erasure request (ADR-0054, GDPR/UK-GDPR Art 17). It is the explicit record that must
+    exist before any erasure runs, carries the dry-run PLAN and the second-confirmation token, and records the OUTCOME
+    — all as counts/ids only, NEVER deleted message content. It holds NO ForeignKey to the objects being erased (those
+    ids live in the JSON plan/outcome), so the request survives the erasure it records. Not evidence; append-only in
+    spirit but not trigger-protected (it is operational metadata, not broker evidence)."""
+
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "Requested (identity not yet verified)"
+        PLANNED = "PLANNED", "Dry-run plan produced; awaiting independent approval"
+        APPROVED = "APPROVED", "Independently approved (two-person); ready to execute"
+        EXECUTED = "EXECUTED", "Erasure executed (DB rows removed)"
+        COMPLETED = "COMPLETED", "Fully erased (all file-deletion outbox tasks drained)"
+        FAILED = "FAILED", "Erasure failed (rolled back)"
+        HELD = "HELD", "Blocked by an active legal/security hold"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    subject_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="erasure_requests")
+    subject_user_id_snapshot = models.PositiveIntegerField(db_index=True)   # durable owner id (survives SET_NULL)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="+")                      # the staff/governance operator
+    reason = models.CharField(max_length=200, blank=True, default="")       # category/justification, never content
+    identity_verified = models.BooleanField(default=False)                  # verified data-subject identity gate
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.REQUESTED, db_index=True)
+    plan = models.JSONField(null=True, blank=True)                          # dry-run plan: counts + classified ids
+    confirm_token = models.CharField(max_length=64, blank=True, default="") # second-confirmation token (plan digest)
+    outcome = models.JSONField(null=True, blank=True)                       # execution result: counts only, no content
+    error = models.CharField(max_length=300, blank=True, default="")        # sanitised failure reason (no content)
+    created_at = models.DateTimeField(auto_now_add=True)
+    planned_at = models.DateTimeField(null=True, blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    # --- Two-person separation-of-duties lifecycle (ADR-0054 Finding 7) -------------------------------------
+    # Four roles are RECORDED with timestamps. The ENFORCED two-person rule is: the APPROVER must differ from the
+    # ``requested_by`` requester, and a request with no recorded requester cannot be approved or executed (both
+    # checked in the control plane). ``requested_by`` (above) is the operator who raised the request. The VERIFIER
+    # attests the data-subject's identity was checked out-of-band (method category only, never ID documents) and
+    # can only be set before approval. The EXECUTOR is recorded by the provisioned backend at execution (execute
+    # is fail-closed in this build, so it is unset here). Approval carries an expiry and can be revoked; a
+    # revoked/expired approval fails closed. These are operational metadata — no message content.
+    verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verification_method = models.CharField(max_length=60, blank=True, default="")   # category, e.g. "signed-request"
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_expires_at = models.DateTimeField(null=True, blank=True)
+    approval_revoked = models.BooleanField(default=False)
+    executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    # The operator AUTHORISED to execute this request, designated at approval (must differ from the approver).
+    # The governed procedure will only execute when the DB-authenticated session maps (via ErasureExecutionGrant)
+    # to exactly this operator — the executor identity is NOT a caller argument (ADR-0054, P0 non-forgeability).
+    assigned_executor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                          blank=True, related_name="+")
+
+    class Meta:
+        indexes = [models.Index(fields=["subject_user_id_snapshot", "status"])]
+        # Finding A — DB-level row-consistency (defense in depth; the governed procedure re-validates the full
+        # record at execution). NB: the staff FKs are SET_NULL by design (they survive a staff-user deletion),
+        # so these CHECKs deliberately do NOT require the FK ids to be non-null — that completeness is enforced
+        # by the procedure at execution (and fails closed if a staff id was later nulled).
+        constraints = [
+            # A verified request must carry a non-empty method category.
+            models.CheckConstraint(
+                name="erasurereq_verified_requires_method",
+                check=models.Q(identity_verified=False) | ~models.Q(verification_method=""),
+            ),
+            # A request cannot reach an approved/executed/completed state without verified identity.
+            models.CheckConstraint(
+                name="erasurereq_advanced_requires_verified",
+                check=(~models.Q(status__in=["APPROVED", "EXECUTED", "COMPLETED"])
+                       | models.Q(identity_verified=True)),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"ErasureRequest(subject={self.subject_user_id_snapshot}, {self.status})"
+
+
+class ErasureExecutionGrant(models.Model):
+    """A non-forgeable, SINGLE-USE authorisation binding an EXACT PostgreSQL login (``db_session_user``) to an
+    operator for ONE ``ErasureRequest`` (ADR-0054, P0 — executor identity must not be caller-asserted).
+
+    Created ONLY by the independently-approved grant process (a privileged role — NEVER the application role;
+    provisioning moves this table off the app role so the runtime cannot forge a grant). The governed SECURITY
+    DEFINER procedure reads ``session_user`` (the login that connected — unaffected by SECURITY DEFINER, unlike
+    ``current_user``), resolves the operator from THIS mapping, requires it to equal the request's
+    ``assigned_executor`` and to differ from the approver, then CONSUMES the grant (sets ``consumed_at``).
+    A revoked, expired, unmapped, wrong-request, or already-consumed grant fails closed."""
+
+    request = models.ForeignKey(ErasureRequest, on_delete=models.CASCADE, related_name="execution_grants")
+    db_session_user = models.CharField(max_length=63)   # exact PostgreSQL login role name (NAMEDATALEN-1)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+")
+    expires_at = models.DateTimeField()
+    revoked = models.BooleanField(default=False)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["request", "db_session_user"],
+                                               name="uniq_execgrant_request_session")]
+        indexes = [models.Index(fields=["db_session_user", "request"])]
+
+    def __str__(self) -> str:
+        return f"ErasureExecutionGrant(req={self.request_id}, session={self.db_session_user}, consumed={bool(self.consumed_at)})"
+
+
+class DeletionTask(models.Model):
+    """Durable FILE-deletion OUTBOX (ADR-0054 Findings 3/4). Irreversible filesystem deletion (encrypted
+    credential files, content-addressed evidence files) is NEVER done inside the governed DB transaction. The
+    governed procedure deletes the DB rows and, in the SAME transaction, writes PENDING tasks here; an idempotent
+    worker removes the files AFTER commit and marks each task COMPLETED/FAILED. A crash after commit therefore
+    leaves a durable PENDING task (not an orphan file); the ``ErasureRequest`` is only COMPLETED once no
+    PENDING/FAILED tasks remain. Carries only a target reference (a sha256/credential-ref pointer), never content."""
+
+    class Kind(models.TextChoices):
+        CREDENTIAL_FILE = "CREDENTIAL_FILE", "Encrypted OAuth credential file"
+        EVIDENCE_FILE = "EVIDENCE_FILE", "Content-addressed evidence blob file"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending (file not yet removed)"
+        COMPLETED = "COMPLETED", "Completed (file removed or already absent)"
+        FAILED = "FAILED", "Failed (retryable)"
+        DEAD = "DEAD", "Dead-lettered (retry cap reached; needs operator intervention)"
+
+    request = models.ForeignKey(ErasureRequest, on_delete=models.PROTECT, related_name="deletion_tasks")
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    target_ref = models.CharField(max_length=128)             # sha256 (evidence) or credential_ref — a pointer, no content
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=300, blank=True, default="")   # sanitised, no content
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "kind"])]
+        # A given (request, kind, target_ref) is written once — idempotent re-plans do not duplicate work.
+        constraints = [models.UniqueConstraint(fields=["request", "kind", "target_ref"],
+                                               name="uniq_deletiontask_request_kind_target")]
+
+    def __str__(self) -> str:
+        return f"DeletionTask(req={self.request_id}, {self.kind}, {self.status})"

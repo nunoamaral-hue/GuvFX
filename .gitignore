@@ -89,3 +89,6 @@ deploy/node2-dispatch-worker/node2-dispatch-worker.env
 # Broker-intelligence raw evidence store (WP2) — raw broker messages must never enter Git (data rule)
 backend/var/
 var/broker_intelligence_evidence/
+
+# Controlled-erasure rehearsal raw log (artifact; curated evidence is REHEARSAL_EVIDENCE.md)
+ops/erasure/last_rehearsal_evidence.log
