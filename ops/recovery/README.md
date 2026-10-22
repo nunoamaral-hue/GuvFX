@@ -61,6 +61,19 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
   verification and fails closed on a present-but-corrupt artifact. Use `--gate-usable` for readiness.
 - **On-host is not enough.** An on-host backup does not survive host/storage loss — replicate the
   artifact + its `.meta.json` sidecar **off-host** (NAS / object store). The tool does not transfer.
+- **Client/server major parity (recovery-point correctness).** A production recovery point is dumped
+  with a `pg_dump` whose MAJOR equals the production server major. `backup.sh` refuses a production dump
+  on a major mismatch **before** dumping (overridable only with
+  `GUVFX_BACKUP_ALLOW_CLIENT_MAJOR_MISMATCH=1`, after validating restore compatibility), because a
+  NEWER client can emit statements the production-major restore target rejects — `pg_dump` 17 emits
+  `SET transaction_timeout = 0;` (a PG17-only GUC) which a strict PG15 restore rejects, making a
+  `pg_dump`-17 artifact **unusable** as a PG15 recovery point. An OLDER client is always refused
+  (incomplete dump). The dump client/server majors are recorded in the metadata sidecar
+  (`pg_dump_major` / `server_major` / `client_server_major_parity`); the restore client/server
+  versions are logged and, with `GUVFX_RESTORE_ATTEST_OUT`, written as a restore attestation. A
+  recovery point produced with an incompatible client is **superseded** and must not be used for
+  recovery — retain it clearly marked (e.g. a `superseded-*/` subfolder with a README); **never delete
+  or overwrite** an encrypted artifact. Certified by `tests/test_client_compat.sh`.
 
 ## Scripts
 
@@ -76,6 +89,7 @@ GuvFX recovery foundation. Design + rationale: [`docs/DB_RECOVERY_FOUNDATION.md`
 | `tests/certify_provisioner.sh` | privileged-provisioner trust-boundary certification (R3; 20 cases: setup/teardown symmetry, production-selection refusal, redirection neutralisation, verified-shutdown teardown, cleanup safety) | runs |
 | `tests/certify_cleanup.sh` | harness cleanup-tracking certification (R3 CLOSEOUT+FINAL; 13 cases: tracking survives a subshell; the trap cleans an abnormal exit; main + unrelated dirs untouched) | runs |
 | `tests/certify.sh` | isolated recovery backup/verify/restore/reconcile certification (64 cases), run **as the least-privilege role** after independent attestation | runs |
+| `tests/test_client_compat.sh` | client/server MAJOR compatibility gate certification (13 cases: positive + negative controls) | runs |
 
 ## Typical isolated use (dev/test)
 
