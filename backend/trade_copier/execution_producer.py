@@ -38,6 +38,7 @@ from trade_copier.models import CopierFollower, CopierReplication, MasterEvent, 
 from trade_copier.replication import (
     _broker_constraints,
     _cfg,
+    _dec,
     _master_position_from_event,
     validate_follower_binding,
 )
@@ -621,4 +622,229 @@ def produce_pending_modifies(*, limit: int = 200) -> dict:
                 produced += 1
         except Exception as e:  # noqa: BLE001
             logger.exception("copier produce_pending_modifies error on replication %s: %s", rep.id, e)
+    return {"enabled": True, "armed": copier_execute_demo_armed(), "considered": considered, "produced": produced}
+
+
+# =============================================================================
+# Partial-CLOSE producer (ADR-0055, Workstream B increment 3) — DEMO-only, SHADOW-by-default.
+# Master PARTIAL_CLOSE -> PROPORTIONAL follower reduction of the VERIFIED copier-owned ticket via a DISTINCT
+# PARTIAL_CLOSE_TRADE job. Never by symbol; never a full close; fresh authoritative follower volume; broker
+# min/step; round DOWN so rounding never over-reduces; a sub-min reduction/remainder fails closed (no
+# full-close substitution policy exists in this increment).
+# =============================================================================
+
+def _partial_reduction(master_before, master_after, current_volume, constraints) -> tuple[bool, float, float, str]:
+    """PURE proportional-reduction calc. Returns ``(ok, reduction, remaining, reason)``.
+
+    reduction = floor((before-after)/before * current / step) * step  (round DOWN — never over-reduce).
+    Fail closed on an invalid master ratio, unavailable constraints, a zero/below-min reduction, a reduction
+    that is not strictly less than the current volume (would be a full close), or a sub-min remainder."""
+    import math
+    mb, ma, cur = float(master_before), float(master_after), float(current_volume)
+    if mb <= 0 or ma < 0 or ma >= mb:
+        return False, 0.0, 0.0, "master_ratio_invalid"
+    ratio = (mb - ma) / mb
+    if not (0.0 < ratio < 1.0):
+        return False, 0.0, 0.0, "master_ratio_invalid"
+    if cur <= 0:
+        return False, 0.0, 0.0, "follower_volume_invalid"
+    step = float(constraints.lot_step or 0)
+    vmin = float(constraints.min_volume or 0)
+    if step <= 0 or vmin <= 0:
+        return False, 0.0, 0.0, "constraints_unavailable"
+    raw = ratio * cur
+    if raw <= 0:
+        return False, 0.0, 0.0, "zero_requested"
+    reduction = round(math.floor((raw / step) + 1e-9) * step, 8)
+    if reduction <= 0:
+        return False, 0.0, 0.0, "rounds_to_zero"
+    if reduction < vmin:
+        return False, 0.0, 0.0, "below_min_reduction"
+    if reduction >= cur:
+        return False, 0.0, 0.0, "would_be_full_close"
+    remaining = round(cur - reduction, 8)
+    if remaining < vmin:
+        return False, 0.0, 0.0, "remainder_below_min"
+    return True, reduction, remaining, "ok"
+
+
+def admit_partial_close(replication: CopierReplication, *, fetch=None) -> tuple[bool, int, float, float, str]:
+    """Fail-closed admission for a DEMO partial close. Returns ``(ok, ticket, reduction, remaining, reason)``.
+
+    Requires a VERIFIED copier-owned follower ticket (never by symbol), a FRESH identity-firewalled follower
+    read (ticket still open, symbol consistent), and a valid proportional reduction against FRESH broker
+    constraints + the authoritative CURRENT follower volume."""
+    from trade_copier.reconcile import read_follower_position
+    from trade_copier.reconcile import _fetch_account_positions
+    fetch = fetch or _fetch_account_positions
+
+    if replication.execution_job_id is not None:
+        return False, 0, 0.0, 0.0, "already_produced"
+    if replication.status != ReplicationStatus.SHADOW_RECORDED:
+        return False, 0, 0.0, 0.0, "not_shadow_intent"
+    if replication.requested_op != "PARTIAL_CLOSE":
+        return False, 0, 0.0, 0.0, "op_not_partial_close"
+    follower = replication.follower
+    if not follower.enabled:
+        return False, 0, 0.0, 0.0, "follower_disabled"
+
+    acct = follower.follower_account
+    try:
+        from trading.account_policy import is_demo_environment
+        if not is_demo_environment(acct):
+            return False, 0, 0.0, 0.0, "follower_not_demo"
+    except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
+        return False, 0, 0.0, 0.0, "environment_unresolved"
+    if not getattr(acct, "is_active", False):
+        return False, 0, 0.0, 0.0, "account_inactive"
+
+    ok, reason = validate_follower_binding(follower)
+    if not ok:
+        return False, 0, 0.0, 0.0, reason
+
+    open_repl = _matched_open_for_close(replication)   # position-keyed (NOT symbol): the matched OPEN ticket
+    if open_repl is None or open_repl.follower_ticket is None:
+        return False, 0, 0.0, 0.0, "no_verified_follower_ticket"
+    ticket = int(open_repl.follower_ticket)
+
+    # FRESH identity-firewalled follower read: ticket still open + symbol consistent + authoritative volume.
+    ok_read, pos, read_reason = read_follower_position(follower, ticket, fetch=fetch)
+    if not ok_read:
+        return False, ticket, 0.0, 0.0, f"follower_read:{read_reason}"
+    if pos is None:
+        return False, ticket, 0.0, 0.0, "follower_ticket_not_open"
+    if replication.follower_symbol and str(pos.symbol) != str(replication.follower_symbol):
+        return False, ticket, 0.0, 0.0, "symbol_changed"
+
+    constraints = _broker_constraints(acct, replication.follower_symbol or pos.symbol)
+    if not constraints.authoritative:
+        return False, ticket, 0.0, 0.0, "constraints_not_authoritative"
+
+    event = replication.master_event
+    ok_calc, reduction, remaining, calc_reason = _partial_reduction(
+        event.volume_before, event.volume_after, pos.volume, constraints)
+    if not ok_calc:
+        return False, ticket, 0.0, 0.0, calc_reason
+
+    if _partial_close_already_targets(acct.id, ticket):
+        return False, ticket, 0.0, 0.0, "partial_close_already_in_flight"
+    return True, ticket, reduction, remaining, "ok"
+
+
+def _partial_close_already_targets(acct_id: int, follower_ticket: int) -> bool:
+    """A non-terminal PARTIAL_CLOSE_TRADE already targets this (account, ticket) -> don't duplicate."""
+    return ExecutionJob.objects.filter(
+        job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE,
+        status__in=(ExecutionJob.Status.PENDING, ExecutionJob.Status.RUNNING),
+        account_id=acct_id, payload__ticket=follower_ticket,
+    ).exists()
+
+
+def _partial_close_payload(replication, ticket, reduction, remaining, is_demo, execution_mode) -> dict:
+    event = replication.master_event
+    return {
+        "symbol": replication.follower_symbol or event.symbol,
+        "ticket": ticket,                                  # EXPLICIT verified ticket — never by symbol
+        "volume": str(reduction),                          # EXPLICIT partial volume — bridge floats + re-normalizes
+        "is_demo": is_demo,
+        "execution_mode": execution_mode,                  # 'SHADOW' is recorded intent only (no job)
+        "comment": f"CPYP{replication.id}",                # copier partial-close provenance
+        "signal_source": "copier",
+        "reason": "copier_master_partial_close",
+        "copier_replication_id": replication.id,
+        "expected_remaining": str(remaining),
+    }
+
+
+def produce_partial_close_one(replication: CopierReplication, *, fetch=None) -> dict:
+    """Produce (at most) one partial close for a PARTIAL_CLOSE intent. Gated + idempotent + fail-closed.
+
+    SHADOW (default): record the computed reduction on the row, create NO ExecutionJob. Armed DEMO: create one
+    ``PARTIAL_CLOSE_TRADE`` job. All admission (incl. the fresh follower read + proportional calc) re-run under
+    the lock."""
+    if not copier_execute_enabled():
+        return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+
+    ok, _ticket, _reduction, _remaining, reason = admit_partial_close(replication, fetch=fetch)
+    if not ok:
+        return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+    # Preflight ARM read is a cheap hint ONLY and must NOT govern the job decision — the authoritative value
+    # is re-read INSIDE the lock below, so a flag flipped off between here and the locked decision yields
+    # SHADOW + no job.
+    armed_preflight = copier_execute_demo_armed()
+
+    try:
+        with transaction.atomic():
+            locked = (CopierReplication.objects
+                      .select_for_update()
+                      .select_related("follower", "master_event")
+                      .get(pk=replication.pk))
+            if not copier_execute_enabled():
+                return {"replication_id": replication.id, "produced": False, "reason": "producer_disabled"}
+            fresh_follower = (CopierFollower.objects
+                              .select_for_update(of=("self",))
+                              .select_related("follower_account", "follower_account__broker_server",
+                                              "master__trading_account")
+                              .get(pk=locked.follower_id))
+            locked.follower = fresh_follower
+            ok, ticket, reduction, remaining, reason = admit_partial_close(locked, fetch=fetch)
+            if not ok:
+                return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # P1 — AUTHORITATIVE ARM re-read INSIDE the lock, immediately before the job decision. If DEMO
+            # arming was disabled between the preflight hint and here, record SHADOW only and create NO
+            # mutation-capable job. The payload's execution mode derives from THIS in-lock value.
+            armed = copier_execute_demo_armed()
+            mode = "DEMO" if armed else "SHADOW"
+            if not armed:
+                if armed_preflight:
+                    logger.info("copier partial-close replication %s: arming flipped off between preflight "
+                                "and the locked decision -> SHADOW, no job", replication.id)
+                locked.follower_ticket = ticket
+                locked.target_volume = _dec(reduction)     # the intended partial reduction (SHADOW record)
+                locked.status = ReplicationStatus.SHADOW_JOB_RECORDED
+                locked.save(update_fields=["follower_ticket", "target_volume", "status", "updated_at"])
+                return {"replication_id": replication.id, "produced": True, "job_id": None, "armed": False,
+                        "follower_ticket": ticket, "reduction": reduction, "remaining": remaining,
+                        "status": ReplicationStatus.SHADOW_JOB_RECORDED}
+
+            acct = locked.follower.follower_account
+            job = ExecutionJob.objects.create(
+                account=acct, job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE,
+                payload=_partial_close_payload(locked, ticket, reduction, remaining, is_demo=True,
+                                               execution_mode=mode),
+                hosted_idempotency_key=f"copier-pclose:{locked.pk}")
+            locked.execution_job = job
+            locked.follower_ticket = ticket
+            locked.target_volume = _dec(reduction)
+            locked.status = ReplicationStatus.EXECUTION_REQUESTED
+            locked.save(update_fields=["execution_job", "follower_ticket", "target_volume", "status", "updated_at"])
+    except Exception as e:  # noqa: BLE001 — an inherited ExecutionJob.save() gate (or any error) must not sink
+        logger.warning("copier partial-close blocked for replication %s: %s", replication.id, type(e).__name__)
+        return {"replication_id": replication.id, "produced": False, "reason": f"gate:{type(e).__name__}"}
+
+    return {"replication_id": replication.id, "produced": True, "job_id": job.id,
+            "job_type": ExecutionJob.JobType.PARTIAL_CLOSE_TRADE, "armed": True, "follower_ticket": ticket,
+            "reduction": reduction, "remaining": remaining, "status": ReplicationStatus.EXECUTION_REQUESTED}
+
+
+def produce_pending_partial_closes(*, limit: int = 200, fetch=None) -> dict:
+    """Produce partial closes for pending SHADOW_RECORDED PARTIAL_CLOSE intents. Gated + fail-closed."""
+    if not copier_execute_enabled():
+        return {"enabled": False, "produced": 0, "considered": 0}
+    qs = (CopierReplication.objects
+          .filter(status=ReplicationStatus.SHADOW_RECORDED, execution_job__isnull=True,
+                  requested_op="PARTIAL_CLOSE", follower__enabled=True)
+          .select_related("follower", "follower__follower_account", "master_event")
+          .order_by("id")[:limit])
+    produced = 0
+    considered = 0
+    for rep in qs:
+        considered += 1
+        try:
+            if produce_partial_close_one(rep, fetch=fetch).get("produced"):
+                produced += 1
+        except Exception as e:  # noqa: BLE001
+            logger.exception("copier produce_pending_partial_closes error on replication %s: %s", rep.id, e)
     return {"enabled": True, "armed": copier_execute_demo_armed(), "considered": considered, "produced": produced}

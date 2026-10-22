@@ -284,3 +284,34 @@ The master/follower lifecycle is not fully executable until follower CLOSE/MODIF
 - *Migration/rollback:* additive bridge handler behind a default‑OFF flag; rollback = disable flag + revert
   handler; no schema change on the critical path.
 - *Decision required:* Sponsor + Security GO before building or deploying the broadened bridge mutation.
+
+## Increment 3 — partial close (ADR-0055) — BUILT, DARK (2026-10-21)
+
+Status terms: `BUILT` / `CI_GREEN` once its PR certifies; `DARK_MERGED` only after a separate Sponsor GO;
+`DEMO_CERTIFIED` / `LIVE_EXECUTION_CERTIFIED` = false. Delivered under Sponsor Path-B authorization (code only;
+no deploy/migration/arming/execution/LIVE).
+
+- *Shipped:* distinct job type `PARTIAL_CLOSE_TRADE`; DEMO+HEDGING-only bridge primitive
+  `partial_close_position(ticket, volume, identity, expected_symbol)`; producer `produce_partial_close_one`
+  (+`admit_partial_close`) with a proportional reduction from the authoritative current follower volume
+  (fresh identity-firewalled read), SHADOW-by-default; migration `execution/0035` (choices only, not applied).
+- *Bridge is a DISTINCT operation:* explicit ticket + explicit partial volume; MANDATORY job-bound identity
+  pin (login+server, `require_identity_pin` forced, no env fallback) + MANDATORY `expected_symbol` +
+  exactly-one returned position whose ticket equals the request; send-time re-read + re-normalize; a SINGLE
+  `order_send`, never retried; NEVER falls back to a full close, different ticket or symbol; the legacy
+  full-close path is unchanged; no general-purpose arbitrary-position endpoint.
+- *Partial fills + reconciliation (PD CHANGES REQUIRED, 2026-10-22):* `TRADE_RETCODE_DONE_PARTIAL` and a
+  DONE with a smaller/missing reported volume are treated as a MUTATION, never a clean failure; EVERY
+  post-send outcome returns `need_reconcile=true` (authoritative remaining is broker state). Post-send
+  `reconcile.reconcile_partial_close` re-reads the position → `PCLOSE_RECONCILED` / `PCLOSE_DIVERGENT_VOL` /
+  `PCLOSE_TICKET_GONE` (ticket gone after a partial = divergence, NEVER a silent full close) /
+  `PCLOSE_RECON_UNAVAIL`, no blind retry. Producer re-reads the ARM flag INSIDE the lock. The consumer that
+  dispatches `PARTIAL_CLOSE_TRADE` + drives reconciliation is NOT wired (required before DEMO cert).
+- *Hedging/netting:* HEDGING certified; NETTING/EXCHANGE/unknown fail closed (`account_mode_not_certified`).
+- *Known unsupported (fail closed):* netting/exchange/unknown modes; below-min reduction/remainder (no
+  full-close substitution); unsupported filling modes; any position without a verified `CPY<id>` ticket; LIVE.
+- *Evidence:* `backend/execution/tests_bridge_partial_close.py` + `backend/trade_copier/tests_partial_close_producer.py`
+  (discriminating negative controls); governance `execution_entrypoints.json` + WP6 `EXE-14`.
+- *Runbook / DEMO rehearsal / rollback:* `docs/MT5_COPIER_PARTIAL_CLOSE_RUNBOOK.md`.
+- *Gated:* ADR-0055 ratification, merge, DEMO arming, any real partial close, deployment and LIVE remain
+  separate explicit Sponsor gates. Actual live availability = 0%.

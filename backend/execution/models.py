@@ -177,6 +177,13 @@ class ExecutionJob(models.Model):
         # it is deliberately NOT in KILL_SWITCH_BLOCKED_JOB_TYPES — a breakeven must
         # still complete while the kill switch is engaged (closing risk is safe).
         MODIFY_POSITION = "MODIFY_POSITION", "Modify position SL/TP (breakeven)"
+        # ADR-0055 — copier partial close: reduce an OPEN position by an EXPLICIT partial volume
+        # (DEMO + HEDGING only, via the bridge partial_close_position primitive). A DISTINCT type from
+        # CLOSE_TRADE so it can NEVER be served to / executed by a full-close consumer and cannot silently
+        # become a full close. Risk-REDUCING (opens no exposure): excluded from the kill-switch and broker
+        # gate sets; identity-pinned (it reaches a real mutation). Not in any deployed worker's claim
+        # allowlist, so no current consumer executes it (wiring a DEMO consumer is a separate arming step).
+        PARTIAL_CLOSE_TRADE = "PARTIAL_CLOSE_TRADE", "Partial close (copier, DEMO/hedging)"
         # EXEC-E2a — a SUPPRESSED, un-claimable shadow job promoted from a demo
         # plan. Distinct from PLACE_ORDER so no deployed worker claims it, and
         # served by next_job only to a shadow_worker (see views.next_job guard).
@@ -405,6 +412,7 @@ IDENTITY_PIN_JOB_TYPES = (
     ExecutionJob.JobType.PLACE_TEST_ORDER,
     ExecutionJob.JobType.CLOSE_TRADE,
     ExecutionJob.JobType.MODIFY_POSITION,
+    ExecutionJob.JobType.PARTIAL_CLOSE_TRADE,   # ADR-0055: reaches a real mutation -> wrong-account fails closed at the bridge
 )
 
 
