@@ -21,7 +21,7 @@ import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
 import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
 import { WithdrawalsHistory } from "@/components/dashboard/WithdrawalsHistory";
 import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
-import type { PortfolioSummary } from "@/types/portfolio";
+import type { PortfolioSummary, UsdAggregate, AggregateState } from "@/types/portfolio";
 import { localeFor, type Lang } from "@/lib/i18n";
 import {
   formatCustomerAccountDisplay,
@@ -74,6 +74,41 @@ function greeting() { const h = new Date().getHours(); return h < 12 ? "Good mor
 function observedPnlSummary(lang: Lang, value: string, trades?: number): string {
   if (lang === "ja") return `観測損益: ${value}${trades ? `（${trades}件の取引）` : ""}`;
   return `Observed PnL: ${value}${trades ? ` (${trades} trades)` : ""}`;
+}
+
+// ─── Honest-aggregate presentation (EN/JA) ───
+// A USD aggregate that dropped EVERY eligible account must read as an explicit state, NEVER a measured "$0". The
+// backend supplies a machine `state` (+ safe `reason` category); we render the human label here. The three labels
+// mirror the backend contract: "Unavailable" (all excluded), "Partial — currency conversion unavailable",
+// "Partial — stale or missing account data". Only `currency_unconvertible` maps to the currency label; every other
+// reason (stale/missing/read_refused/mixed) is "stale or missing account data".
+function aggregateStateLabel(lang: Lang, state: AggregateState | undefined, reason?: string | null): string {
+  if (state === "UNAVAILABLE") return lang === "ja" ? "利用不可" : "Unavailable";
+  if (state === "PARTIAL") {
+    return reason === "currency_unconvertible"
+      ? (lang === "ja" ? "一部 — 通貨換算が利用できません" : "Partial — currency conversion unavailable")
+      : (lang === "ja" ? "一部 — 口座データが古いか取得できません" : "Partial — stale or missing account data");
+  }
+  return "";
+}
+// Tooltip detail = the state label plus the honest account split (requirement 3: included vs excluded).
+function aggregateStateTitle(lang: Lang, agg: UsdAggregate): string {
+  const inc = agg.included_count ?? agg.converted_count ?? 0;
+  const exc = agg.excluded_count ?? (agg.unconverted?.length ?? 0);
+  const label = aggregateStateLabel(lang, agg.state, agg.reason);
+  const counts = lang === "ja" ? `対象 ${inc}口座 / 除外 ${exc}口座` : `${inc} included · ${exc} excluded`;
+  return label ? `${label} · ${counts}` : counts;
+}
+// Render a USD aggregate as either its measured number (with a PARTIAL asterisk) or an explicit state label — and
+// never call .toLocaleString on a null (UNAVAILABLE) total.
+function usdAggregateView(lang: Lang, agg: UsdAggregate | null | undefined): { text: string; title?: string } {
+  if (!agg) return { text: "—" };
+  if (agg.total_usd == null || agg.state === "UNAVAILABLE") {
+    return { text: aggregateStateLabel(lang, "UNAVAILABLE", agg.reason), title: aggregateStateTitle(lang, agg) };
+  }
+  const n = `$${agg.total_usd.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const partial = agg.state === "PARTIAL" || agg.basis === "PARTIAL";
+  return { text: partial ? `${n} *` : n, title: partial ? aggregateStateTitle(lang, agg) : undefined };
 }
 
 // ─── Phase 2: Human translation layer (market state → Market Mood) ───
@@ -558,7 +593,12 @@ export default function DashboardPage() {
     currency: isAll ? "" : (perf?.currency || ""),                                    // "" -> "$" (USD portfolio)
     equity: isAll ? (portfolioForScope?.aggregate.equity_usd.total_usd ?? null) : equityRef,
     series: isAll ? [] as number[] : equitySeries,
-    partial: isAll ? (aggM?.basis === "PARTIAL") : false,
+    // Explicit statistics state (requirement 1/2): OK / PARTIAL / UNAVAILABLE. UNAVAILABLE = every account excluded
+    // -> the strip shows N/A + an "Unavailable" context line, never measured 0 trades / $0 / 0% win-rate.
+    metricsState: (isAll ? (aggM?.state ?? (aggM?.basis === "PARTIAL" ? "PARTIAL" : "OK")) : "OK") as AggregateState,
+    metricsReason: isAll ? (aggM?.reason ?? null) : null,
+    includedCount: isAll ? (aggM?.included_count ?? null) : null,
+    excludedCount: isAll ? (aggM?.excluded_count ?? null) : null,
   };
 
   const netPnl = snap.netPnl;
@@ -682,23 +722,37 @@ export default function DashboardPage() {
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 110 }}>
             <div style={microLabel}><i className="ti ti-wallet" aria-hidden="true" style={{ marginRight: 5 }} />Equity{isAll ? " (USD)" : ""}</div>
-            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#f0f6ff" }}
-                 title={isAll && portfolioForScope?.aggregate.equity_usd.basis === "PARTIAL" ? "Some accounts use a currency that could not be converted to USD and are excluded" : undefined}>
-              {isAll
-                ? (portfolioForScope
-                    ? `$${portfolioForScope.aggregate.equity_usd.total_usd.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${portfolioForScope.aggregate.equity_usd.basis === "PARTIAL" ? " *" : ""}`
-                    : "—")
-                : money(lang, equityRef, perf?.currency)}
-            </div>
+            {(() => {
+              // ALL scope: honest USD equity — a measured number, or an explicit "Unavailable"/"Partial …" state
+              // (never a measured $0 when every eligible account was excluded). Specific scope: the account's
+              // NATIVE equity in its NATIVE currency (requirement 5 — never forced through USD / blanked).
+              const view = isAll ? usdAggregateView(lang, portfolioForScope?.aggregate.equity_usd) : null;
+              const unavailable = isAll && (portfolioForScope?.aggregate.equity_usd.state === "UNAVAILABLE"
+                || portfolioForScope?.aggregate.equity_usd.total_usd == null);
+              return (
+                <div style={{ fontSize: unavailable ? "0.8rem" : "0.95rem", fontWeight: 600, color: unavailable ? "#9fb4d6" : "#f0f6ff" }}
+                     title={isAll ? view?.title : undefined}>
+                  {isAll ? (portfolioForScope ? view!.text : "—") : money(lang, equityRef, perf?.currency)}
+                </div>
+              );
+            })()}
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 120 }}>
             {(() => {
               // ALL scope: portfolio REALIZED daily P/L (USD, from the trade set). Specific account: per-account daily.
               const dp = isAll ? (portfolioForScope ? portfolioForScope.aggregate.daily_realized_pnl_usd : null) : dailyPnl;
               const unit = isAll ? "$" : (perf?.currency ? perf.currency + " " : "$");
+              // ALL scope with a withheld (null) daily figure means today's realized P/L cannot be expressed in USD
+              // for every account (a non-USD account, or a mixed-currency trade). A dedicated honest line, so "—"
+              // is never read as "$0" regardless of the specific cause.
+              const dpTitle = isAll && dp == null && portfolioForScope
+                ? (lang === "ja"
+                    ? "本日の確定損益を全口座についてUSDで表示できません（通貨換算が利用できない口座があります）"
+                    : "Today's realized P/L cannot be shown in USD for every account (currency conversion unavailable)")
+                : undefined;
               return (<>
                 <div style={microLabel}><i className={`ti ti-trending-${dp != null && dp < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL{isAll ? " (realized)" : ""}</div>
-                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }}>
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
                   {dp == null ? "—" : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
               </>);
@@ -723,11 +777,20 @@ export default function DashboardPage() {
         {/* H3: label WHOSE performance this is — the whole portfolio (ALL) vs the single selected account (shown in
             the header above) — so portfolio-wide figures are never read as one account's, nor one account's as the
             portfolio's. Localised so the JA view leaks no English. */}
-        <div style={{ fontSize: "0.66rem", color: "#64748b", marginTop: -4, marginBottom: 8 }}>
+        <div style={{ fontSize: "0.66rem", color: snap.metricsState === "UNAVAILABLE" ? "#9fb4d6" : "#64748b", marginTop: -4, marginBottom: 8 }}>
           {isAll
-            ? (lang === "ja"
-                ? `ポートフォリオ全体${portfolioForScope ? ` · ${portfolioForScope.account_count}口座` : ""} · USD・確定${snap.partial ? "（USD以外の口座を除外）" : ""}`
-                : `Whole portfolio${portfolioForScope ? ` · ${portfolioForScope.account_count} account${portfolioForScope.account_count === 1 ? "" : "s"}` : ""} · USD, realized${snap.partial ? " · partial (non-USD accounts excluded)" : ""}`)
+            ? (() => {
+                // Explicit statistics state, localised: measured ("USD, realized"), or an "Unavailable" / "Partial — …"
+                // label with the included/excluded account split — never a silent measured zero.
+                const stateLabel = aggregateStateLabel(lang, snap.metricsState, snap.metricsReason);
+                const counts = (snap.includedCount != null && snap.excludedCount != null && snap.excludedCount > 0)
+                  ? (lang === "ja" ? `（対象${snap.includedCount} / 除外${snap.excludedCount}）` : ` (${snap.includedCount} included · ${snap.excludedCount} excluded)`)
+                  : "";
+                const base = lang === "ja"
+                  ? `ポートフォリオ全体${portfolioForScope ? ` · ${portfolioForScope.account_count}口座` : ""} · USD・確定`
+                  : `Whole portfolio${portfolioForScope ? ` · ${portfolioForScope.account_count} account${portfolioForScope.account_count === 1 ? "" : "s"}` : ""} · USD, realized`;
+                return stateLabel ? `${base} · ${stateLabel}${counts}` : base;
+              })()
             : (lang === "ja" ? "選択した口座 · 確定損益" : "Selected account · realized")}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
