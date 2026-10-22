@@ -215,6 +215,31 @@ default); and the account rehearsal. ADR-0056 stays **Proposed** until this impl
 - Mutual exclusivity rests on the UNCONDITIONAL 403 at the generic `next_job` + the base-qs exclusion, not the
   grant shape; `assert_dedicated_worker` additionally refuses a `shadow_worker` co-grant.
 
+### Independent adversarial review of the final implementation (2026-10-22)
+
+The review confirmed the safety floor is **genuinely closed**: no double-send (generic `next_job` unconditional
+exclusion + type-scoped reclaimers + no PENDING requeue), no broker reach while DARK, the in-lock three-flag
+pre-send recheck, server-derived reconciliation inputs, and completion authorization. Findings handled:
+
+- **HIGH-1 (fixed) — an exception AFTER the send must reconcile, not be recorded as "nothing sent".** The
+  bridge's catch-all `except` returns `{"ok": False, "error": "exception"}` with no `need_reconcile`, and it
+  sits after the `order_send` point. The first implementation classified any not-ok/no-`need_reconcile` result
+  as dispatch-refused (terminal FAILED, no read), so a real partial reduction could be silently recorded as
+  "nothing happened" and, because the sweep scans only RUNNING, never revisited. Fixed: only an ENUMERATED set
+  of provably-pre-send bridge codes (`_PRESEND_REFUSAL_ERRORS`) is treated as dispatch-refused; ANY other not-ok
+  result (incl. `exception`) is reconcile-required — fail safe. Regression-tested
+  (`test_exception_after_send_reconciles_not_dispatch_refused`).
+- **MEDIUM-1 (fixed) — the sweep no longer holds the job row lock across the bridge network read.** It now
+  captures under a short lock, reads authoritatively OUTSIDE the lock, then finalizes under a brief re-lock
+  (mirroring `complete_partial_close`), so a concurrent completion is never blocked across the network; the
+  terminal transition stays idempotent via the job-status guard.
+- **MEDIUM-2 (fixed) — the single-use send nonce is now MANDATORY on completion** once an authorization exists
+  (a dispatch-token holder cannot complete by omitting it). Tested
+  (`test_completion_without_nonce_refused_once_authorized`).
+- **LOW (fixed) — explicit `follower_ticket` check in authorize-send; audit/error strings passed through a
+  code-only sanitiser (`_safe_error_code`); the sweep's `copier_enabled()`-only gate documented as deliberate
+  (drain in-flight jobs read-only after disarming; never sends).**
+
 ## Status / approval
 DARK engineering design + implementation. ADR ratification, DEMO arming, the dedicated worker grant,
 deployment and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` /

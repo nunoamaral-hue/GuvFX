@@ -53,6 +53,28 @@ PHASE_RECON_PENDING = "recon_pending"          # sent; authoritative read not ye
 _SWEEP_GRACE_SECONDS = int(os.getenv("COPIER_PCLOSE_SWEEP_GRACE_SECONDS", "300") or 300)
 _SWEEP_MAX_RECON_ATTEMPTS = int(os.getenv("COPIER_PCLOSE_SWEEP_MAX_ATTEMPTS", "12") or 12)
 
+# Enumerated bridge error codes that PROVABLY occur BEFORE ``order_send`` in ``partial_close_position`` — a
+# result carrying one of these means the position is untouched (terminal dispatch-refused, no read needed).
+# ANY OTHER not-ok result — crucially the bridge's catch-all ``"exception"``, which can be raised AFTER the
+# send (IPC loss / terminal crash mid-ACK) — is treated as reconcile-REQUIRED. Fail SAFE: when we cannot
+# PROVE nothing was sent, we read the broker authoritatively rather than record "nothing happened".
+_PRESEND_REFUSAL_ERRORS = frozenset({
+    "mt5_not_installed", "mt5_init_failed", "account_info_failed", "account_not_demo",
+    "account_mode_not_certified", "volume_invalid", "volume_non_positive", "expected_symbol_required",
+    "identity_pin_required", "positions_get_failed", "position_not_found", "multiple_positions_returned",
+    "ticket_mismatch", "symbol_changed", "symbol_info_failed", "symbol_constraints_unavailable",
+    "unsupported_filling_mode", "would_be_full_close", "rounds_to_zero", "below_min_reduction",
+    "remainder_below_min", "tick_failed", "identity_rejected",
+})
+
+
+def _safe_error_code(value) -> str:
+    """A log/audit-safe rendering of a bridge error field: a short code only. Guards the F6 "no secrets in
+    audit" guarantee against a value-shaped leak (``_sanitize_metadata`` scrubs by KEY, not value) — anything
+    not a bare code-like token is collapsed to ``"unsanitised"``."""
+    s = str(value or "unknown")
+    return s[:48] if (s and all(c.isalnum() or c in "_-." for c in s)) else "unsanitised"
+
 # ── audit event family (ADR-0056 F6) — sanitised; safe identifiers + reason/status codes ONLY ─────────
 AUDIT_CLAIM_ACCEPTED = "COPIER_PCLOSE_CLAIM_ACCEPTED"
 AUDIT_CLAIM_REFUSED = "COPIER_PCLOSE_CLAIM_REFUSED"
@@ -296,6 +318,8 @@ def _admit_authorize_locked(job, replication, worker_identity, dispatch_token, *
         return False, "replication_not_execution_requested"
     if replication.reconciliation_status != reconcile.PARTIAL_RECON_PENDING:
         return False, "not_recon_pending"              # already sent / terminal -> never re-authorize
+    if replication.follower_ticket is None:
+        return False, "no_follower_ticket"             # explicit: the instruction targets a verified ticket
     follower = replication.follower
     if not follower.enabled:
         return False, "follower_disabled"
@@ -480,23 +504,28 @@ def complete_partial_close(worker_identity, *, job_id: int, dispatch_token: str,
                 # A completion is already driving (or awaiting) reconciliation — serialise, no second transition.
                 return {"ok": True, "in_progress": True, "status": replication.reconciliation_status}
             raise ClaimRefused("completion_requires_authorization")
-        if send_nonce is not None and res.get("send_nonce") and send_nonce != res.get("send_nonce"):
+        # Once a send was authorized, the single-use nonce is MANDATORY on completion (not merely checked when
+        # volunteered): a dispatch-token holder cannot complete by omitting it.
+        if res.get("send_nonce") and send_nonce != res.get("send_nonce"):
             raise ClaimRefused("send_nonce_mismatch")
 
         br = bridge_result or {}
         need_reconcile = bool(br.get("need_reconcile"))
-        if not need_reconcile and not br.get("ok"):
-            # A PRE-SEND bridge refusal (identity/demo/volume gate) — NO order_send was attempted, so the
-            # position is untouched. Terminal dispatch-refused; no reconciliation read.
+        err = br.get("error")
+        if not br.get("ok") and not need_reconcile and err in _PRESEND_REFUSAL_ERRORS:
+            # A PROVABLY PRE-SEND bridge refusal (identity/demo/volume gate) — NO order_send was attempted, so
+            # the position is untouched. Terminal dispatch-refused; no reconciliation read. A not-ok result
+            # that is NOT an enumerated pre-send code (e.g. "exception", raisable AFTER the send) falls through
+            # to the reconcile path below — we never record "nothing sent" unless we can prove it.
             reconcile._set_recon(replication, reconcile.PARTIAL_DISPATCH_REFUSED)
             res["phase"] = PHASE_DISPATCH_REFUSED
             job.result = res
             job.status = ExecutionJob.Status.FAILED
             job.finished_at = now
-            job.error_message = f"partial_close_dispatch_refused:{str(br.get('error'))[:80]}"[:500]
+            job.error_message = f"partial_close_dispatch_refused:{_safe_error_code(err)}"[:500]
             job.save(update_fields=["result", "status", "finished_at", "error_message"])
             _audit(AUDIT_DISPATCH_REFUSED_EVT, severity="WARN", replication=replication, job=job,
-                   worker_id=wid, reason=str(br.get("error") or "unknown"))
+                   worker_id=wid, reason=_safe_error_code(err))
             return {"ok": False, "status": reconcile.PARTIAL_DISPATCH_REFUSED, "reason": "dispatch_refused"}
 
         # A send WAS attempted ⇒ record the post-send state + claim the reconciliation transition (COMPLETING).
@@ -548,7 +577,12 @@ def sweep_partial_close_reconcile(*, now=None, limit: int = 200, fetch=None) -> 
     can cause a second broker send. Concurrency-safe (``skip_locked`` per job) and idempotent. Uses the
     SERVER-derived ticket / intended remaining / authoritative broker ``volume_step`` (never a default).
     Escalates to operator review after ``_SWEEP_MAX_RECON_ATTEMPTS`` unavailable reads or when the broker step
-    is non-authoritative. Inert while the copier is DARK (``copier_enabled()`` OFF)."""
+    is non-authoritative. Inert while the copier is DARK (``copier_enabled()`` OFF).
+
+    Gate choice (deliberate): it is gated on ``copier_enabled()`` only, NOT on the execute/arming flags — a
+    job dispatched while armed must still be resolvable after the operator DISARMS (otherwise disarming would
+    strand an in-flight job forever). This is safe because the sweep is strictly read-only and can never
+    ``order_send``; it only drains/reconciles jobs that were already dispatched."""
     if not copier_enabled():
         return {"enabled": False, "scanned": 0, "finalized": 0}
     now = now or timezone.now()
@@ -560,6 +594,10 @@ def sweep_partial_close_reconcile(*, now=None, limit: int = 200, fetch=None) -> 
                          .order_by("lease_expires_at").values_list("id", flat=True)[:limit])
     scanned = finalized = 0
     for cid in candidate_ids:
+        # Phase 1 — claim + capture under a SHORT lock. NO bridge network read is held here (MEDIUM-1): the
+        # authoritative read runs OUTSIDE the lock in phase 2, so a concurrent ``complete`` is never blocked
+        # across the network. Only quick DB work (the broker-instrument step read) happens under the lock.
+        read_plan = None
         with transaction.atomic():
             job = (ExecutionJob.objects.select_for_update(skip_locked=True)
                    .filter(id=cid, status=ExecutionJob.Status.RUNNING).first())
@@ -584,7 +622,6 @@ def sweep_partial_close_reconcile(*, now=None, limit: int = 200, fetch=None) -> 
                        worker_id=job.worker_id, reason="sweep_expired_before_send")
                 finalized += 1
                 continue
-            scanned += 1
             acct = replication.follower.follower_account
             symbol = replication.follower_symbol
             intended = (job.payload or {}).get("expected_remaining")
@@ -602,14 +639,27 @@ def sweep_partial_close_reconcile(*, now=None, limit: int = 200, fetch=None) -> 
                        worker_id=job.worker_id, reason="sweep_unresolved")
                 finalized += 1
                 continue
-            step = float(constraints.lot_step)
-            rec = (reconcile.reconcile_partial_close(replication, intended, step=step, fetch=fetch)
-                   if fetch is not None
-                   else reconcile.reconcile_partial_close(replication, intended, step=step))
-            status = rec.get("status")
-            if status == reconcile.PARTIAL_RECONCILE_UNAVAILABLE:
-                job.save(update_fields=["result"])     # record the attempt; stay RUNNING for the next sweep
-            else:
-                _finalize_job_terminal(job, status, now=now)
+            job.save(update_fields=["result"])         # persist the attempt before releasing the lock
+            read_plan = (replication, intended, float(constraints.lot_step))
+        if read_plan is None:
+            continue
+
+        # Phase 2 — authoritative read OUTSIDE the lock. reconcile_partial_close records the recon status.
+        replication, intended, step = read_plan
+        scanned += 1
+        rec = (reconcile.reconcile_partial_close(replication, intended, step=step, fetch=fetch)
+               if fetch is not None
+               else reconcile.reconcile_partial_close(replication, intended, step=step))
+        status = rec.get("status")
+        if status == reconcile.PARTIAL_RECONCILE_UNAVAILABLE:
+            continue                                   # stays RUNNING; attempt recorded; next sweep retries
+
+        # Phase 3 — finalize under a brief re-lock. Idempotent: if a concurrent ``complete`` already drove the
+        # job terminal, the status guard in _finalize_job_terminal leaves it untouched.
+        with transaction.atomic():
+            job2 = (ExecutionJob.objects.select_for_update()
+                    .filter(id=cid, job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE).first())
+            if job2 is not None and job2.status == ExecutionJob.Status.RUNNING:
+                _finalize_job_terminal(job2, status, now=now)
                 finalized += 1
     return {"enabled": True, "scanned": scanned, "finalized": finalized}

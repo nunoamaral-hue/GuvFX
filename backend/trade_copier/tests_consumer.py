@@ -386,6 +386,29 @@ class CompletionTests(ConsumerFixture):
         self.assertEqual(self.job.status, ExecutionJob.Status.FAILED)
 
     @override_settings(**ARMED)
+    def test_exception_after_send_reconciles_not_dispatch_refused(self):
+        """HIGH-1 — the bridge's catch-all ``exception`` (no need_reconcile) can be raised AFTER order_send.
+        It must NOT be recorded as dispatch-refused/nothing-sent; the consumer must read authoritatively."""
+        token = self._dispatch()
+        br = {"ok": False, "error": "exception", "detail": "boom after send"}   # not an enumerated pre-send code
+        out = self._complete(self._w, token, br, fetch=_fetch(777, 0.60))       # broker left intended 0.60
+        self.assertNotEqual(out.get("status"), reconcile.PARTIAL_DISPATCH_REFUSED)
+        self.assertEqual(out["reconciliation"]["status"], reconcile.PARTIAL_RECONCILED)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ExecutionJob.Status.SUCCESS)
+
+    @override_settings(**ARMED)
+    def test_completion_without_nonce_refused_once_authorized(self):
+        """MEDIUM-2 — once a send is authorized the single-use nonce is MANDATORY on completion; a
+        dispatch-token holder cannot complete by omitting it."""
+        token = self._dispatch()
+        with self.assertRaises(ClaimRefused) as cm:
+            complete_partial_close(self._w, job_id=self.job.id, dispatch_token=token,
+                                   bridge_result={"ok": True, "mutated": True, "need_reconcile": True},
+                                   send_nonce=None, fetch=_fetch(777, 0.60))
+        self.assertEqual(cm.exception.reason, "send_nonce_mismatch")
+
+    @override_settings(**ARMED)
     def test_missing_ticket_is_divergence(self):
         token = self._dispatch()
         br = {"ok": True, "mutated": True, "need_reconcile": True}
