@@ -88,8 +88,33 @@ size; max aggregate exposure; test duration; abort thresholds; named kill-switch
 Minimum evidence (secrets/account-sensitive values redacted): master op timestamp, observation event,
 replication decision, execution job, bridge response, follower remaining volume, reconciliation result,
 end-to-end latency, idempotency result, abort behaviour, screenshots.
-Abort: disengage `COPIER_EXECUTE_DEMO_ARMED` (kill switch) at any threshold breach; the full-close path is
-unaffected; no LIVE account is ever in scope.
+Abort: at any threshold breach, set `COPIER_EXECUTE_DEMO_ARMED` OFF (disarm). See the exact semantics below —
+disarming stops ALL new copier mutation dispatch (OPEN/CLOSE/MODIFY/PARTIAL_CLOSE); it does NOT keep
+automated copier closes running. No LIVE account is ever in scope.
+
+## Kill switch vs copier disarm — exact verified semantics
+Two distinct controls; do not conflate them:
+- **Copier disarm** = `COPIER_EXECUTE_DEMO_ARMED` OFF. This is the rehearsal abort. Verified behavior:
+  - it stops admission of ALL new mutation-capable copier jobs — the flag is re-read IN-LOCK by every
+    producer immediately before the job decision;
+  - OPEN becomes a SHADOW record (or is blocked by its path) — no real order;
+  - **CLOSE / MODIFY / PARTIAL_CLOSE are NOT newly dispatched while disarmed** — each records
+    `SHADOW_JOB_RECORDED` and creates **no** `ExecutionJob`;
+  - the dedicated consumer additionally re-reads all three flags in-lock at `authorize-send`, so a job already
+    claimed cannot be authorized to send while disarmed;
+  - a job with an uncertain prior broker send is reconciled READ-ONLY and is NEVER resent;
+  - any emergency manual close is a SEPARATE supervised broker-terminal action, outside the copier.
+- **Execution kill switch** = the platform `ExecutionControl` / `GUVFX_EXECUTION_DISABLED` gate. It blocks
+  creating exposure-OPENING jobs but deliberately does NOT block `CLOSE_TRADE` / `MODIFY_POSITION` /
+  `PARTIAL_CLOSE_TRADE` (so an already-open position can still be flattened / risk-reduced). This is the
+  meaning of "risk-reducing is not blocked" in ADR-0052/0053/0055 — it is about the EXECUTION kill switch,
+  NOT about copier disarm, which blocks every new copier close/modify/partial dispatch as above.
+
+These semantics are pinned by discriminating tests: `trade_copier/tests_close_producer.py::test_shadow_records_no_job` +
+`::test_stale_arming_flip_records_shadow_no_job`; `tests_modify_producer.py` (same two);
+`tests_partial_close_producer.py::test_shadow_records_no_job` +
+`::test_stale_arming_flip_between_preflight_and_lock_creates_no_job`; and the consumer
+`tests_consumer.py::test_arming_dropped_after_claim_refuses_authorize_no_instruction`.
 
 ## Rollback plan
 Every change is additive and DARK (`COPIER_EXECUTE_*` default OFF; `PARTIAL_CLOSE_TRADE` claimed by no
