@@ -28,7 +28,7 @@ DECLARE
   r text;
 BEGIN
   -- (1) roles
-  FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec'] LOOP
+  FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec','guvfx_migrate'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       problems := problems || format('role %s absent', r); END IF;
   END LOOP;
@@ -116,10 +116,26 @@ BEGIN
   IF has_table_privilege('guvfx_erasure', 'broker_intelligence_erasureexecutiongrant', 'INSERT') THEN
     problems := problems || 'guvfx_erasure has INSERT on the execution-grant table'::text; END IF;
 
-  -- (7) app role: not a member of privileged roles
-  FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec'] LOOP
-    IF pg_has_role(v_app, r, 'USAGE') THEN problems := problems || format('app role is a member of %s', r); END IF;
+  -- (7) app role: LEAST PRIVILEGE -- no elevated cluster attribute; not a member of / able to assume any
+  -- privileged role (incl. guvfx_migrate). A SUPERUSER/BYPASSRLS/CREATEROLE/CREATEDB app role would bypass the
+  -- REVOKEs and the immutability triggers (P0 production superuser blocker). Mirrors privileged_backend_readiness.
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=v_app AND rolsuper) THEN
+    problems := problems || 'app role is SUPERUSER (bypasses the REVOKEs and the immutability triggers)'::text; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=v_app AND rolcreaterole) THEN
+    problems := problems || 'app role has CREATEROLE'::text; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=v_app AND rolcreatedb) THEN
+    problems := problems || 'app role has CREATEDB'::text; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=v_app AND rolbypassrls) THEN
+    problems := problems || 'app role has BYPASSRLS'::text; END IF;
+  FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec','guvfx_migrate'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=r)
+       AND (pg_has_role(v_app, r, 'USAGE') OR pg_has_role(v_app, r, 'MEMBER')) THEN
+      problems := problems || format('app role is a member of or can assume %s', r); END IF;
   END LOOP;
+  -- Transitive escalation: no role the app role can SET ROLE to may itself carry an elevated attribute.
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname <> v_app AND pg_has_role(v_app, r.oid, 'MEMBER')
+             AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls)) THEN
+    problems := problems || 'app role can assume a role with an elevated attribute (SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS) -- transitive escalation'::text; END IF;
 
   -- (8) app role: no DELETE/TRUNCATE on evidence tables
   FOREACH r IN ARRAY ARRAY['broker_intelligence_evidenceblob','broker_intelligence_brokerevent'] LOOP

@@ -225,10 +225,34 @@ Every element is placed in exactly one category, so no reader mistakes a design 
 - **DESIGNED but not implemented (none change the fail-closed stance):**
   - The operational-vs-security retention split for `core.AuditEvent`; record-level (vs owner-level) legal
     holds. Neither is required for owner erasure.
+- **MANDATORY PRECONDITION — least-privilege application identity (NOT merely a recommendation):** the ordinary
+  application runtime role MUST be `NOSUPERUSER`, `NOCREATEROLE`, `NOCREATEDB`, `NOBYPASSRLS`, and MUST NOT be a
+  member of — or able to `SET ROLE` to — `guvfx_erasure`, `guvfx_erasure_exec`, `guvfx_schema_owner`,
+  `guvfx_migrate`, **or any other role that itself carries an elevated attribute** (transitive escalation, e.g. a
+  stray `GRANT postgres TO <app role>`). A superuser (or `BYPASSRLS`/`CREATEROLE`/`CREATEDB`) application role —
+  directly or via such membership — bypasses the REVOKEs **and** the BEFORE-DELETE immutability triggers, making
+  the entire erasure boundary cosmetic. This is enforced in three places and fails closed:
+  `erasure.privileged_backend_readiness()` returns NOT READY (so `execute` refuses),
+  `ops/erasure/provision_erasure_privilege.sql` **refuses before any ownership change or procedure creation**,
+  and `ops/erasure/verify_erasure_privilege.sql` reports it — all covering both direct attributes and transitive
+  role membership. Demotion of a currently-privileged production role to this posture is
+  a **separate, explicit production operation with its own rollback** — the provisioning script never demotes a
+  role automatically.
+- **PER-OPERATOR EXECUTOR LOGIN LIFECYCLE (F-5, mandatory convention):** each short-lived executor login (a
+  member of the NOLOGIN `guvfx_erasure_exec` group) MUST be named `guvfx_erx_<suffix>` and MUST carry a hard
+  `VALID UNTIL` expiry. The prefix is enforced fail-closed by `broker_intelligence.erasure_operators` and the
+  `manage.py mint_erasure_operator` command (a non-conforming name is refused before any DB change); it is
+  required because `ops/erasure/production_rollback_erasure.sql` removes execute authority by dropping exactly
+  `guvfx_erx_%` — a login minted outside the convention would survive rollback with EXECUTE intact. Deletion:
+  `mint_erasure_operator --suffix <s> --revoke` after use, and wholesale by the rollback script. The operator
+  password is supplied out of band (env/secret store), never on argv; it is sent to PostgreSQL as a
+  **SCRAM-SHA-256 verifier computed client-side** (the cleartext never enters a SQL statement, so it cannot leak
+  to the server log on a statement error or under `log_statement=ddl`), and the login expires via `VALID UNTIL`.
 - **REQUIRES PRIVILEGED PROVISIONING IN PRODUCTION (superuser, separately Sponsor-authorised):** running
   `ops/erasure/provision_erasure_privilege.sql` against production, creating the roles there, moving ownership,
-  and deploying the `guvfx_erasure_exec` credential into the governed job's environment. Until done,
-  `privileged_backend_ready()` is false in production and `execute` fails closed.
+  and deploying the `guvfx_erasure_exec` credential into the governed job's environment. Until done, **and until
+  the application role satisfies the mandatory least-privilege precondition above,** `privileged_backend_ready()`
+  is false in production and `execute` fails closed.
 - **PROHIBITED (no authorisation sought here):** merging PR #543, ratifying this ADR, running the provisioning
   or any migration against production, arming `BROKER_INTELLIGENCE_ERASURE_ENABLED`, processing any real user,
   deploying the executor credential to the web/worker runtime, and `--execute` against real data.

@@ -67,6 +67,30 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \quit
 \endif
 
+-- Precondition (P0 -- production superuser blocker): the application runtime role MUST already be least
+-- privilege. If it carries ANY elevated cluster attribute (SUPERUSER / CREATEROLE / CREATEDB / BYPASSRLS), a
+-- session on it would bypass the REVOKEs AND the BEFORE-DELETE immutability triggers, so this provisioning
+-- would install a COSMETIC boundary. Refuse BEFORE any ownership change or procedure creation. Demotion to the
+-- least-privilege posture is a SEPARATE, explicit production operation with its own rollback -- this script
+-- NEVER demotes a role automatically.
+SELECT CASE WHEN EXISTS (
+  -- direct elevated attribute on the app role ...
+  SELECT 1 FROM pg_roles
+  WHERE rolname = :'app_role' AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls)
+) OR EXISTS (
+  -- ... or the app role can SET ROLE to some OTHER role that carries an elevated attribute (transitive).
+  SELECT 1 FROM pg_roles m
+  WHERE m.rolname <> :'app_role' AND pg_has_role(:'app_role', m.oid, 'MEMBER')
+    AND (m.rolsuper OR m.rolcreaterole OR m.rolcreatedb OR m.rolbypassrls)
+) THEN 'true' ELSE 'false' END AS _approlepriv \gset
+\if :_approlepriv
+  \echo '*** REFUSED: application role is privileged (SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS). Demote it to the'
+  \echo '    least-privilege runtime posture FIRST (a separate, explicit governed operation with its own'
+  \echo '    rollback). Provisioning a privileged app role would be a cosmetic boundary. Nothing changed; rolling back.'
+  ROLLBACK;
+  \quit
+\endif
+
 -- pgcrypto: the procedure recomputes credential-ref digests (sha256) to detect plan drift.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
