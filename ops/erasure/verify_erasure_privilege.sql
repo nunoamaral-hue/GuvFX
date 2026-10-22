@@ -28,7 +28,7 @@ DECLARE
   r text;
 BEGIN
   -- (1) roles
-  FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec'] LOOP
+  FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec','guvfx_migrate'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       problems := problems || format('role %s absent', r); END IF;
   END LOOP;
@@ -132,6 +132,10 @@ BEGIN
        AND (pg_has_role(v_app, r, 'USAGE') OR pg_has_role(v_app, r, 'MEMBER')) THEN
       problems := problems || format('app role is a member of or can assume %s', r); END IF;
   END LOOP;
+  -- Transitive escalation: no role the app role can SET ROLE to may itself carry an elevated attribute.
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname <> v_app AND pg_has_role(v_app, r.oid, 'MEMBER')
+             AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls)) THEN
+    problems := problems || 'app role can assume a role with an elevated attribute (SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS) -- transitive escalation'::text; END IF;
 
   -- (8) app role: no DELETE/TRUNCATE on evidence tables
   FOREACH r IN ARRAY ARRAY['broker_intelligence_evidenceblob','broker_intelligence_brokerevent'] LOOP

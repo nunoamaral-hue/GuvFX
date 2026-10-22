@@ -11,13 +11,33 @@ never logged or placed on argv; the role additionally carries a hard ``VALID UNT
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import os
 import re
 
 OPERATOR_LOGIN_PREFIX = "guvfx_erx_"
 # PostgreSQL identifiers are <= 63 bytes (NAMEDATALEN-1). Lowercase ascii word characters only, so the name is
-# safe to interpolate as an identifier and cannot smuggle quoting/whitespace.
-_SUFFIX_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-_FULL_RE = re.compile(r"^guvfx_erx_[a-z0-9_]{1,40}$")
+# safe to interpolate as an identifier and cannot smuggle quoting/whitespace. Anchored with \A ... \Z (NOT $,
+# which in Python also matches immediately before a trailing newline) so a suffix like "op1\n" is rejected.
+_SUFFIX_RE = re.compile(r"\A[a-z0-9_]{1,40}\Z")
+_FULL_RE = re.compile(r"\Aguvfx_erx_[a-z0-9_]{1,40}\Z")
+
+
+def scram_sha256_verifier(password: str, *, iterations: int = 4096) -> str:
+    """Compute a PostgreSQL SCRAM-SHA-256 password verifier from a cleartext password (RFC 5802 / PG storage
+    format). The verifier is what gets sent in ``CREATE ROLE ... PASSWORD '<verifier>'`` so the CLEARTEXT never
+    enters a SQL statement and therefore cannot leak to the PostgreSQL server log on a statement error or under
+    ``log_statement=ddl/all``. The verifier is a salted hash and is NOT reversible to the password."""
+    salt = os.urandom(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    return "SCRAM-SHA-256${}:{}${}:{}".format(
+        iterations, base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(stored_key).decode("ascii"), base64.b64encode(server_key).decode("ascii"))
 
 
 class OperatorNamingError(ValueError):

@@ -323,6 +323,19 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                                 [app_role, role, app_role, role])
                     if cur.fetchone()[0]:
                         reasons.append(f"application role '{app_role}' must not be a member of or able to assume '{role}'")
+            # Transitive escalation: NO role the app role can SET ROLE to (directly OR via nested membership) may
+            # itself carry an elevated attribute. A stray `GRANT <superuser/createrole/... role> TO <app role>`
+            # would otherwise let a runtime session SET ROLE and bypass the REVOKEs + immutability triggers, even
+            # though the app role's OWN attributes are clean. Excludes the app role itself (its own attributes are
+            # checked above).
+            cur.execute(
+                "SELECT coalesce(array_agg(r.rolname ORDER BY r.rolname), ARRAY[]::text[]) FROM pg_roles r "
+                "WHERE r.rolname <> %s AND pg_has_role(%s, r.oid, 'MEMBER') "
+                "AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls)", [app_role, app_role])
+            escalatable = cur.fetchone()[0] or []
+            if escalatable:
+                reasons.append(f"application role '{app_role}' can assume elevated role(s) {list(escalatable)} "
+                               "— membership in a role with SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS")
             for tbl in _EVIDENCE_TABLES:
                 for priv in ("DELETE", "TRUNCATE"):
                     cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, tbl, priv])

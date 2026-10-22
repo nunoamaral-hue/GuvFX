@@ -42,6 +42,18 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \quit
 \endif
 
+-- Ordering guard (adversarial-review C4): refuse if erasure provisioning has ALREADY run (the governed
+-- procedure exists). Re-running the demotion after provisioning would re-GRANT the app role the broad
+-- DELETE/EXECUTE that provisioning revoked. Roll provisioning back (production_rollback_erasure.sql) first.
+SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE p.proname='bi_governed_erase_owner' AND n.nspname='public') THEN 'true' ELSE 'false' END AS _provisioned \gset
+\if :_provisioned
+  \echo '*** REFUSED: erasure provisioning has already run (bi_governed_erase_owner present). Re-running demotion'
+  \echo '    would re-open broad grants provisioning revoked. Roll provisioning back first. Rolling back.'
+  ROLLBACK;
+  \quit
+\endif
+
 -- 1) Roles (idempotent). guvfx_schema_owner owns objects; guvfx_migrate (its member) runs migrations.
 DO $r$
 BEGIN

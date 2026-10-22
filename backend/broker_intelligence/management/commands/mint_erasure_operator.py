@@ -5,8 +5,15 @@ Creates exactly one conforming ``guvfx_erx_<suffix>`` LOGIN role, a member of th
 fail-closed (``erasure_operators``) so the governed rollback's ``DROP ... guvfx_erx_%`` enumeration always
 covers it. Run by the independent grant-admin (a role with CREATEROLE), never the web/worker runtime.
 
-Secrets: the operator password is read from ``ERASURE_OPERATOR_PW`` (env/secret store) — never a CLI argument,
-never logged. The role also expires via ``VALID UNTIL``, so a leaked/forgotten login stops authenticating.
+Secrets: the operator password is read from ``ERASURE_OPERATOR_PW`` (env/secret store) — never a CLI argument.
+The CLEARTEXT never enters a SQL statement: a SCRAM-SHA-256 verifier is computed client-side and only the
+verifier (a salted hash) is sent in ``CREATE ROLE ... PASSWORD '<verifier>'``, so even if the statement were
+logged (a statement error, or ``log_statement=ddl/all``) the cleartext is not exposed. The role also expires
+via ``VALID UNTIL``, so a leaked/forgotten login stops authenticating.
+
+Connection: runs on Django's configured DB connection, which MUST be the independent grant-admin identity (a
+role with CREATEROLE), NOT the demoted application role (which is NOCREATEROLE in the end state and would fail
+closed here). Invoke it with the grant-admin DB credentials, never the web/worker runtime.
 
 Lifecycle:
   create:  manage.py mint_erasure_operator --suffix <s> [--valid-minutes N]    (ERASURE_OPERATOR_PW set)
@@ -19,7 +26,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 from django.utils import timezone
 
-from broker_intelligence.erasure_operators import OperatorNamingError, operator_login_name
+from broker_intelligence.erasure_operators import (OperatorNamingError, operator_login_name,
+                                                   scram_sha256_verifier)
 
 
 class Command(BaseCommand):
@@ -51,10 +59,10 @@ class Command(BaseCommand):
         minutes = max(1, int(opts["valid_minutes"]))
         valid_until = (timezone.now() + timezone.timedelta(minutes=minutes))
         vu = valid_until.strftime("%Y-%m-%d %H:%M:%S%z")
-        # Identifier is validated to [a-z0-9_]; password is a quoted literal (doubled quotes). The statement is
-        # NOT logged by this command (and production runs with DEBUG off), so the secret is not emitted.
-        pw_lit = "'" + pw.replace("'", "''") + "'"
-        stmt = (f'CREATE ROLE "{name}" LOGIN PASSWORD {pw_lit} VALID UNTIL \'{vu}\' '
+        # Identifier is validated to [a-z0-9_]. The password is sent as a pre-computed SCRAM-SHA-256 VERIFIER
+        # (a salted hash), never the cleartext, so the statement is safe even if it reaches the server log.
+        verifier = scram_sha256_verifier(pw)
+        stmt = (f'CREATE ROLE "{name}" LOGIN PASSWORD \'{verifier}\' VALID UNTIL \'{vu}\' '
                 f'NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS IN ROLE guvfx_erasure_exec')
         with connection.cursor() as cur:
             cur.execute(f'DROP ROLE IF EXISTS "{name}"')

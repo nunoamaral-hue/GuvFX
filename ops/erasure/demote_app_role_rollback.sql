@@ -42,6 +42,19 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \quit
 \endif
 
+-- Ordering guard (adversarial-review C5): refuse while the erasure capability is still provisioned (the
+-- governed procedure exists). Reverting the demotion now would drag the evidence + execution-grant tables back
+-- to the app role while the procedure + BEFORE-DELETE triggers are live -- an inconsistent, exploitable state.
+-- Disable the capability FIRST with ops/erasure/production_rollback_erasure.sql, THEN run this rollback.
+SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE p.proname='bi_governed_erase_owner' AND n.nspname='public') THEN 'true' ELSE 'false' END AS _provisioned \gset
+\if :_provisioned
+  \echo '*** REFUSED: erasure capability still provisioned (bi_governed_erase_owner present). Run'
+  \echo '    production_rollback_erasure.sql FIRST to disable it, THEN re-run this demotion rollback. Rolling back.'
+  ROLLBACK;
+  \quit
+\endif
+
 -- 1) Revoke the runtime grants + default privileges the demotion added.
 ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_migrate IN SCHEMA public REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM :"app_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_migrate IN SCHEMA public REVOKE USAGE, SELECT, UPDATE ON SEQUENCES FROM :"app_role";

@@ -490,6 +490,15 @@ class ReadinessAppRolePostureTests(TestCase):
     """
     _PRIV = ("guvfx_schema_owner", "guvfx_erasure", "guvfx_erasure_exec", "guvfx_migrate")
 
+    def setUp(self):
+        # These checks require the test DB login to create/drop roles. On a least-privilege test cluster, skip
+        # rather than ERROR (evidence-rule portability); on a superuser CI DB they run.
+        with connection.cursor() as cur:
+            cur.execute("SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname=current_user")
+            row = cur.fetchone()
+        if not (row and row[0]):
+            self.skipTest("test DB role lacks CREATEROLE/SUPERUSER; readiness-posture checks verified elsewhere")
+
     def _mkrole(self, name, opts):
         with connection.cursor() as cur:
             cur.execute(f"DROP ROLE IF EXISTS {name}")
@@ -575,3 +584,18 @@ class ReadinessAppRolePostureTests(TestCase):
         ready, reasons = self._readiness_as("relp_mig")
         self.assertFalse(ready)
         self.assertTrue(self._has(reasons, "able to assume 'guvfx_migrate'"), reasons)
+
+    def test_refuses_app_role_that_can_assume_an_elevated_role_transitively(self):
+        # C3: the app role's OWN attributes are clean, but it is a member of some OTHER role that carries an
+        # elevated attribute (here a SUPERUSER role) -> it could SET ROLE and escalate -> must be NOT READY.
+        self._mkrole("relp_elev", "NOLOGIN SUPERUSER")
+        self._mkrole("relp_trans", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        with connection.cursor() as cur:
+            cur.execute("GRANT relp_elev TO relp_trans")
+        ready, reasons = self._readiness_as("relp_trans")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "can assume elevated role"), reasons)
+        # positive control: without the grant, no transitive-escalation reason
+        self._mkrole("relp_trans_clean", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        _, reasons2 = self._readiness_as("relp_trans_clean")
+        self.assertFalse(self._has(reasons2, "can assume elevated role"), reasons2)
