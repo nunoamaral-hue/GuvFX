@@ -400,13 +400,17 @@ def _state_identity_reason(workspace, acct) -> str:
 
 
 # ── Fleet health metrics (fail-open; never raises) ───────────────────────────────────────────────────────────
-def _health_state_for(stuck_faults: int, total: int) -> str:
+def _health_state_for(stuck_faults: int, total: int, *, scan_truncated: bool = False) -> str:
     """Map the fleet diagnosis to the shared operational-health vocabulary WITHOUT modifying the core rollup.
-    No workspaces ⇒ AWAITING_SPONSOR (expected darkness); any fault ⇒ DEGRADED; else HEALTHY."""
+    No workspaces ⇒ AWAITING_SPONSOR (expected darkness); any fault ⇒ DEGRADED; else HEALTHY — EXCEPT that a
+    TRUNCATED scan can never claim HEALTHY (faults may hide in the unscanned tail), mirroring the
+    operational-health principle that an unobserved subsystem never reports healthy."""
     from core.operational_health import HealthState
     if total == 0:
         return HealthState.AWAITING_SPONSOR
-    return HealthState.DEGRADED if stuck_faults else HealthState.HEALTHY
+    if stuck_faults:
+        return HealthState.DEGRADED
+    return HealthState.DEGRADED if scan_truncated else HealthState.HEALTHY
 
 
 def _snapshot_age_metrics(account_ids, now_dt):
@@ -434,32 +438,47 @@ def _snapshot_age_metrics(account_ids, now_dt):
         return None
 
 
-def observation_health_metrics(*, now=None) -> dict:
-    """Fail-open fleet health metrics for hosted-workspace observation/delivery. MUTATES NOTHING and NEVER
-    RAISES (mirrors the ``core.operational_health`` fail-open contract without touching the core rollup).
+# Cap on the number of workspaces the reason-distribution scan materialises, so the metric is BOUNDED (never an
+# unbounded fleet scan). Headline counts use DB-level aggregates and are exact regardless of this cap.
+_METRICS_SCAN_LIMIT = 500
 
-    Counts: accounts never observed (``observation_version == 0``), observation age (stale by the operational
-    threshold), workspaces stuck in ``AUTHORIZED`` / ``NONE`` delivery, a per-reason-code distribution across the
-    fleet, and snapshot age (max ``analytics_accountequitysnapshot.observed_at`` per account, read-only)."""
+
+def observation_health_metrics(*, now=None) -> dict:
+    """Fail-open, BOUNDED fleet health metrics for hosted-workspace observation/delivery. MUTATES NOTHING and
+    NEVER RAISES (mirrors the ``core.operational_health`` fail-open contract without touching the core rollup).
+
+    Headline counts (``workspace_total`` / ``never_observed`` / ``stuck_authorized`` / ``stuck_none`` /
+    ``proj_connected_false``) come from DB-level ``count()`` aggregates — exact and bounded, no row
+    materialisation, no N+1. The per-reason-code distribution + observation ages come from a SINGLE
+    ``select_related`` query capped at ``_METRICS_SCAN_LIMIT`` (so the pure per-row classification is bounded and
+    issues no extra per-row query). Snapshot age is one read-only aggregate over the scanned accounts."""
+    from django.db.models import Q
     from django.utils import timezone
     now_dt = now or timezone.now()
     out: dict = {"generated_at": now_dt.isoformat()}
     try:
         from hosted_workspace.models import HostedMt5Workspace
 
-        rows = list(HostedMt5Workspace.objects
-                    .select_related("trading_account__broker_server").order_by("id"))
-        total = len(rows)
-        never_observed = 0
+        base = HostedMt5Workspace.objects
+        # Exact, bounded headline counts via DB aggregates (no fleet materialisation, no N+1).
+        total = base.count()
+        never_observed = base.filter(observation_version=0).count()
+        proj_connected_false = base.filter(~Q(proj_connected=True)).count()
+        stuck_authorized = base.filter(delivery_state="AUTHORIZED").count()
+        stuck_none = base.filter(delivery_state="NONE").count()
+
+        # Bounded reason-distribution scan: ONE query, select_related, capped. The per-row diagnosis is pure
+        # (reads only already-fetched fields) so this issues no extra per-row query.
+        scan_rows = list(base.select_related("trading_account__broker_server").order_by("id")[:_METRICS_SCAN_LIMIT])
+        scanned = len(scan_rows)
         stale = 0
-        stuck_authorized = 0
-        stuck_none = 0
-        proj_connected_false = 0
         obs_ages = []
         reason_counts: dict = {}
         fault_count = 0
         diagnose_errors = 0
-        for ws in rows:
+        scanned_account_ids = []
+        for ws in scan_rows:
+            scanned_account_ids.append(getattr(ws, "trading_account_id", None))
             try:
                 d = diagnose_workspace(ws, now=now_dt)
             except Exception:  # noqa: BLE001 — a single bad row never collapses the whole fleet payload
@@ -468,18 +487,10 @@ def observation_health_metrics(*, now=None) -> dict:
             reason_counts[d["reason"]] = reason_counts.get(d["reason"], 0) + 1
             if d["is_fault"]:
                 fault_count += 1
-            if not d["observed"]:
-                never_observed += 1
-            if d["proj_connected"] is not True:
-                proj_connected_false += 1
             if d["reason"] == STALE_HEARTBEAT:
                 stale += 1
             if d["last_decision_age_seconds"] is not None:
                 obs_ages.append(d["last_decision_age_seconds"])
-            if d["delivery_state"] == "AUTHORIZED":
-                stuck_authorized += 1
-            elif d["delivery_state"] == "NONE":
-                stuck_none += 1
 
         out.update({
             "workspace_total": total,
@@ -487,6 +498,10 @@ def observation_health_metrics(*, now=None) -> dict:
             "proj_connected_false": proj_connected_false,
             "stuck_authorized": stuck_authorized,
             "stuck_none": stuck_none,
+            # Fault count + reason distribution are over the bounded scan; ``scanned`` / ``scan_truncated`` make
+            # the boundedness explicit so a reader never mistakes a capped scan for the whole fleet.
+            "scanned": scanned,
+            "scan_truncated": total > scanned,
             "fault_count": fault_count,
             "diagnose_errors": diagnose_errors,
             "observation_age": {
@@ -495,8 +510,8 @@ def observation_health_metrics(*, now=None) -> dict:
                 "max_age_seconds": (max(obs_ages) if obs_ages else None),
             },
             "reason_code_counts": reason_counts,
-            "snapshot_age": _snapshot_age_metrics([getattr(w, "trading_account_id", None) for w in rows], now_dt),
-            "health": _health_state_for(fault_count, total),
+            "snapshot_age": _snapshot_age_metrics(scanned_account_ids, now_dt),
+            "health": _health_state_for(fault_count, total, scan_truncated=total > scanned),
         })
     except Exception:  # noqa: BLE001 — the whole metric is fail-open; a partial/empty payload beats a raise
         logger.warning("corroboration_diagnosis: observation_health_metrics degraded", exc_info=True)

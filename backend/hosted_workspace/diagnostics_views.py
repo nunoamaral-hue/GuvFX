@@ -1,29 +1,33 @@
-"""hosted_workspace.diagnostics_views — WHY-not-CONNECTED diagnosis read API (DARK, read-only).
+"""hosted_workspace.diagnostics_views — WHY-not-CONNECTED diagnosis read API (DARK, read-only, STAFF-ONLY).
 
-    GET /api/hosted-workspace/diagnostics/   → per-workspace corroboration diagnosis (+ staff fleet metrics)
+    GET /api/hosted-workspace/diagnostics/   → per-workspace corroboration diagnosis (+ fleet metrics)
 
-404-invisible while the hosted subsystem is DARK (``hosted_persistent_mt5_enabled()`` OFF), decided BEFORE any
-DB read. STRICTLY read-only: it calls only the pure ``corroboration_diagnosis`` helpers (no host contact, no
-workspace mutation). SCOPING:
+This is **OPERATIONAL DIAGNOSTICS, not a customer feature.** It exists so operators can determine WHY a hosted
+workspace has not reached CONNECTED. It is gated by its OWN dedicated flag and is STAFF-ONLY.
 
-  * a STAFF caller may see the whole fleet (bounded) + the fail-open health metrics, or one account via an
-    optional ``?account_id=`` / ``?workspace_uuid=`` selector;
-  * a NON-STAFF caller sees ONLY their own workspace's diagnosis (owner-scoped via the immutable
-    ``trading_account.user`` binding). A selector that is not theirs, or no workspace, yields 404 — a non-owner
-    learns nothing (IDOR-safe).
+Gating (checked in this order, BEFORE any DB read):
+  1. ``hosted_connection_diagnostics_enabled()`` — a DEDICATED, independent flag, DEFAULT OFF. The route 404s
+     while it is OFF **even when every other Hosted Workspace flag is ON** (production already runs the master /
+     observation flags on, so this endpoint must never ride on those). This is the first and operative gate.
+  2. ``request.user.is_staff`` — STAFF-ONLY. A non-staff caller (member) gets 404 even with the flag on;
+     detailed corroboration diagnostics are not a member surface (product + information-disclosure need separate
+     approval). No owner-scoped member branch exists here by design.
 
-The payload is secret-free (reason codes, booleans, enum codes, coarse ages) — never a credential, full login,
-username or path. Nothing here arms execution, mutates delivery/observer state, or places an order.
+STRICTLY read-only: it calls only the pure ``corroboration_diagnosis`` helpers (no host contact, no workspace
+mutation). The payload is secret-free (reason codes, booleans, enum codes, coarse ages) — never a credential,
+full login, Windows username, or runtime/terminal path. Nothing here arms execution, mutates state, or places an
+order.
 """
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status as http
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from hosted_workspace.corroboration_diagnosis import diagnose_workspace, observation_health_metrics
-from hosted_workspace.flags import hosted_persistent_mt5_enabled
+from hosted_workspace.flags import hosted_connection_diagnostics_enabled
 from hosted_workspace.models import HostedMt5Workspace
 
 _NOT_FOUND = Response({"detail": "Not found."}, status=http.HTTP_404_NOT_FOUND)
@@ -44,43 +48,35 @@ def _selector(request):
 
 
 class HostedWorkspaceDiagnosticsView(APIView):
-    """GET the corroboration diagnosis. Staff → fleet (+ metrics) or a selected account; non-staff → own only."""
+    """GET the corroboration diagnosis — STAFF-ONLY, behind the dedicated diagnostics flag (both 404-invisible)."""
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 404 BEFORE any DB read while the subsystem is dark.
-        if not hosted_persistent_mt5_enabled():
+        # Gate 1 — the DEDICATED diagnostics flag, checked BEFORE anything else and independently of every other
+        # Hosted Workspace flag. OFF (the default) ⇒ 404, even in production where the master/observation flags
+        # are on. No DB access happens before this returns.
+        if not hosted_connection_diagnostics_enabled():
+            return _NOT_FOUND
+        # Gate 2 — STAFF-ONLY. A non-staff caller (member) learns nothing even with the flag on; this is an
+        # operational surface, not a customer feature. No owner-scoped member path exists here.
+        if not bool(getattr(request.user, "is_staff", False)):
             return _NOT_FOUND
 
-        is_staff = bool(getattr(request.user, "is_staff", False))
+        qs = HostedMt5Workspace.objects.select_related("trading_account__broker_server")
         wu, aid = _selector(request)
-
-        if is_staff:
-            qs = HostedMt5Workspace.objects.select_related("trading_account__broker_server")
-            if wu or aid is not None:
+        if wu or aid is not None:
+            try:
                 ws = (qs.filter(workspace_uuid=wu).first() if wu
                       else qs.filter(trading_account_id=aid).first())
-                if ws is None:
-                    return _NOT_FOUND
-                return Response({"diagnosis": diagnose_workspace(ws)})
-            rows = list(qs.order_by("id")[:_FLEET_ROW_LIMIT])
-            return Response({
-                "rows": [diagnose_workspace(ws) for ws in rows],
-                "limit": _FLEET_ROW_LIMIT,
-                "metrics": observation_health_metrics(),
-            })
-
-        # Non-staff: owner-scoped to the caller's OWN workspace(s). A selector that is not theirs → 404.
-        owned = HostedMt5Workspace.objects.filter(
-            trading_account__user=request.user).select_related("trading_account__broker_server")
-        if wu:
-            ws = owned.filter(workspace_uuid=wu).first()
-        elif aid is not None:
-            ws = owned.filter(trading_account_id=aid).first()
-        else:
-            # No selector: only unambiguous when the caller owns exactly one workspace (no arbitrary pick).
-            ws = owned.first() if owned.count() == 1 else None
-        if ws is None:
-            return _NOT_FOUND
-        return Response({"diagnosis": diagnose_workspace(ws)})
+            except (ValueError, DjangoValidationError):
+                return _NOT_FOUND          # a malformed uuid/id matches nothing → 404 (never an unhandled 500)
+            if ws is None:
+                return _NOT_FOUND
+            return Response({"diagnosis": diagnose_workspace(ws)})
+        rows = list(qs.order_by("id")[:_FLEET_ROW_LIMIT])
+        return Response({
+            "rows": [diagnose_workspace(ws) for ws in rows],
+            "limit": _FLEET_ROW_LIMIT,
+            "metrics": observation_health_metrics(),
+        })

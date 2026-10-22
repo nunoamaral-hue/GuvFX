@@ -18,6 +18,12 @@ All new code is pure, read-only, secret-free. It **never contacts the host, neve
 never feeds the trust/observer decision.** No persisted field, no migration (computed diagnosis, per the packet's
 "prefer exposing a computed read-only diagnosis").
 
+> **Release-gating correction (post-review):** the HTTP endpoint is gated by a DEDICATED default-OFF flag,
+> `HOSTED_CONNECTION_DIAGNOSTICS_ENABLED`, checked FIRST and independently of the existing Hosted Workspace
+> flags (which are already ON in production), and is STAFF-ONLY. The operator management command is unaffected
+> (no flag gate, no HTTP surface). Fleet metrics are BOUNDED (DB aggregates for headline counts + a capped,
+> single-query reason-distribution scan — no N+1).
+
 - `backend/hosted_workspace/corroboration_diagnosis.py`
   - `classify_corroboration_result(result, *, workspace, now)` — faithful classifier that re-walks the EXACT gate
     order of `live_observe.corroboration_matches` + `build_observation_from_host` over a raw `OBSERVE_WORKSPACE`
@@ -25,10 +31,15 @@ never feeds the trust/observer decision.** No persisted field, no migration (com
     `producer` / `matching` so it cannot drift from the gates it explains.
   - `diagnose_workspace(workspace, *, now)` — operational diagnosis derived PURELY from durable persisted fields.
   - `observation_health_metrics(*, now)` — fail-open fleet metrics (never raises).
-- `backend/hosted_workspace/diagnostics_views.py` — `GET /api/hosted-workspace/diagnostics/` (404-dark behind the
-  master flag; staff → fleet + metrics or a selected account; non-staff → own workspace only; non-owner → 404).
-- `backend/hosted_workspace/management/commands/hosted_observation_diagnose.py` — operator command (no flag gate;
-  staff by shell access) `manage.py hosted_observation_diagnose [--account <id>]`.
+- `backend/hosted_workspace/diagnostics_views.py` — `GET /api/hosted-workspace/diagnostics/`. **STAFF-ONLY
+  operational diagnostics, not a customer feature.** Gated FIRST by a DEDICATED, independent flag
+  `HOSTED_CONNECTION_DIAGNOSTICS_ENABLED` (DEFAULT OFF): the route 404s while it is OFF **even when every other
+  Hosted Workspace flag is ON** (production already runs the master/observation flags, so the endpoint must not
+  ride on those). With the flag ON, a non-staff caller — including the workspace owner — still gets 404 (member
+  exposure needs separate product + information-disclosure approval). Staff → fleet + metrics, or a selected
+  account via `?account_id=`/`?workspace_uuid=`.
+- `backend/hosted_workspace/management/commands/hosted_observation_diagnose.py` — operator command (no flag gate,
+  no HTTP surface; staff by shell access) `manage.py hosted_observation_diagnose [--account <id>]`. Read-only.
 - Route added in `backend/hosted_workspace/urls.py`.
 
 ## Reason codes → exact gate / field mapping
@@ -59,19 +70,28 @@ existing `onboarding_ops` surface). A host-provided `reason` string is sanitised
 ## Verification (exact commands + results)
 
 - New focused suite: `DB_NAME=<isolated> manage.py test hosted_workspace.tests_corroboration_diagnosis
-  hosted_workspace.tests_diagnostics_api` → **48 OK** (classifier per-gate accuracy incl. positive control +
-  LIVE flag-on/off faithfulness, state-derived accuracy, redaction, no-mutate, owner-scope/IDOR, metrics,
-  command smoke).
-- Full regression (serial): `DB_NAME=<isolated> manage.py test hosted_workspace core` → **1382 OK (skipped=1)**.
+  hosted_workspace.tests_diagnostics_api` → **50 OK** (classifier per-gate accuracy incl. positive control +
+  LIVE flag-on/off faithfulness; state-derived accuracy; redaction; no-mutate; the dedicated-flag gate
+  (master-on + diagnostics-off ⇒ 404); staff-only (non-staff incl. owner ⇒ 404); bounded metrics / truncation;
+  malformed-uuid ⇒ 404; command smoke).
+- Full regression (serial): `DB_NAME=<isolated> manage.py test hosted_workspace core` → **1385 OK (skipped=1)**.
 - `manage.py makemigrations --check --dry-run` → **no `hosted_workspace` migration** (pre-existing unrelated local
   index-rename noise in backtests/reliability/signal_intake/strategies only; none introduced here).
 - `python3 scripts/check_no_secrets.py` → **no findings.**
 
 ## Independent adversarial review (disposition)
 
-An independent general-purpose subagent reviewed the final diff against the real gates
-(`live_observe.py`/`producer.py`/`matching.py`) and the persistence writer. Verdict: leakage **clean**,
-mutation **clean**, owner-scope/IDOR **clean**. Findings fixed:
+Reviewed twice by independent general-purpose subagents against the real gates
+(`live_observe.py`/`producer.py`/`matching.py`) and the persistence writer.
+
+**Second review (post release-gating revision):** verified the dedicated-flag gate (404 while
+`HOSTED_CONNECTION_DIAGNOSTICS_ENABLED` is OFF, even with master/observation flags ON; checked first, before any
+DB read), staff-only audience (non-staff incl. owner → 404; no member path), the ungated read-only command, and
+BOUNDED metrics (DB aggregates + capped single-query scan, **no N+1** — traced that `diagnose_workspace` reads
+only `select_related` fields). **No HIGH/MED.** Two LOW fixed: a malformed `workspace_uuid` now → 404 (not 500);
+a truncated metrics scan never reports HEALTHY.
+
+**First review (initial diff):** leakage / mutation / owner-scope **clean**. Findings fixed:
 
 - **MED — classifier drift (false-`corroborated`).** `_expected_account` ignored `hosted_live_monitoring_enabled()`,
   so a clean LIVE account with the flag OFF (the DARK default) could classify `corroborated` where the production

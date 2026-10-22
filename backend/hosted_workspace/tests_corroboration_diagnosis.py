@@ -11,6 +11,7 @@ Proves:
 """
 import json
 from io import StringIO
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -369,6 +370,42 @@ class MetricsTests(TestCase):
         self.assertGreaterEqual(m["reason_code_counts"].get(CD.NO_RUNTIME_POPULATED, 0), 2)
         # snapshot_age is a read-only cross-app read (fail-open) — present (dict) or None, never raises.
         self.assertTrue(m["snapshot_age"] is None or isinstance(m["snapshot_age"], dict))
+
+    def test_metrics_are_bounded_but_headline_counts_exact(self):
+        # Headline counts come from DB aggregates (exact regardless of the scan cap); the reason-distribution
+        # scan is BOUNDED by _METRICS_SCAN_LIMIT. Cap it to 1 over a 3-workspace fleet and prove: aggregates
+        # stay exact, the scan is truncated, and no unbounded materialisation happens.
+        u = _user("bnd")
+        _ws(_acct(u, login="920001"), canonical_state=S.WAITING_FOR_LOGIN,
+            delivery_state=HostedMt5Workspace.DeliveryState.AUTHORIZED)
+        _ws(_acct(u, login="920002"), canonical_state=S.PROVISIONING,
+            delivery_state=HostedMt5Workspace.DeliveryState.NONE)
+        _ws(_acct(u, login="920003"), canonical_state=S.WAITING_FOR_LOGIN,
+            delivery_state=HostedMt5Workspace.DeliveryState.NONE)
+        with patch.object(CD, "_METRICS_SCAN_LIMIT", 1):
+            m = CD.observation_health_metrics()
+        self.assertEqual(m["workspace_total"], 3)       # exact aggregate
+        self.assertEqual(m["never_observed"], 3)        # exact aggregate
+        self.assertEqual(m["stuck_authorized"], 1)      # exact aggregate
+        self.assertEqual(m["stuck_none"], 2)            # exact aggregate
+        self.assertEqual(m["scanned"], 1)               # bounded scan
+        self.assertTrue(m["scan_truncated"])
+
+    def test_truncated_scan_never_reports_healthy(self):
+        # Two fully-corroborated (non-fault) workspaces, scan capped to 1: the scanned row has no fault, but
+        # because the scan is TRUNCATED, health must not claim HEALTHY (a fault could hide in the unscanned tail).
+        u = _user("trunc")
+        for n in ("930001", "930002"):
+            ws = _ws(_acct(u, login=n), canonical_state=S.EXECUTION_READY, observation_version=3,
+                     delivery_state=HostedMt5Workspace.DeliveryState.CONNECTED,
+                     proj_process_running=True, proj_ipc_available=True, proj_connected=True,
+                     proj_account_match=True, proj_trade_allowed=True)
+            HostedMt5Workspace.objects.filter(pk=ws.pk).update(last_decision_at=timezone.now())
+        with patch.object(CD, "_METRICS_SCAN_LIMIT", 1):
+            m = CD.observation_health_metrics()
+        self.assertEqual(m["fault_count"], 0)
+        self.assertTrue(m["scan_truncated"])
+        self.assertEqual(m["health"], "DEGRADED")       # truncated ⇒ never HEALTHY
 
 
 class CommandTests(TestCase):
