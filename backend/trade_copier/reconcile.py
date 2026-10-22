@@ -40,13 +40,27 @@ MATCHED = "MATCHED"
 UNMATCHED = "UNMATCHED"
 AMBIGUOUS = "AMBIGUOUS"
 DIVERGENT_MISSING = "DIVERGENT_MISSING"
-# Partial-close post-send reconciliation states (ADR-0055). A partial close is NEVER declared terminal from
-# the bridge return alone — the authoritative remaining volume is broker state, re-read here.
+# Partial-close result/reconciliation state machine (ADR-0055 + ADR-0056). A partial close is NEVER declared
+# terminal from the bridge return alone — the authoritative remaining volume is broker state, re-read here.
 # NB: values kept <= 24 chars to fit CopierReplication.reconciliation_status (CharField max_length=24).
+PARTIAL_DISPATCH_REFUSED = "PCLOSE_DISPATCH_REFUSED"   # a claim/pre-send gate failed — no mutation sent
+PARTIAL_SENT = "PCLOSE_SENT"                           # order_send returned a mutation retcode
+PARTIAL_OUTCOME_UNKNOWN = "PCLOSE_OUTCOME_UNKNOWN"     # lost ACK — resolve ONLY by authoritative read
+PARTIAL_RECON_PENDING = "PCLOSE_RECON_PENDING"         # sent; awaiting the authoritative re-read
 PARTIAL_RECONCILED = "PCLOSE_RECONCILED"
 PARTIAL_DIVERGENT_VOLUME = "PCLOSE_DIVERGENT_VOL"
 PARTIAL_DIVERGENT_TICKET_GONE = "PCLOSE_TICKET_GONE"
 PARTIAL_RECONCILE_UNAVAILABLE = "PCLOSE_RECON_UNAVAIL"
+PARTIAL_OPERATOR_REVIEW = "PCLOSE_OPERATOR_REVIEW"     # a divergence/abort requiring a human
+
+# Post-send terminal states (no further auto-send from any of them).
+PARTIAL_TERMINAL_STATES = frozenset({
+    PARTIAL_RECONCILED, PARTIAL_DIVERGENT_VOLUME, PARTIAL_DIVERGENT_TICKET_GONE, PARTIAL_OPERATOR_REVIEW})
+# "This replication already entered the mutation-dispatch lifecycle" — any present ⇒ refuse a second
+# claim/dispatch (no-double-send). Includes every post-send state.
+PARTIAL_DISPATCH_MARKERS = frozenset({
+    PARTIAL_SENT, PARTIAL_OUTCOME_UNKNOWN, PARTIAL_RECON_PENDING, PARTIAL_RECONCILE_UNAVAILABLE,
+}) | PARTIAL_TERMINAL_STATES
 
 
 def _provenance_comment(replication_id: int) -> str:

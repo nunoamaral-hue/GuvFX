@@ -143,7 +143,17 @@ the endpoint implementation is bound by them.
   (`PCLOSE_DISPATCH_REFUSED`, 23) fits with 1 char headroom. The implementation MUST keep codes ≤24 or widen
   the field by migration before adding longer codes.
 
+## Implementation status (2026-10-22 — Sponsor GO FOR IMPLEMENTATION)
+
+The consumer is now IMPLEMENTED in #546 per this spec (`backend/trade_copier/consumer.py` +
+`consumer_api.py`, endpoints under `/api/copy-trading/partial-close/{claim,complete}/`,
+`tests_consumer.py` + `tests_partial_close_claim_guard.py`). What remains before a DEMO run (each a separate
+Sponsor gate): granting a real `partial_close_worker` identity (none exists outside tests); the host-side
+worker that calls the bridge primitive; `COPIER_EXECUTE_DEMO_ARMED`; and the account rehearsal. ADR-0056 stays
+**Proposed** until the implementation passes review (Sponsor disposition). Nothing is deployed, armed or
+executed; the endpoints are reachable only by a (non-existent) granted worker with arming on.
+
 ## Status / approval
-DARK engineering design. The endpoint implementation, ADR ratification, DEMO arming, the dedicated worker
-grant, deployment and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` /
+DARK engineering design + implementation. ADR ratification, DEMO arming, the dedicated worker grant,
+deployment and LIVE all remain separate explicit Sponsor gates. `DEMO_CERTIFIED` /
 `LIVE_EXECUTION_CERTIFIED` = false; actual live availability = 0%.

@@ -250,6 +250,13 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         worker_identity = getattr(request, "_worker_identity", None)
         perms = (worker_identity.worker_permissions or {}) if worker_identity else {}
 
+        # ADR-0056 worker-class separation: an identity carrying the dedicated ``partial_close_worker``
+        # permission is CATEGORICALLY refused at this generic endpoint — even if it was also (mis)granted
+        # generic permissions — so the dedicated DEMO partial-close class can never claim OPEN/CLOSE/MODIFY
+        # or any other job here. It is served ONLY by its own reviewed consumer endpoint.
+        if perms.get("partial_close_worker"):
+            return Response({"detail": "partial_close_worker_forbidden_on_generic_endpoint"}, status=403)
+
         # ADR-0034 capstone isolation invariant (defence-in-depth): the SHARED ``legacy-worker`` identity —
         # to which every legacy X-Worker-Token bridge resolves — must NEVER be treated as node-aware, or a
         # shared/legacy bridge could claim a hosted (node-bound) job. A dedicated per-node bridge uses its
