@@ -55,3 +55,29 @@ def copier_ui_enabled() -> bool:
     arming any observation or execution. When OFF the read API reports enabled:false and returns no
     rows, and the frontend hides the Copy Trading entry — nothing is exposed in production until armed."""
     return _flag("COPIER_UI_ENABLED")
+
+
+def copier_execute_enabled() -> bool:
+    """Master gate for the B-exec DEMO ExecutionJob PRODUCER. DEFAULT OFF, ANDed with the master gate.
+
+    BUILD != ARM: enabling this lets the producer run, but it creates SUPPRESSED PLACE_ORDER_SHADOW
+    jobs (no order) unless ``copier_execute_demo_armed()`` is ALSO on. Even then, DEMO followers only —
+    never LIVE, never bypassing the demo-only bridge close/modify walls, kill switch, pin or readiness."""
+    return copier_enabled() and _flag("COPIER_EXECUTE_ENABLED")
+
+
+def copier_execute_demo_armed() -> bool:
+    """When on (AND execute enabled), the producer creates REAL DEMO ``PLACE_ORDER`` jobs instead of
+    suppressed SHADOW jobs — DEMO followers ONLY. DEFAULT OFF. Arming is a separate operator-gated step:
+    building the producer does NOT authorize arming it, and it never reaches a LIVE destination."""
+    return copier_execute_enabled() and _flag("COPIER_EXECUTE_DEMO_ARMED")
+
+
+def copier_reconcile_enabled() -> bool:
+    """Gate for the follower-ticket reconciliation pass (ADR-0052). DEFAULT OFF, ANDed with the master gate.
+
+    Reconciliation is READ-ONLY: it reads a follower's live positions through the identity firewall and
+    records which broker ticket a copied OPEN produced (``CopierReplication.follower_ticket``). It never
+    places, closes or modifies an order. It is the prerequisite for any follower-position-targeting
+    lifecycle op (CLOSE/MODIFY), which must never act by symbol resemblance."""
+    return copier_enabled() and _flag("COPIER_RECONCILE_ENABLED")

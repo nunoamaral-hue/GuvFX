@@ -273,6 +273,13 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         if not bool(perms.get("shadow_worker")):
             base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
 
+        # ADR-0055 endpoint guard: the copier partial-close job type has NO deployed consumer and its DEMO
+        # consumer is a separate, not-yet-built arming step. Exclude it UNCONDITIONALLY from the claim set so
+        # "no worker executes a partial close" is an ENFORCED endpoint property (not merely the emergent
+        # "nothing asks for it"), mirroring the PLACE_ORDER_SHADOW guard above. A dedicated consumer, when
+        # built + armed, will claim it through its own reviewed path — never this generic dispatch.
+        base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE)
+
         # Determine routing mode for audit trail
         routing_mode = "node_aware" if authorized_nodes else "legacy_null_node"
 
