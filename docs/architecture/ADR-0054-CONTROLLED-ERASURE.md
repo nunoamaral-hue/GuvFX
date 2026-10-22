@@ -100,40 +100,89 @@ This ADR and PR #543 were **not approved** in their first or second form. Correc
   role boundary (`guvfx_schema_owner`, `guvfx_migrate`, `guvfx_app`, `guvfx_erasure`, `guvfx_erasure_exec`,
   `guvfx_readonly`) is scripted; the app role has no DELETE/TRUNCATE, no membership, and no EXECUTE on the
   procedure; a separate executor login (credential off the web runtime) is the sole EXECUTE grantee.
-- **Findings 3/4/5/6/7 (control plane):** now **built and tested** — the durable `DeletionTask` outbox +
-  idempotent worker, the comprehensive readiness probe, the observation-union + credential-ref-drift token, the
-  per-subject concurrency locks, and the two-person (requester/verifier/approver/executor) lifecycle with
-  approval expiry + revocation. 28 discriminating tests pass locally.
-- The destructive deletion path remains **fail-closed in this build** (execute refuses — no deletion occurs).
-**Still gated on the privileged provisioning (separately authorized rehearsal):** the SECURITY DEFINER
-procedure body, the role/ownership move, audit-row anonymisation applied to live rows, and the DB
-role-integration test set. See `docs/WV1_ERASURE_REWORK_PACKET.md`.
+- **Findings 3/4/5/6/7 (control plane):** **built and locally tested** — the durable `DeletionTask` outbox +
+  idempotent worker + dead-letter, the comprehensive readiness probe, the observation-union + credential-ref-drift
+  token, the per-subject concurrency locks, the two-person SoD lifecycle + verification-method allowlist, and the
+  `ErasureRequest` CHECK constraints.
+
+## Round-4 status (2026-10-22 — Phase 2 implementation + Phase 3 disposable rehearsal)
+Under the PD's conditional authorisation, the destructive backend is now implemented and exercised in a
+**disposable PostgreSQL-15 rehearsal with synthetic data only** (`ops/erasure/REHEARSAL_EVIDENCE.md`;
+`ALL EVIDENCE PASS`):
+- **Finding A** (forgeable lifecycle) — the complete verification record (verifier + timestamp + allow-listed
+  method) is required and re-checked at execution; `ErasureRequest` CHECK constraints make an unverified/
+  method-less advanced state impossible to persist.
+- **Finding B** (overstated SoD) — the enforced policy is stated above and encoded in code + tests + the procedure.
+- **Finding C** (no executor connection) — a dedicated `erasure_executor` DATABASES alias (credential absent in
+  web/worker/CI/local → fail-closed) is the only way the procedure is invoked; the rehearsal proves the app
+  connection cannot call it and the executor connection can.
+- **Finding D** (weak readiness) — the probe pins schema, single overload, exact signature/owner/SECURITY
+  DEFINER/search_path/version marker, ACL (executor-only, no PUBLIC/app, no unexpected grantees), table +
+  sequence + trigger-function ownership, trigger install/enabled, app membership + DELETE/TRUNCATE exclusions,
+  and required migrations.
+- **Finding E** (doc contradictions) — reconciled into the five categories above.
+- **Finding F** (template, not runnable) — `provision_erasure_privilege.sql` is a complete, guarded, idempotent,
+  transactional script with the full procedure; `verify_*` and `rollback_*` scripts added; all three ran in the
+  rehearsal.
+- **Finding G** (audit anonymisation) — implemented in the procedure + the migration-0020 carve-out; the
+  rehearsal proves subject PII is removed while accountability facts + the row are preserved, and other users are
+  untouched.
+`execute_owner_erasure` is **fail-closed in every unprovisioned/unconfigured environment** (web, workers, CI,
+local, and production until Sponsor-authorised provisioning). It performs real deletion ONLY where the flag is
+on, the executor connection is configured, and the full readiness probe passes — which in this programme means
+the disposable rehearsal, and (only after a separate Sponsor GO) production.
+**Still PROHIBITED without that per-step Sponsor authorisation:** production provisioning, production migration,
+arming the flag, processing a real user, deploying the executor credential to any runtime, and PR merge / ADR
+ratification. See `docs/WV1_ERASURE_REWORK_PACKET.md`.
+
+## Separation-of-duties policy (Finding B — exactly what the code enforces)
+Four roles are recorded (requester, verifier, approver, executor) and the following distinctness is ENFORCED, in
+the Python control plane AND re-checked in the SECURITY DEFINER procedure at execution:
+- **requester** recorded (`requested_by`), else nothing may be approved or executed;
+- **verifier** recorded (`verified_by` + `verified_at` + a non-empty, allow-listed `verification_method`) and
+  **verifier ≠ requester**; verification can only be set before approval;
+- **approver** recorded (`approved_by` + `approved_at`, not revoked, not expired) and **approver ≠ requester**
+  and **approver ≠ verifier**;
+- **executor** recorded and **executor ≠ approver**; the executor's *authority* comes from the dedicated
+  `guvfx_erasure_exec` connection (the ordinary app role cannot invoke the procedure at all), not from a
+  caller-supplied flag.
+So no single operator can perform requester + approver, verifier + approver, or approver + executor — the
+approver is distinct from every other role. (We deliberately do NOT claim executor ≠ verifier or ≠ requester,
+because the code does not enforce those.)
 
 ## Capability status — five categories (what is true right now)
-To prevent any reader mistaking a design for a shipped control, every element of this ADR is placed in exactly
-one category. Nothing below "IMPLEMENTED NOW" can delete data in this build.
+Every element is placed in exactly one category, so no reader mistakes a design for a shipped control.
 
-- **IMPLEMENTED NOW (in the branch, tested locally + CI):**
-  - Role-enforced BEFORE-DELETE triggers — every ordinary DML DELETE of `EvidenceBlob`/`BrokerEvent` is
-    blocked (migration 0017); the trigger keys on `current_user = 'guvfx_erasure'`, not a forgeable GUC.
-  - The fail-closed control plane: pure dry-run PLAN (owner-scoped, union of event + observation evidence),
-    the TOCTOU confirmation token, and the `execute` gate (flag + executable-status + identity + hold + token
-    + readiness) — which **always refuses** in this build (no destructive deletion runs).
-  - The durable `DeletionTask` outbox model + the two-person `ErasureRequest` lifecycle fields
-    (requester/verifier/approver/executor + timestamps + method) and their separation-of-duties checks.
-  - Negative controls proving the boundary (`test_ordinary_delete_blocked`, `test_old_guc_cannot_bypass`).
-- **PROPOSED (this ADR — awaits Sponsor ratification):** the controlled-erasure exception itself, the
-  retention position it supports, and arming `BROKER_INTELLIGENCE_ERASURE_ENABLED` for any cohort.
-- **NOT YET BUILT (design only; no code deletes data):** the physical file-deletion worker body that drains
-  the outbox after commit, and audit-row anonymisation applied to live rows.
-- **REQUIRES PRIVILEGED PROVISIONING (superuser, separately authorized, rehearsal first):** the five/six-role
-  trust boundary (`guvfx_schema_owner`, `guvfx_migrate`, `guvfx_app`, `guvfx_erasure`, `guvfx_erasure_exec`,
-  `guvfx_readonly`), the ownership move off the app role, the DELETE/TRUNCATE revocations, and the
-  `bi_governed_erase_owner` SECURITY DEFINER procedure (`ops/erasure/provision_erasure_privilege.sql`).
-  Until provisioned, `privileged_backend_ready()` is false and `execute` fails closed.
-- **PROHIBITED in this build (no authorization sought here):** merging PR #543, ratifying this ADR, running
-  the provisioning script against production, running any migration against production, arming the flag, and
-  `--execute` against real data.
+- **Implemented and LOCALLY TESTED (branch + CI unit tests):** role-enforced BEFORE-DELETE triggers; the
+  fail-closed control plane (pure dry-run PLAN with the event+observation union and credential-ref-drift token;
+  the full lifecycle gate); the two-person SoD lifecycle + the verification-method allowlist; the durable
+  `DeletionTask` outbox model + the idempotent worker + dead-letter; the comprehensive readiness probe; the
+  `ErasureRequest` CHECK constraints; the executor-connection fail-closed wiring. Negative controls prove each.
+- **Implemented and REHEARSAL-INTEGRATION-TESTED (disposable PostgreSQL-15, synthetic data — see
+  `ops/erasure/REHEARSAL_EVIDENCE.md`):** the `bi_governed_erase_owner` SECURITY DEFINER procedure (owner-scoped
+  deletes, outbox enqueue, audit anonymisation, all gates re-derived from DB state); the runnable
+  provisioning / verification / rollback scripts; the audit-anonymisation carve-out (migration 0020); the
+  six-role boundary with the ownership move + DELETE/TRUNCATE revocations; the executor connection. Proven: only
+  the procedure deletes; app + PUBLIC cannot EXECUTE/TRUNCATE/DDL; concurrency yields one outcome; crash leaves a
+  durable task; shared evidence retained; files removed only via the outbox; audit PII anonymised.
+- **DESIGNED but not implemented (production-arming follow-ups; none change the fail-closed stance):**
+  - **Ingestion serialisation (adversarial-review MED residual).** The procedure derives its deletable-blob set
+    from live rows at delete time (via `RETURNING`), closing the plan→delete window. A row the ingestion worker
+    commits for the subject AFTER the procedure's delete statements is new data that survives. Full closure
+    requires ingestion to take the same `pg_advisory_xact_lock(26485, owner)`, or a mailbox-disconnect
+    precondition before erasure. Required before production arming; ingestion is DARK today.
+  - **Executor attribution (adversarial-review LOW).** `executed_by` is a caller-supplied staff id (recorded as
+    `executor_id_self_asserted` in the outcome); the real execution *authority* is possession of the
+    `guvfx_erasure_exec` connection. Binding `executed_by` to an authenticated operator record is a follow-up.
+  - The operational-vs-security retention split for `core.AuditEvent`; record-level (vs owner-level) legal
+    holds. Neither is required for owner erasure.
+- **REQUIRES PRIVILEGED PROVISIONING IN PRODUCTION (superuser, separately Sponsor-authorised):** running
+  `ops/erasure/provision_erasure_privilege.sql` against production, creating the roles there, moving ownership,
+  and deploying the `guvfx_erasure_exec` credential into the governed job's environment. Until done,
+  `privileged_backend_ready()` is false in production and `execute` fails closed.
+- **PROHIBITED (no authorisation sought here):** merging PR #543, ratifying this ADR, running the provisioning
+  or any migration against production, arming `BROKER_INTELLIGENCE_ERASURE_ENABLED`, processing any real user,
+  deploying the executor credential to the web/worker runtime, and `--execute` against real data.
 
 ## Status / ratification
 **Proposed — NOT ratified; PR #543 is a governed review packet, not a merge request.** Do not merge, do not

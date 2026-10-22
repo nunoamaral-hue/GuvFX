@@ -943,6 +943,23 @@ class ErasureRequest(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["subject_user_id_snapshot", "status"])]
+        # Finding A — DB-level row-consistency (defense in depth; the governed procedure re-validates the full
+        # record at execution). NB: the staff FKs are SET_NULL by design (they survive a staff-user deletion),
+        # so these CHECKs deliberately do NOT require the FK ids to be non-null — that completeness is enforced
+        # by the procedure at execution (and fails closed if a staff id was later nulled).
+        constraints = [
+            # A verified request must carry a non-empty method category.
+            models.CheckConstraint(
+                name="erasurereq_verified_requires_method",
+                check=models.Q(identity_verified=False) | ~models.Q(verification_method=""),
+            ),
+            # A request cannot reach an approved/executed/completed state without verified identity.
+            models.CheckConstraint(
+                name="erasurereq_advanced_requires_verified",
+                check=(~models.Q(status__in=["APPROVED", "EXECUTED", "COMPLETED"])
+                       | models.Q(identity_verified=True)),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"ErasureRequest(subject={self.subject_user_id_snapshot}, {self.status})"

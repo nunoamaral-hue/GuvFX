@@ -1,11 +1,52 @@
-# WV1 Controlled-Erasure — Governed Review Packet (adversarial-review corrections, round 3)
+# WV1 Controlled-Erasure — Governed Review Packet
 
-- **Date:** 2026-10-21 · **PR #543** (branch `feat/wv1-controlled-erasure`). **A governed review packet, NOT a
-  merge request.** No ADR ratification, no merge, no production migration/erasure/deploy, no Console change.
-  MT5 Copy Trading untouched.
-- **Verified this round (local, PostgreSQL):** `broker_intelligence` full suite pass; erasure + governance
-  **32 pass**; no migration drift in `broker_intelligence`/`core`; the erasure CLI parses.
-- **Standing boundary unchanged:** nothing provisioned, migrated, merged, flag-armed, or executed in production.
+- **Date:** 2026-10-22 · **PR #543** (branch `feat/wv1-controlled-erasure`). **A governed review packet, NOT a
+  merge request.** No ADR ratification, no merge, no production provisioning/migration/erasure/deploy, no Console
+  change. MT5 Copy Trading untouched.
+- **Standing boundary unchanged:** nothing provisioned, migrated, merged, flag-armed, or executed **in
+  production**. The only place destructive deletion ran is a **disposable PostgreSQL-15 rehearsal with synthetic
+  data**, destroyed on exit.
+
+## Round 4 (2026-10-22) — Phase 1–3 under the PD conditional authorisation
+The PD authorised: (1) correct PR metadata + ADR/packet contradictions; (2) complete the implementation WITHOUT
+production provisioning; (3) a **disposable PG15 rehearsal, synthetic data only**. All three are done.
+
+- **Phase 1:** PR #543 title + description corrected to ADR-0054 and the role-based design (states destructive
+  deletion remains unimplemented/unprovisioned in production); ADR category contradiction fixed.
+- **Phase 2 (implemented, locally tested):** the dedicated **executor DATABASES alias** (Finding C,
+  fail-closed when absent); the **comprehensive readiness probe** (Finding D — schema/overload/signature/owner/
+  SECURITY DEFINER/exact search_path/version marker/ACL-grantees/ownership/triggers/migrations); the full
+  **two-person SoD** with a verification-method allowlist + `ErasureRequest` CHECK constraints (Findings A/B); a
+  complete, guarded, idempotent, transactional **provisioning script + the SECURITY DEFINER procedure body** +
+  **verification** + **rollback** scripts (Finding F); **audit anonymisation** in the procedure + the
+  migration-0020 carve-out (Finding G). Ordinary full regression stayed green before any role creation.
+- **Phase 3 (disposable PG15 rehearsal — `ops/erasure/REHEARSAL_EVIDENCE.md`, `ALL EVIDENCE PASS`):** 22 steps,
+  incl. unprovisioned negative control, provision + verify, app/PUBLIC cannot EXECUTE/TRUNCATE/DDL, real
+  governed execution, shared-evidence retention, observation-only handling, outbox durability + worker drain,
+  audit anonymisation, dead-letter → FAILED, concurrency one-winner, plan-token drift + hold + executor=approver
+  refusals, and a clean rollback restoring the original arrangement. Container destroyed; no secrets logged.
+
+- **Independent adversarial review (round 4):** a fresh reviewer attacked the backend and confirmed the boundary,
+  SECURITY-DEFINER search_path safety, proc shared-blob/token/SoD/carve-out logic, and fail-closed behaviour are
+  SOLID. It found one HIGH (`DROP SCHEMA public CASCADE` owner-level vector), two MED (the contact-binding
+  PROTECT FK; a narrow plan→delete ingestion race), and minor LOW hardening. **All confirmed items are fixed and
+  the rehearsal re-ran green** — see `ops/erasure/REHEARSAL_EVIDENCE.md` (steps `06-app-cannot-drop-schema`,
+  `03-contact-binding-seeded`/`11 contacts:1`, `20-future-migrations-work`) and ADR-0054 round-4 status.
+
+### Finding A–G disposition (this round)
+| # | Finding | Status |
+|---|---------|--------|
+| A | Lifecycle authority forgeable in app data | **FIXED** — complete verification record required + re-checked at execute; DB CHECK constraints block an unverified/method-less advanced state; the procedure re-derives + re-checks from DB rows. |
+| B | SoD overstated | **FIXED** — exact enforced policy (requester/verifier/approver pairwise-distinct; executor ≠ approver; executor authority from the executor connection) stated in ADR-0054 and encoded in code + tests + procedure. |
+| C | No executor connection | **IMPLEMENTED** — `erasure_executor` alias; credential absent in web/worker/CI/local → fail-closed; rehearsal proves app connection cannot call the proc, executor can. |
+| D | Readiness not comprehensive | **IMPLEMENTED** — pinned schema + single overload (ambiguous ⇒ NOT READY) + signature via `proargtypes` + owner + SECURITY DEFINER + exact search_path + version marker + ACL enumeration + ownership + triggers + migrations. |
+| E | Doc contradictions | **FIXED** — ADR reconciled into five status categories; worker-vs-procedure distinction corrected. |
+| F | Provisioning was a template | **IMPLEMENTED** — runnable, guarded (target-db + ack + synthetic), idempotent, transactional; full procedure body; `verify_*` + `rollback_*` scripts; all ran in the rehearsal. |
+| G | Audit anonymisation unimplemented | **IMPLEMENTED** — procedure anonymises `BrokerEmailIdentityAudit`/`TradingAccountBrokerContactAudit`/`core.AuditEvent` (email/proofs/ip/user_agent/metadata cleared, subject/links nulled) while keeping accountability facts; migration 0020 carves out the append-only UPDATE trigger for the governed path only. |
+
+### Round-3 record (retained below)
+- **Verified round 3 (local, PostgreSQL):** `broker_intelligence` full suite pass; erasure + governance
+  **32 pass**; no migration drift; the erasure CLI parses.
 
 ## Independent adversarial review (round 3) + fixes
 A fresh independent reviewer tried to REFUTE the claims. It confirmed the headline claim — **no destructive
@@ -83,15 +124,18 @@ PENDING task → worker completes · shared evidence retained · observation-onl
 invalidates · audit PII anonymised in-procedure · future migrations still operational.
 
 ## Updated production-readiness (honest)
-- Erasure **capability ~55%**: control plane + security boundary design + outbox/worker + two-person lifecycle +
-  readiness are built and tested; the destructive DB procedure + ownership provisioning + audit anonymisation are
-  specified/scripted but unbuilt/unprovisioned, so **erasure is not yet operable**.
-- WV1 engineering overall unchanged (~95% feature; erasure is additive and DARK).
-- Production-readiness **~55%** (the erasure gap + prior recovery / log-retention / DPA / DPIA gaps). Live-user
-  availability **0%**.
+- Erasure **engineering ~90%**: the full capability — control plane, two-person SoD, outbox/worker/dead-letter,
+  readiness probe, the SECURITY DEFINER procedure, the six-role boundary, provisioning/verify/rollback, and audit
+  anonymisation — is **built, locally tested, and certified in a disposable PG15 rehearsal**. Remaining
+  engineering: the AuditEvent operational-vs-security retention split and record-level holds (documented future
+  refinements, not required for owner erasure).
+- Erasure **production-operability 0%**: it is **not operable in production** — production provisioning, the ADR
+  ratification, arming the flag, and deploying the executor credential are all Sponsor-gated and NOT done.
+- WV1 engineering overall ~95% feature (erasure is additive and DARK). Overall WV1 production-readiness still
+  gated by the prior recovery / log-retention / DPA / DPIA items. Live-user availability **0%**.
 
-## Approval requests (unchanged)
-- Review the corrected design (this packet + ADR-0054 + the provisioning script).
-- Authorize (separately) the **superuser provisioning in a REHEARSAL database** so the destructive procedure +
-  the role-integration test set can be built and run.
+## Approval requests
+- Review the implemented design + the rehearsal evidence (this packet + ADR-0054 + `ops/erasure/`).
+- Decide on ratifying ADR-0054 and (separately) authorising production provisioning + flag-arming — both remain
+  your gate; nothing here presumes them.
 - Keep PR #543 **DRAFT/DARK**, unratified, unmerged; do not arm the flag or run `--execute` against production.

@@ -41,8 +41,8 @@ from django.db import transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from broker_intelligence.erasure import (ErasureRefused, approve_request, execute_owner_erasure,
-                                          plan_owner_erasure, privileged_backend_readiness,
+from broker_intelligence.erasure import (ErasureRefused, approve_request, erasure_executor_alias,
+                                          execute_owner_erasure, plan_owner_erasure, privileged_backend_readiness,
                                           privileged_backend_ready, process_deletion_tasks, verify_identity)
 from broker_intelligence.evidence import EvidenceStore
 from broker_intelligence.models import (BrokerEvent, BrokerMessageObservation, ConnectedMailbox, DeletionTask,
@@ -174,7 +174,8 @@ class ControlledErasureControlPlaneTests(TestCase):
         req = ErasureRequest.objects.create(
             subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
             identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
-            plan={"x": 1}, confirm_token="t", status=ErasureRequest.Status.PLANNED)
+            verification_method="signed-request", plan={"x": 1}, confirm_token="t",
+            status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
             approve_request(req, self.requester)            # approver == requester
         req.refresh_from_db()
@@ -190,9 +191,44 @@ class ControlledErasureControlPlaneTests(TestCase):
     def test_approve_requires_a_plan(self):
         req = ErasureRequest.objects.create(
             subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
-            identity_verified=True, status=ErasureRequest.Status.REQUESTED)
+            identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
+            verification_method="signed-request", status=ErasureRequest.Status.REQUESTED)
         with self.assertRaises(ErasureRefused):
             approve_request(req, self.approver)
+
+    def test_verify_rejects_unknown_method(self):
+        req = ErasureRequest.objects.create(
+            subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
+            status=ErasureRequest.Status.REQUESTED)
+        with self.assertRaises(ErasureRefused):
+            verify_identity(req, self.verifier, "banana-not-a-method")
+        req.refresh_from_db()
+        self.assertFalse(req.identity_verified)
+
+    def test_verify_rejects_verifier_equals_requester(self):
+        req = ErasureRequest.objects.create(
+            subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
+            status=ErasureRequest.Status.REQUESTED)
+        with self.assertRaises(ErasureRefused):
+            verify_identity(req, self.requester, "signed-request")   # verifier == requester
+
+    def test_approve_rejects_approver_equals_verifier(self):
+        req = ErasureRequest.objects.create(
+            subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
+            identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
+            verification_method="signed-request", plan={"x": 1}, confirm_token="t",
+            status=ErasureRequest.Status.PLANNED)
+        with self.assertRaises(ErasureRefused):
+            approve_request(req, self.verifier)                      # approver == verifier
+
+    def test_db_check_blocks_verified_without_method(self):
+        """Finding A: the DB CHECK refuses a verified row with no method category (defense in depth)."""
+        from django.db import IntegrityError, transaction as _txn
+        with self.assertRaises(IntegrityError):
+            with _txn.atomic():
+                ErasureRequest.objects.create(
+                    subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
+                    identity_verified=True, verification_method="", status=ErasureRequest.Status.REQUESTED)
 
     def test_approve_blocked_when_no_requester(self):
         """Round-3 adversarial HIGH: a request with NO recorded requester cannot be approved — the two-person
@@ -200,7 +236,8 @@ class ControlledErasureControlPlaneTests(TestCase):
         req = ErasureRequest.objects.create(
             subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=None,
             identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
-            plan={"x": 1}, confirm_token="t", status=ErasureRequest.Status.PLANNED)
+            verification_method="signed-request", plan={"x": 1}, confirm_token="t",
+            status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
             approve_request(req, self.approver)
         req.refresh_from_db()
@@ -236,10 +273,13 @@ class ControlledErasureControlPlaneTests(TestCase):
         with self.assertRaises(ErasureRefused):
             execute_owner_erasure(req, self._token(self.a), executor=self.executor)
 
-    def test_unverified_identity_blocks(self):
-        req = self._approved_request(self.a, identity_verified=False)
-        with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+    def test_unverified_identity_cannot_reach_approved_state(self):
+        """Finding A: the DB CHECK makes an APPROVED request with unverified identity impossible to persist, so
+        execution can never see one (defense in depth beyond the gate's own identity check)."""
+        from django.db import IntegrityError, transaction as _txn
+        with self.assertRaises(IntegrityError):
+            with _txn.atomic():
+                self._approved_request(self.a, identity_verified=False)
 
     def test_revoked_approval_blocks(self):
         req = self._approved_request(self.a, approval_revoked=True)
@@ -268,23 +308,44 @@ class ControlledErasureControlPlaneTests(TestCase):
         with self.assertRaises(ErasureRefused):
             execute_owner_erasure(req, "deadbeef-not-the-token", executor=self.executor)
 
-    def test_execute_fails_closed_when_backend_unprovisioned(self):
-        """All gates pass + correct token, but the privileged backend is not provisioned -> fail-closed refusal.
-        Nothing is deleted."""
+    def test_execute_fails_closed_when_executor_unconfigured(self):
+        """All lifecycle gates pass + correct token, but the dedicated executor connection is NOT configured in
+        this environment (Finding C) -> fail-closed refusal. Nothing is deleted. (The full provisioned path is
+        exercised against synthetic data in the disposable PG15 rehearsal, not in unit tests.)"""
         b = self._blob(b"fail closed mail"); e = self._event(self.a, b)
         req = self._approved_request(self.a)
+        self.assertIsNone(erasure_executor_alias())      # no ERASURE_EXECUTOR_DB_* in the unit-test environment
         with self.assertRaises(ErasureRefused) as ctx:
             execute_owner_erasure(req, self._token(self.a), executor=self.executor)
-        self.assertIn("not ready", str(ctx.exception).lower())
+        self.assertIn("fail-closed", str(ctx.exception).lower())
         self.assertTrue(BrokerEvent.objects.filter(pk=e.pk).exists())
         self.assertTrue(EvidenceBlob.objects.filter(pk=b.pk).exists())
+
+    def test_executor_equals_approver_blocked(self):
+        """Two-person: the executor must differ from the approver (checked before any backend call)."""
+        req = self._approved_request(self.a)
+        with self.assertRaises(ErasureRefused):
+            execute_owner_erasure(req, self._token(self.a), executor=self.approver)
+
+    def test_execute_requires_an_executor(self):
+        req = self._approved_request(self.a)
+        with self.assertRaises(ErasureRefused):
+            execute_owner_erasure(req, self._token(self.a), executor=None)
 
     # --- durable file-deletion OUTBOX worker (Findings 3/4) ---------------
     def test_worker_removes_files_and_completes_request(self):
         """A worker drains PENDING tasks, removes the real files, and advances an EXECUTED request to COMPLETED."""
-        blob = self._blob(b"to be physically erased")
-        evidence_path = self.store._abs(blob.storage_key)
+        import hashlib
         import os
+        # Write the content-addressed evidence file WITHOUT a blob row — the governed procedure deletes the
+        # EvidenceBlob row before the outbox task is drained, so the worker's "no live blob re-references this
+        # content" guard must permit the unlink.
+        raw = b"to be physically erased"
+        sha = hashlib.sha256(raw).hexdigest()
+        evidence_path = self.store._abs(f"{sha[:2]}/{sha[2:4]}/{sha}")
+        os.makedirs(os.path.dirname(evidence_path), exist_ok=True)
+        with open(evidence_path, "wb") as fh:
+            fh.write(raw)
         cred_ref = "crworkertest0001"
         cred_path = os.path.join(self.cred_root, f"{cred_ref}.enc")
         with open(cred_path, "wb") as fh:
@@ -292,7 +353,7 @@ class ControlledErasureControlPlaneTests(TestCase):
         self.assertTrue(os.path.exists(evidence_path) and os.path.exists(cred_path))
 
         req = self._approved_request(self.a, status=ErasureRequest.Status.EXECUTED)
-        DeletionTask.objects.create(request=req, kind=DeletionTask.Kind.EVIDENCE_FILE, target_ref=blob.sha256)
+        DeletionTask.objects.create(request=req, kind=DeletionTask.Kind.EVIDENCE_FILE, target_ref=sha)
         DeletionTask.objects.create(request=req, kind=DeletionTask.Kind.CREDENTIAL_FILE, target_ref=cred_ref)
 
         result = process_deletion_tasks()
@@ -303,6 +364,21 @@ class ControlledErasureControlPlaneTests(TestCase):
         self.assertFalse(DeletionTask.objects.exclude(status=DeletionTask.Status.COMPLETED).exists())
         req.refresh_from_db()
         self.assertEqual(req.status, ErasureRequest.Status.COMPLETED)
+
+    def test_worker_retains_file_still_referenced_by_live_blob(self):
+        """Re-ingestion race guard: if a LIVE EvidenceBlob now re-uses the task's content hash, the worker must
+        NOT unlink the file (it backs a live row). Task still COMPLETES, with a note; file survives."""
+        import os
+        blob = self._blob(b"content re-ingested by another owner")   # creates a live row + file
+        path = self.store._abs(blob.storage_key)
+        req = self._approved_request(self.a, status=ErasureRequest.Status.EXECUTED)
+        DeletionTask.objects.create(request=req, kind=DeletionTask.Kind.EVIDENCE_FILE, target_ref=blob.sha256)
+        res = process_deletion_tasks()
+        self.assertEqual(res["failed"], 0)
+        self.assertTrue(os.path.exists(path))                        # file retained — a live blob references it
+        task = DeletionTask.objects.get(request=req)
+        self.assertEqual(task.status, DeletionTask.Status.COMPLETED)
+        self.assertIn("re-referenced", task.last_error)
 
     def test_worker_missing_file_is_success(self):
         """A target file that is already gone is idempotent success (COMPLETED), not a failure."""

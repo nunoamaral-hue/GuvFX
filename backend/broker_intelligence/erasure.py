@@ -13,8 +13,12 @@ DELETE/TRUNCATE revoked from the application role. Why role-enforced, not a GUC 
 privileged role and cannot ``SET ROLE``, so EVERY ordinary DML DELETE (ORM/bulk/raw) is blocked; TRUNCATE/DDL
 bypasses are closed by the provisioning ownership move + revocations.
 
-**No destructive deletion occurs in this build: ``execute`` fails closed** (the privileged backend is not
-provisioned and governed deletion is gated). See ADR-0054 and docs/WV1_ERASURE_REWORK_PACKET.md.
+``execute`` is **fail-closed in every unprovisioned/unconfigured environment** — web, workers, CI, local, and
+production until a Sponsor-authorised provisioning — because the flag is off, the dedicated executor connection
+(``erasure_executor``) is absent, and/or the full readiness probe fails. It performs real owner-scoped deletion
+ONLY when all three hold, which in this programme means the disposable PostgreSQL-15 rehearsal
+(``ops/erasure/rehearse_erasure.sh``; evidence in ``ops/erasure/REHEARSAL_EVIDENCE.md``) and, only after a
+separate Sponsor GO, production. See ADR-0054 and docs/WV1_ERASURE_REWORK_PACKET.md.
 """
 from __future__ import annotations
 
@@ -22,13 +26,14 @@ import hashlib
 import json
 import logging
 
-from django.db import connection, transaction
+from django.conf import settings
+from django.db import connection, connections, transaction
 from django.utils import timezone
 
 from . import flags
 from .models import (
     BrokerEmailIdentity, BrokerEvent, BrokerMessageObservation, ConnectedMailbox, DeletionTask, ErasureHold,
-    ErasureRequest, Withdrawal,
+    ErasureRequest, EvidenceBlob, TradingAccountBrokerContact, Withdrawal,
 )
 
 logger = logging.getLogger("guvfx.broker_intelligence.erasure")
@@ -38,11 +43,39 @@ logger = logging.getLogger("guvfx.broker_intelligence.erasure")
 _PRIVILEGED_ROLE = "guvfx_erasure"          # NOLOGIN; owns the SECURITY DEFINER proc; the trigger identity
 _EXECUTOR_ROLE = "guvfx_erasure_exec"       # LOGIN; the ONLY role granted EXECUTE on the proc (separate credential)
 _SCHEMA_OWNER_ROLE = "guvfx_schema_owner"   # NOLOGIN; owns the evidence tables + ordinary trigger functions
+_EXECUTOR_ALIAS = "erasure_executor"        # Django DATABASES alias for the executor login (absent => fail-closed)
 _PROC_NAME = "bi_governed_erase_owner"
-_PROC_SIG = "bigint, bytea"                 # pg_get_function_identity_arguments form (request id, confirmation)
+_PROC_SCHEMA = "public"
+_PROC_SIG = "bigint, bigint, text"          # (request_id, executor_user_id, confirmation_token) identity args
+_PROC_VERSION = "ADR-0054/erasure-proc/v1"  # version marker stored as the function COMMENT; readiness pins it
+_PROC_SEARCH_PATH = "pg_catalog, public"    # exact pinned search_path (not merely "some setting present")
 _EVIDENCE_TABLES = ("broker_intelligence_evidenceblob", "broker_intelligence_brokerevent")
+_EVIDENCE_SEQUENCES = ("broker_intelligence_evidenceblob_id_seq", "broker_intelligence_brokerevent_id_seq")
+_TRIGGER_FUNCTIONS = ("bi_evidenceblob_block_delete", "bi_brokerevent_block_delete")
+_DELETE_TRIGGERS = ("bi_evidenceblob_no_delete", "bi_brokerevent_no_delete")
+_REQUIRED_MIGRATIONS = (                     # exact names (triggers + lifecycle/outbox + checks + anon carve-out)
+    "0017_erasurehold_erasurerequest",
+    "0018_erasure_lifecycle_and_deletion_outbox",
+    "0019_erasurerequest_consistency_checks",
+    "0020_audit_anonymisation_carveout",
+)
 _ADVISORY_NS = 0x6775                        # fixed namespace key for pg_advisory_xact_lock(ns, owner_id)
 _MAX_DELETION_ATTEMPTS = 5                   # a file-deletion task that fails this many times is dead-lettered
+# Allowed data-subject identity-verification method CATEGORIES (never ID documents). A verification record must
+# carry one of these (Finding A): a non-empty, recognised code — not a free-text or empty string.
+_ALLOWED_VERIFICATION_METHODS = frozenset({
+    "signed-request", "video-call", "gov-id-checked", "account-control-proof", "support-ticket-verified",
+})
+
+
+def erasure_executor_alias():
+    """Return the configured executor DATABASES alias name, or None if it is not configured (fail-closed).
+
+    The alias exists ONLY when the dedicated executor credential is present in THIS process's environment
+    (settings builds it from ERASURE_EXECUTOR_DB_*). Web/worker/CI/local runtimes must NOT carry that credential,
+    so this returns None there and governed execution refuses. Never falls back to the application connection."""
+    from django.conf import settings
+    return _EXECUTOR_ALIAS if _EXECUTOR_ALIAS in settings.DATABASES else None
 
 
 class ErasureRefused(Exception):
@@ -71,6 +104,8 @@ def plan_owner_erasure(owner_id: int) -> dict:
     obs = _ids(BrokerMessageObservation.objects.filter(owner_id=owner_id))
     mbx = _ids(ConnectedMailbox.objects.filter(user_id=owner_id))
     idn = _ids(BrokerEmailIdentity.objects.filter(user_id=owner_id))
+    # The subject's account<->broker-identity bindings (PROTECT the identities; are the subject's personal data).
+    con = _ids(TradingAccountBrokerContact.objects.filter(broker_email_identity__user_id=owner_id))
     cred_refs = sorted(ConnectedMailbox.objects.filter(user_id=owner_id)
                        .exclude(credential_ref="").values_list("credential_ref", flat=True))
     cred_ref_digests = sorted(_ref_digest(r) for r in cred_refs)
@@ -99,6 +134,7 @@ def plan_owner_erasure(owner_id: int) -> dict:
         "credential_refs_count": len(cred_refs),
         "credential_ref_digests": cred_ref_digests,
         "identities": idn,
+        "contacts": con,
         "evidence_blobs_delete": to_delete,
         "evidence_blobs_retain_shared": to_retain,
     }
@@ -112,25 +148,35 @@ def _plan_token(plan: dict) -> str:
     the token even when every id set is unchanged (Finding 5b)."""
     basis = json.dumps({k: plan[k] for k in (
         "subject_user_id", "withdrawals", "broker_events", "observations", "connected_mailboxes",
-        "credential_ref_digests", "identities", "evidence_blobs_delete", "evidence_blobs_retain_shared")},
+        "credential_ref_digests", "identities", "contacts", "evidence_blobs_delete",
+        "evidence_blobs_retain_shared")},
         sort_keys=True)
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
 
-def privileged_backend_readiness() -> tuple[bool, list[str]]:
-    """Comprehensive, fail-closed readiness probe for the separately-provisioned privileged backend (Finding 4).
-    Returns ``(ready, reasons)``; ``ready`` is True ONLY when every invariant holds. Any missing object, wrong
-    owner/ACL, app-role membership/privilege, or probe error => NOT READY with a sanitised reason. Every query is
-    guarded so it cannot raise in an unprovisioned database (it must not poison the caller's transaction)."""
+def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str]]:
+    """Comprehensive, fail-closed readiness probe for the separately-provisioned privileged backend (Finding D).
+    Returns ``(ready, reasons)``; ``ready`` is True ONLY when EVERY invariant holds. Any missing object, wrong
+    schema/signature/owner/SECURITY DEFINER/search_path/version, any unexpected or PUBLIC EXECUTE grantee, any
+    app-role membership/privilege, a missing migration, a missing/disabled trigger, an ambiguous overload, or any
+    probe error => NOT READY with a sanitised reason. Every query is guarded so it cannot raise on an
+    unprovisioned database. ``using`` selects the connection alias (the executor alias at execute time)."""
     reasons: list[str] = []
+    # The APPLICATION role is the configured default-connection user, regardless of which alias we probe over.
+    app_role = settings.DATABASES["default"]["USER"]
     try:
-        with connection.cursor() as cur:
+        with connections[using].cursor() as cur:
             def _exists(sql, params):
                 cur.execute(sql, params)
                 return cur.fetchone() is not None
 
-            cur.execute("SELECT current_user")
-            app_role = cur.fetchone()[0]
+            # (0) When probing over the executor alias, confirm we actually connected as the executor role
+            # (belt-and-suspenders against a misconfigured ERASURE_EXECUTOR_DB_USER).
+            if using == _EXECUTOR_ALIAS:
+                cur.execute("SELECT current_user")
+                cu = cur.fetchone()[0]
+                if cu != _EXECUTOR_ROLE:
+                    reasons.append(f"executor connection current_user is '{cu}', expected '{_EXECUTOR_ROLE}'")
 
             # (1) Required roles exist.
             for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE):
@@ -138,69 +184,135 @@ def privileged_backend_readiness() -> tuple[bool, list[str]]:
                     reasons.append(f"role '{role}' absent")
             roles_ok = not reasons
 
-            # (2) Procedure present, with the expected signature / SECURITY DEFINER / owner / pinned search_path.
-            cur.execute(
-                "SELECT p.oid, p.prosecdef, pg_get_userbyid(p.proowner), p.proconfig, "
-                "pg_get_function_identity_arguments(p.oid) "
-                "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-                "WHERE p.proname = %s", [_PROC_NAME])
-            prow = cur.fetchone()
-            if prow is None:
-                reasons.append(f"procedure '{_PROC_NAME}' absent")
+            # (1b) Schema 'public' must be owned by the schema owner (not the app role) and the app role must not
+            # hold CREATE on it — closes the `DROP SCHEMA public CASCADE` owner-level destruction vector (HIGH).
+            cur.execute("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public'")
+            srow = cur.fetchone()
+            if srow is None or srow[0] == app_role:
+                reasons.append("schema 'public' must not be owned by the application role")
+            elif srow[0] != _SCHEMA_OWNER_ROLE:
+                reasons.append(f"schema 'public' not owned by '{_SCHEMA_OWNER_ROLE}' (owner '{srow[0]}')")
+            cur.execute("SELECT has_schema_privilege(%s, 'public', 'CREATE')", [app_role])
+            if cur.fetchone()[0]:
+                reasons.append("application role must not have CREATE on schema 'public'")
+
+            # (2) EXACTLY ONE procedure of this name in the pinned schema (ambiguous overload => NOT READY).
+            cur.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE p.proname = %s AND n.nspname = %s", [_PROC_NAME, _PROC_SCHEMA])
+            n_proc = cur.fetchone()[0]
+            proc_oid = None
+            if n_proc == 0:
+                reasons.append(f"procedure '{_PROC_SCHEMA}.{_PROC_NAME}' absent")
+            elif n_proc > 1:
+                reasons.append(f"{n_proc} functions named '{_PROC_NAME}' in '{_PROC_SCHEMA}' — ambiguous, NOT READY")
             else:
-                proc_oid, prosecdef, proc_owner, proconfig, proc_args = prow
+                cur.execute(
+                    "SELECT p.oid, p.prosecdef, pg_get_userbyid(p.proowner), p.proconfig, "
+                    "(SELECT string_agg(format_type(t, NULL), ', ') FROM unnest(p.proargtypes) AS t), "
+                    "obj_description(p.oid, 'pg_proc') "
+                    "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                    "WHERE p.proname = %s AND n.nspname = %s", [_PROC_NAME, _PROC_SCHEMA])
+                proc_oid, prosecdef, proc_owner, proconfig, proc_args, proc_desc = cur.fetchone()
                 if (proc_args or "").replace(" ", "") != _PROC_SIG.replace(" ", ""):
                     reasons.append(f"procedure signature mismatch (got '{proc_args}')")
                 if not prosecdef:
                     reasons.append("procedure is not SECURITY DEFINER")
                 if proc_owner != _PRIVILEGED_ROLE:
-                    reasons.append(f"procedure not owned by '{_PRIVILEGED_ROLE}'")
-                if not proconfig or not any(c.lower().startswith("search_path=") for c in proconfig):
+                    reasons.append(f"procedure not owned by '{_PRIVILEGED_ROLE}' (owner '{proc_owner}')")
+                sp = next((c.split("=", 1)[1] for c in (proconfig or []) if c.lower().startswith("search_path=")), None)
+                if sp is None:
                     reasons.append("procedure search_path not pinned")
+                elif sp.strip() != _PROC_SEARCH_PATH:
+                    reasons.append(f"procedure search_path is not exactly '{_PROC_SEARCH_PATH}' (got '{sp}')")
+                if not proc_desc or _PROC_VERSION not in proc_desc:
+                    reasons.append(f"procedure version marker missing/mismatched (want '{_PROC_VERSION}')")
 
-                # (3) EXECUTE ACL: executor yes; PUBLIC and the app role NO. (The executor check is guarded by
-                # roles_ok because has_function_privilege raises on a nonexistent role.)
-                if roles_ok:
-                    cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", [_EXECUTOR_ROLE, proc_oid])
-                    if not cur.fetchone()[0]:
-                        reasons.append(f"'{_EXECUTOR_ROLE}' lacks EXECUTE on the procedure")
+            # (3) EXECUTE ACL: executor only; PUBLIC and the app role NO; no unexpected grantees; ACL not default.
+            if proc_oid is not None:
                 cur.execute("SELECT has_function_privilege('public', %s, 'EXECUTE')", [proc_oid])
                 if cur.fetchone()[0]:
                     reasons.append("PUBLIC must not have EXECUTE on the procedure")
                 cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", [app_role, proc_oid])
                 if cur.fetchone()[0]:
                     reasons.append("application role must not have EXECUTE on the procedure")
+                if roles_ok:
+                    cur.execute("SELECT has_function_privilege(%s, %s, 'EXECUTE')", [_EXECUTOR_ROLE, proc_oid])
+                    if not cur.fetchone()[0]:
+                        reasons.append(f"'{_EXECUTOR_ROLE}' lacks EXECUTE on the procedure")
+                cur.execute("SELECT proacl IS NULL FROM pg_proc WHERE oid = %s", [proc_oid])
+                if cur.fetchone()[0]:
+                    reasons.append("procedure ACL is default (PUBLIC retains EXECUTE); REVOKE not applied")
+                else:
+                    cur.execute(
+                        "SELECT coalesce(array_agg(grantee::regrole::text), ARRAY[]::text[]) "
+                        "FROM aclexplode((SELECT proacl FROM pg_proc WHERE oid = %s)) "
+                        "WHERE privilege_type = 'EXECUTE' AND grantee <> 0 "
+                        "AND grantee <> (SELECT proowner FROM pg_proc WHERE oid = %s)", [proc_oid, proc_oid])
+                    grantees = cur.fetchone()[0] or []
+                    unexpected = sorted({g for g in grantees if g != _EXECUTOR_ROLE})
+                    if unexpected:
+                        reasons.append(f"unexpected EXECUTE grantees on the procedure: {unexpected}")
 
-            # (4) Evidence tables owned by the schema owner (not the app role) — closes TRUNCATE/DDL.
+            # (4) Evidence tables + sequences owned by the schema owner (closes TRUNCATE/DDL on the app role).
             for tbl in _EVIDENCE_TABLES:
                 cur.execute("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = %s", [tbl])
-                orow = cur.fetchone()
-                if orow and orow[0] != _SCHEMA_OWNER_ROLE:
-                    reasons.append(f"table '{tbl}' not owned by '{_SCHEMA_OWNER_ROLE}'")
+                r = cur.fetchone()
+                if r is None:
+                    reasons.append(f"evidence table '{tbl}' absent")
+                elif r[0] != _SCHEMA_OWNER_ROLE:
+                    reasons.append(f"table '{tbl}' not owned by '{_SCHEMA_OWNER_ROLE}' (owner '{r[0]}')")
+            for seq in _EVIDENCE_SEQUENCES:
+                cur.execute("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = %s AND relkind = 'S'", [seq])
+                r = cur.fetchone()
+                if r and r[0] != _SCHEMA_OWNER_ROLE:
+                    reasons.append(f"sequence '{seq}' not owned by '{_SCHEMA_OWNER_ROLE}' (owner '{r[0]}')")
 
-            # (5) The app role must NOT be a member of any privileged role (cannot SET ROLE to the trigger identity).
+            # (5) Trigger FUNCTIONS owned by the schema owner (app role cannot CREATE OR REPLACE them).
+            for fn in _TRIGGER_FUNCTIONS:
+                cur.execute("SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE proname = %s", [fn])
+                r = cur.fetchone()
+                if r is None:
+                    reasons.append(f"trigger function '{fn}' absent")
+                elif r[0] != _SCHEMA_OWNER_ROLE:
+                    reasons.append(f"trigger function '{fn}' not owned by '{_SCHEMA_OWNER_ROLE}' (owner '{r[0]}')")
+
+            # (6) Required DELETE-blocker triggers installed AND firing in an origin session (tgenabled O or A;
+            # 'D'=disabled and 'R'=replica-only both fail to fire here).
+            for trg in _DELETE_TRIGGERS:
+                cur.execute("SELECT tgenabled FROM pg_trigger WHERE tgname = %s AND NOT tgisinternal", [trg])
+                r = cur.fetchone()
+                if r is None:
+                    reasons.append(f"trigger '{trg}' not installed")
+                elif r[0] not in ("O", "A"):
+                    reasons.append(f"trigger '{trg}' does not fire in an origin session (tgenabled='{r[0]}')")
+
+            # (7) App role: not a member of any privileged role; lacks DELETE/TRUNCATE on the evidence tables.
             if roles_ok:
                 for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE):
                     cur.execute("SELECT pg_has_role(%s, %s, 'USAGE')", [app_role, role])
                     if cur.fetchone()[0]:
-                        reasons.append(f"application role must not be a member of '{role}'")
-
-            # (6) The app role must lack DELETE and TRUNCATE on the evidence tables.
+                        reasons.append(f"application role '{app_role}' must not be a member of '{role}'")
             for tbl in _EVIDENCE_TABLES:
                 for priv in ("DELETE", "TRUNCATE"):
                     cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, tbl, priv])
                     if cur.fetchone()[0]:
-                        reasons.append(f"application role must not have {priv} on '{tbl}'")
+                        reasons.append(f"application role '{app_role}' must not have {priv} on '{tbl}'")
+
+            # (8) Required migrations applied (exact names — a differently-named 00NN_* must not false-pass).
+            for mig in _REQUIRED_MIGRATIONS:
+                if not _exists("SELECT 1 FROM django_migrations WHERE app = 'broker_intelligence' AND name = %s",
+                               [mig]):
+                    reasons.append(f"required migration '{mig}' not applied")
     except Exception:  # noqa: BLE001 — any probe error is treated as NOT READY (fail-closed), never as ready.
         logger.warning("privileged backend readiness probe errored; treating as NOT READY", exc_info=True)
         return False, ["readiness probe error (treated as not ready)"]
     return (len(reasons) == 0), reasons
 
 
-def privileged_backend_ready() -> bool:
+def privileged_backend_ready(using: str = "default") -> bool:
     """True iff the separately-provisioned privileged erasure backend satisfies EVERY readiness invariant
-    (Finding 4). Until then, execute fails closed. Provisioning is superuser + Sponsor-gated."""
-    ready, _ = privileged_backend_readiness()
+    (Finding D). Until then, execute fails closed. Provisioning is superuser + Sponsor-gated."""
+    ready, _ = privileged_backend_readiness(using=using)
     return ready
 
 
@@ -213,12 +325,19 @@ def verify_identity(request: ErasureRequest, verifier, method: str) -> ErasureRe
     # recorded verifier once a plan has been approved or executed.
     if req.status not in (ErasureRequest.Status.REQUESTED, ErasureRequest.Status.PLANNED):
         raise ErasureRefused(f"cannot verify identity once request status is '{req.status}'")
-    if getattr(verifier, "pk", None) is None:
+    verifier_id = getattr(verifier, "pk", None)
+    if verifier_id is None:
         raise ErasureRefused("a verifier identity is required")
+    if (method or "") not in _ALLOWED_VERIFICATION_METHODS:
+        raise ErasureRefused("verification method must be a recognised non-empty category code")
+    if req.requested_by_id is None:
+        raise ErasureRefused("cannot verify: no requester recorded (two-person cannot be enforced)")
+    if verifier_id == req.requested_by_id:
+        raise ErasureRefused("two-person rule: the verifier must differ from the requester")
     req.identity_verified = True
     req.verified_by = verifier
     req.verified_at = timezone.now()
-    req.verification_method = (method or "")[:60]
+    req.verification_method = method[:60]
     req.save(update_fields=["identity_verified", "verified_by", "verified_at", "verification_method"])
     logger.info("erasure request %s identity verified (method=%s)", req.id, req.verification_method)
     return req
@@ -241,8 +360,12 @@ def approve_request(request: ErasureRequest, approver, *, approval_ttl_minutes: 
         # Finding (round-3 adversarial HIGH): without a recorded requester the two-person rule cannot be
         # enforced, so approval must fail closed rather than vacuously pass.
         raise ErasureRefused("two-person rule: no requester recorded; cannot enforce separation of duties")
+    if req.verified_by_id is None:
+        raise ErasureRefused("cannot approve: no verifier recorded")
     if approver_id == req.requested_by_id:
         raise ErasureRefused("two-person rule: the approver must differ from the requester")
+    if approver_id == req.verified_by_id:
+        raise ErasureRefused("two-person rule: the approver must differ from the verifier")
     now = timezone.now()
     req.approved_by = approver
     req.approved_at = now
@@ -262,19 +385,29 @@ def assert_erasure_allowed(request: ErasureRequest) -> int:
         raise ErasureRefused("controlled erasure is disabled (BROKER_INTELLIGENCE_ERASURE_ENABLED off)")
     if request.status != ErasureRequest.Status.APPROVED:
         raise ErasureRefused(f"request status '{request.status}' is not executable (needs two-person approval)")
+    # Finding A — a COMPLETE, internally-consistent verification record (not just the boolean).
     if not request.identity_verified:
         raise ErasureRefused("data-subject identity not verified for this request")
+    if request.verified_by_id is None or request.verified_at is None:
+        raise ErasureRefused("incomplete verification record (missing verifier or timestamp)")
+    if (request.verification_method or "") not in _ALLOWED_VERIFICATION_METHODS:
+        raise ErasureRefused("incomplete verification record (missing/invalid method category)")
     if request.approved_by_id is None or request.approved_at is None:
         raise ErasureRefused("request has no recorded approval")
     if request.approval_revoked:
         raise ErasureRefused("the approval for this request has been revoked")
     if request.approval_expires_at is not None and request.approval_expires_at < timezone.now():
         raise ErasureRefused("the approval for this request has expired")
+    # Finding B — separation of duties: requester/verifier/approver recorded + pairwise-distinct (executor is
+    # checked in execute_owner_erasure, which also requires executor != approver).
     if request.requested_by_id is None:
-        # Finding (round-3 adversarial HIGH): a NULL requester makes the two-person check vacuous — fail closed.
         raise ErasureRefused("two-person rule: no requester recorded; cannot enforce separation of duties")
+    if request.verified_by_id == request.requested_by_id:
+        raise ErasureRefused("two-person rule violated: verifier equals requester")
     if request.approved_by_id == request.requested_by_id:
         raise ErasureRefused("two-person rule violated: approver equals requester")
+    if request.approved_by_id == request.verified_by_id:
+        raise ErasureRefused("two-person rule violated: approver equals verifier")
     owner_id = request.subject_user_id_snapshot
     if not owner_id:
         raise ErasureRefused("request has no subject owner id")
@@ -284,33 +417,57 @@ def assert_erasure_allowed(request: ErasureRequest) -> int:
 
 
 def execute_owner_erasure(request: ErasureRequest, confirm_token: str, executor=None) -> dict:
-    """GOVERNED erasure entry point — concurrency-safe + fail-closed. Locks the request row + a per-subject
-    advisory lock, RE-VALIDATES every gate under the lock, verifies the TOCTOU token against the live plan, and
-    then requires the fully-provisioned privileged backend (Finding 4). **In this build the privileged backend is
-    not provisioned and governed deletion is gated, so this always refuses** — no destructive deletion occurs. The
-    actual deletion + durable outbox writes run only inside the provisioned SECURITY DEFINER procedure."""
-    assert_erasure_allowed(request)   # cheap pre-check before taking locks
-    with transaction.atomic():
-        # Finding 6 — concurrency: lock the request row; only one active execution per subject via an advisory
-        # lock on (namespace, owner_id); re-validate everything under the lock.
-        req = ErasureRequest.objects.select_for_update().get(pk=request.pk)
-        owner_id = req.subject_user_id_snapshot
-        with connection.cursor() as cur:
-            cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_ADVISORY_NS, owner_id])
-        owner_id = assert_erasure_allowed(req)          # re-check status/identity/approval/hold under the lock
-        plan = plan_owner_erasure(owner_id)
-        if not confirm_token or confirm_token != plan["token"]:
-            raise ErasureRefused("confirmation token does not match the current plan (state changed or wrong token)")
-        ready, reasons = privileged_backend_readiness()
-        if not ready:
-            raise ErasureRefused(
-                "privileged erasure backend not ready (ADR-0054): the guvfx_erasure / guvfx_erasure_exec / "
-                "guvfx_schema_owner roles + the governed SECURITY DEFINER procedure must be provisioned by a "
-                "superuser under Sponsor authorization (ops/erasure/provision_erasure_privilege.sql) before any "
-                f"destructive erasure can run. Fail-closed. Unmet: {'; '.join(reasons[:4])}")
-        # When provisioned, the destructive deletion + durable DeletionTask outbox writes + audit anonymisation
-        # run here inside the SECURITY DEFINER procedure (Findings 3/4/5). Guarded so this build never deletes:
-        raise ErasureRefused("governed destructive deletion is not enabled in this build (review packet gate)")
+    """GOVERNED erasure entry point. Triple fail-closed gate before anything destructive can happen:
+      1. the flag + the full lifecycle gate (``assert_erasure_allowed``);
+      2. the dedicated executor connection must be configured (``erasure_executor_alias``) — absent in web/worker/
+         CI/local, so execution refuses there (Finding C). The destructive proc is invoked ONLY over this
+         connection as ``guvfx_erasure_exec``; the ordinary app connection has no EXECUTE on it;
+      3. the privileged backend must pass the FULL readiness probe (Finding D), checked over the executor
+         connection.
+    Only then is the SECURITY DEFINER procedure ``bi_governed_erase_owner(request_id, executor_id, token)``
+    invoked. The procedure (as ``guvfx_erasure``) re-derives owner/plan/approvals from DB rows, re-checks every
+    gate + the two-person policy + the TOCTOU plan facts under its own row + advisory lock, performs the
+    owner-scoped deletes, enqueues the durable file-deletion outbox, anonymises audit PII, and records the
+    terminal state — all in ONE transaction. Returns the procedure's JSON outcome (counts only; no content).
+
+    In normal environments the executor connection is unconfigured and/or the backend is unprovisioned, so this
+    refuses with ``ErasureRefused`` and nothing is deleted. Real deletion runs only in the authorised rehearsal
+    (and, once Sponsor-approved, production), where all three gates are satisfied against synthetic/real data."""
+    executor_id = getattr(executor, "pk", None)
+    if executor_id is None:
+        raise ErasureRefused("an executor identity is required")
+    assert_erasure_allowed(request)   # fast pre-check (flag/status/identity/approval/SoD/hold) on the app conn
+    if request.approved_by_id is not None and executor_id == request.approved_by_id:
+        raise ErasureRefused("two-person rule: the executor must differ from the approver")
+    alias = erasure_executor_alias()
+    if alias is None:
+        raise ErasureRefused(
+            "erasure executor connection not configured (fail-closed, Finding C): the dedicated "
+            "guvfx_erasure_exec credential is not present in this environment, so governed deletion cannot run. "
+            "It is injected only into the manually-invoked governed job, never the web/worker runtime.")
+    if not confirm_token:
+        raise ErasureRefused("a confirmation token is required")
+    ready, reasons = privileged_backend_readiness(using=alias)
+    if not ready:
+        raise ErasureRefused(
+            "privileged erasure backend not ready (ADR-0054): the guvfx_erasure / guvfx_erasure_exec / "
+            "guvfx_schema_owner roles + the governed SECURITY DEFINER procedure must be provisioned by a "
+            "superuser under Sponsor authorization (ops/erasure/provision_erasure_privilege.sql) before any "
+            f"destructive erasure can run. Fail-closed. Unmet: {'; '.join(reasons[:4])}")
+    # Invoke the governed procedure over the EXECUTOR connection only. Autocommit: the function body is one
+    # atomic transaction; on return its deletes + outbox writes + audit anonymisation are committed together.
+    exec_conn = connections[alias]
+    try:
+        with exec_conn.cursor() as cur:
+            cur.execute("SELECT bi_governed_erase_owner(%s, %s, %s)", [request.pk, executor_id, confirm_token])
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 — a proc-side RAISE (gate/TOCTOU failure) is a sanitised refusal.
+        raise ErasureRefused(f"governed erasure procedure refused or failed: {str(exc).splitlines()[0][:200]}")
+    outcome = row[0] if row else None
+    if isinstance(outcome, str):
+        outcome = json.loads(outcome)
+    logger.info("governed erasure executed for request %s (executor=%s)", request.pk, executor_id)
+    return outcome or {}
 
 
 def process_deletion_tasks(limit: int = 100) -> dict:
@@ -339,14 +496,20 @@ def process_deletion_tasks(limit: int = 100) -> dict:
             task.attempts += 1
             try:
                 if task.kind == DeletionTask.Kind.EVIDENCE_FILE:
-                    removed = store.delete_file_by_sha256(task.target_ref)   # missing => False, never raises
+                    # Re-ingestion race guard (adversarial-review LOW): if a LIVE blob now re-uses this exact
+                    # content (content-addressed store, cross-owner), do NOT unlink — that file backs a live row.
+                    if EvidenceBlob.objects.filter(sha256=task.target_ref).exists():
+                        removed = None   # retained: still referenced
+                    else:
+                        removed = store.delete_file_by_sha256(task.target_ref)   # missing => False, never raises
                 elif task.kind == DeletionTask.Kind.CREDENTIAL_FILE:
                     removed = delete_token(task.target_ref)                  # missing => False (bad ref => raises)
                 else:
                     raise ValueError(f"unknown deletion task kind: {task.kind}")
                 task.status = DeletionTask.Status.COMPLETED
                 task.completed_at = timezone.now()
-                task.last_error = "" if removed else "file already absent at processing time"
+                task.last_error = ("content re-referenced by a live blob; file retained" if removed is None
+                                   else "" if removed else "file already absent at processing time")
                 processed["completed"] += 1
             except Exception as exc:  # noqa: BLE001 — a failed unlink is retryable, never fatal to the worker.
                 if task.attempts >= _MAX_DELETION_ATTEMPTS:
