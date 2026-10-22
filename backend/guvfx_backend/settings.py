@@ -125,8 +125,10 @@ DATABASES = {
 
 # --- Controlled-erasure executor connection (ADR-0054, Finding C) -------------------------------------------
 # A SEPARATE, tightly-scoped DB alias used ONLY by the governed erasure management command to invoke the
-# privileged SECURITY DEFINER procedure as the dedicated `guvfx_erasure_exec` login. Its credential MUST NOT be
-# present in the web/worker runtime environment — it is injected only into the governed job's environment. When
+# privileged SECURITY DEFINER procedure. It connects as a SHORT-LIVED per-operator LOGIN role that is a member of
+# the NOLOGIN `guvfx_erasure_exec` group (which holds the sole EXECUTE grant); the procedure then authenticates
+# the human operator via session_user + a single-use grant. The credential MUST NOT be present in the web/worker
+# runtime environment — it is injected only into the governed job's environment for one operation. When
 # these env vars are absent (the normal case: web, workers, CI, local dev), the alias is NOT defined and erasure
 # fails closed (erasure.erasure_executor_alias() returns None). It must never reuse DB_USER/DB_PASSWORD.
 _ERASURE_EXEC_USER = env("ERASURE_EXECUTOR_DB_USER", "")

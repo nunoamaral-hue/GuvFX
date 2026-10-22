@@ -111,6 +111,32 @@ class ControlledErasureControlPlaneTests(TestCase):
         self.assertTrue(reasons)                                   # structured, non-empty diagnostics
         self.assertTrue(any("guvfx_erasure" in r for r in reasons))
 
+    def _assert_required_migration(self, migration_name, surviving_table):
+        """Discriminating control: readiness keys on the EXACT migration RECORD, not on the table/columns the
+        migration created. With the record present, no 'not applied' reason names it; delete ONLY the record
+        (the table/columns remain) and readiness must report it missing."""
+        from django.db import connection
+        def _not_applied_reason_present():
+            return any(migration_name in r and "not applied" in r for r in privileged_backend_readiness()[1])
+        self.assertFalse(_not_applied_reason_present())            # present (migrated) -> not flagged
+        with connection.cursor() as cur:
+            cur.execute("DELETE FROM django_migrations WHERE app='broker_intelligence' AND name=%s",
+                        [migration_name])
+            cur.execute("SELECT to_regclass(%s)", [surviving_table])
+            self.assertIsNotNone(cur.fetchone()[0])                # the created table/columns STILL exist
+        ready, reasons = privileged_backend_readiness()
+        self.assertFalse(ready)
+        self.assertTrue(_not_applied_reason_present(),             # record absent -> readiness names it NOT READY
+                        f"readiness did not flag missing migration {migration_name}; reasons={reasons}")
+
+    def test_readiness_requires_migration_0021_grant(self):
+        self._assert_required_migration("0021_erasure_execution_grant",
+                                        "broker_intelligence_erasureexecutiongrant")
+
+    def test_readiness_requires_migration_0022_generation(self):
+        self._assert_required_migration("0022_connectedmailbox_generation",
+                                        "broker_intelligence_connectedmailbox")
+
     # --- dry-run plan is pure ---------------------------------------------
     def test_dry_run_performs_no_mutation(self):
         b = self._blob(b"dry run mail"); e = self._event(self.a, b)

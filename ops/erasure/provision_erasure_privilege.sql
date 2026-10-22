@@ -27,7 +27,9 @@
 --   <app_role>          LOGIN    runtime: DML only on evidence tables (no DELETE/TRUNCATE), no ownership, no
 --                                membership in any privileged role, NO EXECUTE on the procedure.
 --   guvfx_erasure       NOLOGIN  owns the SECURITY DEFINER procedure; the identity the triggers key on.
---   guvfx_erasure_exec  LOGIN    the ONLY EXECUTE grantee of the procedure (credential off the web runtime).
+--   guvfx_erasure_exec  NOLOGIN  GROUP holding the ONLY EXECUTE grant on the procedure; short-lived per-operator
+--                                LOGIN roles join it for one operation (credential off the web runtime). The
+--                                procedure authenticates the human operator via session_user + a single-use grant.
 --   guvfx_readonly      LOGIN    operational/audit read-only.
 
 \set ON_ERROR_STOP on
