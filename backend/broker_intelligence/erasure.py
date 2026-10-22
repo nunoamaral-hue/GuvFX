@@ -41,7 +41,9 @@ logger = logging.getLogger("guvfx.broker_intelligence.erasure")
 # Privileged identities the provisioning script (ops/erasure/provision_erasure_privilege.sql) creates. The
 # readiness check re-verifies the whole boundary against these before any execute could proceed.
 _PRIVILEGED_ROLE = "guvfx_erasure"          # NOLOGIN; owns the SECURITY DEFINER proc; the trigger identity
-_EXECUTOR_ROLE = "guvfx_erasure_exec"       # LOGIN; the ONLY role granted EXECUTE on the proc (separate credential)
+_EXECUTOR_ROLE = "guvfx_erasure_exec"       # NOLOGIN GROUP holding the sole EXECUTE grant on the proc; individual
+                                            # short-lived operator LOGIN roles join it for one governed operation,
+                                            # and the proc authenticates the human operator via session_user
 _SCHEMA_OWNER_ROLE = "guvfx_schema_owner"   # NOLOGIN; owns the evidence tables + ordinary trigger functions
 _EXECUTOR_ALIAS = "erasure_executor"        # Django DATABASES alias for the executor login (absent => fail-closed)
 _PROC_NAME = "bi_governed_erase_owner"
@@ -54,11 +56,13 @@ _GRANT_TABLE = "broker_intelligence_erasureexecutiongrant"   # executor trust an
 _EVIDENCE_SEQUENCES = ("broker_intelligence_evidenceblob_id_seq", "broker_intelligence_brokerevent_id_seq")
 _TRIGGER_FUNCTIONS = ("bi_evidenceblob_block_delete", "bi_brokerevent_block_delete")
 _DELETE_TRIGGERS = ("bi_evidenceblob_no_delete", "bi_brokerevent_no_delete")
-_REQUIRED_MIGRATIONS = (                     # exact names (triggers + lifecycle/outbox + checks + anon carve-out)
-    "0017_erasurehold_erasurerequest",
-    "0018_erasure_lifecycle_and_deletion_outbox",
-    "0019_erasurerequest_consistency_checks",
-    "0020_audit_anonymisation_carveout",
+_REQUIRED_MIGRATIONS = (                     # exact names — EVERY safety-critical migration of the accepted design
+    "0017_erasurehold_erasurerequest",          # role-enforced BEFORE-DELETE triggers
+    "0018_erasure_lifecycle_and_deletion_outbox",  # two-person lifecycle + durable outbox
+    "0019_erasurerequest_consistency_checks",   # CHECK constraints
+    "0020_audit_anonymisation_carveout",        # audit-anonymisation UPDATE carve-out
+    "0021_erasure_execution_grant",             # non-forgeable single-use executor grant (P0)
+    "0022_connectedmailbox_generation",         # mailbox-generation stale-ingestion protection (P0)
 )
 _ADVISORY_NS = 0x6775                        # fixed namespace key for pg_advisory_xact_lock(ns, owner_id)
 _MAX_DELETION_ATTEMPTS = 5                   # a file-deletion task that fails this many times is dead-lettered
