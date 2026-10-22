@@ -9,6 +9,7 @@ from hosted_workspace.delivery_views import (
     HostedWorkspaceDeliveryConnectView,
     HostedWorkspaceDeliveryStateView,
 )
+from hosted_workspace.diagnostics_views import HostedWorkspaceDiagnosticsView
 from hosted_workspace.onboarding_views import (
     OnboardingAddBrokerAccountView,
     OnboardingAuthorizeExecutionView,
@@ -30,6 +31,8 @@ urlpatterns = [
     path("delivery-state/", HostedWorkspaceDeliveryStateView.as_view(), name="delivery-state"),
     # ADR-0034 Workspace Delivery — DARK owner-scoped RemoteApp connect (mints the signed descriptor).
     path("delivery-connect/", HostedWorkspaceDeliveryConnectView.as_view(), name="delivery-connect"),
+    # WHY-not-CONNECTED diagnosis (DARK, read-only). Staff → fleet + metrics; non-staff → own workspace only.
+    path("diagnostics/", HostedWorkspaceDiagnosticsView.as_view(), name="diagnostics"),
     # ADR-0034 Onboarding — DARK customer journey API (404-invisible unless master + onboarding flags ON).
     path("onboarding/journey/", OnboardingJourneyView.as_view(), name="onboarding-journey"),
     path("onboarding/request/", OnboardingRequestView.as_view(), name="onboarding-request"),
