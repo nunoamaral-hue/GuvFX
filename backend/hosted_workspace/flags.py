@@ -126,6 +126,20 @@ def hosted_mt5_observation_enabled() -> bool:
     return _flag("HOSTED_MT5_OBSERVATION_ENABLED")
 
 
+def hosted_connection_diagnostics_enabled() -> bool:
+    """DEDICATED, INDEPENDENT gate for the HTTP connection-diagnostics endpoint
+    (``/api/hosted-workspace/diagnostics/``). DEFAULT OFF.
+
+    This is a SEPARATE gate on purpose: production already runs with the Hosted Workspace master/observation
+    flags ON, so the diagnostics route must NOT ride on those — it stays 404-invisible until THIS flag is
+    explicitly turned on, EVEN when every other hosted flag is on. The endpoint is OPERATIONAL DIAGNOSTICS
+    (staff-only), never a customer feature; exposing it to members needs separate product + information-
+    disclosure approval. The read-only management command (``hosted_observation_diagnose``) is operator-local
+    and does NOT consult this flag. Observability only: this flag NEVER arms execution, contacts a host,
+    mutates workspace state, or changes the observer/delivery/trust path."""
+    return _flag("HOSTED_CONNECTION_DIAGNOSTICS_ENABLED")
+
+
 def hosted_workspace_onboarding_enabled() -> bool:
     """ADR-0034 Onboarding — the SUBSYSTEM-LEVEL gate for the customer-facing Hosted Workspace onboarding /
     provisioning journey (request → provision-intent → node bind → observe → discover → confirm → ready →
