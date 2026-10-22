@@ -1,8 +1,31 @@
 # ADR-0054 — Controlled owner-scoped erasure exception to immutable evidence
 
-- **Status:** **Proposed** (NOT ratified — requires Sponsor approval before activation).
-- **Date:** 2026-10-21 · **Scope:** Withdrawal Intelligence (`broker_intelligence`) only.
+- **Status:** **Accepted** (ratified by the Programme Director on 2026-10-22 for ARCHITECTURE + DARK CODE
+  INTEGRATION ONLY — NOT production operation). Reviewed head `627bef1e`; exact-head CI run 39754764529 = 5/5.
+  Acceptance does NOT authorise production provisioning, executor-credential deployment, flag activation, any
+  production migration/deployment, or any real erasure — each remains a separate, Sponsor-gated step.
+- **Date:** 2026-10-21 (proposed) · 2026-10-22 (accepted) · **Scope:** Withdrawal Intelligence
+  (`broker_intelligence`) only.
 - **Context docs:** `WV1_RETENTION_DELETION_SPEC.md`, `.claude/rules/data.md` (immutability invariant).
+
+## Accepted design of record (what ratification covers)
+- Procedure signature: `public.bi_governed_erase_owner(bigint request_id, text confirmation)` (SECURITY DEFINER,
+  owned by NOLOGIN `guvfx_erasure`, pinned `search_path`).
+- Non-forgeable executor authentication: the operator is derived from the authenticated PostgreSQL `session_user`
+  (never a caller argument; SECURITY DEFINER does not change `session_user`).
+- `guvfx_erasure_exec` is a NOLOGIN **group**; short-lived individual operator LOGIN roles are members and are the
+  only EXECUTE path, minted with their grant by an independent process.
+- Request-bound, single-use `ErasureExecutionGrant` (expiring, revocable, consumed once); the application role
+  cannot create, inspect, consume, or bypass it, and cannot execute the procedure.
+- Separation of duties as implemented: requester / verifier / approver pairwise-distinct; assigned executor ≠
+  approver; the resolved executor must equal the assigned executor.
+- Per-owner advisory-lock contract (ns 26485) shared by erasure and every owner-scoped WI writer; mailbox
+  `generation` stale-work protection.
+- Durable `DeletionTask` outbox (post-commit file removal, idempotent worker, dead-letter → request FAILED).
+- Production rollback behaviour: `ops/erasure/production_rollback_erasure.sql` disables the capability while
+  PRESERVING the secure ownership boundary (distinct from the disposable-rehearsal teardown).
+- Remaining documented risks are LOW / informational (see "Capability status" + the round-4/5 status sections);
+  none changes the fail-closed stance.
 
 ## Context
 `broker_intelligence` is immutable by design (data rule "quarantine, don't destroy"): raw broker-email
@@ -211,6 +234,11 @@ Every element is placed in exactly one category, so no reader mistakes a design 
   deploying the executor credential to the web/worker runtime, and `--execute` against real data.
 
 ## Status / ratification
-**Proposed — NOT ratified; PR #543 is a governed review packet, not a merge request.** Do not merge, do not
-activate (`BROKER_INTELLIGENCE_ERASURE_ENABLED`), do not provision the privileged role/procedure, and do not
-run `--execute` against production data, without explicit Sponsor authorization for that specific step.
+**Accepted (2026-10-22) for ARCHITECTURE + DARK CODE INTEGRATION ONLY — PR #543 is cleared for a governed DARK
+squash merge.** Acceptance does NOT authorise production operation. The following remain separately
+Sponsor-gated, per step, and are NOT permitted under this acceptance: provisioning the privileged roles/procedure
+in production, deploying any executor credential to any runtime, activating `BROKER_INTELLIGENCE_ERASURE_ENABLED`,
+any production migration/deployment, and any `--execute` against real data. A separate production-preparation
+packet (backup + verified recovery point, provisioning plan, operator-identity custody, migration/rollback
+window, readiness-probe evidence, monitoring, named requester/verifier/approver/executor, a non-client canary,
+and explicit per-step Sponsor authorisation) is required before any of those steps.

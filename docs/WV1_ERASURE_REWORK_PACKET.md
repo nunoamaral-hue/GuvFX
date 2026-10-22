@@ -153,8 +153,11 @@ invalidates · audit PII anonymised in-procedure · future migrations still oper
 - WV1 engineering overall ~95% feature (erasure is additive and DARK). Overall WV1 production-readiness still
   gated by the prior recovery / log-retention / DPA / DPIA items. Live-user availability **0%**.
 
-## Approval requests
-- Review the implemented design + the rehearsal evidence (this packet + ADR-0054 + `ops/erasure/`).
-- Decide on ratifying ADR-0054 and (separately) authorising production provisioning + flag-arming — both remain
-  your gate; nothing here presumes them.
-- Keep PR #543 **DRAFT/DARK**, unratified, unmerged; do not arm the flag or run `--execute` against production.
+## Disposition (2026-10-22)
+- **GRANTED by the Programme Director:** ADR-0054 ratified **Accepted** (architecture + DARK code integration
+  only) and PR #543 cleared for a **governed DARK squash merge** (reviewed head `627bef1e`, exact-head CI run
+  39754764529 = 5/5). Merging changes nothing operationally: the flag is OFF, the backend is unprovisioned in
+  production, no executor credential exists in any runtime, and `execute_owner_erasure` is fail-closed.
+- **STILL SEPARATELY GATED (Red / per-step Sponsor authorisation; a separate production-preparation packet):**
+  production role/procedure provisioning, executor-credential custody, flag activation, any production
+  migration/deployment, and any real erasure. Auto-merge stays OFF.
