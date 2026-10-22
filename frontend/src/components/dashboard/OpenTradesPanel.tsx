@@ -135,7 +135,7 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
         <div style={meta}>
           {STR.floating[L]}{" "}
-          <span style={{ color: (floating?.total_usd ?? 0) >= 0 ? "#5ad19a" : "#e88", fontWeight: 600 }}>
+          <span style={{ color: floating?.total_usd == null ? "#9fb4d6" : floating.total_usd >= 0 ? "#5ad19a" : "#e88", fontWeight: 600 }}>
             {money(floating?.total_usd ?? null)} USD
           </span>
           {floating?.basis === "PARTIAL" && (
