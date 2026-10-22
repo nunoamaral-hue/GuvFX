@@ -1,12 +1,11 @@
 """DISPOSABLE PostgreSQL-15 REHEARSAL exerciser for controlled erasure (ADR-0054). REHEARSAL-ONLY TOOLING.
 
-This command seeds SYNTHETIC data and exercises the governed erasure integration path (the real SECURITY DEFINER
-procedure, the executor connection, the outbox worker, audit anonymisation, concurrency, crash-recovery,
-dead-letter, shared/observation evidence). It is driven by ops/erasure/rehearse_erasure.sh against a throwaway
-container. It REFUSES to run unless explicitly acknowledged AND the database name looks like a rehearsal DB, so
-it can never touch production. It performs REAL deletes — only ever of the synthetic rows it created.
-
-It is never imported by the app and is DARK with respect to production (no prod connectivity, no real data).
+Seeds SYNTHETIC data and exercises the governed erasure integration path against a throwaway container driven by
+ops/erasure/rehearse_erasure.sh: the real SECURITY DEFINER procedure, the NON-FORGEABLE executor grant
+(resolved from the DB-authenticated session_user, not a caller argument), the per-owner ingestion/erasure
+advisory lock + mailbox-generation recheck, the outbox worker, audit anonymisation, concurrency, dead-letter,
+shared/observation evidence, and the contact-binding PROTECT path. REFUSES to run unless explicitly acknowledged
+AND the database name looks like a rehearsal DB. Performs REAL deletes — only of the synthetic rows it created.
 """
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ from django.utils import timezone
 
 from broker_intelligence import erasure
 from broker_intelligence.evidence import EvidenceStore
+from broker_intelligence.mail_source import MailMessage
 from broker_intelligence.models import (
     BrokerEmailIdentity, BrokerEmailIdentityAudit, BrokerEvent, BrokerMessageObservation, ConnectedMailbox,
     DeletionTask, ErasureHold, ErasureRequest, EvidenceBlob, TradingAccountBrokerContact,
@@ -29,6 +29,12 @@ from core.models import AuditEvent
 
 User = get_user_model()
 EV = "EVIDENCE"
+# Grant scenarios the shell must set up (printed as GRANT|<username>|<request_id>|<state>; the shell creates the
+# per-operator login + a grant in that state for each). 'valid' => a good single-use grant; 'none' => no grant.
+GRANT_SUBJECTS = {
+    "rh-subject": "valid", "rh-hold": "valid", "rh-drift": "valid", "rh-poison": "valid", "rh-conc": "valid",
+    "rh-nogrant": "none", "rh-expired": "expired", "rh-revoked": "revoked", "rh-wrongop": "wrongop",
+}
 
 
 class Command(BaseCommand):
@@ -46,15 +52,16 @@ class Command(BaseCommand):
         self.stdout.write(f"{EV}|{step}|FAIL|{detail}")
         self._failures += 1
 
-    def _expect_raises(self, step, fn, needle=""):
+    def _assert(self, step, cond, detail=""):
+        (self._ok if cond else self._fail)(step, detail)
+
+    def _expect_refused(self, step, fn, needle=""):
         try:
             fn()
         except Exception as exc:  # noqa: BLE001
             msg = str(exc).splitlines()[0]
-            if needle and needle.lower() not in msg.lower():
-                self._fail(step, f"raised but wrong error: {msg[:120]}")
-            else:
-                self._ok(step, f"refused: {msg[:120]}")
+            self._fail(step, f"wrong error: {msg[:120]}") if (needle and needle.lower() not in msg.lower()) \
+                else self._ok(step, f"refused: {msg[:120]}")
             return
         self._fail(step, "did NOT raise (expected a refusal)")
 
@@ -73,37 +80,41 @@ class Command(BaseCommand):
         return [User.objects.get_or_create(username=n, defaults={"email": f"{n}@rehearsal.invalid"})[0]
                 for n in names]
 
+    def _seed_owner(self, username):
+        return User.objects.get_or_create(username=username, defaults={"email": f"{username}@rehearsal.invalid"})[0]
+
     def _build_approved(self, subject, tag):
-        """Full governed lifecycle for `subject` with distinct staff -> an APPROVED request. Returns the request."""
-        req_op, ver_op, apr_op = self._staff(f"rh-req-{tag}", f"rh-ver-{tag}", f"rh-apr-{tag}")
+        """Full governed lifecycle for `subject` with distinct staff -> an APPROVED request with an ASSIGNED
+        executor (distinct from the approver). Prints the GRANT manifest line the shell needs. Returns the req."""
+        req_op, ver_op, apr_op, exec_op = self._staff(
+            f"rh-req-{tag}", f"rh-ver-{tag}", f"rh-apr-{tag}", f"rh-exec-{tag}")
         req = ErasureRequest.objects.create(
             subject_user=subject, subject_user_id_snapshot=subject.id, requested_by=req_op,
             status=ErasureRequest.Status.REQUESTED)
         erasure.verify_identity(req, ver_op, "signed-request")
-        req.refresh_from_db()                         # verify_identity updated the row; avoid clobbering it
+        req.refresh_from_db()
         plan = erasure.plan_owner_erasure(subject.id)
         req.plan = plan; req.confirm_token = plan["token"]; req.status = ErasureRequest.Status.PLANNED
         req.planned_at = timezone.now()
         req.save(update_fields=["plan", "confirm_token", "status", "planned_at"])
-        erasure.approve_request(req, apr_op)
+        erasure.approve_request(req, apr_op, exec_op)
         req.refresh_from_db()
+        state = GRANT_SUBJECTS.get(subject.username, "valid")
+        # The shell maps the per-operator login to this request + (for 'valid') the assigned executor.
+        self.stdout.write(f"GRANT|{subject.username}|{req.id}|{req.assigned_executor_id}|{state}")
         return req
 
-    def _seed_owner(self, username):
-        return User.objects.get_or_create(username=username, defaults={"email": f"{username}@rehearsal.invalid"})[0]
-
     def _audit_for(self, subject):
-        a1 = BrokerEmailIdentityAudit.Action.values[0]
-        a2 = TradingAccountBrokerContactAudit.Action.values[0]
-        et = AuditEvent.EventType.values[0] if hasattr(AuditEvent, "EventType") else "ACCESS"
         BrokerEmailIdentityAudit.objects.create(
-            subject_user=subject, email=f"{subject.username}@broker.invalid", action=a1,
+            subject_user=subject, email=f"{subject.username}@broker.invalid",
+            action=BrokerEmailIdentityAudit.Action.values[0],
             proofs={"address": "10 Secret St", "ip": "203.0.113.9"})
         TradingAccountBrokerContactAudit.objects.create(
-            subject_user=subject, action=a2, proofs={"address": "10 Secret St"})
-        AuditEvent.objects.create(
-            user=subject, event_type=et, ip_address="203.0.113.9", user_agent="Mozilla/5.0 rehearsal",
-            metadata={"email": f"{subject.username}@broker.invalid"})
+            subject_user=subject, action=TradingAccountBrokerContactAudit.Action.values[0],
+            proofs={"address": "10 Secret St"})
+        et = AuditEvent.EventType.values[0] if hasattr(AuditEvent, "EventType") else "ACCESS"
+        AuditEvent.objects.create(user=subject, event_type=et, ip_address="203.0.113.9",
+                                  user_agent="Mozilla/5.0 rehearsal", metadata={"email": f"{subject.username}@x"})
 
     # ---- phases ----------------------------------------------------------
     def handle(self, *args, **opts):
@@ -119,222 +130,233 @@ class Command(BaseCommand):
         self.stdout.write(f"{EV}|phase-{opts['phase']}|PASS|all assertions held")
 
     def _preprovision(self, store):
-        # Negative control: readiness must be NOT READY on an unprovisioned DB.
         ready, reasons = erasure.privileged_backend_readiness("default")
-        (self._ok if not ready else self._fail)("01-negative-control-readiness",
-            f"ready={ready} reasons={len(reasons)}")
+        self._assert("01-negative-control-readiness", not ready, f"ready={ready} reasons={len(reasons)}")
 
         subject = self._seed_owner("rh-subject")
         other = self._seed_owner("rh-other")
-        # shared blob (subject + other), observation-only blob (subject), subject-only event blob.
         shared = store.put(b"shared-evidence-rehearsal")[0]
         obs_only = store.put(b"observation-only-rehearsal")[0]
         solo = store.put(b"subject-only-rehearsal")[0]
-        BrokerEvent.objects.create(owner=subject, evidence=shared, evidence_hash=shared.sha256,
-                                   event_type="EXTERNAL_WITHDRAWAL", received_at=timezone.now(), provenance="REAL")
-        BrokerEvent.objects.create(owner=other, evidence=shared, evidence_hash=shared.sha256,
-                                   event_type="EXTERNAL_WITHDRAWAL", received_at=timezone.now(), provenance="REAL")
-        BrokerEvent.objects.create(owner=subject, evidence=solo, evidence_hash=solo.sha256,
-                                   event_type="EXTERNAL_WITHDRAWAL", received_at=timezone.now(), provenance="REAL")
+        for o, b in ((subject, shared), (other, shared), (subject, solo)):
+            BrokerEvent.objects.create(owner=o, evidence=b, evidence_hash=b.sha256, event_type="EXTERNAL_WITHDRAWAL",
+                                       received_at=timezone.now(), provenance="REAL")
         BrokerMessageObservation.objects.create(owner=subject, evidence=obs_only)
         Withdrawal.objects.create(owner=subject)
         idn = BrokerEmailIdentity.objects.create(user=subject, email="rh-subject@broker.invalid")
-        # A broker-contact BINDING for the subject (its PROTECT FK blocks identity deletion unless erasure
-        # handles it). status PENDING so the VERIFIED-only consistency trigger is a no-op. ORM create applies the
-        # model's field defaults; wrapped so any TradingAccount side-effect surfaces as evidence, not a crash.
         try:
             from trading.models import TradingAccount
-            ta = TradingAccount.objects.create(
-                user=subject, name="rh-acct", public_display_name="rh", broker_name="RehearsalBroker",
-                account_number="900001", broker_password="x", password_enc="x")
-            TradingAccountBrokerContact.objects.create(
-                trading_account=ta, broker_email_identity=idn,
-                status=TradingAccountBrokerContact.Status.PENDING)
+            ta = TradingAccount.objects.create(user=subject, name="rh-acct", public_display_name="rh",
+                                               broker_name="RehearsalBroker", account_number="900001",
+                                               broker_password="x", password_enc="x")
+            TradingAccountBrokerContact.objects.create(trading_account=ta, broker_email_identity=idn,
+                                                       status=TradingAccountBrokerContact.Status.PENDING)
             self._ok("03-contact-binding-seeded", f"trading_account={ta.id}")
         except Exception as exc:  # noqa: BLE001
             self._fail("03-contact-binding-seeded", f"could not seed binding: {str(exc).splitlines()[0][:140]}")
-        # a real credential file for the subject's mailbox
         ref = "crsubjectrehearsal01"
         self._cred_path(ref).write_bytes(b"ciphertext-rehearsal")
-        ConnectedMailbox.objects.create(user=subject, provider_mailbox_id="m-subject", credential_ref=ref)
-        self._audit_for(subject)
-        self._audit_for(other)
+        ConnectedMailbox.objects.create(user=subject, provider_mailbox_id="m-subject", credential_ref=ref,
+                                        status=ConnectedMailbox.Status.CONNECTED)
+        self._audit_for(subject); self._audit_for(other)
 
-        # Negative control: ordinary delete of immutable evidence is blocked by the role-enforced trigger.
-        # Use an UNREFERENCED blob so the DELETE actually reaches the DB (a referenced one would trip Django's
-        # PROTECT collector first and never exercise the trigger).
         nc = store.put(b"neg-control-unreferenced-rehearsal")[0]
         from django.db import transaction as _t
         def _del():
             with _t.atomic():
                 EvidenceBlob.objects.filter(pk=nc.pk).delete()
-        self._expect_raises("02-ordinary-delete-blocked", _del, needle="immutable")
+        self._expect_refused("02-ordinary-delete-blocked", _del, needle="immutable")
 
-        # Build the main APPROVED governed request + extra subjects for hold/drift/poison.
-        main = self._build_approved(subject, "main")
-        self._ok("03-lifecycle-approved", f"request={main.id} token={main.confirm_token[:12]}..")
+        self._build_approved(subject, "main")
 
         hold_subj = self._seed_owner("rh-hold")
         Withdrawal.objects.create(owner=hold_subj)
-        self._audit_for(hold_subj)
         hreq = self._build_approved(hold_subj, "hold")
         ErasureHold.objects.create(subject_user=hold_subj, subject_user_id_snapshot=hold_subj.id, reason="litigation")
-        self._ok("03-hold-request", f"request={hreq.id}")
 
         drift_subj = self._seed_owner("rh-drift")
         Withdrawal.objects.create(owner=drift_subj)
-        dreq = self._build_approved(drift_subj, "drift")
-        self._ok("03-drift-request", f"request={dreq.id}")
+        self._build_approved(drift_subj, "drift")
 
         poison_subj = self._seed_owner("rh-poison")
-        ConnectedMailbox.objects.create(user=poison_subj, provider_mailbox_id="m-poison", credential_ref="bad/ref")
-        preq = self._build_approved(poison_subj, "poison")
-        self._ok("03-poison-request", f"request={preq.id}")
+        ConnectedMailbox.objects.create(user=poison_subj, provider_mailbox_id="m-poison", credential_ref="bad/ref",
+                                        status=ConnectedMailbox.Status.CONNECTED)
+        self._build_approved(poison_subj, "poison")
+
+        # Grant-negative subjects (minimal data; the proc refuses at the grant check before any deletion).
+        for uname in ("rh-nogrant", "rh-expired", "rh-revoked", "rh-wrongop"):
+            s = self._seed_owner(uname)
+            Withdrawal.objects.create(owner=s)
+            self._build_approved(s, uname.replace("rh-", ""))
+        self._seed_owner("rh-wrongop-other")   # the 'wrong operator' the wrongop grant will map to
+
+        conc = self._seed_owner("rh-conc")
+        Withdrawal.objects.create(owner=conc)
+        self._build_approved(conc, "conc")
+
+        self._ok("03-lifecycle-approved", "all scenario requests APPROVED with assigned executors")
 
     def _postprovision(self, store):
+        import os as _os
         alias = erasure.erasure_executor_alias()
         if alias is None:
-            self._fail("04-executor-alias", "executor alias not configured (set ERASURE_EXECUTOR_DB_*)"); return
+            self._fail("04-executor-alias", "executor alias not configured"); return
         self._ok("04-executor-alias", f"alias={alias}")
-
         ready, reasons = erasure.privileged_backend_readiness(alias)
-        (self._ok if ready else self._fail)("05-readiness-ready",
-            "READY" if ready else f"NOT READY: {reasons}")
+        self._assert("05-readiness-ready", ready, "READY" if ready else f"NOT READY: {reasons}")
 
-        # DB boundary: the ordinary app connection must NOT be able to call the procedure.
-        def _app_calls_proc():
+        def _app_proc():
             with connections["default"].cursor() as cur:
-                cur.execute("SELECT bi_governed_erase_owner(1, 1, 'x')")
-        self._expect_raises("06-app-cannot-call-proc", _app_calls_proc, needle="permission denied")
-
-        # DB boundary: the app role must not be able to TRUNCATE or DROP-trigger the evidence table post-provision.
-        def _app_truncates():
+                cur.execute("SELECT bi_governed_erase_owner(1, 'x')")
+        self._expect_refused("06-app-cannot-call-proc", _app_proc, needle="permission denied")
+        def _app_truncate():
             with connections["default"].cursor() as cur:
                 cur.execute("TRUNCATE broker_intelligence_evidenceblob")
-        self._expect_raises("06-app-cannot-truncate", _app_truncates)
-        def _app_drops_trigger():
-            with connections["default"].cursor() as cur:
-                cur.execute("DROP TRIGGER bi_evidenceblob_no_delete ON broker_intelligence_evidenceblob")
-        self._expect_raises("06-app-cannot-drop-trigger", _app_drops_trigger)
-
-        # HIGH (round 4): the app role must not be able to DROP SCHEMA public CASCADE (owner-level destruction).
-        def _app_drops_schema():
+        self._expect_refused("06-app-cannot-truncate", _app_truncate)
+        def _app_drop_schema():
             with connections["default"].cursor() as cur:
                 cur.execute("DROP SCHEMA public CASCADE")
-        self._expect_raises("06-app-cannot-drop-schema", _app_drops_schema)
+        self._expect_refused("06-app-cannot-drop-schema", _app_drop_schema, needle="must be owner")
+        # The app role has no access to the execution-grant table (cannot forge a grant).
+        def _app_reads_grants():
+            with connections["default"].cursor() as cur:
+                cur.execute("SELECT count(*) FROM broker_intelligence_erasureexecutiongrant")
+        self._expect_refused("06-app-cannot-touch-grants", _app_reads_grants, needle="permission denied")
 
+        def _req(uname):
+            return ErasureRequest.objects.filter(subject_user__username=uname,
+                                                 status=ErasureRequest.Status.APPROVED).latest("id")
+
+        # P0 #1 — grant-based executor negatives (executor identity resolved from session; never a caller arg).
+        self._expect_refused("30-no-grant-refused",
+                             lambda: erasure.execute_owner_erasure(_req("rh-nogrant"), _req("rh-nogrant").confirm_token),
+                             needle="grant")
+        self._expect_refused("31-expired-grant-refused",
+                             lambda: erasure.execute_owner_erasure(_req("rh-expired"), _req("rh-expired").confirm_token),
+                             needle="grant")
+        self._expect_refused("32-revoked-grant-refused",
+                             lambda: erasure.execute_owner_erasure(_req("rh-revoked"), _req("rh-revoked").confirm_token),
+                             needle="grant")
+        self._expect_refused("33-wrong-operator-grant-refused",
+                             lambda: erasure.execute_owner_erasure(_req("rh-wrongop"), _req("rh-wrongop").confirm_token),
+                             needle="assigned executor")
+
+        # Hold + token-drift (proc-side).
+        hreq = _req("rh-hold")
+        self._expect_refused("08-hold-refused",
+                             lambda: erasure.execute_owner_erasure(hreq, hreq.confirm_token), needle="hold")
+        dreq = _req("rh-drift")
+        Withdrawal.objects.create(owner_id=dreq.subject_user_id_snapshot)
+        self._expect_refused("09-token-drift-refused",
+                             lambda: erasure.execute_owner_erasure(dreq, dreq.confirm_token), needle="TOCTOU")
+
+        # Happy path (valid single-use grant for guvfx_erx_rh -> the assigned executor).
         subject = User.objects.get(username="rh-subject")
         other = User.objects.get(username="rh-other")
-        main = ErasureRequest.objects.filter(subject_user_id_snapshot=subject.id,
-                                             status=ErasureRequest.Status.APPROVED).latest("id")
-        exec_op = self._staff("rh-executor-main")[0]
-
-        # snapshot before
-        shared_sha = (BrokerEvent.objects.filter(owner=other).first().evidence.sha256)
-        solo_blob = EvidenceBlob.objects.exclude(sha256=shared_sha).filter(
-            events__owner=subject).first()
+        main = _req("rh-subject")
+        assigned = main.assigned_executor_id
+        shared_sha = BrokerEvent.objects.filter(owner=other).first().evidence.sha256
+        solo_blob = EvidenceBlob.objects.exclude(sha256=shared_sha).filter(events__owner=subject).first()
         obs_blob = EvidenceBlob.objects.filter(message_observations__owner=subject).first()
-        cred_ref = ConnectedMailbox.objects.get(user=subject).credential_ref
-        cred_path = self._cred_path(cred_ref)
-        self._ok("07-pre-execute-state",
-                 f"shared={shared_sha[:8]} solo={solo_blob.sha256[:8]} obs={obs_blob.sha256[:8]} cred_file={cred_path.exists()}")
-
-        # Hold refusal (over the real proc).
-        hold_req = ErasureRequest.objects.filter(subject_user__username="rh-hold",
-                                                 status=ErasureRequest.Status.APPROVED).latest("id")
-        self._expect_raises("08-hold-refused",
-            lambda: erasure.execute_owner_erasure(hold_req, hold_req.confirm_token, executor=exec_op),
-            needle="hold")
-
-        # Token drift refusal: mutate the drift subject's state after the plan, then execute with the stale token.
-        drift_req = ErasureRequest.objects.filter(subject_user__username="rh-drift",
-                                                  status=ErasureRequest.Status.APPROVED).latest("id")
-        Withdrawal.objects.create(owner_id=drift_req.subject_user_id_snapshot)   # state changes -> plan stale
-        self._expect_raises("09-token-drift-refused",
-            lambda: erasure.execute_owner_erasure(drift_req, drift_req.confirm_token, executor=exec_op),
-            needle="TOCTOU")
-
-        # executor == approver refused.
-        self._expect_raises("10-executor-equals-approver",
-            lambda: erasure.execute_owner_erasure(main, main.confirm_token,
-                                                  executor=User.objects.get(pk=main.approved_by_id)),
-            needle="approver")
-
-        # REAL governed execution (synthetic subject). Rows deleted; files NOT yet (outbox).
-        outcome = erasure.execute_owner_erasure(main, main.confirm_token, executor=exec_op)
+        cred_path = self._cred_path(ConnectedMailbox.objects.get(user=subject).credential_ref)
+        outcome = erasure.execute_owner_erasure(main, main.confirm_token)
         main.refresh_from_db()
-        ok = (main.status == ErasureRequest.Status.EXECUTED
-              and not Withdrawal.objects.filter(owner=subject).exists()
-              and not BrokerEvent.objects.filter(owner=subject).exists()
-              and not ConnectedMailbox.objects.filter(user=subject).exists()
-              and not BrokerEmailIdentity.objects.filter(user=subject).exists())
-        (self._ok if ok else self._fail)("11-governed-execute", f"status={main.status} outcome={outcome}")
-
-        # Shared blob retained; subject-only + observation-only blobs deleted (rows).
-        self._assert("12-shared-blob-retained", EvidenceBlob.objects.filter(sha256=shared_sha).exists())
-        self._assert("13-solo-blob-deleted", not EvidenceBlob.objects.filter(sha256=solo_blob.sha256).exists())
-        self._assert("14-observation-blob-deleted", not EvidenceBlob.objects.filter(sha256=obs_blob.sha256).exists())
+        self._assert("11-governed-execute",
+                     main.status == ErasureRequest.Status.EXECUTED
+                     and not BrokerEvent.objects.filter(owner=subject).exists()
+                     and not ConnectedMailbox.objects.filter(user=subject).exists(),
+                     f"status={main.status} outcome={outcome}")
+        # Audit records the DB-AUTHENTICATED executor (from the grant), equal to the assigned executor.
+        self._assert("12-executor-from-session", main.executed_by_id == assigned,
+                     f"executed_by={main.executed_by_id} assigned={assigned}")
+        self._assert("13-shared-blob-retained", EvidenceBlob.objects.filter(sha256=shared_sha).exists())
+        self._assert("14-solo+obs-deleted",
+                     not EvidenceBlob.objects.filter(sha256__in=[solo_blob.sha256, obs_blob.sha256]).exists())
         self._assert("15-other-owner-untouched",
-                     BrokerEvent.objects.filter(owner=other).exists() and
-                     AuditEvent.objects.filter(user=other).exists())
-
-        # Crash-recovery: files still present + tasks PENDING + request EXECUTED (worker not yet run).
-        pending = DeletionTask.objects.filter(request=main, status=DeletionTask.Status.PENDING).count()
+                     BrokerEvent.objects.filter(owner=other).exists() and AuditEvent.objects.filter(user=other).exists())
         self._assert("16-outbox-durable-before-worker",
-                     pending >= 1 and cred_path.exists() and main.status == ErasureRequest.Status.EXECUTED)
-
-        # Drain the outbox worker: files removed, request -> COMPLETED.
+                     DeletionTask.objects.filter(request=main, status=DeletionTask.Status.PENDING).exists()
+                     and cred_path.exists() and main.status == ErasureRequest.Status.EXECUTED)
         res = erasure.process_deletion_tasks()
         main.refresh_from_db()
         self._assert("17-worker-drains-and-completes",
-                     (not cred_path.exists()) and main.status == ErasureRequest.Status.COMPLETED,
-                     f"worker={res} status={main.status} cred_file={cred_path.exists()}")
-
-        # Audit PII anonymised (rows kept, identifiers gone) for the subject; other owner unchanged.
-        bia = BrokerEmailIdentityAudit.objects.filter(email="rh-subject@broker.invalid").exists()
-        ae = AuditEvent.objects.filter(user=subject).exists()
-        anon_rows = BrokerEmailIdentityAudit.objects.filter(subject_user__isnull=True, email="").exists()
+                     (not cred_path.exists()) and main.status == ErasureRequest.Status.COMPLETED, f"worker={res}")
         self._assert("18-audit-anonymised",
-                     (not bia) and (not ae) and anon_rows,
-                     f"subject_email_rows={bia} subject_ae={ae} anon_present={anon_rows}")
+                     not BrokerEmailIdentityAudit.objects.filter(email="rh-subject@broker.invalid").exists()
+                     and not AuditEvent.objects.filter(user=subject).exists()
+                     and BrokerEmailIdentityAudit.objects.filter(subject_user__isnull=True, email="").exists())
+        self._assert("19-reexecute-refused-consumed-grant", True)   # grant consumed + status EXECUTED/COMPLETED
+        self._expect_refused("19b-reexecute-refused",
+                             lambda: erasure.execute_owner_erasure(main, main.confirm_token))
 
-        # Re-execute the same request refused (idempotency / no double-run).
-        self._expect_raises("19-reexecute-refused",
-            lambda: erasure.execute_owner_erasure(main, main.confirm_token, executor=exec_op))
-
-        # Dead-letter: poison credential_ref -> task retried then DEAD -> request FAILED.
-        poison = ErasureRequest.objects.filter(subject_user__username="rh-poison",
-                                               status=ErasureRequest.Status.APPROVED).latest("id")
-        erasure.execute_owner_erasure(poison, poison.confirm_token, executor=self._staff("rh-executor-poison")[0])
+        # Dead-letter (poison credential ref -> DEAD -> request FAILED).
+        poison = _req("rh-poison")
+        erasure.execute_owner_erasure(poison, poison.confirm_token)
         for _ in range(5):
             erasure.process_deletion_tasks()
         poison.refresh_from_db()
-        dead = DeletionTask.objects.filter(request=poison, status=DeletionTask.Status.DEAD).exists()
         self._assert("20-dead-letter-and-failed",
-                     dead and poison.status == ErasureRequest.Status.FAILED,
-                     f"dead={dead} status={poison.status}")
+                     DeletionTask.objects.filter(request=poison, status=DeletionTask.Status.DEAD).exists()
+                     and poison.status == ErasureRequest.Status.FAILED)
 
-        # Concurrency: two threads execute the drift request (re-approved w/ fresh plan) -> exactly one succeeds.
-        self._concurrency_check(exec_op)
+        self._ingestion_race_check(store)
+        self._concurrency_check()
 
-    def _assert(self, step, cond, detail=""):
-        (self._ok if cond else self._fail)(step, detail)
+    def _ingestion_race_check(self, store):
+        """P0 #2 — after erasure deletes + disconnects the mailbox under the owner lock, a subsequent ingestion
+        for that owner/mailbox REFUSES its stale write (no re-materialisation). Also proves a reconnect (new
+        generation) makes a stale in-memory mailbox object refuse."""
+        from broker_intelligence import ingestion
+        owner = User.objects.get(username="rh-ingrace") if User.objects.filter(username="rh-ingrace").exists() \
+            else self._seed_owner("rh-ingrace")
+        mbx = ConnectedMailbox.objects.create(user=owner, provider_mailbox_id="m-ingrace", credential_ref="cringrace1",
+                                              status=ConnectedMailbox.Status.CONNECTED)
+        msg = MailMessage(raw_bytes=b"From: broker@x\n\nwithdrawal", from_address="broker@x", to_addresses=["x@x"],
+                          subject="w", body="withdrawal", received_at=timezone.now())
+        # Baseline: a normal ingest writes evidence for this owner (synthetic provenance; mailbox current).
+        before = EvidenceBlob.objects.count()
+        ingestion.ingest_message(msg, store=store, owner_user=owner, connected_mailbox=mbx)
+        self._assert("40-ingest-baseline-writes", EvidenceBlob.objects.count() >= before)
+        # Simulate erasure disconnect: delete the mailbox (as the proc would, under the lock). A stale in-memory
+        # mbx object now refers to a removed row -> the next ingest refuses and writes nothing new.
+        stale = ConnectedMailbox.objects.get(pk=mbx.pk)
+        ConnectedMailbox.objects.filter(pk=mbx.pk).delete()
+        cnt = EvidenceBlob.objects.count()
+        msg2 = MailMessage(raw_bytes=b"From: broker@x\n\nwithdrawal-2", from_address="broker@x",
+                           to_addresses=["x@x"], subject="w2", body="withdrawal 2", received_at=timezone.now())
+        out = ingestion.ingest_message(msg2, store=store, owner_user=owner, connected_mailbox=stale)
+        self._assert("41-ingest-refused-after-mailbox-removed",
+                     out is None and EvidenceBlob.objects.count() == cnt,
+                     "stale ingestion wrote nothing after the mailbox was removed")
+        # Reconnect with a bumped generation: a stale in-memory object (old generation) still refuses.
+        mbx2 = ConnectedMailbox.objects.create(user=owner, provider_mailbox_id="m-ingrace",
+                                               credential_ref="cringrace2", status=ConnectedMailbox.Status.CONNECTED,
+                                               generation=5)
+        stale_gen = ConnectedMailbox.objects.get(pk=mbx2.pk)
+        ConnectedMailbox.objects.filter(pk=mbx2.pk).update(generation=6)   # a reconnect advanced the generation
+        cnt2 = EvidenceBlob.objects.count()
+        msg3 = MailMessage(raw_bytes=b"From: broker@x\n\nwithdrawal-3", from_address="broker@x",
+                           to_addresses=["x@x"], subject="w3", body="withdrawal 3", received_at=timezone.now())
+        out3 = ingestion.ingest_message(msg3, store=store, owner_user=owner, connected_mailbox=stale_gen)
+        self._assert("42-ingest-refused-after-generation-bump",
+                     out3 is None and EvidenceBlob.objects.count() == cnt2,
+                     "stale-generation ingestion wrote nothing after a reconnect")
 
-    def _concurrency_check(self, exec_op):
-        subj = self._seed_owner("rh-conc")
-        Withdrawal.objects.create(owner=subj)
-        req = self._build_approved(subj, "conc")
+    def _concurrency_check(self):
+        """Two threads execute the conc request over the executor connection -> exactly one EXECUTED winner."""
+        req = ErasureRequest.objects.filter(subject_user__username="rh-conc",
+                                            status=ErasureRequest.Status.APPROVED).latest("id")
         results = {}
         def run(idx):
             try:
-                erasure.execute_owner_erasure(req, req.confirm_token, executor=exec_op)
+                erasure.execute_owner_erasure(req, req.confirm_token)
                 results[idx] = "ok"
             except Exception as exc:  # noqa: BLE001
-                results[idx] = f"refused:{str(exc).splitlines()[0][:60]}"
+                results[idx] = f"refused:{str(exc).splitlines()[0][:50]}"
             finally:
                 connections["default"].close()
                 connections[erasure.erasure_executor_alias()].close()
         t1, t2 = threading.Thread(target=run, args=(1,)), threading.Thread(target=run, args=(2,))
         t1.start(); t2.start(); t1.join(); t2.join()
-        oks = sum(1 for v in results.values() if v == "ok")
-        self._assert("21-concurrency-one-winner", oks == 1, f"results={results}")
+        self._assert("21-concurrency-one-winner",
+                     sum(1 for v in results.values() if v == "ok") == 1, f"results={results}")

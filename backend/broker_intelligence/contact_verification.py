@@ -102,6 +102,9 @@ def verify_contact(contact: Contact, *, actor=None, proofs: Optional[dict] = Non
     # Atomic: the status change and its audit row commit together or not at all — a status transition must never
     # persist without the audit record that justifies it (and vice versa).
     with transaction.atomic():
+        # P0 (ADR-0054): serialise this owner-scoped contact write against governed erasure.
+        from .erasure_lock import acquire_owner_erasure_lock
+        acquire_owner_erasure_lock(getattr(contact.trading_account, "user_id", None))
         if ok:
             contact.status = Contact.Status.VERIFIED
             contact.verified_at = timezone.now()

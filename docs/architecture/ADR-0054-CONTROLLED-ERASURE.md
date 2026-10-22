@@ -135,20 +135,44 @@ the disposable rehearsal, and (only after a separate Sponsor GO) production.
 arming the flag, processing a real user, deploying the executor credential to any runtime, and PR merge / ADR
 ratification. See `docs/WV1_ERASURE_REWORK_PACKET.md`.
 
-## Separation-of-duties policy (Finding B — exactly what the code enforces)
-Four roles are recorded (requester, verifier, approver, executor) and the following distinctness is ENFORCED, in
-the Python control plane AND re-checked in the SECURITY DEFINER procedure at execution:
+## Round-5 status (2026-10-22 — P0 closure: non-forgeable executor + ingestion race)
+The PD's round-4 disposition returned CHANGES REQUIRED on two P0 correctness items; both are now closed and
+re-rehearsed green (`REHEARSAL: ALL EVIDENCE PASS`):
+- **P0 — forgeable executor identity.** The procedure no longer takes an executor-id argument. It is now
+  `bi_governed_erase_owner(bigint request_id, text confirmation)` (version marker `v2`); the executor is resolved
+  from the DB-authenticated `session_user` via a single-use `ErasureExecutionGrant` (migration 0021) and must
+  equal the request's `assigned_executor` and differ from the approver. `guvfx_erasure_exec` became a NOLOGIN
+  group; per-operator short-lived member logins + their grants are minted by an independent process; the grant
+  table is owned off the application role. Mandatory negatives all proven (no-grant / expired / revoked /
+  wrong-operator / consumed-single-use / executor≠approver / app-cannot-read-grants; audit records the
+  DB-authenticated operator).
+- **P0 — post-erasure ingestion race.** Every owner-scoped WI writer takes the shared per-owner advisory lock;
+  ingestion re-reads the mailbox under the lock and refuses a stale write (mailbox removed / REVOKED /
+  owner-mismatch / `generation` bumped by a reconnect, migration 0022); the procedure takes the lock first and
+  deletes the mailbox in-transaction. So a request cannot be recorded EXECUTED/COMPLETED while new personal data
+  is being written for the subject.
+
+## Separation-of-duties policy (Finding B + P0 — exactly what the code enforces)
+Four roles are recorded and the following distinctness is ENFORCED, in the Python control plane AND re-checked
+in the SECURITY DEFINER procedure at execution from DB state (never caller input):
 - **requester** recorded (`requested_by`), else nothing may be approved or executed;
 - **verifier** recorded (`verified_by` + `verified_at` + a non-empty, allow-listed `verification_method`) and
   **verifier ≠ requester**; verification can only be set before approval;
 - **approver** recorded (`approved_by` + `approved_at`, not revoked, not expired) and **approver ≠ requester**
-  and **approver ≠ verifier**;
-- **executor** recorded and **executor ≠ approver**; the executor's *authority* comes from the dedicated
-  `guvfx_erasure_exec` connection (the ordinary app role cannot invoke the procedure at all), not from a
-  caller-supplied flag.
-So no single operator can perform requester + approver, verifier + approver, or approver + executor — the
-approver is distinct from every other role. (We deliberately do NOT claim executor ≠ verifier or ≠ requester,
-because the code does not enforce those.)
+  and **approver ≠ verifier**; approval also DESIGNATES an **assigned executor** (`assigned_executor`);
+- **assigned executor** recorded and **≠ approver**.
+
+**Executor identity is NON-FORGEABLE (P0).** The executor is NOT a caller argument. The procedure takes only
+`(request_id, confirmation)`; it reads the DB-authenticated **`session_user`** (which SECURITY DEFINER does NOT
+change — unlike `current_user`) and resolves the human operator through a single-use **`ErasureExecutionGrant`**
+that maps that exact login to an operator for THIS request. The resolved operator must EQUAL the request's
+`assigned_executor` and DIFFER from the approver; the grant must be unrevoked, unexpired and unconsumed; it is
+then consumed (single-use). `guvfx_erasure_exec` is a NOLOGIN GROUP — each authorised operator connects as a
+distinct, short-lived LOGIN member, created with its grant by an independent grant process that the application
+role cannot reach (the grant table is owned off the app role). So a holder of one login cannot pass another
+person's id, reuse a consumed grant, use a grant minted for a different request, or act as the approver — every
+one of these fails closed (proven in the rehearsal, steps 30–33 + 12). No single operator can perform
+requester + approver, verifier + approver, approver + executor, or forge the executor identity.
 
 ## Capability status — five categories (what is true right now)
 Every element is placed in exactly one category, so no reader mistakes a design for a shipped control.
@@ -165,15 +189,17 @@ Every element is placed in exactly one category, so no reader mistakes a design 
   six-role boundary with the ownership move + DELETE/TRUNCATE revocations; the executor connection. Proven: only
   the procedure deletes; app + PUBLIC cannot EXECUTE/TRUNCATE/DDL; concurrency yields one outcome; crash leaves a
   durable task; shared evidence retained; files removed only via the outbox; audit PII anonymised.
-- **DESIGNED but not implemented (production-arming follow-ups; none change the fail-closed stance):**
-  - **Ingestion serialisation (adversarial-review MED residual).** The procedure derives its deletable-blob set
-    from live rows at delete time (via `RETURNING`), closing the plan→delete window. A row the ingestion worker
-    commits for the subject AFTER the procedure's delete statements is new data that survives. Full closure
-    requires ingestion to take the same `pg_advisory_xact_lock(26485, owner)`, or a mailbox-disconnect
-    precondition before erasure. Required before production arming; ingestion is DARK today.
-  - **Executor attribution (adversarial-review LOW).** `executed_by` is a caller-supplied staff id (recorded as
-    `executor_id_self_asserted` in the outcome); the real execution *authority* is possession of the
-    `guvfx_erasure_exec` connection. Binding `executed_by` to an authenticated operator record is a follow-up.
+- **Implemented and REHEARSAL-INTEGRATION-TESTED (round 5, P0 closure):**
+  - **Non-forgeable executor** — the `ErasureExecutionGrant` + `session_user` mechanism above (no caller-supplied
+    executor id); `executed_by` is the grant-resolved operator. Rehearsal steps 12 + 30–33 + 06-cannot-touch-grants.
+  - **Ingestion/erasure race closure** — EVERY owner-scoped WI writer (ingestion `ingest_message`, correlation
+    `correlate_event`/`correlate_completion_event`, the mailbox connect path, identity/contact binding) now
+    acquires `pg_advisory_xact_lock(26485, owner)` (shared helper `erasure_lock.acquire_owner_erasure_lock`) in
+    its own transaction before the write; ingestion also re-reads the `ConnectedMailbox` under the lock and
+    refuses if it is removed, REVOKED, owner-mismatched, or its `generation` advanced (a reconnect). The
+    procedure takes the same lock before deriving/deleting and deletes the mailbox in-transaction. Rehearsal
+    steps 40–42.
+- **DESIGNED but not implemented (none change the fail-closed stance):**
   - The operational-vs-security retention split for `core.AuditEvent`; record-level (vs owner-level) legal
     holds. Neither is required for owner erasure.
 - **REQUIRES PRIVILEGED PROVISIONING IN PRODUCTION (superuser, separately Sponsor-authorised):** running

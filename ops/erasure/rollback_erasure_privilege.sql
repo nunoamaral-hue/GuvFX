@@ -26,7 +26,8 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \quit
 \endif
 
--- 1) Drop the governed procedure + helpers (owned by guvfx_erasure).
+-- 1) Drop the governed procedure + helpers (owned by guvfx_erasure). Both signatures, for any prior version.
+DROP FUNCTION IF EXISTS public.bi_governed_erase_owner(bigint, text);
 DROP FUNCTION IF EXISTS public.bi_governed_erase_owner(bigint, bigint, text);
 DROP FUNCTION IF EXISTS public.bi_erasure_plan_facts(bigint);
 DROP FUNCTION IF EXISTS public.bi_erasure_plan_matches(jsonb, jsonb);
@@ -42,14 +43,25 @@ ALTER SEQUENCE broker_intelligence_brokerevent_id_seq  OWNER TO :"app_role";
 -- 3) Restore the app role's full table rights (owner implicitly has them, but make the grant explicit too).
 GRANT ALL ON broker_intelligence_evidenceblob, broker_intelligence_brokerevent TO :"app_role";
 
--- 3b) Restore schema ownership + CREATE to the application role (reverses the HIGH-finding hardening).
+-- 3b) Restore ownership of the execution-grant table (a migrated Django table) to the app role, so the DROP
+-- OWNED below does NOT drop it. The grant ROWS are left as-is (harmless metadata; the procedure is gone).
+ALTER TABLE broker_intelligence_erasureexecutiongrant OWNER TO :"app_role";
+ALTER SEQUENCE broker_intelligence_erasureexecutiongrant_id_seq OWNER TO :"app_role";
+
+-- 3c) Restore schema ownership + CREATE to the application role (reverses the HIGH-finding hardening).
 ALTER SCHEMA public OWNER TO :"app_role";
 GRANT CREATE ON SCHEMA public TO :"app_role";
 
 -- 4) Remove privileged-role grants, then drop the roles. DROP OWNED cleans up any remaining grants/defaults.
+-- Per-operator executor LOGINs (members of guvfx_erasure_exec, created by the grant process, e.g. guvfx_erx_*)
+-- are dropped first so the group drop has no dependent members.
 DO $drop$
 DECLARE r text;
 BEGIN
+  FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'guvfx_erx_%' LOOP
+    EXECUTE format('DROP OWNED BY %I CASCADE', r);
+    EXECUTE format('DROP ROLE %I', r);
+  END LOOP;
   FOREACH r IN ARRAY ARRAY['guvfx_erasure','guvfx_erasure_exec','guvfx_schema_owner','guvfx_migrate','guvfx_readonly'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('DROP OWNED BY %I CASCADE', r);

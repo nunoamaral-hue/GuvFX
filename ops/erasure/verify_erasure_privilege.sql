@@ -36,7 +36,7 @@ BEGIN
   -- (2) exactly one procedure in public
   SELECT count(*) INTO v_count FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
    WHERE p.proname = 'bi_governed_erase_owner' AND n.nspname = 'public';
-  IF v_count = 0 THEN problems := problems || 'procedure absent';
+  IF v_count = 0 THEN problems := problems || 'procedure absent'::text;
   ELSIF v_count > 1 THEN problems := problems || format('%s procedures named bi_governed_erase_owner (ambiguous)', v_count);
   ELSE
     SELECT p.oid, p.prosecdef, pg_get_userbyid(p.proowner), p.proconfig,
@@ -45,23 +45,23 @@ BEGIN
       INTO v_oid, v_secdef, v_owner, v_cfg, v_args, v_desc
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE p.proname = 'bi_governed_erase_owner' AND n.nspname = 'public';
-    IF replace(v_args,' ','') <> 'bigint,bigint,text' THEN problems := problems || format('bad signature: %s', v_args); END IF;
-    IF NOT v_secdef THEN problems := problems || 'not SECURITY DEFINER'; END IF;
+    IF replace(v_args,' ','') <> 'bigint,text' THEN problems := problems || format('bad signature: %s', v_args); END IF;
+    IF NOT v_secdef THEN problems := problems || 'not SECURITY DEFINER'::text; END IF;
     IF v_owner <> 'guvfx_erasure' THEN problems := problems || format('owner is %s not guvfx_erasure', v_owner); END IF;
     SELECT substring(c FROM 'search_path=(.*)') INTO v_sp FROM unnest(coalesce(v_cfg,ARRAY[]::text[])) c
       WHERE c LIKE 'search_path=%' LIMIT 1;
-    IF v_sp IS NULL THEN problems := problems || 'search_path not pinned';
+    IF v_sp IS NULL THEN problems := problems || 'search_path not pinned'::text;
     ELSIF btrim(v_sp) <> 'pg_catalog, public' THEN problems := problems || format('search_path not exact: %s', v_sp); END IF;
-    IF v_desc IS NULL OR position('ADR-0054/erasure-proc/v1' IN v_desc) = 0 THEN
-      problems := problems || 'version marker missing/mismatched'; END IF;
+    IF v_desc IS NULL OR position('ADR-0054/erasure-proc/v2' IN v_desc) = 0 THEN
+      problems := problems || 'version marker missing/mismatched'::text; END IF;
 
     -- (3) EXECUTE ACL
-    IF has_function_privilege('public', v_oid, 'EXECUTE') THEN problems := problems || 'PUBLIC has EXECUTE'; END IF;
-    IF has_function_privilege(v_app, v_oid, 'EXECUTE') THEN problems := problems || 'app role has EXECUTE'; END IF;
+    IF has_function_privilege('public', v_oid, 'EXECUTE') THEN problems := problems || 'PUBLIC has EXECUTE'::text; END IF;
+    IF has_function_privilege(v_app, v_oid, 'EXECUTE') THEN problems := problems || 'app role has EXECUTE'::text; END IF;
     IF NOT has_function_privilege('guvfx_erasure_exec', v_oid, 'EXECUTE') THEN
-      problems := problems || 'executor lacks EXECUTE'; END IF;
+      problems := problems || 'executor lacks EXECUTE'::text; END IF;
     IF (SELECT proacl IS NULL FROM pg_proc WHERE oid = v_oid) THEN
-      problems := problems || 'procedure ACL is default (PUBLIC retains EXECUTE)';
+      problems := problems || 'procedure ACL is default (PUBLIC retains EXECUTE)'::text;
     ELSE
       SELECT coalesce(array_agg(grantee::regrole::text),ARRAY[]::text[]) INTO v_grantees
         FROM aclexplode((SELECT proacl FROM pg_proc WHERE oid = v_oid))
@@ -98,9 +98,9 @@ BEGIN
 
   -- (6b) schema public owned by the schema owner; app role has no CREATE on it (closes DROP SCHEMA CASCADE)
   IF (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public') IS DISTINCT FROM 'guvfx_schema_owner' THEN
-    problems := problems || 'schema public not owned by guvfx_schema_owner'; END IF;
+    problems := problems || 'schema public not owned by guvfx_schema_owner'::text; END IF;
   IF has_schema_privilege(v_app, 'public', 'CREATE') THEN
-    problems := problems || 'app role has CREATE on schema public'; END IF;
+    problems := problems || 'app role has CREATE on schema public'::text; END IF;
 
   -- (7) app role: not a member of privileged roles
   FOREACH r IN ARRAY ARRAY['guvfx_schema_owner','guvfx_erasure','guvfx_erasure_exec'] LOOP

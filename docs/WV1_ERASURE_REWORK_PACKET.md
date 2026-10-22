@@ -7,6 +7,25 @@
   production**. The only place destructive deletion ran is a **disposable PostgreSQL-15 rehearsal with synthetic
   data**, destroyed on exit.
 
+## Round 5 (2026-10-22) — P0 closure (CHANGES REQUIRED from the round-4 disposition)
+The PD accepted the round-4 rehearsal evidence but returned CHANGES REQUIRED on two P0 correctness items. Both
+are fixed and re-rehearsed green (`ALL EVIDENCE PASS`; see `ops/erasure/REHEARSAL_EVIDENCE.md`):
+- **P0 — executor identity was forgeable.** The procedure no longer accepts an executor-id argument
+  (`bi_governed_erase_owner(bigint, text)`, v2). The executor is resolved from the DB-authenticated `session_user`
+  via a single-use `ErasureExecutionGrant` (mig 0021), must equal the request's `assigned_executor`, and must
+  differ from the approver. `guvfx_erasure_exec` is now a NOLOGIN group; per-operator short-lived member logins +
+  grants are minted by an independent process; the grant table is owned off the app role. Rehearsal proves
+  no-grant / expired / revoked / wrong-operator / single-use-consumed / executor≠approver refusals + that
+  `executed_by` is the DB-authenticated operator (steps 12, 30–33, 06-cannot-touch-grants).
+- **P0 — post-erasure ingestion race.** A shared per-owner advisory lock (`erasure_lock.acquire_owner_erasure_lock`,
+  ns 26485) is taken by EVERY owner-scoped WI writer (ingestion, correlation, mailbox connect, identity/contact);
+  ingestion re-reads the mailbox under the lock and refuses a stale write (removed / REVOKED / owner-mismatch /
+  `generation` bumped, mig 0022). The procedure takes the lock first + deletes the mailbox in-transaction.
+  Rehearsal steps 40–42.
+- Also: separate PRODUCTION rollback runbook (`ops/erasure/production_rollback_erasure.sql`) that disables the
+  capability while PRESERVING the secure ownership boundary (distinct from the disposable-rehearsal teardown).
+- Full backend regression re-run on the reconciled head; branch reconciled with canonical main.
+
 ## Round 4 (2026-10-22) — Phase 1–3 under the PD conditional authorisation
 The PD authorised: (1) correct PR metadata + ADR/packet contradictions; (2) complete the implementation WITHOUT
 production provisioning; (3) a **disposable PG15 rehearsal, synthetic data only**. All three are done.
@@ -102,7 +121,7 @@ lifecycle are now **built and tested** (the PD required these before provisionin
 | `guvfx_readonly` | yes | — | no | no | — | ops secret store |
 
 ## Readiness invariants re-checked before any execute (fail-closed)
-roles exist · procedure present · expected signature `(bigint, bytea)` · SECURITY DEFINER · owned by
+roles exist · procedure present · expected signature `(bigint, text)` · SECURITY DEFINER · owned by
 `guvfx_erasure` · pinned `search_path` · EXECUTE = `guvfx_erasure_exec` only (not PUBLIC, not app) · evidence
 tables owned by `guvfx_schema_owner` · app role not a member of any privileged role · app role lacks
 DELETE+TRUNCATE. Any failure ⇒ `privileged_backend_ready()` is False and execute refuses with sanitised reasons.

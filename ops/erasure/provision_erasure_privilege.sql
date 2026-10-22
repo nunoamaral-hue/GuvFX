@@ -77,21 +77,18 @@ BEGIN
     CREATE ROLE guvfx_erasure NOLOGIN; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_migrate') THEN
     CREATE ROLE guvfx_migrate LOGIN; END IF;
+  -- guvfx_erasure_exec is a NOLOGIN GROUP (P0 — no single shared executor login). Each authorised operator gets
+  -- a distinct short-lived LOGIN role that is a MEMBER of this group (created by the independent grant process,
+  -- NOT here), inheriting EXECUTE on the procedure. The procedure resolves the human operator from session_user
+  -- via ErasureExecutionGrant — the executor identity is never a caller argument.
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_erasure_exec') THEN
-    CREATE ROLE guvfx_erasure_exec LOGIN; END IF;
+    CREATE ROLE guvfx_erasure_exec NOLOGIN; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_readonly') THEN
     CREATE ROLE guvfx_readonly LOGIN; END IF;
 END
 $roles$;
 
--- LOGIN credentials from psql vars (never literals in this file). erasure_exec is required.
-\if :{?erasure_exec_pw}
-  ALTER ROLE guvfx_erasure_exec LOGIN PASSWORD :'erasure_exec_pw';
-\else
-  \echo '*** REFUSED: pass -v erasure_exec_pw=<password>. Rolling back.'
-  ROLLBACK;
-  \quit
-\endif
+-- LOGIN credentials from psql vars (never literals in this file). guvfx_erasure_exec is a NOLOGIN group (no pw).
 \if :{?migrate_pw}
   ALTER ROLE guvfx_migrate LOGIN PASSWORD :'migrate_pw';
 \endif
@@ -141,8 +138,19 @@ GRANT USAGE, SELECT ON SEQUENCE broker_intelligence_deletiontask_id_seq TO guvfx
 GRANT SELECT, UPDATE ON broker_intelligence_brokeremailidentityaudit,
                         broker_intelligence_tradingaccountbrokercontactaudit,
                         core_auditevent TO guvfx_erasure;
+-- The procedure reads + CONSUMES execution grants (sets consumed_at). It never INSERTs them.
+GRANT SELECT, UPDATE ON broker_intelligence_erasureexecutiongrant TO guvfx_erasure;
+
+-- ---- 4b) Execution-grant table: OFF the application role (P0 — a forged grant would defeat non-forgeability).
+-- Owned by the schema owner; the app role gets NOTHING; the independent grant-admin process (a privileged role,
+-- never the app role or an executor) INSERTs rows out of band. The procedure (guvfx_erasure) SELECT/UPDATEs it.
+ALTER TABLE broker_intelligence_erasureexecutiongrant OWNER TO guvfx_schema_owner;
+ALTER SEQUENCE broker_intelligence_erasureexecutiongrant_id_seq OWNER TO guvfx_schema_owner;
+REVOKE ALL ON broker_intelligence_erasureexecutiongrant FROM PUBLIC;
+REVOKE ALL ON broker_intelligence_erasureexecutiongrant FROM :"app_role";
 
 -- The executor connection runs the readiness probe, which reads django_migrations (a regular, non-PII table).
+-- Members of the guvfx_erasure_exec group inherit this SELECT.
 GRANT SELECT ON django_migrations TO guvfx_erasure_exec;
 
 -- ---- 5) Read-only operational role -------------------------------------------------------------------------
@@ -207,14 +215,16 @@ ALTER FUNCTION public.bi_erasure_plan_matches(jsonb, jsonb) OWNER TO guvfx_erasu
 REVOKE ALL ON FUNCTION public.bi_erasure_plan_matches(jsonb, jsonb) FROM PUBLIC;
 
 -- ---- 8) The governed SECURITY DEFINER procedure (the ONLY path to current_user = guvfx_erasure) -----------
-CREATE OR REPLACE FUNCTION public.bi_governed_erase_owner(p_request_id bigint, p_executor_id bigint,
-                                                          p_confirmation text)
+CREATE OR REPLACE FUNCTION public.bi_governed_erase_owner(p_request_id bigint, p_confirmation text)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $proc$
 DECLARE
   r record;
   v_owner bigint;
   v_live jsonb;
   v_del_blob_ids bigint[];
+  v_session text;
+  v_grant_id bigint;
+  v_executor bigint;
   v_wd int := 0; v_obs int := 0; v_ev int := 0; v_blobs int := 0; v_mbx int := 0; v_idn int := 0;
   v_contacts int := 0; v_cred_tasks int := 0; v_total_tasks int := 0;
 BEGIN
@@ -235,8 +245,8 @@ BEGIN
   IF r.verified_by_id = r.requested_by_id THEN RAISE EXCEPTION 'two-person: verifier = requester'; END IF;
   IF r.approved_by_id = r.requested_by_id THEN RAISE EXCEPTION 'two-person: approver = requester'; END IF;
   IF r.approved_by_id = r.verified_by_id THEN RAISE EXCEPTION 'two-person: approver = verifier'; END IF;
-  IF p_executor_id IS NULL THEN RAISE EXCEPTION 'no executor recorded'; END IF;
-  IF p_executor_id = r.approved_by_id THEN RAISE EXCEPTION 'two-person: executor = approver'; END IF;
+  IF r.assigned_executor_id IS NULL THEN RAISE EXCEPTION 'no assigned executor on the request'; END IF;
+  IF r.assigned_executor_id = r.approved_by_id THEN RAISE EXCEPTION 'two-person: assigned executor = approver'; END IF;
 
   v_owner := r.subject_user_id_snapshot;
   IF v_owner IS NULL THEN RAISE EXCEPTION 'no subject owner id'; END IF;
@@ -254,6 +264,26 @@ BEGIN
   v_live := public.bi_erasure_plan_facts(v_owner);
   IF NOT public.bi_erasure_plan_matches(r.plan, v_live) THEN
      RAISE EXCEPTION 'owner state changed since the plan was produced (TOCTOU)'; END IF;
+
+  -- P0 — resolve the EXECUTOR from the DB-authenticated login, NOT a caller argument. session_user is the role
+  -- that connected; SECURITY DEFINER changes current_user to the procedure owner but NEVER session_user. A
+  -- single-use ErasureExecutionGrant (created out of band by the independent grant process; the app role has no
+  -- access to that table) maps this exact session to an operator for THIS request. A missing/revoked/expired/
+  -- already-consumed grant, or one mapping a different operator, fails closed. The grant is then consumed.
+  v_session := session_user;
+  SELECT g.id, g.operator_id INTO v_grant_id, v_executor
+  FROM broker_intelligence_erasureexecutiongrant g
+  WHERE g.request_id = p_request_id AND g.db_session_user = v_session
+        AND NOT g.revoked AND g.consumed_at IS NULL AND g.expires_at > now()
+  FOR UPDATE;
+  IF v_grant_id IS NULL THEN
+     RAISE EXCEPTION 'no valid execution grant for session % on request %', v_session, p_request_id; END IF;
+  IF v_executor IS NULL THEN RAISE EXCEPTION 'execution grant has no operator'; END IF;
+  IF v_executor <> r.assigned_executor_id THEN
+     RAISE EXCEPTION 'grant operator (%) does not match the request assigned executor (%)',
+        v_executor, r.assigned_executor_id; END IF;
+  IF v_executor = r.approved_by_id THEN RAISE EXCEPTION 'two-person: executor = approver'; END IF;
+  UPDATE broker_intelligence_erasureexecutiongrant SET consumed_at = now() WHERE id = v_grant_id;  -- single-use
 
   -- Enqueue credential-file deletions for the owner's mailboxes (all are about to be deleted), then delete them.
   INSERT INTO broker_intelligence_deletiontask(request_id, kind, target_ref, status, attempts, last_error, created_at)
@@ -329,12 +359,12 @@ BEGIN
 
   -- Terminal state (counts only; never content). EXECUTED => rows gone; worker drains files to COMPLETED.
   UPDATE broker_intelligence_erasurerequest
-     SET status = 'EXECUTED', executed_at = now(), executed_by_id = p_executor_id,
+     SET status = 'EXECUTED', executed_at = now(), executed_by_id = v_executor,
          outcome = jsonb_build_object(
             'withdrawals', v_wd, 'observations', v_obs, 'broker_events', v_ev,
             'evidence_blobs_deleted', v_blobs, 'connected_mailboxes', v_mbx, 'identities', v_idn,
             'contacts', v_contacts, 'deletion_tasks', v_total_tasks, 'credential_file_tasks', v_cred_tasks,
-            'executor_id_self_asserted', p_executor_id)
+            'executor_db_session', v_session)
    WHERE id = p_request_id;
 
   RETURN jsonb_build_object('status', 'EXECUTED', 'owner', v_owner,
@@ -344,11 +374,13 @@ BEGIN
 END
 $proc$;
 
-ALTER FUNCTION public.bi_governed_erase_owner(bigint, bigint, text) OWNER TO guvfx_erasure;
-COMMENT ON FUNCTION public.bi_governed_erase_owner(bigint, bigint, text) IS 'ADR-0054/erasure-proc/v1';
-REVOKE ALL ON FUNCTION public.bi_governed_erase_owner(bigint, bigint, text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.bi_governed_erase_owner(bigint, bigint, text) FROM :"app_role";
-GRANT EXECUTE ON FUNCTION public.bi_governed_erase_owner(bigint, bigint, text) TO guvfx_erasure_exec;
+-- Drop the old 3-arg signature if a previous provision created it (the executor id argument is removed, P0).
+DROP FUNCTION IF EXISTS public.bi_governed_erase_owner(bigint, bigint, text);
+ALTER FUNCTION public.bi_governed_erase_owner(bigint, text) OWNER TO guvfx_erasure;
+COMMENT ON FUNCTION public.bi_governed_erase_owner(bigint, text) IS 'ADR-0054/erasure-proc/v2';
+REVOKE ALL ON FUNCTION public.bi_governed_erase_owner(bigint, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.bi_governed_erase_owner(bigint, text) FROM :"app_role";
+GRANT EXECUTE ON FUNCTION public.bi_governed_erase_owner(bigint, text) TO guvfx_erasure_exec;
 
 COMMIT;
 

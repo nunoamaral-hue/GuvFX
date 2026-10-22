@@ -19,7 +19,7 @@ PSQL_SUPER=(docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d "
 
 SUPER_PW="$(openssl rand -hex 16)"
 APP_PW="$(openssl rand -hex 16)"
-EXEC_PW="$(openssl rand -hex 16)"
+ERX_PW="$(openssl rand -hex 16)"       # per-operator executor LOGIN (member of the guvfx_erasure_exec group)
 MIGRATE_PW="$(openssl rand -hex 16)"
 READONLY_PW="$(openssl rand -hex 16)"
 
@@ -61,14 +61,53 @@ log "=== 3) drop temporary superuser from the app role (it must be an ordinary r
 "${PSQL_SUPER[@]}" -c "ALTER ROLE guvfx_app NOSUPERUSER;"
 
 log "=== 4) PREPROVISION phase: negative control + seed synthetic data + governed lifecycle ==="
+PREOUT="$WORK/preprovision.out"
 ( cd "$BACKEND" && "$PY" manage.py rehearse_controlled_erasure --phase=preprovision \
-    --i-understand-this-is-a-disposable-rehearsal 2>&1 | tee -a "$EVLOG" )
+    --i-understand-this-is-a-disposable-rehearsal ) >"$PREOUT" 2>&1 || { cat "$PREOUT" | tee -a "$EVLOG"; exit 1; }
+grep -E "^EVIDENCE\|" "$PREOUT" | tee -a "$EVLOG"
 
-log "=== 5) PROVISION the privilege boundary (superuser) ==="
+log "=== 5) PROVISION the privilege boundary (superuser; guvfx_erasure_exec is a NOLOGIN group) ==="
 docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d "$DBNAME" \
   -v target_db="$DBNAME" -v allow_destructive_provisioning=1 -v synthetic_confirmed=1 \
-  -v app_role=guvfx_app -v erasure_exec_pw="$EXEC_PW" -v migrate_pw="$MIGRATE_PW" -v readonly_pw="$READONLY_PW" \
+  -v app_role=guvfx_app -v migrate_pw="$MIGRATE_PW" -v readonly_pw="$READONLY_PW" \
   < "$REPO_ROOT/ops/erasure/provision_erasure_privilege.sql" 2>&1 | tee -a "$EVLOG"
+
+log "=== 5b) grant-admin (independent process): per-operator executor login + single-use execution grants ==="
+# A distinct short-lived LOGIN that is a MEMBER of the NOLOGIN guvfx_erasure_exec group. The procedure resolves
+# the human executor from THIS login's session via the grant rows below — the executor identity is never a caller
+# argument. The app role has no access to the grant table; only this independent (superuser) process writes it.
+docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d "$DBNAME" <<SQL 2>&1 | tee -a "$EVLOG"
+DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_erx_rh') THEN
+  CREATE ROLE guvfx_erx_rh LOGIN PASSWORD '$ERX_PW'; END IF; END \$\$;
+ALTER ROLE guvfx_erx_rh PASSWORD '$ERX_PW';
+GRANT guvfx_erasure_exec TO guvfx_erx_rh;
+SQL
+WRONGOP_ID=$(docker exec -i "$CONTAINER" psql -tA -U postgres -d "$DBNAME" \
+  -c "SELECT id FROM users_user WHERE username='rh-wrongop-other'" | tr -d '[:space:]')
+log "grant-admin: WRONGOP_ID=$WRONGOP_ID; GRANT lines=$(grep -cE '^GRANT\|' "$PREOUT")"
+_grant_fail=0
+while IFS='|' read -r _tag uname reqid opid state; do
+  reqid="$(echo "$reqid" | tr -d '[:space:]')"; opid="$(echo "$opid" | tr -d '[:space:]')"
+  state="$(echo "$state" | tr -d '[:space:]')"
+  case "$state" in
+    none)    log "grant: $uname req=$reqid state=none (no grant)"; continue;;
+    expired) exp="now() - interval '1 hour'"; rev="false"; op="$opid";;
+    revoked) exp="now() + interval '1 hour'"; rev="true";  op="$opid";;
+    wrongop) exp="now() + interval '1 hour'"; rev="false"; op="$WRONGOP_ID";;
+    *)       exp="now() + interval '1 hour'"; rev="false"; op="$opid";;
+  esac
+  if docker exec "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d "$DBNAME" -c \
+    "INSERT INTO broker_intelligence_erasureexecutiongrant(request_id, db_session_user, operator_id, expires_at, revoked, consumed_at, created_at) VALUES ($reqid, 'guvfx_erx_rh', $op, $exp, $rev, NULL, now());" </dev/null >/dev/null 2>"$WORK/grant_err"; then
+    log "grant: $uname req=$reqid state=$state op=$op OK"
+  else
+    log "grant: $uname req=$reqid state=$state op=$op FAILED: $(cat "$WORK/grant_err")"; _grant_fail=1
+  fi
+done < <(grep -E "^GRANT\|" "$PREOUT")
+if [ "$_grant_fail" = "0" ]; then
+  echo "EVIDENCE|05b-execution-grants-created|PASS|per-operator login + single-use grants installed by the grant-admin" | tee -a "$EVLOG"
+else
+  echo "EVIDENCE|05b-execution-grants-created|FAIL|one or more grant inserts failed" | tee -a "$EVLOG"
+fi
 
 log "=== 6) VERIFY the privilege boundary (superuser) ==="
 docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U postgres -d "$DBNAME" -v app_role=guvfx_app \
@@ -84,7 +123,7 @@ fi
 
 log "=== 7) POSTPROVISION phase: DB boundary + real governed execution + outbox + anonymisation + concurrency ==="
 ( cd "$BACKEND" && \
-  ERASURE_EXECUTOR_DB_USER=guvfx_erasure_exec ERASURE_EXECUTOR_DB_PASSWORD="$EXEC_PW" \
+  ERASURE_EXECUTOR_DB_USER=guvfx_erx_rh ERASURE_EXECUTOR_DB_PASSWORD="$ERX_PW" \
   BROKER_INTELLIGENCE_ERASURE_ENABLED=1 \
   "$PY" manage.py rehearse_controlled_erasure --phase=postprovision \
     --i-understand-this-is-a-disposable-rehearsal 2>&1 | tee -a "$EVLOG" )

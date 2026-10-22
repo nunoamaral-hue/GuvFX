@@ -46,8 +46,8 @@ _SCHEMA_OWNER_ROLE = "guvfx_schema_owner"   # NOLOGIN; owns the evidence tables 
 _EXECUTOR_ALIAS = "erasure_executor"        # Django DATABASES alias for the executor login (absent => fail-closed)
 _PROC_NAME = "bi_governed_erase_owner"
 _PROC_SCHEMA = "public"
-_PROC_SIG = "bigint, bigint, text"          # (request_id, executor_user_id, confirmation_token) identity args
-_PROC_VERSION = "ADR-0054/erasure-proc/v1"  # version marker stored as the function COMMENT; readiness pins it
+_PROC_SIG = "bigint, text"                  # (request_id, confirmation_token) — executor is resolved from session
+_PROC_VERSION = "ADR-0054/erasure-proc/v2"  # version marker stored as the function COMMENT; readiness pins it
 _PROC_SEARCH_PATH = "pg_catalog, public"    # exact pinned search_path (not merely "some setting present")
 _EVIDENCE_TABLES = ("broker_intelligence_evidenceblob", "broker_intelligence_brokerevent")
 _EVIDENCE_SEQUENCES = ("broker_intelligence_evidenceblob_id_seq", "broker_intelligence_brokerevent_id_seq")
@@ -170,13 +170,15 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                 cur.execute(sql, params)
                 return cur.fetchone() is not None
 
-            # (0) When probing over the executor alias, confirm we actually connected as the executor role
-            # (belt-and-suspenders against a misconfigured ERASURE_EXECUTOR_DB_USER).
+            # (0) When probing over the executor alias, confirm the connected login is a MEMBER of the
+            # guvfx_erasure_exec group (each operator connects as a distinct short-lived login that is a member;
+            # the group itself is NOLOGIN). Belt-and-suspenders against a misconfigured ERASURE_EXECUTOR_DB_USER.
             if using == _EXECUTOR_ALIAS:
-                cur.execute("SELECT current_user")
-                cu = cur.fetchone()[0]
-                if cu != _EXECUTOR_ROLE:
-                    reasons.append(f"executor connection current_user is '{cu}', expected '{_EXECUTOR_ROLE}'")
+                cur.execute("SELECT session_user")
+                su = cur.fetchone()[0]
+                cur.execute("SELECT pg_has_role(%s, %s, 'USAGE')", [su, _EXECUTOR_ROLE])
+                if not cur.fetchone()[0]:
+                    reasons.append(f"executor session '{su}' is not a member of '{_EXECUTOR_ROLE}'")
 
             # (1) Required roles exist.
             for role in (_PRIVILEGED_ROLE, _EXECUTOR_ROLE, _SCHEMA_OWNER_ROLE):
@@ -344,18 +346,24 @@ def verify_identity(request: ErasureRequest, verifier, method: str) -> ErasureRe
 
 
 @transaction.atomic
-def approve_request(request: ErasureRequest, approver, *, approval_ttl_minutes: int = 60) -> ErasureRequest:
-    """Independent two-person APPROVAL (lifecycle step 2; Finding 7). Requires a produced plan (PLANNED),
-    verified identity, and an approver who is a DIFFERENT person from the requester. Sets an approval expiry; a
-    separate invocation from execute. Fail-closed via ErasureRefused on any violation."""
+def approve_request(request: ErasureRequest, approver, assigned_executor,
+                    *, approval_ttl_minutes: int = 60) -> ErasureRequest:
+    """Independent two-person APPROVAL (lifecycle step 2). Requires a produced plan (PLANNED), verified identity,
+    an approver DIFFERENT from the requester AND verifier, and an ASSIGNED EXECUTOR different from the approver.
+    The assigned executor designates WHO may later execute; at execution the governed procedure resolves the
+    DB-authenticated session to an operator and requires it to equal this assigned executor (P0). Sets an approval
+    expiry; a separate invocation from execute. Fail-closed via ErasureRefused on any violation."""
     req = ErasureRequest.objects.select_for_update().get(pk=request.pk)
     if req.status != ErasureRequest.Status.PLANNED:
         raise ErasureRefused(f"request status '{req.status}' is not approvable (need a produced plan)")
     if not req.identity_verified:
         raise ErasureRefused("cannot approve: data-subject identity not verified")
     approver_id = getattr(approver, "pk", None)
+    executor_id = getattr(assigned_executor, "pk", None)
     if approver_id is None:
         raise ErasureRefused("an approver identity is required")
+    if executor_id is None:
+        raise ErasureRefused("an assigned executor identity is required")
     if req.requested_by_id is None:
         # Finding (round-3 adversarial HIGH): without a recorded requester the two-person rule cannot be
         # enforced, so approval must fail closed rather than vacuously pass.
@@ -366,14 +374,18 @@ def approve_request(request: ErasureRequest, approver, *, approval_ttl_minutes: 
         raise ErasureRefused("two-person rule: the approver must differ from the requester")
     if approver_id == req.verified_by_id:
         raise ErasureRefused("two-person rule: the approver must differ from the verifier")
+    if executor_id == approver_id:
+        raise ErasureRefused("two-person rule: the assigned executor must differ from the approver")
     now = timezone.now()
     req.approved_by = approver
+    req.assigned_executor = assigned_executor
     req.approved_at = now
     req.approval_revoked = False
     req.approval_expires_at = now + timezone.timedelta(minutes=max(1, approval_ttl_minutes))
     req.status = ErasureRequest.Status.APPROVED
-    req.save(update_fields=["approved_by", "approved_at", "approval_revoked", "approval_expires_at", "status"])
-    logger.info("erasure request %s APPROVED (two-person)", req.id)
+    req.save(update_fields=["approved_by", "assigned_executor", "approved_at", "approval_revoked",
+                            "approval_expires_at", "status"])
+    logger.info("erasure request %s APPROVED (two-person; executor assigned)", req.id)
     return req
 
 
@@ -398,8 +410,10 @@ def assert_erasure_allowed(request: ErasureRequest) -> int:
         raise ErasureRefused("the approval for this request has been revoked")
     if request.approval_expires_at is not None and request.approval_expires_at < timezone.now():
         raise ErasureRefused("the approval for this request has expired")
-    # Finding B — separation of duties: requester/verifier/approver recorded + pairwise-distinct (executor is
-    # checked in execute_owner_erasure, which also requires executor != approver).
+    # Finding B / P0 — separation of duties: requester/verifier/approver recorded + pairwise-distinct, and an
+    # assigned executor distinct from the approver. The ACTUAL executor identity is resolved + re-checked in the
+    # governed procedure from the DB-authenticated session (never a caller argument); this pre-check only asserts
+    # the DB-recorded designation so a request with no/invalid assigned executor cannot reach the backend.
     if request.requested_by_id is None:
         raise ErasureRefused("two-person rule: no requester recorded; cannot enforce separation of duties")
     if request.verified_by_id == request.requested_by_id:
@@ -408,6 +422,10 @@ def assert_erasure_allowed(request: ErasureRequest) -> int:
         raise ErasureRefused("two-person rule violated: approver equals requester")
     if request.approved_by_id == request.verified_by_id:
         raise ErasureRefused("two-person rule violated: approver equals verifier")
+    if request.assigned_executor_id is None:
+        raise ErasureRefused("no assigned executor on the request")
+    if request.assigned_executor_id == request.approved_by_id:
+        raise ErasureRefused("two-person rule violated: assigned executor equals approver")
     owner_id = request.subject_user_id_snapshot
     if not owner_id:
         raise ErasureRefused("request has no subject owner id")
@@ -416,35 +434,30 @@ def assert_erasure_allowed(request: ErasureRequest) -> int:
     return owner_id
 
 
-def execute_owner_erasure(request: ErasureRequest, confirm_token: str, executor=None) -> dict:
-    """GOVERNED erasure entry point. Triple fail-closed gate before anything destructive can happen:
-      1. the flag + the full lifecycle gate (``assert_erasure_allowed``);
+def execute_owner_erasure(request: ErasureRequest, confirm_token: str) -> dict:
+    """GOVERNED erasure entry point. Fail-closed gates before anything destructive can happen:
+      1. the flag + the full lifecycle gate (``assert_erasure_allowed``), incl. an assigned executor != approver;
       2. the dedicated executor connection must be configured (``erasure_executor_alias``) — absent in web/worker/
-         CI/local, so execution refuses there (Finding C). The destructive proc is invoked ONLY over this
-         connection as ``guvfx_erasure_exec``; the ordinary app connection has no EXECUTE on it;
-      3. the privileged backend must pass the FULL readiness probe (Finding D), checked over the executor
-         connection.
-    Only then is the SECURITY DEFINER procedure ``bi_governed_erase_owner(request_id, executor_id, token)``
-    invoked. The procedure (as ``guvfx_erasure``) re-derives owner/plan/approvals from DB rows, re-checks every
-    gate + the two-person policy + the TOCTOU plan facts under its own row + advisory lock, performs the
-    owner-scoped deletes, enqueues the durable file-deletion outbox, anonymises audit PII, and records the
+         CI/local, so execution refuses there. The destructive proc is invoked ONLY over this connection, whose
+         login is a MEMBER of the NOLOGIN ``guvfx_erasure_exec`` group; the ordinary app connection has no EXECUTE;
+      3. the privileged backend must pass the FULL readiness probe, checked over the executor connection.
+    Only then is ``bi_governed_erase_owner(request_id, token)`` invoked. **The executor identity is NOT passed**
+    (P0 non-forgeability): the procedure (as ``guvfx_erasure``) resolves the human operator from the DB-authenticated
+    ``session_user`` via a single-use ``ErasureExecutionGrant``, requires it to equal the request's assigned
+    executor and differ from the approver, consumes the grant, re-checks every gate + TOCTOU under its own row +
+    advisory lock, performs the owner-scoped deletes, enqueues the outbox, anonymises audit PII, and records the
     terminal state — all in ONE transaction. Returns the procedure's JSON outcome (counts only; no content).
 
     In normal environments the executor connection is unconfigured and/or the backend is unprovisioned, so this
-    refuses with ``ErasureRefused`` and nothing is deleted. Real deletion runs only in the authorised rehearsal
-    (and, once Sponsor-approved, production), where all three gates are satisfied against synthetic/real data."""
-    executor_id = getattr(executor, "pk", None)
-    if executor_id is None:
-        raise ErasureRefused("an executor identity is required")
-    assert_erasure_allowed(request)   # fast pre-check (flag/status/identity/approval/SoD/hold) on the app conn
-    if request.approved_by_id is not None and executor_id == request.approved_by_id:
-        raise ErasureRefused("two-person rule: the executor must differ from the approver")
+    refuses and nothing is deleted. Real deletion runs only where all gates hold: the authorised rehearsal, and
+    (only after a separate Sponsor GO) production."""
+    assert_erasure_allowed(request)   # fast pre-check (flag/status/identity/approval/SoD/assigned-exec/hold)
     alias = erasure_executor_alias()
     if alias is None:
         raise ErasureRefused(
-            "erasure executor connection not configured (fail-closed, Finding C): the dedicated "
-            "guvfx_erasure_exec credential is not present in this environment, so governed deletion cannot run. "
-            "It is injected only into the manually-invoked governed job, never the web/worker runtime.")
+            "erasure executor connection not configured (fail-closed): the dedicated per-operator executor "
+            "credential is not present in this environment, so governed deletion cannot run. It is injected only "
+            "into the manually-invoked governed job, never the web/worker runtime.")
     if not confirm_token:
         raise ErasureRefused("a confirmation token is required")
     ready, reasons = privileged_backend_readiness(using=alias)
@@ -459,14 +472,14 @@ def execute_owner_erasure(request: ErasureRequest, confirm_token: str, executor=
     exec_conn = connections[alias]
     try:
         with exec_conn.cursor() as cur:
-            cur.execute("SELECT bi_governed_erase_owner(%s, %s, %s)", [request.pk, executor_id, confirm_token])
+            cur.execute("SELECT bi_governed_erase_owner(%s, %s)", [request.pk, confirm_token])
             row = cur.fetchone()
-    except Exception as exc:  # noqa: BLE001 — a proc-side RAISE (gate/TOCTOU failure) is a sanitised refusal.
+    except Exception as exc:  # noqa: BLE001 — a proc-side RAISE (gate/TOCTOU/grant failure) is a sanitised refusal.
         raise ErasureRefused(f"governed erasure procedure refused or failed: {str(exc).splitlines()[0][:200]}")
     outcome = row[0] if row else None
     if isinstance(outcome, str):
         outcome = json.loads(outcome)
-    logger.info("governed erasure executed for request %s (executor=%s)", request.pk, executor_id)
+    logger.info("governed erasure executed for request %s", request.pk)
     return outcome or {}
 
 

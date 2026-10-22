@@ -420,6 +420,11 @@ class ConnectedMailbox(models.Model):
     last_error_http_status = models.PositiveSmallIntegerField(null=True, blank=True)  # safe Gmail HTTP status, if any
     last_error_at = models.DateTimeField(null=True, blank=True)                  # when the last failure was recorded
     consecutive_failures = models.PositiveIntegerField(default=0)                # resets to 0 on a successful pass
+    # ADR-0054 P0 (ingestion/erasure race): a durable generation bumped on every (re)connect. An in-flight
+    # ingestion pass captures the generation of the mailbox it is processing; under the per-owner erasure lock it
+    # re-reads the row and refuses its write if the row is gone (erased), REVOKED, owner-mismatched, or the
+    # generation advanced (a reconnect) — so a stale pass cannot revive data after erasure + reconnection.
+    generation = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -940,6 +945,11 @@ class ErasureRequest(models.Model):
     approval_revoked = models.BooleanField(default=False)
     executed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name="+")
+    # The operator AUTHORISED to execute this request, designated at approval (must differ from the approver).
+    # The governed procedure will only execute when the DB-authenticated session maps (via ErasureExecutionGrant)
+    # to exactly this operator — the executor identity is NOT a caller argument (ADR-0054, P0 non-forgeability).
+    assigned_executor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                          blank=True, related_name="+")
 
     class Meta:
         indexes = [models.Index(fields=["subject_user_id_snapshot", "status"])]
@@ -963,6 +973,36 @@ class ErasureRequest(models.Model):
 
     def __str__(self) -> str:
         return f"ErasureRequest(subject={self.subject_user_id_snapshot}, {self.status})"
+
+
+class ErasureExecutionGrant(models.Model):
+    """A non-forgeable, SINGLE-USE authorisation binding an EXACT PostgreSQL login (``db_session_user``) to an
+    operator for ONE ``ErasureRequest`` (ADR-0054, P0 — executor identity must not be caller-asserted).
+
+    Created ONLY by the independently-approved grant process (a privileged role — NEVER the application role;
+    provisioning moves this table off the app role so the runtime cannot forge a grant). The governed SECURITY
+    DEFINER procedure reads ``session_user`` (the login that connected — unaffected by SECURITY DEFINER, unlike
+    ``current_user``), resolves the operator from THIS mapping, requires it to equal the request's
+    ``assigned_executor`` and to differ from the approver, then CONSUMES the grant (sets ``consumed_at``).
+    A revoked, expired, unmapped, wrong-request, or already-consumed grant fails closed."""
+
+    request = models.ForeignKey(ErasureRequest, on_delete=models.CASCADE, related_name="execution_grants")
+    db_session_user = models.CharField(max_length=63)   # exact PostgreSQL login role name (NAMEDATALEN-1)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+")
+    expires_at = models.DateTimeField()
+    revoked = models.BooleanField(default=False)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["request", "db_session_user"],
+                                               name="uniq_execgrant_request_session")]
+        indexes = [models.Index(fields=["db_session_user", "request"])]
+
+    def __str__(self) -> str:
+        return f"ErasureExecutionGrant(req={self.request_id}, session={self.db_session_user}, consumed={bool(self.consumed_at)})"
 
 
 class DeletionTask(models.Model):

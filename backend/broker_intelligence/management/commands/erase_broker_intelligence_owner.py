@@ -13,8 +13,11 @@ Two-person lifecycle (each a SEPARATE invocation — no single run can create + 
   1) create:   manage.py erase_broker_intelligence_owner --owner 42 --create --reason "art17" --operator <REQUESTER>
   2) verify:   manage.py erase_broker_intelligence_owner --request 7 --verify --verifier <VERIFIER> --method signed-request
   3) plan:     manage.py erase_broker_intelligence_owner --request 7
-  4) approve:  manage.py erase_broker_intelligence_owner --request 7 --approve --approver <APPROVER!=REQUESTER>
-  5) execute:  manage.py erase_broker_intelligence_owner --request 7 --execute --executor <EXECUTOR> --confirm <TOKEN>
+  4) approve:  manage.py erase_broker_intelligence_owner --request 7 --approve --approver <APPROVER!=REQUESTER> \
+                   --assigned-executor <EXECUTOR!=APPROVER>
+  5) execute:  manage.py erase_broker_intelligence_owner --request 7 --execute --confirm <TOKEN>
+               (run WITH the assigned executor's executor-connection credentials; the executor identity is
+                resolved from the DB session via a single-use grant, NEVER a CLI argument — P0 non-forgeability)
 
 ``--owner N`` alone (no --create/--request) prints a non-persisted plan preview. NEVER run with --execute against
 production data without explicit Sponsor authorisation for that exact operation.
@@ -48,8 +51,9 @@ class Command(BaseCommand):
         parser.add_argument("--method", default="", help="identity-verification method category (never ID documents)")
         parser.add_argument("--approve", action="store_true", help="independently approve (two-person; != requester)")
         parser.add_argument("--approver", type=int, help="the staff User id approving (must differ from requester)")
+        parser.add_argument("--assigned-executor", type=int, dest="assigned_executor",
+                            help="the staff User id DESIGNATED to execute (must differ from approver); set at --approve")
         parser.add_argument("--execute", action="store_true", help="perform the erasure (default is dry-run/plan)")
-        parser.add_argument("--executor", type=int, help="the staff User id executing (recorded as executed_by)")
         parser.add_argument("--confirm", default="", help="confirmation token from the dry-run plan (with --execute)")
 
     def _user_or_error(self, User, uid, label):
@@ -112,14 +116,18 @@ class Command(BaseCommand):
                 raise CommandError("--approve requires a persisted --request")
             if not opts.get("approver"):
                 raise CommandError("--approve requires --approver <staff id>")
+            if not opts.get("assigned_executor"):
+                raise CommandError("--approve requires --assigned-executor <staff id> (must differ from approver)")
             approver = self._user_or_error(User, opts["approver"], "approver")
+            assigned_executor = self._user_or_error(User, opts["assigned_executor"], "assigned-executor")
             try:
-                approve_request(req, approver)
+                approve_request(req, approver, assigned_executor)
             except ErasureRefused as exc:
                 raise CommandError(f"REFUSED: {exc}. Nothing was changed.")
             self.stdout.write(self.style.SUCCESS(
-                f"Request #{req.id}: APPROVED by user={approver.pk} (two-person). "
-                f"Next: --request {req.id} --execute --executor <id> --confirm <TOKEN>."))
+                f"Request #{req.id}: APPROVED by user={approver.pk}; executor assigned user={assigned_executor.pk}. "
+                f"Execution requires the assigned executor's DB-authenticated session (a single-use grant) — "
+                f"the executor identity is never a CLI argument. Next: --request {req.id} --execute --confirm <TOKEN>."))
             return
 
         # --- EXECUTE ----------------------------------------------------------
@@ -130,9 +138,12 @@ class Command(BaseCommand):
                 raise CommandError("--execute requires --confirm <TOKEN> (the token printed by the dry-run plan)")
             if not flags.broker_intelligence_erasure_enabled():
                 raise CommandError("REFUSED: BROKER_INTELLIGENCE_ERASURE_ENABLED is off (DARK). Nothing was changed.")
-            executor = self._user_or_error(User, opts["executor"], "executor") if opts.get("executor") else None
+            # The executor identity is NOT passed here (P0 non-forgeability): it is resolved by the governed
+            # procedure from the DB-authenticated session_user via a single-use ErasureExecutionGrant. This
+            # command must therefore run with the assigned executor's own executor-connection credentials
+            # configured (ERASURE_EXECUTOR_DB_*), established by the independent grant process.
             try:
-                outcome = execute_owner_erasure(req, opts["confirm"], executor=executor)
+                outcome = execute_owner_erasure(req, opts["confirm"])
             except ErasureRefused as exc:
                 raise CommandError(f"REFUSED: {exc}. Nothing was changed.")
             self.stdout.write(self.style.SUCCESS(

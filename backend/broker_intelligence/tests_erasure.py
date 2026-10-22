@@ -95,7 +95,7 @@ class ControlledErasureControlPlaneTests(TestCase):
         fields = dict(
             subject_user=owner, subject_user_id_snapshot=owner.id, requested_by=self.requester,
             identity_verified=True, verified_by=self.verifier, verified_at=now, verification_method="signed-request",
-            approved_by=self.approver, approved_at=now,
+            approved_by=self.approver, assigned_executor=self.executor, approved_at=now,
             approval_expires_at=now + timezone.timedelta(hours=1), approval_revoked=False,
             status=ErasureRequest.Status.APPROVED)
         fields.update(overrides)
@@ -148,7 +148,7 @@ class ControlledErasureControlPlaneTests(TestCase):
         # And execute with the stale token is refused.
         req = self._approved_request(self.a)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, token_before, executor=self.executor)
+            execute_owner_erasure(req, token_before)
 
     # --- two-person SoD lifecycle -----------------------------------------
     def test_verify_then_plan_then_approve_happy_path(self):
@@ -163,7 +163,7 @@ class ControlledErasureControlPlaneTests(TestCase):
         plan = plan_owner_erasure(self.a.id)
         req.plan = plan; req.confirm_token = plan["token"]; req.status = ErasureRequest.Status.PLANNED
         req.save(update_fields=["plan", "confirm_token", "status"])
-        approve_request(req, self.approver)
+        approve_request(req, self.approver, self.executor)
         req.refresh_from_db()
         self.assertEqual(req.status, ErasureRequest.Status.APPROVED)
         self.assertEqual(req.approved_by_id, self.approver.id)
@@ -177,7 +177,7 @@ class ControlledErasureControlPlaneTests(TestCase):
             verification_method="signed-request", plan={"x": 1}, confirm_token="t",
             status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
-            approve_request(req, self.requester)            # approver == requester
+            approve_request(req, self.requester, self.executor)            # approver == requester
         req.refresh_from_db()
         self.assertEqual(req.status, ErasureRequest.Status.PLANNED)   # not advanced
 
@@ -186,7 +186,7 @@ class ControlledErasureControlPlaneTests(TestCase):
             subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
             identity_verified=False, plan={"x": 1}, confirm_token="t", status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
-            approve_request(req, self.approver)
+            approve_request(req, self.approver, self.executor)
 
     def test_approve_requires_a_plan(self):
         req = ErasureRequest.objects.create(
@@ -194,7 +194,7 @@ class ControlledErasureControlPlaneTests(TestCase):
             identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
             verification_method="signed-request", status=ErasureRequest.Status.REQUESTED)
         with self.assertRaises(ErasureRefused):
-            approve_request(req, self.approver)
+            approve_request(req, self.approver, self.executor)
 
     def test_verify_rejects_unknown_method(self):
         req = ErasureRequest.objects.create(
@@ -219,7 +219,7 @@ class ControlledErasureControlPlaneTests(TestCase):
             verification_method="signed-request", plan={"x": 1}, confirm_token="t",
             status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
-            approve_request(req, self.verifier)                      # approver == verifier
+            approve_request(req, self.verifier, self.executor)                      # approver == verifier
 
     def test_db_check_blocks_verified_without_method(self):
         """Finding A: the DB CHECK refuses a verified row with no method category (defense in depth)."""
@@ -239,7 +239,7 @@ class ControlledErasureControlPlaneTests(TestCase):
             verification_method="signed-request", plan={"x": 1}, confirm_token="t",
             status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
-            approve_request(req, self.approver)
+            approve_request(req, self.approver, self.executor)
         req.refresh_from_db()
         self.assertEqual(req.status, ErasureRequest.Status.PLANNED)   # not advanced
 
@@ -247,7 +247,7 @@ class ControlledErasureControlPlaneTests(TestCase):
         """Even a contrived APPROVED row with no requester must refuse at execute (re-checked under the lock)."""
         req = self._approved_request(self.a, requested_by=None)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_verify_blocked_after_approval(self):
         """Identity verification cannot be re-recorded once the request is APPROVED (no verifier overwrite)."""
@@ -260,18 +260,18 @@ class ControlledErasureControlPlaneTests(TestCase):
         req = self._approved_request(self.a)
         with override_settings(BROKER_INTELLIGENCE_ERASURE_ENABLED=""):
             with self.assertRaises(ErasureRefused):
-                execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+                execute_owner_erasure(req, self._token(self.a))
 
     def test_non_executable_status_blocks(self):
         req = self._approved_request(self.a, status=ErasureRequest.Status.REQUESTED)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_planned_but_unapproved_blocks(self):
         req = self._approved_request(self.a, status=ErasureRequest.Status.PLANNED,
                                      approved_by=None, approved_at=None, approval_expires_at=None)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_unverified_identity_cannot_reach_approved_state(self):
         """Finding A: the DB CHECK makes an APPROVED request with unverified identity impossible to persist, so
@@ -284,29 +284,29 @@ class ControlledErasureControlPlaneTests(TestCase):
     def test_revoked_approval_blocks(self):
         req = self._approved_request(self.a, approval_revoked=True)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_expired_approval_blocks(self):
         req = self._approved_request(self.a, approval_expires_at=timezone.now() - timezone.timedelta(minutes=1))
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_approver_equals_requester_blocks_exec(self):
         """Even if a row is contrived with approver == requester, execute re-checks and refuses."""
         req = self._approved_request(self.a, approved_by=self.requester)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_legal_hold_blocks(self):
         ErasureHold.objects.create(subject_user=self.a, subject_user_id_snapshot=self.a.id, reason="litigation")
         req = self._approved_request(self.a)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
 
     def test_wrong_token_blocks(self):
         req = self._approved_request(self.a)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, "deadbeef-not-the-token", executor=self.executor)
+            execute_owner_erasure(req, "deadbeef-not-the-token")
 
     def test_execute_fails_closed_when_executor_unconfigured(self):
         """All lifecycle gates pass + correct token, but the dedicated executor connection is NOT configured in
@@ -316,21 +316,26 @@ class ControlledErasureControlPlaneTests(TestCase):
         req = self._approved_request(self.a)
         self.assertIsNone(erasure_executor_alias())      # no ERASURE_EXECUTOR_DB_* in the unit-test environment
         with self.assertRaises(ErasureRefused) as ctx:
-            execute_owner_erasure(req, self._token(self.a), executor=self.executor)
+            execute_owner_erasure(req, self._token(self.a))
         self.assertIn("fail-closed", str(ctx.exception).lower())
         self.assertTrue(BrokerEvent.objects.filter(pk=e.pk).exists())
         self.assertTrue(EvidenceBlob.objects.filter(pk=b.pk).exists())
 
-    def test_executor_equals_approver_blocked(self):
-        """Two-person: the executor must differ from the approver (checked before any backend call)."""
-        req = self._approved_request(self.a)
+    def test_approve_rejects_assigned_executor_equals_approver(self):
+        """Two-person (P0): the ASSIGNED executor must differ from the approver (checked at approval)."""
+        req = ErasureRequest.objects.create(
+            subject_user=self.a, subject_user_id_snapshot=self.a.id, requested_by=self.requester,
+            identity_verified=True, verified_by=self.verifier, verified_at=timezone.now(),
+            verification_method="signed-request", plan={"x": 1}, confirm_token="t",
+            status=ErasureRequest.Status.PLANNED)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=self.approver)
+            approve_request(req, self.approver, self.approver)        # assigned executor == approver
 
-    def test_execute_requires_an_executor(self):
-        req = self._approved_request(self.a)
+    def test_execute_blocked_when_no_assigned_executor(self):
+        """The gate refuses a request with no assigned executor (the governed procedure also re-checks it)."""
+        req = self._approved_request(self.a, assigned_executor=None)
         with self.assertRaises(ErasureRefused):
-            execute_owner_erasure(req, self._token(self.a), executor=None)
+            execute_owner_erasure(req, self._token(self.a))
 
     # --- durable file-deletion OUTBOX worker (Findings 3/4) ---------------
     def test_worker_removes_files_and_completes_request(self):
