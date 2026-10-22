@@ -3,6 +3,7 @@ proportional reduction from authoritative current follower volume; fail closed o
 remainder; NEVER by symbol; NEVER a full close. (Full-close-after-rounding and the single-send no-retry are
 enforced + tested at the bridge layer — see tests_bridge_partial_close.py.)"""
 from decimal import Decimal
+from unittest import mock
 
 from django.test import override_settings
 from django.utils import timezone
@@ -202,3 +203,61 @@ class ProducePartialTests(PartialFixture):
         summary = produce_pending_partial_closes(fetch=_fetch_pos(777, 1.0))
         self.assertTrue(summary["enabled"])
         self.assertEqual(summary["produced"], 1)
+
+    @override_settings(**ARMED)
+    def test_stale_arming_flip_between_preflight_and_lock_creates_no_job(self):
+        """P1 (discriminating) — arming reads TRUE at the preflight but FALSE at the in-lock decision
+        (side_effect flip). The in-lock value must govern -> SHADOW + NO job. A producer that used the
+        pre-lock value would create a mutation-capable job here and FAIL this test."""
+        f, rep = self._ready_partial()
+        with mock.patch("trade_copier.execution_producer.copier_execute_demo_armed",
+                        side_effect=[True, False]) as m_armed:
+            out = produce_partial_close_one(rep, fetch=_fetch_pos(777, 1.0))
+        self.assertEqual(m_armed.call_count, 2)            # preflight hint + authoritative in-lock re-read
+        self.assertTrue(out["produced"], out)
+        self.assertIsNone(out["job_id"])
+        self.assertFalse(out["armed"])
+        self.assertEqual(ExecutionJob.objects.count(), 0)
+        rep.refresh_from_db()
+        self.assertEqual(rep.status, ReplicationStatus.SHADOW_JOB_RECORDED)
+
+
+class ReconcilePartialTests(PartialFixture):
+    def _produced_partial(self, follower, *, ticket=777):
+        return CopierReplication.objects.create(
+            master_event=self._partial_event(), follower=follower, requested_op="PARTIAL_CLOSE",
+            status=ReplicationStatus.EXECUTION_REQUESTED, follower_symbol="XAUUSD",
+            follower_ticket=ticket, target_volume=Decimal("0.40"))
+
+    def test_reconciled_within_tolerance(self):
+        f = self._follower()
+        rep = self._produced_partial(f)
+        out = reconcile.reconcile_partial_close(rep, 0.60, step=0.01, fetch=_fetch_pos(777, 0.60))
+        self.assertEqual(out["status"], reconcile.PARTIAL_RECONCILED)
+        rep.refresh_from_db()
+        self.assertEqual(rep.reconciliation_status, reconcile.PARTIAL_RECONCILED)
+
+    def test_divergent_volume(self):
+        f = self._follower()
+        rep = self._produced_partial(f)
+        out = reconcile.reconcile_partial_close(rep, 0.60, step=0.01, fetch=_fetch_pos(777, 0.50))
+        self.assertEqual(out["status"], reconcile.PARTIAL_DIVERGENT_VOLUME)
+        self.assertEqual(out["actual_remaining"], 0.50)
+
+    def test_ticket_gone_is_divergence_not_full_close(self):
+        f = self._follower()
+        rep = self._produced_partial(f)
+        out = reconcile.reconcile_partial_close(rep, 0.60, step=0.01, fetch=_fetch_empty())
+        self.assertEqual(out["status"], reconcile.PARTIAL_DIVERGENT_TICKET_GONE)   # NOT a silent full close
+        rep.refresh_from_db()
+        self.assertEqual(rep.reconciliation_status, reconcile.PARTIAL_DIVERGENT_TICKET_GONE)
+
+    def test_read_refused_is_unavailable_nonterminal(self):
+        def _refused(_a):
+            from trade_copier.observer import MasterReadResult
+            return MasterReadResult(False, "snapshot_identity_login_mismatch")
+        f = self._follower()
+        rep = self._produced_partial(f)
+        out = reconcile.reconcile_partial_close(rep, 0.60, step=0.01, fetch=_refused)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], reconcile.PARTIAL_RECONCILE_UNAVAILABLE)

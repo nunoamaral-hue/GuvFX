@@ -769,8 +769,10 @@ def produce_partial_close_one(replication: CopierReplication, *, fetch=None) -> 
     if not ok:
         return {"replication_id": replication.id, "produced": False, "reason": reason}
 
-    armed = copier_execute_demo_armed()
-    mode = "DEMO" if armed else "SHADOW"
+    # Preflight ARM read is a cheap hint ONLY and must NOT govern the job decision — the authoritative value
+    # is re-read INSIDE the lock below, so a flag flipped off between here and the locked decision yields
+    # SHADOW + no job.
+    armed_preflight = copier_execute_demo_armed()
 
     try:
         with transaction.atomic():
@@ -790,7 +792,15 @@ def produce_partial_close_one(replication: CopierReplication, *, fetch=None) -> 
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
 
+            # P1 — AUTHORITATIVE ARM re-read INSIDE the lock, immediately before the job decision. If DEMO
+            # arming was disabled between the preflight hint and here, record SHADOW only and create NO
+            # mutation-capable job. The payload's execution mode derives from THIS in-lock value.
+            armed = copier_execute_demo_armed()
+            mode = "DEMO" if armed else "SHADOW"
             if not armed:
+                if armed_preflight:
+                    logger.info("copier partial-close replication %s: arming flipped off between preflight "
+                                "and the locked decision -> SHADOW, no job", replication.id)
                 locked.follower_ticket = ticket
                 locked.target_volume = _dec(reduction)     # the intended partial reduction (SHADOW record)
                 locked.status = ReplicationStatus.SHADOW_JOB_RECORDED

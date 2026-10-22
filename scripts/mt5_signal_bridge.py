@@ -2126,13 +2126,19 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
     accounts only. A DISTINCT operation from ``close_position``: it NEVER closes the full position, never
     targets a different ticket/symbol, and never falls back to a full close. Structured reason codes.
 
-    Hard rails: unconditionally demo-locked (re-asserted at send time via ``verify_mutation_identity``);
-    HEDGING margin mode only (netting/exchange/unknown fail closed — a netting symbol has one merged net
-    position, so a per-ticket partial is ambiguous); the position is RE-READ at send time; the requested
-    volume is re-normalized with CURRENT symbol constraints and rejected if zero/negative/excessive/
-    equal-to-full/below-min, or if the remainder would fall below the broker minimum. A SINGLE ``order_send``
-    is attempted — a lost ACK returns ``order_send_none_unknown`` (needs reconciliation) and is NEVER blindly
-    retried (a retry could double-reduce). The legacy full-close path is untouched."""
+    Hard rails: unconditionally demo-locked AND HEDGING margin mode only (netting/exchange/unknown fail
+    closed). A job-bound identity pin is MANDATORY — ``identity`` must carry both ``expected_login`` and
+    ``expected_server`` and the gate runs with ``require_identity_pin`` FORCED on (NO process-env fallback);
+    a missing pin or a login/server mismatch fails closed before any send. ``expected_symbol`` is MANDATORY
+    and compared exactly to the live position symbol. The position is RE-READ at send time and must be
+    EXACTLY one whose ticket equals the request (no multiple/mismatched ticket). The requested volume is
+    re-normalized with CURRENT symbol constraints and rejected if zero/negative/excessive/equal-to-full/
+    below-min, or if the remainder would fall below the broker minimum. A SINGLE ``order_send`` is attempted
+    and NEVER blindly retried. Because the authoritative remaining volume is BROKER STATE (not arithmetic),
+    EVERY post-send outcome sets ``need_reconcile=True`` — a lost ACK, a partial fill
+    (``TRADE_RETCODE_DONE_PARTIAL``), a DONE with a smaller/missing reported volume, and a reject all defer to
+    an authoritative re-read; a clean full DONE is flagged ``volume_confirmed`` but still reconciled. Never
+    falls back to a full close/different ticket/symbol. The legacy full-close path is untouched."""
     try:
         import MetaTrader5 as mt5
     except ImportError:
@@ -2162,19 +2168,40 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
         if req_volume <= 0:
             return {"ok": False, "error": "volume_non_positive", "ticket": ticket}
 
-        # Re-read the position at send time — the ticket alone is not authorisation.
+        # P1 — expected_symbol is MANDATORY: a partial close is never located by ticket alone without the
+        # stored replication symbol.
+        exp_symbol = str(expected_symbol or "").strip()
+        if not exp_symbol:
+            return {"ok": False, "error": "expected_symbol_required", "ticket": ticket}
+        # P0 — a JOB-BOUND identity pin is MANDATORY for a copier partial close: both expected login and
+        # server must be supplied; NO process-environment fallback is permitted for this operation. Fail
+        # BEFORE any read/send when the pin is absent.
+        idobj = identity or {}
+        if (not str(idobj.get("expected_login") or "").strip()
+                or not str(idobj.get("expected_server") or "").strip()):
+            return {"ok": False, "error": "identity_pin_required", "ticket": ticket}
+
+        # Re-read the position at send time — the ticket alone is not authorisation. Require EXACTLY one
+        # position whose ticket equals the requested ticket (never trust the wrapper's filter blindly).
         positions = mt5.positions_get(ticket=ticket)
         if positions is None:
             return {"ok": False, "error": "positions_get_failed", "detail": str(mt5.last_error()),
                     "ticket": ticket}
         if len(positions) == 0:
             return {"ok": False, "error": "position_not_found", "ticket": ticket}
+        if len(positions) > 1:
+            return {"ok": False, "error": "multiple_positions_returned", "ticket": ticket,
+                    "count": len(positions)}
         pos = positions[0]
+        if int(getattr(pos, "ticket", -1)) != int(ticket):
+            return {"ok": False, "error": "ticket_mismatch", "ticket": ticket,
+                    "returned_ticket": getattr(pos, "ticket", None)}
+        verified_ticket = int(pos.ticket)
 
         # Symbol must match the stored replication's follower symbol (never act on a changed symbol).
-        if expected_symbol is not None and str(pos.symbol) != str(expected_symbol):
-            return {"ok": False, "error": "symbol_changed", "ticket": ticket,
-                    "expected": expected_symbol, "actual": pos.symbol}
+        if str(pos.symbol) != exp_symbol:
+            return {"ok": False, "error": "symbol_changed", "ticket": verified_ticket,
+                    "expected": exp_symbol, "actual": pos.symbol}
 
         si = mt5.symbol_info(pos.symbol)
         if si is None:
@@ -2222,7 +2249,7 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
             "symbol": pos.symbol,
             "volume": norm,                                  # the EXPLICIT partial volume — never pos.volume
             "type": close_type,
-            "position": ticket,
+            "position": verified_ticket,
             "price": close_price,
             "deviation": 20,
             "magic": pos.magic,
@@ -2231,27 +2258,51 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
             "type_filling": _filling_for(pos.symbol),
         }
 
-        # IDENTITY gate immediately before the mutation (demo + login/server pins). A hard mismatch rejects.
-        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
+        # IDENTITY gate immediately before the mutation — require_identity_pin FORCED on, so the expected
+        # (login, server) MUST come from the job-bound identity (never env) and BOTH must match. A hard
+        # mismatch (wrong login/server, or a missing mandatory pin) rejects before any send.
+        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, {**idobj, "require_identity_pin": True})
         if not _idok:
             return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails,
-                    "ticket": ticket}
+                    "ticket": verified_ticket}
 
-        # SINGLE order_send — a partial close is NEVER retried on an unknown result (would risk a second
-        # reduction). A lost ACK returns an explicit marker so the caller reconciles remaining volume first.
+        # SINGLE order_send — a partial close is NEVER retried on an ambiguous result (a retry could
+        # double-reduce). The authoritative remaining volume is BROKER STATE, not arithmetic, so EVERY
+        # post-send outcome requires reconciliation (need_reconcile=True) before the terminal state is
+        # decided: a lost ACK, a partial fill (TRADE_RETCODE_DONE_PARTIAL), a DONE with a smaller/missing
+        # reported volume, and even a reject (the position may still have moved) all defer to an
+        # authoritative re-read. A clean full-requested DONE is flagged volume_confirmed but still reconciled.
         result = mt5.order_send(request)
         if result is None:
             return {"ok": False, "error": "order_send_none_unknown", "need_reconcile": True,
-                    "detail": str(mt5.last_error()), "ticket": ticket, "requested_volume": norm}
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info(f"[pclose] ticket={ticket} partial close {norm} of {cur_volume}: "
-                        f"order={result.order} deal={result.deal}")
-            return {"ok": True, "ticket": ticket, "partial": True,
-                    "close_order": result.order, "close_deal": result.deal, "close_price": result.price,
-                    "requested_volume": norm, "filled_volume": getattr(result, "volume", None),
-                    "expected_remaining": remaining}
-        return {"ok": False, "error": "partial_close_rejected", "retcode": result.retcode,
-                "comment": getattr(result, "comment", None), "ticket": ticket, "requested_volume": norm}
+                    "detail": str(mt5.last_error()), "ticket": verified_ticket, "requested_volume": norm}
+        rc = getattr(result, "retcode", None)
+        filled = getattr(result, "volume", None)
+        done_partial_rc = getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", None)
+        mutated = (rc == mt5.TRADE_RETCODE_DONE) or (done_partial_rc is not None and rc == done_partial_rc)
+        if mutated:
+            try:
+                filled_f = float(filled) if filled is not None else None
+            except (TypeError, ValueError):
+                filled_f = None
+            # A clean result is ONLY a full DONE whose reported volume matches the request within step
+            # tolerance; DONE_PARTIAL, a mismatched volume, or a missing volume are NOT confirmed.
+            volume_confirmed = (rc == mt5.TRADE_RETCODE_DONE and filled_f is not None
+                                and abs(filled_f - norm) <= max(vstep * 0.5, 1e-9))
+            logger.info(f"[pclose] ticket={verified_ticket} mutated rc={rc} filled={filled} "
+                        f"requested={norm} of {cur_volume} -> reconcile required")
+            return {"ok": True, "ticket": verified_ticket, "partial": True, "mutated": True,
+                    "need_reconcile": True,
+                    "retcode": rc, "close_order": getattr(result, "order", None),
+                    "close_deal": getattr(result, "deal", None), "close_price": getattr(result, "price", None),
+                    "requested_volume": norm, "filled_volume": filled,
+                    "volume_confirmed": volume_confirmed,
+                    "estimated_remaining": remaining}   # ARITHMETIC estimate only — NOT confirmed
+        # Not a mutation retcode: the position state is not provably unchanged — require an authoritative
+        # read before declaring the terminal state (never infer "flat"/"unchanged" from a reject).
+        return {"ok": False, "error": "partial_close_rejected", "need_reconcile": True,
+                "retcode": rc, "comment": getattr(result, "comment", None),
+                "ticket": verified_ticket, "requested_volume": norm}
 
     except Exception as e:
         return {"ok": False, "error": "exception", "detail": str(e)}

@@ -40,6 +40,13 @@ MATCHED = "MATCHED"
 UNMATCHED = "UNMATCHED"
 AMBIGUOUS = "AMBIGUOUS"
 DIVERGENT_MISSING = "DIVERGENT_MISSING"
+# Partial-close post-send reconciliation states (ADR-0055). A partial close is NEVER declared terminal from
+# the bridge return alone — the authoritative remaining volume is broker state, re-read here.
+# NB: values kept <= 24 chars to fit CopierReplication.reconciliation_status (CharField max_length=24).
+PARTIAL_RECONCILED = "PCLOSE_RECONCILED"
+PARTIAL_DIVERGENT_VOLUME = "PCLOSE_DIVERGENT_VOL"
+PARTIAL_DIVERGENT_TICKET_GONE = "PCLOSE_TICKET_GONE"
+PARTIAL_RECONCILE_UNAVAILABLE = "PCLOSE_RECON_UNAVAIL"
 
 
 def _provenance_comment(replication_id: int) -> str:
@@ -136,6 +143,41 @@ def read_follower_position(follower: CopierFollower, ticket: int, *, fetch=_fetc
         if int(p.ticket) == int(ticket):
             return True, p, "ok"
     return True, None, "ticket_not_open"
+
+
+def reconcile_partial_close(replication: CopierReplication, intended_remaining, *, step: float = 0.01,
+                            fetch=_fetch_account_positions) -> dict:
+    """Post-send reconciliation for a produced partial close (ADR-0055). READ-ONLY; NO retry.
+
+    Re-reads the follower position (authoritative) for the replication's ``follower_ticket`` and compares the
+    actual remaining volume against the intended remaining, with broker-step tolerance. Writes a terminal
+    reconciliation state on the row and returns it. Crucially, a ticket that is GONE after a PARTIAL close is
+    recorded as a DIVERGENCE (operator exception) — it is NEVER silently treated as an approved full close.
+    A refused read is non-terminal (``PARTIAL_RECONCILE_UNAVAILABLE``) — re-read later, never retry the send."""
+    ticket = replication.follower_ticket
+    if ticket is None:
+        return {"ok": False, "reason": "no_follower_ticket"}
+    ok_read, pos, read_reason = read_follower_position(replication.follower, int(ticket), fetch=fetch)
+    if not ok_read:
+        _set_recon(replication, PARTIAL_RECONCILE_UNAVAILABLE)
+        return {"ok": False, "status": PARTIAL_RECONCILE_UNAVAILABLE, "reason": read_reason}
+    if pos is None:
+        # Ticket GONE after a PARTIAL close — a divergence requiring operator review, NOT a silent full close.
+        _set_recon(replication, PARTIAL_DIVERGENT_TICKET_GONE)
+        return {"ok": True, "status": PARTIAL_DIVERGENT_TICKET_GONE, "actual_remaining": None}
+    actual = float(pos.volume)
+    tol = max(float(step) * 0.5, 1e-9)
+    if abs(actual - float(intended_remaining)) <= tol:
+        _set_recon(replication, PARTIAL_RECONCILED)
+        return {"ok": True, "status": PARTIAL_RECONCILED, "actual_remaining": actual}
+    _set_recon(replication, PARTIAL_DIVERGENT_VOLUME)       # record divergence; caller raises an exception, no retry
+    return {"ok": True, "status": PARTIAL_DIVERGENT_VOLUME, "actual_remaining": actual,
+            "intended_remaining": float(intended_remaining)}
+
+
+def _set_recon(replication: CopierReplication, status: str) -> None:
+    replication.reconciliation_status = status
+    replication.save(update_fields=["reconciliation_status", "updated_at"])
 
 
 def run_reconcile_pass(*, limit: int = 200, fetch=_fetch_account_positions) -> dict:

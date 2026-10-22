@@ -295,11 +295,18 @@ no deploy/migration/arming/execution/LIVE).
   `partial_close_position(ticket, volume, identity, expected_symbol)`; producer `produce_partial_close_one`
   (+`admit_partial_close`) with a proportional reduction from the authoritative current follower volume
   (fresh identity-firewalled read), SHADOW-by-default; migration `execution/0035` (choices only, not applied).
-- *Bridge is a DISTINCT operation:* explicit ticket + explicit partial volume; send-time re-read +
-  re-normalize; a SINGLE `order_send` (lost ACK → `order_send_none_unknown`, never retried); rejects
-  zero/negative/excessive/equal-full/below-min/sub-min-remainder/changed-symbol/unsupported-filling/identity;
-  NEVER falls back to a full close, different ticket or symbol; the legacy full-close path is unchanged; no
-  general-purpose arbitrary-position endpoint.
+- *Bridge is a DISTINCT operation:* explicit ticket + explicit partial volume; MANDATORY job-bound identity
+  pin (login+server, `require_identity_pin` forced, no env fallback) + MANDATORY `expected_symbol` +
+  exactly-one returned position whose ticket equals the request; send-time re-read + re-normalize; a SINGLE
+  `order_send`, never retried; NEVER falls back to a full close, different ticket or symbol; the legacy
+  full-close path is unchanged; no general-purpose arbitrary-position endpoint.
+- *Partial fills + reconciliation (PD CHANGES REQUIRED, 2026-10-22):* `TRADE_RETCODE_DONE_PARTIAL` and a
+  DONE with a smaller/missing reported volume are treated as a MUTATION, never a clean failure; EVERY
+  post-send outcome returns `need_reconcile=true` (authoritative remaining is broker state). Post-send
+  `reconcile.reconcile_partial_close` re-reads the position → `PCLOSE_RECONCILED` / `PCLOSE_DIVERGENT_VOL` /
+  `PCLOSE_TICKET_GONE` (ticket gone after a partial = divergence, NEVER a silent full close) /
+  `PCLOSE_RECON_UNAVAIL`, no blind retry. Producer re-reads the ARM flag INSIDE the lock. The consumer that
+  dispatches `PARTIAL_CLOSE_TRADE` + drives reconciliation is NOT wired (required before DEMO cert).
 - *Hedging/netting:* HEDGING certified; NETTING/EXCHANGE/unknown fail closed (`account_mode_not_certified`).
 - *Known unsupported (fail closed):* netting/exchange/unknown modes; below-min reduction/remainder (no
   full-close substitution); unsupported filling modes; any position without a verified `CPY<id>` ticket; LIVE.

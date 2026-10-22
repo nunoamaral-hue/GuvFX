@@ -19,11 +19,28 @@ the accounts, limits, abort thresholds and a kill-switch operator.
 
 ## Bridge-contract summary (reason codes)
 `account_not_demo`, `account_mode_not_certified` (netting/exchange/unknown), `volume_non_positive`,
-`would_be_full_close` (volume ≥ current, incl. after rounding), `rounds_to_zero`, `below_min_reduction`,
-`remainder_below_min`, `position_not_found`, `positions_get_failed`, `symbol_changed`,
-`unsupported_filling_mode`, `identity_rejected`, `order_send_none_unknown` (lost ACK — needs reconciliation,
-never retried), `partial_close_rejected`. Success returns `{ok, partial:true, requested_volume,
-filled_volume, expected_remaining}`.
+`expected_symbol_required` (symbol is MANDATORY), `identity_pin_required` (job-bound login+server MANDATORY,
+no env fallback), `position_not_found`, `positions_get_failed`, `multiple_positions_returned`,
+`ticket_mismatch`, `symbol_changed`, `would_be_full_close` (volume ≥ current, incl. after rounding),
+`rounds_to_zero`, `below_min_reduction`, `remainder_below_min`, `unsupported_filling_mode`,
+`identity_rejected` (wrong login/server). Post-send outcomes ALL carry `need_reconcile:true` — the
+authoritative remaining volume is broker state, not arithmetic: `order_send_none_unknown` (lost ACK),
+`partial_close_rejected` (read before deciding terminal state), and a mutation (`ok:true, mutated:true,
+retcode, filled_volume, volume_confirmed, estimated_remaining`) where `volume_confirmed` is true ONLY for a
+full `TRADE_RETCODE_DONE` matching the request within step tolerance (a `TRADE_RETCODE_DONE_PARTIAL`, a
+smaller/missing reported volume → `volume_confirmed:false`). A SINGLE `order_send`; never retried.
+
+## Post-send reconciliation states (`reconcile.reconcile_partial_close`)
+`PCLOSE_RECONCILED` (actual remaining within step tolerance of intended); `PCLOSE_DIVERGENT_VOL` (mismatch —
+recorded, operator exception, NO blind retry); **`PCLOSE_TICKET_GONE` (ticket absent after a PARTIAL — a
+DIVERGENCE, NEVER a silently-approved full close)**; `PCLOSE_RECON_UNAVAIL` (read refused — non-terminal,
+re-read later).
+
+## Lifecycle status — implemented vs NOT wired
+Implemented + tested: producer, bridge primitive, post-send reconciliation transition. **NOT wired (required
+before DEMO certification):** the consumer that dispatches ONLY `PARTIAL_CLOSE_TRADE` to the bridge and drives
+`reconcile_partial_close` after each send. No deployed worker claims `PARTIAL_CLOSE_TRADE`; until that consumer
+is built + armed, no partial close reaches a broker.
 
 ## Hedging / netting support decision
 Certified for **HEDGING** accounts only (`margin_mode == RETAIL_HEDGING`). **NETTING, EXCHANGE and unknown
