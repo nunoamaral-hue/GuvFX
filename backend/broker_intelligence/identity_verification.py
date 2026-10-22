@@ -214,6 +214,9 @@ def verify_identity(*, user, email: str, broker_name: str, trading_account, acto
     # atomic, which would roll back its own audit) and raised durably after the block.
     deferred = None    # (identity, code, before)
     with transaction.atomic():
+        # P0 (ADR-0054): serialise this owner-scoped identity write against governed erasure on the per-owner lock.
+        from .erasure_lock import acquire_owner_erasure_lock
+        acquire_owner_erasure_lock(getattr(user, "id", None))
         # get-or-create the (email, broker) row (uniqueness guarantees at most one). select_for_update serialises
         # concurrent verifies of the same row.
         existing = (BrokerEmailIdentity.objects.select_for_update()

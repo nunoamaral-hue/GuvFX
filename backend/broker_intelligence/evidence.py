@@ -118,3 +118,32 @@ class EvidenceStore:
             return True
         except (OSError, EvidenceStoreError):
             return False
+
+    def delete_blob_file(self, blob) -> bool:
+        """GOVERNED physical deletion of the raw bytes for ONE blob — the ONE place this store ever unlinks a
+        published artifact (``put`` only ever unlinks a *tmp* file). This exists solely for the controlled,
+        owner-scoped erasure path (ADR-0054, GDPR Art 17) and must be called ONLY after the caller has
+        established that no lawful reference to the blob remains (no BrokerEvent / BrokerMessageObservation
+        still points at it). It does NOT touch the DB — the caller removes the ``EvidenceBlob`` row inside the
+        same governed transaction. Idempotent: a missing file returns False, never raises. The content-addressed
+        key carries no owner/account/PII, so logging the key is safe."""
+        abs_path = self._abs(blob.storage_key)
+        try:
+            os.unlink(abs_path)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def delete_file_by_sha256(self, sha256: str) -> bool:
+        """GOVERNED physical deletion by content hash, for the durable erasure OUTBOX worker (ADR-0054
+        Findings 3/4): the ``EvidenceBlob`` row is already gone when the worker runs, so it cannot pass a blob.
+        The caller (the governed procedure) only enqueues an ``EVIDENCE_FILE`` task once no lawful reference to
+        the blob remains. Derives the content-addressed key from the hash and unlinks. Idempotent: a missing or
+        already-removed file returns False, never raises (so the worker is safe to retry). The key carries no
+        owner/account/PII, so logging it is safe."""
+        abs_path = self._abs(_key_for(sha256))
+        try:
+            os.unlink(abs_path)
+            return True
+        except FileNotFoundError:
+            return False

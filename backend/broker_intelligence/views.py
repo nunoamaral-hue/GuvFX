@@ -478,10 +478,13 @@ class MailboxCallbackView(APIView):
         # then its guard sees the now-live mailbox and is rejected. The Gmail network calls already happened ABOVE, so
         # this span is DB-only and short. (Schema-independent — no migration.)
         from django.db import IntegrityError, transaction
+        from django.db.models import F
+        from .erasure_lock import acquire_owner_erasure_lock
         credential_ref = None
         try:
             with transaction.atomic():
                 _acquire_owner_mailbox_lock(request.user.id)
+                acquire_owner_erasure_lock(request.user.id)   # P0 (ADR-0054): serialise connect against erasure
                 # AUTHORITATIVE mailbox-count guard, serialized per owner (the TOCTOU-safe mutation point). Count the
                 # member's OTHER live (non-revoked) mailboxes — `.exclude(provider_mailbox_id=...)` lets a legitimate
                 # in-place reconnect of the member's OWN mailbox through, so it never counts against itself.
@@ -510,6 +513,9 @@ class MailboxCallbackView(APIView):
                     # message added since the last sync not yet consumed (a lost-mail path). (Django 5.0+ create_defaults.)
                     create_defaults={**common, "cursor_state": str(profile.get("historyId", "") or "")},
                     defaults=common)
+                # Bump the ingestion generation on every (re)connect so an in-flight ingestion pass that captured
+                # an older generation refuses its stale write under the erasure lock (ADR-0054 P0).
+                ConnectedMailbox.objects.filter(pk=mb.id).update(generation=F("generation") + 1)
         except IntegrityError:
             # Cross-user race: a different member connected the SAME underlying mailbox between the pre-lock clash
             # check and this write, so the global (provider, provider_mailbox_id) unique constraint rejected the
@@ -690,6 +696,8 @@ class AccountBrokerContactCreateView(APIView):
         if cmid not in (None, ""):
             mailbox = ConnectedMailbox.objects.filter(id=cmid, user=request.user).first()
         with transaction.atomic():
+            from .erasure_lock import acquire_owner_erasure_lock
+            acquire_owner_erasure_lock(request.user.id)   # P0 (ADR-0054): serialise against governed erasure
             # Lock the identity row for the claim decision so two members cannot race to claim one unowned identity
             # (last-writer-wins). Same discipline as verify_identity.
             identity = (BrokerEmailIdentity.objects.select_for_update()
