@@ -23,10 +23,13 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from django.conf import settings
+
 from analytics import fx_fred as FRED
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
-from analytics.fx_ingest import append_fx_observation
+from analytics.fx_db_router import FxIngestRouter
+from analytics.fx_ingest import FX_INGEST_ALIAS, FxIngestConfigError, append_fx_observation, resolve_fx_ingest_alias
 from analytics.fx_source import StoredFredFxRateSource, governed_today, select_observation
 from analytics.models import DailyFxObservation
 from trading.models import BrokerServer, TradingAccount
@@ -231,6 +234,12 @@ class FxRuntimeGrantTests(TransactionTestCase):
 
 # ── F3: revision + concurrency contract ─────────────────────────────────────────────────────────────────────────
 class FxRevisionConcurrencyTests(TestCase):
+    def setUp(self):
+        # These tests exercise ingest LOGIC through the default test connection; route the command's ingestion
+        # alias to 'default' (the dedicated-alias behaviour is covered by FxIngestAliasTests + the PG15 rehearsal).
+        p = mock.patch("analytics.management.commands.fetch_fx_daily.resolve_fx_ingest_alias", return_value="default")
+        p.start(); self.addCleanup(p.stop)
+
     def test_duplicate_identical_observation_is_idempotent(self):
         o1 = _obs(date(2026, 1, 5), "1.27", rev=1)
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -340,6 +349,11 @@ class FxStoredSourceTests(TestCase):
 
 # ── Fetch/backfill command ──────────────────────────────────────────────────────────────────────────────────────
 class FxCommandTests(TestCase):
+    def setUp(self):
+        # Exercise command LOGIC via the default test connection; alias-routing is covered by FxIngestAliasTests.
+        p = mock.patch("analytics.management.commands.fetch_fx_daily.resolve_fx_ingest_alias", return_value="default")
+        p.start(); self.addCleanup(p.stop)
+
     def _run(self, **kw):
         out = StringIO(); call_command("fetch_fx_daily", stdout=out, **kw); return out.getvalue()
 
@@ -549,6 +563,59 @@ class FxConcurrencyTests(TransactionTestCase):
         self.assertEqual(rows.count(), 1)                                # rolled-back insert left nothing
         self.assertEqual(rows.first().rate, Decimal("1.2600"))           # the committed writer landed one revision
         self.assertEqual(rows.first().revision_number, 1)
+
+
+# ── A3: dedicated FX ingestion identity (fail-closed, routed, migration-guarded) ───────────────────────────────
+class FxIngestAliasTests(TestCase):
+    """The ingestion command must use the DEDICATED ``fx_ingest`` alias and FAIL CLOSED when it is absent — never
+    silently fall back to the web-runtime ``default`` connection. (``patch.dict`` toggles the alias in
+    ``settings.DATABASES`` without resetting live connections; the real end-to-end role behaviour is proven on the
+    PG15 rehearsal.)"""
+
+    def test_resolver_fail_closed_without_alias(self):
+        with mock.patch.dict(settings.DATABASES):
+            settings.DATABASES.pop(FX_INGEST_ALIAS, None)
+            with self.assertRaises(FxIngestConfigError):
+                resolve_fx_ingest_alias()
+
+    def test_resolver_returns_dedicated_alias_when_configured(self):
+        with mock.patch.dict(settings.DATABASES,
+                             {FX_INGEST_ALIAS: {**settings.DATABASES["default"], "TEST": {"MIRROR": "default"}}}):
+            self.assertEqual(resolve_fx_ingest_alias(), FX_INGEST_ALIAS)
+
+    def test_command_refuses_to_write_without_alias(self):
+        with mock.patch.dict(settings.DATABASES):
+            settings.DATABASES.pop(FX_INGEST_ALIAS, None)
+            with self.assertRaises(CommandError):
+                call_command("fetch_fx_daily", fixture=FIXTURE, stdout=StringIO())
+        self.assertEqual(DailyFxObservation.objects.count(), 0)          # fail-closed: nothing written
+
+    def test_command_routes_through_ingestion_alias_never_default(self):
+        seen = {}
+
+        def _fake_append(**kw):
+            seen["using"] = kw.get("using")
+            return (True, 1)
+
+        with mock.patch.dict(settings.DATABASES,
+                             {FX_INGEST_ALIAS: {**settings.DATABASES["default"], "TEST": {"MIRROR": "default"}}}):
+            with mock.patch("analytics.management.commands.fetch_fx_daily.append_fx_observation",
+                            side_effect=_fake_append):
+                call_command("fetch_fx_daily", fixture=FIXTURE, stdout=StringIO())
+        self.assertEqual(seen.get("using"), FX_INGEST_ALIAS)            # routed to fx_ingest, never 'default'
+
+    def test_dry_run_requires_no_alias(self):
+        with mock.patch.dict(settings.DATABASES):
+            settings.DATABASES.pop(FX_INGEST_ALIAS, None)
+            call_command("fetch_fx_daily", fixture=FIXTURE, dry_run=True, stdout=StringIO())
+        self.assertEqual(DailyFxObservation.objects.count(), 0)
+
+    def test_router_blocks_migration_on_ingestion_alias(self):
+        r = FxIngestRouter()
+        self.assertIs(r.allow_migrate(FX_INGEST_ALIAS, "analytics"), False)   # never migrate through fx_ingest
+        self.assertIsNone(r.allow_migrate("default", "analytics"))            # no opinion elsewhere
+        self.assertIsNone(r.db_for_read(DailyFxObservation))                  # never auto-route to fx_ingest
+        self.assertIsNone(r.db_for_write(DailyFxObservation))
 
 
 # ── Runtime immutability (app-layer guard; DB triggers are authoritative) ───────────────────────────────────────
