@@ -1,12 +1,12 @@
--- ADR-0054 — Post-provision verification of the controlled-erasure privilege boundary.
+-- ADR-0054 -- Post-provision verification of the controlled-erasure privilege boundary.
 -- Run after provision_erasure_privilege.sql. Read-only. Exits NONZERO (RAISE) if ANY invariant is unmet, so it
 -- can gate a rehearsal/deploy. Mirrors erasure.privileged_backend_readiness().
 --   psql "$DSN" -v ON_ERROR_STOP=1 -v app_role=guvfx_app -f ops/erasure/verify_erasure_privilege.sql
 \set ON_ERROR_STOP on
 \if :{?app_role}
 \else
-  \echo '*** pass -v app_role=<application runtime role>'
-  \quit
+  \echo '*** REFUSED: pass -v app_role=<application runtime role>'
+  DO $refuse$ BEGIN RAISE EXCEPTION 'verify refused (fail-closed): missing -v app_role; no invariant was checked'; END $refuse$;
 \endif
 
 -- Pass app_role into the DO block via a GUC (psql does not interpolate :vars inside dollar-quoted blocks).

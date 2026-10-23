@@ -30,13 +30,16 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
 -- the app role owns the evidence objects and guvfx_schema_owner owns ONLY the handful of erasure objects. In the
 -- F-8 runtime-role-separation model guvfx_schema_owner owns the ENTIRE application schema, so this script would
 -- (a) hand schema + evidence ownership to the runtime app role and (b) `DROP OWNED BY guvfx_schema_owner` (which
--- is role-GLOBAL across ALL schemas), DESTROYING every application object. The detection is therefore as broad as
--- that destructive scope: refuse if guvfx_schema_owner owns ANY schema, OR owns ANY relation (any relkind, any
--- schema) or routine beyond the known erasure allowlist. Refuse fail-closed if that model is detected.
+-- is role-GLOBAL across ALL schemas), DESTROYING every application object. The F-8 DISCRIMINATOR is that
+-- guvfx_schema_owner owns GENERAL application objects beyond the handful of erasure objects: refuse if it owns
+-- ANY relation (any relkind) or routine outside the known erasure allowlist. (We deliberately do NOT key on
+-- schema OWNERSHIP: in the legitimate pre-F-8 rehearsal model guvfx_schema_owner ALSO owns schema public after
+-- provisioning, so a schema-ownership arm would false-positive and brick the documented rehearsal reset. The
+-- general-object signal is present only in the F-8 model, where separation transfers all 155 tables.) Refuse
+-- fail-closed if that model is detected. app_schema is fixed to 'public' throughout this codebase.
 SELECT CASE WHEN
-     EXISTS (SELECT 1 FROM pg_namespace WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname='guvfx_schema_owner'))
-  OR EXISTS (
-       SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     EXISTS (
+       SELECT 1 FROM pg_class c
        WHERE c.relkind IN ('r','p','S','v','m','f')
          AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
          AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',

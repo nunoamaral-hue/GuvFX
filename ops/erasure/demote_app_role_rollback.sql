@@ -61,14 +61,24 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.
 -- the F-8 runtime-role-separation model guvfx_schema_owner owns the ENTIRE application schema and the runtime
 -- guvfx_app must OWN NOTHING, so running this would hand the whole schema + the immutable-evidence tables to the
 -- runtime role and re-elevate it -- collapsing the ADR-0054 boundary. Refuse fail-closed if that model is
--- detected (symmetric to rollback_erasure_privilege.sql's guard).
-SELECT CASE WHEN EXISTS (
-    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
-      AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
-      AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
-                            'broker_intelligence_erasureexecutiongrant')
-  ) THEN 'true' ELSE 'false' END AS _f8model \gset
+-- detected. DISCRIMINATOR (same as rollback_erasure_privilege.sql): guvfx_schema_owner owns a GENERAL relation
+-- (any relkind) or routine beyond the erasure allowlist -- present only in the F-8 model. We do NOT key on schema
+-- ownership (schema_owner owns public in the legit pre-F-8 model too, which would false-positive).
+SELECT CASE WHEN
+     EXISTS (
+       SELECT 1 FROM pg_class c
+       WHERE c.relkind IN ('r','p','S','v','m','f')
+         AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
+                               'broker_intelligence_erasureexecutiongrant',
+                               'broker_intelligence_evidenceblob_id_seq','broker_intelligence_brokerevent_id_seq',
+                               'broker_intelligence_erasureexecutiongrant_id_seq'))
+  OR EXISTS (
+       SELECT 1 FROM pg_proc p
+       WHERE p.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND p.proname NOT IN ('bi_evidenceblob_block_delete','bi_brokerevent_block_delete',
+                               'bi_evidenceblob_block_evidence_update','bi_brokerevent_block_evidence_update'))
+  THEN 'true' ELSE 'false' END AS _f8model \gset
 \if :_f8model
   \echo '*** REFUSED: guvfx_schema_owner owns general application tables -- this is the F-8 runtime-role'
   \echo '    separation model. This pre-F-8 demotion rollback would REASSIGN the whole schema + evidence tables'

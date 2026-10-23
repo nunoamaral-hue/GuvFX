@@ -126,6 +126,15 @@ BEGIN
   IF EXISTS (SELECT 1 FROM _cutover_manifest WHERE classification NOT IN ('application','protected')) THEN
     RAISE EXCEPTION 'manifest contains an unclassified/forbidden classification (only application|protected allowed)';
   END IF;
+  -- Re-anchor to the known immutable-evidence tables (do NOT trust the editable manifest alone for these): if
+  -- either appears, it MUST be classified 'protected' so the grant loop withholds DELETE. A review slip that
+  -- downgraded one to 'application' would otherwise grant the runtime DELETE; refuse fail-closed.
+  IF EXISTS (SELECT 1 FROM _cutover_manifest
+             WHERE obj_kind='table'
+               AND obj_identity IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent')
+               AND classification <> 'protected') THEN
+    RAISE EXCEPTION 'an immutable-evidence table is not classified protected in the manifest (refusing)';
+  END IF;
   CREATE TEMP TABLE _live_inv ON COMMIT DROP AS
     SELECT (CASE c.relkind WHEN 'S' THEN 'sequence' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview'
                            WHEN 'f' THEN 'foreign_table' ELSE 'table' END) AS obj_kind,

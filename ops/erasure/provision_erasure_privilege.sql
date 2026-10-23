@@ -1,4 +1,4 @@
--- ADR-0054 — Privileged controlled-erasure backend provisioning (RUNNABLE).
+-- ADR-0054 -- Privileged controlled-erasure backend provisioning (RUNNABLE).
 -- ============================================================================================================
 -- SUPERUSER-ONLY. SEPARATELY AUTHORISED. NOT a Django migration. Run ONLY against a database you have been
 -- explicitly authorised to provision. PRODUCTION use requires separate Sponsor authorisation for that step.
@@ -38,33 +38,33 @@
 \if :{?target_db}
 \else
   \echo '*** REFUSED: pass -v target_db=<current database name> (safety guard). Nothing was changed.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'provision refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?allow_destructive_provisioning}
 \else
   \echo '*** REFUSED: pass -v allow_destructive_provisioning=1 to acknowledge. Nothing was changed.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'provision refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?synthetic_confirmed}
 \else
   \echo '*** REFUSED: pass -v synthetic_confirmed=1 to confirm the data is synthetic/authorised. Nothing changed.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'provision refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?app_role}
 \else
   \echo '*** REFUSED: pass -v app_role=<application runtime role>. Nothing was changed.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'provision refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 BEGIN;
 
--- DB-name guard (interpolated OUTSIDE any dollar-quoted block — psql does not substitute :vars inside $tag$...$tag$).
+-- DB-name guard (interpolated OUTSIDE any dollar-quoted block -- psql does not substitute :vars inside $tag$...$tag$).
 SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END AS _dbok \gset
 \if :_dbok
 \else
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'provision refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- Precondition (P0 -- production superuser blocker): the application runtime role MUST already be least
@@ -88,7 +88,7 @@ SELECT CASE WHEN EXISTS (
   \echo '    least-privilege runtime posture FIRST (a separate, explicit governed operation with its own'
   \echo '    rollback). Provisioning a privileged app role would be a cosmetic boundary. Nothing changed; rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'provision refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- pgcrypto: the procedure recomputes credential-ref digests (sha256) to detect plan drift.
@@ -103,10 +103,10 @@ BEGIN
     CREATE ROLE guvfx_erasure NOLOGIN; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_migrate') THEN
     CREATE ROLE guvfx_migrate LOGIN; END IF;
-  -- guvfx_erasure_exec is a NOLOGIN GROUP (P0 — no single shared executor login). Each authorised operator gets
+  -- guvfx_erasure_exec is a NOLOGIN GROUP (P0 -- no single shared executor login). Each authorised operator gets
   -- a distinct short-lived LOGIN role that is a MEMBER of this group (created by the independent grant process,
   -- NOT here), inheriting EXECUTE on the procedure. The procedure resolves the human operator from session_user
-  -- via ErasureExecutionGrant — the executor identity is never a caller argument.
+  -- via ErasureExecutionGrant -- the executor identity is never a caller argument.
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_erasure_exec') THEN
     CREATE ROLE guvfx_erasure_exec NOLOGIN; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_readonly') THEN
@@ -167,7 +167,7 @@ GRANT SELECT, UPDATE ON broker_intelligence_brokeremailidentityaudit,
 -- The procedure reads + CONSUMES execution grants (sets consumed_at). It never INSERTs them.
 GRANT SELECT, UPDATE ON broker_intelligence_erasureexecutiongrant TO guvfx_erasure;
 
--- ---- 4b) Execution-grant table: OFF the application role (P0 — a forged grant would defeat non-forgeability).
+-- ---- 4b) Execution-grant table: OFF the application role (P0 -- a forged grant would defeat non-forgeability).
 -- Owned by the schema owner; the app role gets NOTHING; the independent grant-admin process (a privileged role,
 -- never the app role or an executor) INSERTs rows out of band. The procedure (guvfx_erasure) SELECT/UPDATEs it.
 ALTER TABLE broker_intelligence_erasureexecutiongrant OWNER TO guvfx_schema_owner;
@@ -291,7 +291,7 @@ BEGIN
   IF NOT public.bi_erasure_plan_matches(r.plan, v_live) THEN
      RAISE EXCEPTION 'owner state changed since the plan was produced (TOCTOU)'; END IF;
 
-  -- P0 — resolve the EXECUTOR from the DB-authenticated login, NOT a caller argument. session_user is the role
+  -- P0 -- resolve the EXECUTOR from the DB-authenticated login, NOT a caller argument. session_user is the role
   -- that connected; SECURITY DEFINER changes current_user to the procedure owner but NEVER session_user. A
   -- single-use ErasureExecutionGrant (created out of band by the independent grant process; the app role has no
   -- access to that table) maps this exact session to an operator for THIS request. A missing/revoked/expired/
@@ -327,7 +327,7 @@ BEGIN
   -- the plan->delete window (adversarial-review MED): the deletable-blob set is derived from live rows at delete
   -- time, so a row ingested for the owner before this statement is deleted here and its blob captured, instead of
   -- relying on the earlier plan snapshot. (Residual: a row ingested AFTER this statement is new data; full
-  -- closure requires ingestion to take pg_advisory_xact_lock(26485, owner) or a mailbox-disconnect precondition —
+  -- closure requires ingestion to take pg_advisory_xact_lock(26485, owner) or a mailbox-disconnect precondition --
   -- see ADR-0054, a production-arming follow-up.)
   WITH del_ob AS (DELETE FROM broker_intelligence_brokermessageobservation WHERE owner_id = v_owner RETURNING evidence_id),
        del_ev AS (DELETE FROM broker_intelligence_brokerevent WHERE owner_id = v_owner RETURNING evidence_id)
@@ -355,7 +355,7 @@ BEGIN
 
   -- Release inbound PROTECT references to the owner's identities before deleting them:
   --   (a) audit.identity (nulled); (b) TradingAccountBrokerContact.broker_email_identity (the binding is the
-  --   subject's data, so it is DELETED — adversarial-review MED: without this, erasure of any subject with a
+  --   subject's data, so it is DELETED -- adversarial-review MED: without this, erasure of any subject with a
   --   broker-contact binding aborts on the FK).
   UPDATE broker_intelligence_brokeremailidentityaudit SET identity_id = NULL
   WHERE identity_id IN (SELECT id FROM broker_intelligence_brokeremailidentity WHERE user_id = v_owner);
