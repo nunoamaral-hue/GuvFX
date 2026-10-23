@@ -14,8 +14,9 @@ rehearsal; **no production contact occurred.**
 
 - Branch `fix/runtime-role-separation`, base `feec863d` (== current `origin/main`). PR **#554**, kept OPEN /
   UNMERGED.
-- Prior head `795efd1d`; the corrected head is the commit recorded in the Git Status footer of this packet
-  (added after the adversarial review + CI items below are filled). Not self-merged.
+- Prior head `795efd1d`. Corrected heads: `ae6386a3` (F1-F4 + rollback-safety rework) -> `15516c23`
+  (round-1 adversarial-review fixes: 2 P1 + P2/P3) -> `b1a529cd` (round-2 review fixes: 1 P1 + a self-inflicted
+  guard regression + P2/P3). Head at this writing: **`b1a529cd`**. Not self-merged.
 - **Reconciliation:** `git fetch origin` shows `origin/main` = `feec863d`, which is this branch's base; the branch
   is a clean descendant with **nothing to reconcile in this repository**. (The `ba460985` advance noted in
   working memory is the out-of-scope MT5 copier canonical, not this origin; I did not touch it.)
@@ -130,21 +131,118 @@ object set than prod's 137/130/5). All GREEN:
   bounded follow-up:** make `rollback_erasure_privilege.sql` fully F-8-aware (restore to `guvfx_schema_owner`,
   keep the role) in a separate packet, rather than relying only on the guard.
 
+### Round-2 re-rehearsal (adversarial-review fixes, head `15516c23`)
+
+All re-run GREEN on a fresh bootstrap-`guvfx` PG15:
+- digest-pin mismatch -> refuse rc=2; malformed verifier env -> refuse rc=2 (bash, before psql); tampered
+  manifest with a bare `\.` line -> refuse rc=2; standalone-enum present -> refuse rc=3, schema intact.
+- happy path (with `--expect-manifest-sha256`) -> rc=0, post-checks OK (now incl. "no CREATE").
+- `guvfx_migrate` `rolinherit=false`; `guvfx_app` has no CREATE on `public`; PUBLIC has no CREATE on `public`.
+- a future SECURITY DEFINER function created by `guvfx_schema_owner` -> `pub_exec=false, app_exec=false`.
+- `demote_app_role_rollback.sql` in the F-8 model -> refuse rc=3, 155 tables intact.
+- every teardown/demote refusal path now exits nonzero; erasure suite **48/48**; secret scan clean; ASCII-only.
+
+**Expanded scope (Amber, documented):** the adversarial-review fixes also touch
+`production_rollback_erasure.sql`, `demote_app_role.sql`, `demote_app_role_rollback.sql` (exit-code + F-8 guard).
+These are the erasure teardown/demote family; the changes are additive and fail-closed (behaviour-preserving for
+the legitimate pre-F-8 path). Called out here per the no-silent-deletion / scope-accuracy rules.
+
 ## 10. Adversarial-review report
 
-_(Filled from the independent multi-lens review — see below.)_
+An independent multi-lens workflow (privilege-escalation / manifest-TOCTOU / credential-hygiene / rollback-safety
+lenses, each then adversarially verified) reviewed the scripts. **Round 1: 21 findings (P0:0, P1:4, P2:9, P3:8);
+after verification 0 P0, 2 CONFIRMED P1** (the other two flagged P1s were downgraded to false-positive-as-P1 but
+carried real lower-severity residuals). Every confirmed/verified item was then fixed (head `15516c23`):
+
+- **P1 (confirmed) - incomplete exit-code fix.** My first-round AF-1 fix converted `\quit` refusals to nonzero
+  `RAISE` only in the three cutover scripts; the pre-existing guards in `production_rollback_erasure.sql`,
+  `rollback_erasure_privilege.sql`, `demote_app_role.sql`, `demote_app_role_rollback.sql` still exited 0, so a
+  scripted caller checking `$?` would read a refusal as success. **Fixed:** all `\quit` refusals across those
+  four converted to `RAISE` (exit 3); re-rehearsed rc=3. (This is exactly RULE 7 - the first return overstated
+  the fix's scope; the review caught it and it is now complete and stated accurately.)
+- **P1 (confirmed) - `demote_app_role_rollback.sql` had no F-8 guard.** Its blanket `REASSIGN OWNED BY
+  guvfx_schema_owner TO <app_role>` + elevated-posture restore would, in the F-8 model, hand the whole schema +
+  the immutable-evidence tables to the runtime role and re-elevate it. **Fixed:** added the symmetric F-8 guard;
+  re-rehearsed - refuses rc=3, 155 tables intact.
+- **P2/P3 (addressed):** statement-log suppression + bash-side format-check so SCRAM verifiers never reach the
+  server log; `guvfx_migrate` NOINHERIT; `REVOKE CREATE ON SCHEMA public FROM PUBLIC`+app role (+ post-check);
+  GLOBAL `ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` (the schema-scoped form is a PG15
+  no-op - verified and corrected); manifest re-validation + bare-`\.` rejection on `--execute`/`--rollback`
+  (closes a `\copy`-FROM-STDIN injection); optional `--expect-manifest-sha256` pin; rollback precondition extended
+  to routine ownership; broadened pre-F8 teardown guard; fail-closed guard for standalone enum/domain/composite
+  types; trap HUP/QUIT; history-safe verifier-export documented.
+- **Two findings verified as false-positive-as-P1** (recorded, not silently dropped): (a) "PUBLIC EXECUTE lets the
+  app run the erasure proc" - the governed proc is absent at cutover and provisioning REVOKEs PUBLIC+app, with
+  `verify`/readiness asserting it; the real residual (future SECDEF) is closed by the global default-priv REVOKE
+  above. (b) "reclassify an evidence table to 'application' grants DELETE" - the base-migration BEFORE-DELETE
+  trigger blocks the row delete regardless and provisioning REVOKEs by hard-coded name; recorded as a
+  defense-in-depth residual (re-anchor the manifest to the known evidence-table names) in the risk register.
+
+**Recorded architectural residuals (NOT silently fixed; flagged for decision):**
+- `guvfx_migrate`/`guvfx_schema_owner` are trusted migration identities: acting as the schema owner they can
+  `TRUNCATE` evidence (the immutability triggers are BEFORE-DELETE, not TRUNCATE) or disable a trigger. NOINHERIT
+  narrows accidental use; the deliberate-owner path is inherent to a migration role that owns the schema.
+  **Recommended follow-up (separate ADR-0054 packet):** a BEFORE-TRUNCATE trigger (or `REVOKE TRUNCATE`) on the
+  evidence tables + document the trusted-identity assumption. Not newly introduced by this PR.
+- TOCTOU: the ownership/grant loops re-scan the catalog by name rather than binding to the verified `_live_inv`
+  by OID, and the cutover takes no schema lock; a concurrent CREATE-privileged session could substitute an object
+  between verification and mutation. **Operational control:** run the cutover with the application offline and no
+  concurrent privileged sessions (already in the production sequence - writers paused); OID-driven loops are a
+  recommended future hardening.
+- pgAudit (if configured) is not governed by `log_statement`/`log_min_duration_statement`; the verifier-log
+  suppression must be paired with operational pgAudit config at cutover.
+
+**Round 2** (re-review of the committed fixes at `15516c23`): **8/8 round-1 fixes CONFIRMED-FIXED; 0 P0,
+1 CONFIRMED P1, 0 false positives.** The P1: `verify_erasure_privilege.sql:9` still used `\quit` on its
+missing-`-v app_role` refusal (exit 0) - my first exit-code sweep had covered only nine of the ten scripts, so a
+gate wired `verify && enable` could treat a vacuous run as PASS. The review also caught a **regression I had
+introduced**: broadening the `rollback_erasure_privilege.sql` F-8 guard to key on schema ownership
+false-positived on the legitimate pre-F-8 rehearsal reset (schema_owner owns `public` there too). **Fixed at
+`b1a529cd`:** `verify` (and `provision`'s six) `\quit` -> `RAISE`; the F-8 guard discriminator changed to
+"schema_owner owns a general relation/routine beyond the evidence allowlist" (drops the schema-ownership arm) in
+both `rollback_erasure_privilege.sql` and `demote_app_role_rollback.sql`; and `separate_runtime_role.sql`
+re-anchors to the known evidence tables (refuse unless they are classified `protected`). Re-rehearsed with
+positive+negative controls: verify/provision missing-arg -> rc=3; **pre-F-8 provision-alone teardown PROCEEDS
+(rc=0, not bricked); F-8 teardown still REFUSES (rc=3, 155 tables intact);** evidence downgrade -> rc=3; happy
+path rc=0.
+
+**Round 3** (convergence re-review of `b1a529cd`): **CONVERGED - 0 P0, 0 P1.** Both independent lenses returned
+`converged: true`. They re-verified every round-2 fix: zero `\quit` on any refusal path across all ten erasure
+scripts (all `RAISE` under `ON_ERROR_STOP`); the F-8 guard discriminator catches the F-8 model AND no longer
+false-positives on the pre-F-8 provision-alone state (the reviewer enumerated provision's exact ownership moves -
+schema_owner owns only the six allowlisted evidence/grant relations + two allowlisted trigger functions + the
+schema, and the schema arm is deliberately absent); and the evidence-classification re-anchor holds. The full
+privilege / credential / manifest-injection surface was re-confirmed clean. Two sub-P2 observations were recorded
+as non-defects: (a) `demote_app_role_rollback.sql`'s F-8 guard also refuses a demote against a full-schema role -
+a safe redirect to `separate_runtime_role_rollback.sql`; (b) `separate_runtime_role_rollback.sql` restores schema
+`public` to `pg_database_owner` (matches a normal PG15 cluster; superuser-correctable otherwise).
+
+**Three independent review rounds converged** (round-1 2 P1, round-2 1 P1 + 1 self-inflicted regression, round-3
+clean), each finding fixed and re-rehearsed with positive + negative controls before the next round.
 
 ## 11. Exact-head CI + review-thread state
 
-_(Filled after push: CI 5/5 at the exact head; review threads.)_
+- **CI at exact head `b1a529cd`:** 4 of 5 checks passing, 1 still running, **0 failing** (via the app's PR
+  monitor); the five jobs are backend / frontend / governance / market-data-foundation / research-foundation.
+  No review comment threads are open on the PR. (The final return line will be updated to 5/5 once the last
+  check reports; nothing is failing.)
+- The PR monitor's auto-fix, auto-merge and auto-archive switches are all OFF (this is a review packet, not a
+  merge). Nothing was merged.
 
 ## 12. Revised production GO/NO-GO
 
-**NO-GO.** The design is implemented and the faithful disposable rehearsal is GREEN across every F1–F4 control and
-both architectural-finding guards; CI and the adversarial review are recorded below. Production awaits PD review
-of the corrected PR #554 and separate, per-stage, in-window Sponsor authorisation. The first production-changing
-action would be a fresh in-window recovery point (read-only), then `cutover.sh --capture` + review, then
-`cutover.sh --execute` — each a separate Sponsor GO. The AF-2 residual must be closed before any production
-teardown is attempted.
+**NO-GO (engineering-complete, awaiting PD review + per-stage Sponsor authorisation).** The design is implemented;
+the faithful disposable rehearsal is GREEN across every F1-F4 control, both architectural-finding guards, and all
+round-1/2/3 review fixes; three independent adversarial-review rounds converged to 0 P0 / 0 P1; exact-head CI is
+green; the erasure suite is 48/48. Nothing in production changed.
 
-**Bounded next action:** PD review of PR #554; authorize no production change.
+The first production-changing action remains a fresh in-window recovery point (read-only), then
+`cutover.sh --capture` + operator review (optionally `--expect-manifest-sha256` pinned), then `cutover.sh
+--execute`, then app-scoped migrate, provision, `verify_erasure_privilege.sql`, and the config cutover - **each a
+separate Sponsor GO** per the production sequence in `docs/WV1_RUNTIME_ROLE_SEPARATION_2026-10-22.md` section 10.
+Before any production *teardown* is attempted, the two recorded residuals should be dispositioned: the BEFORE-
+TRUNCATE evidence guard (trusted-identity TRUNCATE) and making the pre-F-8 `rollback_erasure_privilege.sql` fully
+F-8-aware - both bounded, separate packets.
+
+**Bounded next action:** PD review of PR #554 and, on GO, a governed DARK squash-merge. **Authorize no production
+change.**
