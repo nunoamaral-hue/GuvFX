@@ -4,6 +4,7 @@ averaged), scope/ownership (IDOR), and multi-account open-trades attribution. Ob
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -350,6 +351,27 @@ class OpenTradesTests(TestCase):
         rows, per = PF.open_positions([a], fetch_positions=_fake_positions({}),   # returns None
                                       rate_source=FX.NullFxRateSource())
         self.assertEqual(rows, []); self.assertTrue(per[a.id]["stale"])
+
+    def test_aggregation_deadline_bounds_fan_out(self):
+        # Overall wall-clock budget: once the deadline is passed, remaining accounts are marked STALE WITHOUT
+        # another ~10s live read. Healthy accounts already fetched still contribute; the slow ones are named
+        # (present + stale), never dropped — so the dashboard settles in bounded time with a labelled partial.
+        u = _user("o_deadline"); a1 = _acct(u); a2 = _acct(u); a3 = _acct(u)
+        calls = []
+
+        def fetch(account):
+            calls.append(account.id)
+            return [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1, "profit": 10.0, "magic": 0}]
+
+        # deadline=100.0; monotonic() returns 50 (a1 in budget → fetched), then 150, 151 (a2, a3 past → stale).
+        with mock.patch("analytics.portfolio.time.monotonic", side_effect=[50.0, 150.0, 151.0]):
+            rows, per = PF.open_positions([a1, a2, a3], fetch_positions=fetch,
+                                          rate_source=FX.NullFxRateSource(), deadline=100.0)
+        self.assertEqual(calls, [a1.id])                                  # only the in-budget account was read
+        self.assertFalse(per[a1.id]["stale"]); self.assertEqual(per[a1.id]["open_count"], 1)
+        self.assertTrue(per[a2.id]["stale"]); self.assertTrue(per[a3.id]["stale"])   # named, not dropped
+        self.assertEqual(set(per.keys()), {a1.id, a2.id, a3.id})
+        self.assertEqual(len(rows), 1)                                    # a1's position contributed
 
     def test_open_pl_aggregation(self):
         u = _user("o5"); a1 = _acct(u); a2 = _acct(u)

@@ -134,4 +134,41 @@ describe("OpenTradesPanel", () => {
     expect(screen.queryByText(/XAUUSD/)).toBeNull();              // stale-scope response did NOT overwrite scope=5
     expect(screen.getByText(/GBPUSD/)).toBeTruthy();
   });
+
+  it("settles to 'Positions unavailable' when the first fetch fails (e.g. client timeout), never stuck loading", async () => {
+    api.apiFetch.mockRejectedValue(new Error("network_unreachable"));   // what a deadline-aborted apiFetch throws
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText("Positions unavailable")).toBeTruthy());
+    expect(screen.queryByText("Loading positions…")).toBeNull();        // exited loading on failure, not stuck
+    // the panel must pass a bounded client deadline so apiFetch can abort a hanging upstream
+    expect(api.apiFetch).toHaveBeenCalledWith(expect.stringContaining("/open-trades/"), {}, 18_000);
+  });
+
+  it("renders a single GBP account's floating total in GBP, never '$0.00 USD' (flat account)", async () => {
+    api.apiFetch.mockResolvedValue(result([], {
+      scope: "49", reporting_currency: "GBP",
+      open_pl_usd: { total_usd: 0.0, basis: "USD", converted_count: 0, unconverted: [], state: "EMPTY" },
+    }));
+    render(<OpenTradesPanel scope="49" />);
+    await waitFor(() => expect(screen.getByText(/0\.00 GBP/)).toBeTruthy());   // native GBP, incl. flat
+    expect(screen.queryByText(/\$0\.00 USD/)).toBeNull();                      // the pre-existing bug
+    expect(screen.queryByText(/USD/)).toBeNull();                             // no USD label on a GBP account
+  });
+
+  it("sums a single GBP account's open positions in GBP (never forced through USD)", async () => {
+    api.apiFetch.mockResolvedValue(result([
+      trade({ position_id: "49:1", account_id: 49, broker: "Pepperstone", account_masked: "••••5983",
+              symbol: "XAUUSD", pl_native: 12.5, pl_native_currency: "GBP", pl_usd: null }),
+      trade({ position_id: "49:2", account_id: 49, broker: "Pepperstone", account_masked: "••••5983",
+              symbol: "XAUUSD", side: "SELL", pl_native: -2.5, pl_native_currency: "GBP", pl_usd: null }),
+    ], {
+      scope: "49", reporting_currency: "GBP",
+      open_pl_usd: { total_usd: null, basis: "PARTIAL", converted_count: 0, state: "UNAVAILABLE",
+                     unconverted: [{ account_id: 49, native: null, native_currency: "GBP", reason: "currency_unconvertible" }] },
+    }));
+    render(<OpenTradesPanel scope="49" />);
+    await waitFor(() => expect(screen.getByText(/\+10\.00 GBP/)).toBeTruthy());   // 12.5 + (−2.5) = 10.00, in GBP
+    expect(screen.queryByText(/\d\.\d\d USD/)).toBeNull();                        // no USD money label (not XAUUSD)
+    expect(screen.queryByText(/\$\d/)).toBeNull();                               // no $ figure anywhere
+  });
 });

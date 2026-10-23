@@ -28,9 +28,17 @@ async function refreshCookiesOnce(): Promise<void> {
 
 export async function apiFetch<T>(
   path: string,
-  opts: RequestInit = {}
+  opts: RequestInit = {},
+  timeoutMs?: number
 ): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+
+  // Optional client-side deadline. Callers that fan out across accounts (the dashboard portfolio summary +
+  // open-trades) pass this so a slow or half-open upstream can never leave the UI pending forever: on expiry we
+  // abort the fetch and the rejection is handled by the caller as a transient failure (stale / "unavailable"),
+  // never a fabricated value. When `timeoutMs` is absent, behaviour is unchanged.
+  const timeoutCtl = timeoutMs != null ? new AbortController() : null;
+  const timeoutId = timeoutCtl ? setTimeout(() => timeoutCtl.abort(), timeoutMs) : null;
 
   const doFetch = async () => {
     const headers: Record<string, string> = {
@@ -52,10 +60,13 @@ export async function apiFetch<T>(
       if (csrf && !headers["X-CSRFToken"]) headers["X-CSRFToken"] = csrf;
     }
 
+    // Don't clobber a caller-supplied signal; add our timeout signal only when the caller didn't pass one.
+    const signal = (opts.signal as AbortSignal | undefined) ?? timeoutCtl?.signal;
     return fetch(url, {
       ...opts,
       headers,
       credentials: "include",
+      ...(signal ? { signal } : {}),
     });
   };
 
@@ -82,11 +93,22 @@ export async function apiFetch<T>(
     }
   }
 
+  // The network phase is complete (no further fetch below) — cancel the deadline so a settled request never
+  // leaves a lingering timer that would fire a (harmless but untidy) abort on an already-finished response.
+  if (timeoutId) clearTimeout(timeoutId);
+
   // Session is fully dead (access + refresh both invalid).
   // Redirect to login so the user can re-authenticate.
   // Uses replace() so the protected page is removed from browser history —
   // pressing Back after session expiry won't land on the gated page.
   if (res.status === 401 && typeof window !== "undefined") {
+    // A deadline-aborted slow read must NEVER force a logout: a timed-out fan-out request is a transient
+    // failure, not an invalid session. Surface it as a tagged network error so the caller marks it stale.
+    if (timeoutCtl?.signal.aborted) {
+      const err = new Error("network_unreachable") as Error & { kind?: string };
+      err.kind = "network";
+      throw err;
+    }
     const reason = url.includes("/api/auth/me/") ? "unauthenticated" : "expired";
     window.location.replace(`/login?reason=${reason}`);
     // Throw to abort any calling code while redirect is in flight
