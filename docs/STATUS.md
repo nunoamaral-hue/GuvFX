@@ -14,6 +14,15 @@
 
 ## Execution workstream log
 
+- **2026-10-23 - WV1 RUNTIME-ROLE (F-8) PRODUCTION-PREP — Stage-8 (DARK, CHANGES REQUIRED).** Interim
+  `ACCEPT_TRUSTED_MIGRATION_IDENTITY` (conditional, expires before GA; Option D′ = required stronger target) +
+  production-prep executed read-only/disposable: fresh encrypted recovery point **certified** (off-host NAS,
+  pg15 exact parity, verify PASSED, restore-certified), read-only production manifest **reviewed** (272 objects,
+  2 protected; digest recorded), migrations 0011→0022 **rehearsed** on the restored copy, runtime-role separation
+  + rollback **proven**. **Blocker:** pgAudit **unavailable** in prod → audit control for evidence
+  TRUNCATE/DROP/DELETE unmet; a tested alternative (`log_statement='mod'` + bootstrap SECDEF `sql_drop` event
+  trigger) is designed, pending a bounded canary. Production cutover **NO-GO**. Evidence:
+  `docs/WV1_RUNTIME_ROLE_STAGE8_RETURN_2026-10-23.md` (+ decision/plan docs + ADR-0054 amendment, PR #557).
 - **2026-10-20 - MT5 MASTER/FOLLOWER COPIER — backend foundation (PR #528, DARK, merge-gated).** New
   `trade_copier` app (ADR-0051; packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING`). **PR A** master
   observer + append-only event ledger (read-only; durable `MasterObservationPoll`/`MasterPositionSnapshot`
