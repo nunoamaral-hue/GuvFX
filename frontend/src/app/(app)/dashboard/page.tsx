@@ -760,6 +760,23 @@ export default function DashboardPage() {
                 </div>
               );
             })()}
+            {/* DARK FX disclosure (ADR-0058): present only when the backend sends an `fx` block (flag ON). Shows
+                the exact rate, its effective date and the source, or an honest "unavailable" — never a fabricated
+                conversion. Absent entirely when the flag is OFF, so default rendering is unchanged. */}
+            {isAll && portfolioForScope?.fx ? (() => {
+              const fx = portfolioForScope.fx!;
+              const srcLabel = fx.source === "FED_H10" ? "Fed H.10" : fx.source;
+              return (
+                <div style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                     title={fx.available
+                       ? `GBP→USD ${fx.rate} (USD per GBP) · rate ${fx.effective_date} · ${srcLabel} ${fx.source_series}`
+                       : "GBP→USD conversion rate unavailable (stale or missing) — non-USD equity is not converted"}>
+                  {fx.available
+                    ? `GBP→USD ${fx.rate} · ${fx.effective_date} · ${srcLabel}`
+                    : (lang === "ja" ? "GBP→USD レート利用不可" : "GBP→USD rate unavailable")}
+                </div>
+              );
+            })() : null}
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 120 }}>
             {(() => {

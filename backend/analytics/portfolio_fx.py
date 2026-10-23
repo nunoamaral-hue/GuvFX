@@ -18,9 +18,18 @@ degrades everything else to PARTIAL — correct and honest until a vetted rate s
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Dict, List, Optional, Protocol
 
 USD = "USD"
+
+
+def _money_half_even(value: float) -> float:
+    """Quantise a USD money amount to 2 decimal places with Decimal ROUND_HALF_EVEN — deterministic banker's
+    rounding on the exact decimal value, not float-binary rounding (ADR-0058 / PD: displayed portfolio money uses
+    Decimal ROUND_HALF_EVEN). For values already exact at ≤2dp (every USD-only total) the result is identical to
+    the prior ``round(x, 2)``, so flag-OFF behaviour is unchanged (guarded by the analytics regression suite)."""
+    return float(Decimal(repr(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN))
 
 # ── Safe, non-identifying exclusion categories ────────────────────────────────────────────────────────────────
 # Why a figure could not enter a USD aggregate, expressed as a stable CATEGORY CODE the UI maps to a human label.
@@ -173,7 +182,7 @@ class UsdAggregate:
         return {
             # A measured number ONLY when at least one item converted. UNAVAILABLE carries ``null`` so an
             # all-excluded portfolio can never read as a measured "$0"; EMPTY (no accounts) keeps 0.0.
-            "total_usd": (None if st == STATE_UNAVAILABLE else round(self.total_usd, 2)),
+            "total_usd": (None if st == STATE_UNAVAILABLE else _money_half_even(self.total_usd)),
             "basis": self.basis,
             "state": st,
             "reason": self.reason,
