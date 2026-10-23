@@ -21,6 +21,9 @@ GRANT SELECT ON TABLE analytics_dailyfxobservation TO <runtime_role>;
 
 -- Governed ingestion writer: SELECT + INSERT only (append-only).
 GRANT SELECT, INSERT ON TABLE analytics_dailyfxobservation TO <ingest_role>;
+-- INSERT needs the serial-PK sequence (nextval) — USAGE is required, SELECT is harmless. Without this, INSERT
+-- fails with "permission denied for sequence" (verified on the PG15 end-to-end rehearsal).
+GRANT USAGE, SELECT ON SEQUENCE analytics_dailyfxobservation_id_seq TO <ingest_role>;
 
 -- Defence in depth: neither role may mutate or truncate.
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE analytics_dailyfxobservation FROM <runtime_role>, <ingest_role>;
