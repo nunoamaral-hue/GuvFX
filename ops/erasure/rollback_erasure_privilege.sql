@@ -7,12 +7,12 @@
 \if :{?target_db}
 \else
   \echo '*** REFUSED: pass -v target_db=<current database name>'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?app_role}
 \else
   \echo '*** REFUSED: pass -v app_role=<application runtime role>'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 BEGIN;
@@ -23,21 +23,32 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
 \else
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- F-8 SAFETY GUARD (adopted with the runtime-role separation). This REHEARSAL teardown predates F-8 and assumes
 -- the app role owns the evidence objects and guvfx_schema_owner owns ONLY the handful of erasure objects. In the
 -- F-8 runtime-role-separation model guvfx_schema_owner owns the ENTIRE application schema, so this script would
--- (a) hand schema + evidence ownership to the runtime app role and (b) `DROP OWNED BY guvfx_schema_owner`,
--- DESTROYING every application table. Refuse fail-closed if that model is detected.
-SELECT CASE WHEN EXISTS (
-    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
-      AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
-      AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
-                            'broker_intelligence_erasureexecutiongrant')
-  ) THEN 'true' ELSE 'false' END AS _f8model \gset
+-- (a) hand schema + evidence ownership to the runtime app role and (b) `DROP OWNED BY guvfx_schema_owner` (which
+-- is role-GLOBAL across ALL schemas), DESTROYING every application object. The detection is therefore as broad as
+-- that destructive scope: refuse if guvfx_schema_owner owns ANY schema, OR owns ANY relation (any relkind, any
+-- schema) or routine beyond the known erasure allowlist. Refuse fail-closed if that model is detected.
+SELECT CASE WHEN
+     EXISTS (SELECT 1 FROM pg_namespace WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname='guvfx_schema_owner'))
+  OR EXISTS (
+       SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE c.relkind IN ('r','p','S','v','m','f')
+         AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
+                               'broker_intelligence_erasureexecutiongrant',
+                               'broker_intelligence_evidenceblob_id_seq','broker_intelligence_brokerevent_id_seq',
+                               'broker_intelligence_erasureexecutiongrant_id_seq'))
+  OR EXISTS (
+       SELECT 1 FROM pg_proc p
+       WHERE p.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND p.proname NOT IN ('bi_evidenceblob_block_delete','bi_brokerevent_block_delete',
+                               'bi_evidenceblob_block_evidence_update','bi_brokerevent_block_evidence_update'))
+  THEN 'true' ELSE 'false' END AS _f8model \gset
 \if :_f8model
   \echo '*** REFUSED: guvfx_schema_owner owns general application tables -- this is the F-8 runtime-role'
   \echo '    separation model. This DISPOSABLE-REHEARSAL teardown would hand schema/evidence ownership to the'

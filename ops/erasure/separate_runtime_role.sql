@@ -39,21 +39,35 @@
   DO $refuse$ BEGIN RAISE EXCEPTION 'cutover refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
--- F-4: SCRAM verifiers from the ENVIRONMENT (never on argv). Default-empty so an unset env fails closed.
+-- F-4: load SCRAM verifiers from the ENVIRONMENT (never on argv). \getenv is client-side (no server round-trip).
+-- Default-empty so an unset env fails closed. The FORMAT CHECK + refusal run AFTER BEGIN, under SET LOCAL log
+-- suppression, so no verifier ever reaches the server statement log. (cutover.sh also validates them in bash
+-- before psql is invoked, so a malformed verifier is rejected before any connection.)
 \set app_scram ''
 \set migrate_scram ''
 \getenv app_scram GUVFX_APP_SCRAM
 \getenv migrate_scram GUVFX_MIGRATE_SCRAM
+
+BEGIN;
+
+-- F-4: suppress statement logging for THIS transaction so the SCRAM verifiers in the format-check SELECT below
+-- and the ALTER ROLE ... PASSWORD statements never reach the server statement log / duration log. SET LOCAL
+-- auto-reverts at COMMIT. (These are superuser GUCs; this script runs as the bootstrap superuser. NOTE: this
+-- covers log_statement + log_min_duration_statement; a separately-configured auditor such as pgAudit is NOT
+-- governed by these GUCs and must be handled by operational config -- recorded as a residual.)
+SET LOCAL log_statement = 'none';
+SET LOCAL log_min_duration_statement = -1;
+
+-- F-4: validate the verifiers now (under the suppression above); fail-closed on malformed/empty.
 SELECT CASE WHEN length(:'app_scram') > 20 AND :'app_scram' LIKE 'SCRAM-SHA-256$%'
             AND length(:'migrate_scram') > 20 AND :'migrate_scram' LIKE 'SCRAM-SHA-256$%'
        THEN 'true' ELSE 'false' END AS _creds_ok \gset
 \if :_creds_ok
 \else
   \echo '*** REFUSED: GUVFX_APP_SCRAM / GUVFX_MIGRATE_SCRAM env vars must each hold a SCRAM-SHA-256 verifier.'
+  ROLLBACK;
   DO $refuse$ BEGIN RAISE EXCEPTION 'cutover refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
-
-BEGIN;
 
 SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END AS _dbok \gset
 \if :_dbok
@@ -144,6 +158,27 @@ BEGIN
 END
 $manifest$;
 
+-- F-3 completeness (fail-closed): the manifest covers relations + routines but NOT standalone types. If the
+-- approved schema contains an application-owned enum / domain / standalone composite type, the transfer would
+-- silently leave it owned by the bootstrap role (later blocking schema-owner migrations that ALTER/DROP it).
+-- Refuse rather than silently omit; the operator must extend the manifest/capture to handle such types.
+DO $types_guard$
+DECLARE bad text;
+BEGIN
+  SELECT string_agg(format('%s %s (%s)', t.typname, n.nspname,
+           CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'd' THEN 'domain' ELSE 'composite' END), '; ') INTO bad
+    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+   WHERE n.nspname = current_setting('x.schema')
+     AND t.typowner = (SELECT oid FROM pg_roles WHERE rolname = current_setting('x.boot'))
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_type'::regclass AND d.objid=t.oid AND d.deptype='e')
+     AND (t.typtype IN ('e','d')
+          OR (t.typtype = 'c' AND EXISTS (SELECT 1 FROM pg_class c WHERE c.oid=t.typrelid AND c.relkind='c')));
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'application-owned standalone type(s) present but not covered by the manifest (refusing; extend the manifest/capture to transfer them): %', bad;
+  END IF;
+END
+$types_guard$;
+
 -- F-1: membership-closure guard (pre-mutation). Permitted matrix: app_role {}, schema_owner {} + NOLOGIN,
 -- migrate {guvfx_schema_owner}. Refuse (do NOT silently revoke) on any unexpected direct/transitive membership.
 DO $closure_pre$
@@ -181,7 +216,11 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_schema_owner') THEN
     CREATE ROLE guvfx_schema_owner NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='guvfx_migrate') THEN
-    CREATE ROLE guvfx_migrate LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS; END IF;
+    -- NOINHERIT: guvfx_migrate gains guvfx_schema_owner's owner rights ONLY via the explicit `SET role` below,
+    -- never silently by inheritance, so a session that RESETs role holds no owner rights over the evidence tables.
+    CREATE ROLE guvfx_migrate LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS;
+  ELSE
+    ALTER ROLE guvfx_migrate NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_setting('x.app_role')) THEN
     EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS', current_setting('x.app_role'));
   ELSE
@@ -252,9 +291,18 @@ $own_fn$;
 -- ---- F-2: MINIMAL runtime grants for the app role (owns nothing). ---------------------------------------
 --   application tables: SELECT/INSERT/UPDATE/DELETE ; protected tables: SELECT/INSERT/UPDATE (NO DELETE/TRUNCATE);
 --   sequences: USAGE/SELECT/UPDATE ; routines: NONE (trigger functions need no invoker EXECUTE; the app calls no
---   custom DB routine). Default privileges grant NO DELETE and NO EXECUTE, so FUTURE objects are DELETE-safe and
---   never auto-executable.
+--   custom DB routine). Default privileges grant NO DELETE, and we REVOKE the PostgreSQL built-in default
+--   EXECUTE-to-PUBLIC for FUTURE schema-owner functions, so a future migration-created (incl. SECURITY DEFINER)
+--   function is NOT executable by PUBLIC / the runtime role. CREATE on the schema is revoked so the runtime
+--   cannot create -- and thereby own -- objects (preserving "owns nothing" even in the cutover-alone window).
 GRANT USAGE ON SCHEMA :"app_schema" TO :"app_role";
+-- Close the legacy PUBLIC CREATE grant on the schema (carried forward on pg_upgrade'd clusters) so neither
+-- PUBLIC nor the runtime role can create objects in it. (provision_erasure_privilege.sql also does this; doing it
+-- here holds the invariant in the cutover-alone window before provisioning.)
+SELECT format('REVOKE CREATE ON SCHEMA %I FROM PUBLIC', :'app_schema') AS _rc1 \gset
+SELECT format('REVOKE CREATE ON SCHEMA %I FROM %I', :'app_schema', :'app_role') AS _rc2 \gset
+:_rc1 ;
+:_rc2 ;
 DO $grants$
 DECLARE r record;
 BEGIN
@@ -270,11 +318,18 @@ BEGIN
   END LOOP;
 END
 $grants$;
--- Default privileges for FUTURE migration-created objects (schema_owner is the creator): NO DELETE, NO EXECUTE.
+-- Default privileges for FUTURE migration-created objects (schema_owner is the creator): the app role gets
+-- S/I/U on tables + U/S/U on sequences (NO DELETE), and PUBLIC loses the built-in EXECUTE on functions so a
+-- future function (incl. SECURITY DEFINER) is not executable by PUBLIC / the runtime role by default.
+-- NOTE: the function REVOKE uses the GLOBAL form (NO `IN SCHEMA`). On PostgreSQL the built-in PUBLIC-EXECUTE
+-- default on functions can only be overridden by the global per-role default ACL; the schema-scoped form is a
+-- silent no-op for this (verified on PG15). schema_owner only creates objects in the app schema, so a global
+-- default scoped to that role is equivalent in effect and is the only form that actually takes hold.
 SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_schema_owner IN SCHEMA %I GRANT SELECT, INSERT, UPDATE ON TABLES TO %I', :'app_schema', :'app_role') AS _d1 \gset
 SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_schema_owner IN SCHEMA %I GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I', :'app_schema', :'app_role') AS _d2 \gset
 :_d1 ;
 :_d2 ;
+ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_schema_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 -- ---- Pre-COMMIT re-checks (fail-closed) -----------------------------------------------------------------
 DO $post$
@@ -301,7 +356,10 @@ BEGIN
   -- app role carries no elevated attribute
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=v_app AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls)) THEN
     RAISE EXCEPTION 'post-check: app role carries an elevated attribute'; END IF;
-  RAISE NOTICE 'post-checks OK: app role owns nothing, no protected DELETE/TRUNCATE, no membership, least-privilege';
+  -- app role must NOT hold CREATE on the schema (else it could create + own objects, breaking owns-nothing)
+  IF has_schema_privilege(v_app, v_sch, 'CREATE') THEN
+    RAISE EXCEPTION 'post-check: app role has CREATE on schema % (must not; could create + own objects)', v_sch; END IF;
+  RAISE NOTICE 'post-checks OK: app role owns nothing, no protected DELETE/TRUNCATE, no membership, no CREATE, least-privilege';
 END
 $post$;
 

@@ -136,7 +136,20 @@ BEGIN
   ) l JOIN _cutover_manifest m USING (obj_kind,obj_schema,obj_identity)
     WHERE l.owner <> 'guvfx_schema_owner';
   IF bad IS NOT NULL THEN
-    RAISE EXCEPTION 'rollback refused: manifest object(s) not owned by guvfx_schema_owner (state is not the expected post-separation one): %', bad;
+    RAISE EXCEPTION 'rollback refused: manifest relation(s) not owned by guvfx_schema_owner (state is not the expected post-separation one): %', bad;
+  END IF;
+  -- same check for manifest ROUTINES (functions/procedures/aggregates): every one must be owned by schema_owner
+  SELECT string_agg(l.obj_identity, '; ') INTO bad FROM (
+    SELECT p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' AS obj_identity,
+           pg_get_userbyid(p.proowner) AS owner,
+           (CASE p.prokind WHEN 'a' THEN 'aggregate' WHEN 'p' THEN 'procedure' ELSE 'function' END) AS obj_kind,
+           n.nspname AS obj_schema
+      FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+     WHERE n.nspname=current_setting('x.schema')
+  ) l JOIN _cutover_manifest m USING (obj_kind,obj_schema,obj_identity)
+    WHERE l.owner <> 'guvfx_schema_owner';
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'rollback refused: manifest routine(s) not owned by guvfx_schema_owner (state is not the expected post-separation one): %', bad;
   END IF;
 END
 $precond$;
@@ -153,6 +166,9 @@ SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_schema_owner IN SCHEMA %I
 :_r4 ;
 :_r5 ;
 :_r3 ;
+-- Undo the GLOBAL default-privilege REVOKE EXECUTE the separation applied (restore the built-in PUBLIC default
+-- for schema_owner's future functions), so teardown leaves no lingering default ACL.
+ALTER DEFAULT PRIVILEGES FOR ROLE guvfx_schema_owner GRANT EXECUTE ON FUNCTIONS TO PUBLIC;
 
 -- 2) Reverse ownership of the MANIFEST-approved application objects (not a blanket sweep) from
 --    guvfx_schema_owner back to the bootstrap role; restore the schema to its original owner.

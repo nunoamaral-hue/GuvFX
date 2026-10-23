@@ -19,17 +19,17 @@
 \if :{?target_db}
 \else
   \echo '*** REFUSED: pass -v target_db=<current database name>.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?allow_destructive_provisioning}
 \else
   \echo '*** REFUSED: pass -v allow_destructive_provisioning=1 to acknowledge.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?app_role}
 \else
   \echo '*** REFUSED: pass -v app_role=<application runtime role to demote>.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 BEGIN;
@@ -39,7 +39,7 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
 \else
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- F-8 topology guard: this IN-PLACE demotion is UNSAFE for a bootstrap / sole-superuser application role --
@@ -57,7 +57,7 @@ SELECT CASE WHEN
   \echo '    leave the cluster without a superuser and target pinned system objects. Use'
   \echo '    ops/erasure/separate_runtime_role.sql (new least-privilege runtime role) instead. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- Ordering guard (adversarial-review C4): refuse if erasure provisioning has ALREADY run (the governed
@@ -69,7 +69,7 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.
   \echo '*** REFUSED: erasure provisioning has already run (bi_governed_erase_owner present). Re-running demotion'
   \echo '    would re-open broad grants provisioning revoked. Roll provisioning back first. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- 1) Roles (idempotent). guvfx_schema_owner owns objects; guvfx_migrate (its member) runs migrations.
