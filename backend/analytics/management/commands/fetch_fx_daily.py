@@ -19,11 +19,10 @@ import urllib.request
 from urllib.parse import urlparse
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 from django.utils import timezone
 
 from analytics import fx_fred as FRED
-from analytics.models import DailyFxObservation
+from analytics.fx_ingest import append_fx_observation
 
 # Keyless FRED CSV download for the Fed H.10 DEXUSUK series (no API key). HTTPS only.
 DEFAULT_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXUSUK"
@@ -52,10 +51,12 @@ class Command(BaseCommand):
         new_rows = dup_rows = 0
         if not opts["dry_run"]:
             for obs in result.accepted:
-                if self._append_revision(obs, now, source_url):
-                    new_rows += 1
-                else:
-                    dup_rows += 1
+                written, _rev = append_fx_observation(
+                    effective_date=obs.effective_date, rate=obs.rate,
+                    observation_checksum=obs.observation_checksum, raw_line=obs.raw_line,
+                    source_url=source_url, retrieved_at=now)
+                new_rows += 1 if written else 0
+                dup_rows += 0 if written else 1
 
         summary = {
             "origin": source_url, "series": FRED.SERIES, "direction": FRED.DIRECTION,
@@ -86,23 +87,3 @@ class Command(BaseCommand):
         if len(raw) > _MAX_BYTES:
             raise CommandError("response exceeds size limit; store unchanged")
         return raw.decode("utf-8", "ignore"), url
-
-    # ── append-only revision write ──
-    def _append_revision(self, obs, now, source_url) -> bool:
-        """Insert a new ACCEPTED revision for this observation, or skip if the IDENTICAL payload is already stored.
-        Returns True when a row was written, False when it was a duplicate. The group rows are locked so revision
-        numbering is serialised (single-writer daily job; the unique constraints are the DB backstop)."""
-        with transaction.atomic():
-            grp = list(DailyFxObservation.objects.select_for_update().filter(
-                source=FRED.SOURCE, base_currency=FRED.BASE, quote_currency=FRED.QUOTE,
-                effective_date=obs.effective_date).values_list("revision_number", "observation_checksum"))
-            if any(cs == obs.observation_checksum for _, cs in grp):
-                return False
-            next_rev = (max((rn for rn, _ in grp), default=0)) + 1
-            DailyFxObservation.objects.create(
-                base_currency=FRED.BASE, quote_currency=FRED.QUOTE, effective_date=obs.effective_date,
-                rate=obs.rate, source=FRED.SOURCE, source_series=FRED.SERIES, retrieved_at=now,
-                observation_checksum=obs.observation_checksum, revision_number=next_rev,
-                acceptance_state=DailyFxObservation.STATE_ACCEPTED,
-                source_url=source_url, raw_line=obs.raw_line)
-            return True

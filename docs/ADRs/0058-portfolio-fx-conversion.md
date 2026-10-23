@@ -91,6 +91,18 @@ Under the Equity (USD) card, when conversion is ON: `GBP→USD <rate> · <effect
 "(USD per GBP) · rate <date> · Fed H.10 DEXUSUK"); when ON but no valid rate: `GBP→USD rate unavailable`. Absent
 entirely when OFF.
 
+### Immutability boundary — precise statement (F11)
+- The table is **NOT absolutely immutable against its owner.** The owner/migration identity (and a superuser) can
+  ultimately bypass or change the protections — disable a trigger, `SET session_replication_role='replica'`, or
+  TRUNCATE (TRUNCATE is owner-only).
+- The **ordinary web runtime and the FX ingestion writer cannot TRUNCATE** (nor UPDATE/DELETE): they are
+  non-owner roles with, respectively, SELECT-only and SELECT+INSERT-only privileges, proven on PostgreSQL 15.
+- **FX enablement remains BLOCKED until F-8** separates the application runtime identity from table ownership
+  (SELECT-only runtime). Until then the app connects as owner/superuser and the above owner-bypass applies.
+- The trusted migration/owner-identity residual risk is **the same governed boundary already accepted for the
+  protected evidence stores** (e.g. the erasure audit carve-out / RuntimeEvent immutability) — not a new or
+  weaker position.
+
 ## Threat model
 | Threat | Mitigation |
 |---|---|

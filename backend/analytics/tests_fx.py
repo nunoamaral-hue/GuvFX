@@ -18,7 +18,7 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.db import DatabaseError, IntegrityError, connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -26,6 +26,7 @@ from django.utils import timezone
 from analytics import fx_fred as FRED
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
+from analytics.fx_ingest import append_fx_observation
 from analytics.fx_source import StoredFredFxRateSource, governed_today, select_observation
 from analytics.models import DailyFxObservation
 from trading.models import BrokerServer, TradingAccount
@@ -456,6 +457,98 @@ class FxViewTests(TestCase):
     def test_equity_curve_endpoint_ok_under_flag(self):
         r = self.client.get("/api/analytics/portfolio/equity-curve/?scope=ALL")
         self.assertEqual(r.status_code, 200)   # curve stays on the USD-only source (point-in-time)
+
+
+# ── F10: real concurrent-transaction races (threads + barrier + separate connections) ──────────────────────────
+class _Rollback(Exception):
+    pass
+
+
+class FxConcurrencyTests(TransactionTestCase):
+    """Two genuinely simultaneous writers (own DB connection each, synchronised by a Barrier) exercise the
+    advisory-lock serialisation in ``append_fx_observation``. ``select_for_update`` cannot lock a not-yet-existing
+    first row; the advisory transaction lock can, so a first-insert race yields exactly one row and corrections
+    get distinct sequential revisions — with no duplicate revision number, no lost correction, and no unhandled
+    IntegrityError reaching the caller."""
+
+    def _run_pair(self, fn_a, fn_b):
+        import threading
+        barrier = threading.Barrier(2, timeout=20)
+        results = {}
+
+        def wrap(idx, fn):
+            try:
+                fn(barrier, results, idx)
+            finally:
+                connections.close_all()   # close THIS worker thread's connection
+
+        ta = threading.Thread(target=wrap, args=(0, fn_a))
+        tb = threading.Thread(target=wrap, args=(1, fn_b))
+        ta.start(); tb.start(); ta.join(25); tb.join(25)
+        return results
+
+    @staticmethod
+    def _ingest_fn(eff, rate_str):
+        def _fn(barrier, results, idx):
+            rate = Decimal(rate_str)
+            cs = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", eff, rate)
+            barrier.wait()
+            try:
+                written, rev = append_fx_observation(
+                    effective_date=eff, rate=rate, observation_checksum=cs, raw_line="%s,%s" % (eff, rate),
+                    source_url="x", retrieved_at=timezone.now())
+                results[idx] = ("ok", written, rev)
+            except Exception as e:  # noqa: BLE001 — record any IntegrityError that escapes (should be none)
+                results[idx] = ("err", type(e).__name__, str(e))
+        return _fn
+
+    def test_two_identical_first_ingestions_one_row(self):
+        res = self._run_pair(self._ingest_fn(date(2026, 1, 5), "1.2600"),
+                             self._ingest_fn(date(2026, 1, 5), "1.2600"))
+        self.assertEqual(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5)).count(), 1)
+        self.assertEqual(sorted(res.values()), sorted([("ok", True, 1), ("ok", False, None)]))
+
+    def test_two_distinct_corrections_sequential_revisions(self):
+        _obs(date(2026, 1, 5), "1.2600", rev=1)   # pre-existing accepted revision
+        res = self._run_pair(self._ingest_fn(date(2026, 1, 5), "1.2700"),
+                             self._ingest_fn(date(2026, 1, 5), "1.2800"))
+        revs = sorted(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5))
+                      .values_list("revision_number", flat=True))
+        self.assertEqual(revs, [1, 2, 3])                               # distinct, sequential — no collision/loss
+        self.assertEqual(sorted(r[2] for r in res.values()), [2, 3])
+        self.assertFalse(any(r[0] == "err" for r in res.values()))      # no IntegrityError escaped
+
+    def test_identical_duplicate_racing_a_correction(self):
+        _obs(date(2026, 1, 5), "1.2600", rev=1)
+        res = self._run_pair(self._ingest_fn(date(2026, 1, 5), "1.2600"),   # identical dup
+                             self._ingest_fn(date(2026, 1, 5), "1.2900"))    # genuine correction
+        self.assertEqual(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5)).count(), 2)
+        rates = set(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5))
+                    .values_list("rate", flat=True))
+        self.assertEqual(rates, {Decimal("1.2600"), Decimal("1.2900")})
+
+    def test_rollback_during_allocation_releases_lock(self):
+        def roll(barrier, results, idx):
+            eff = date(2026, 1, 5); rate = Decimal("9.9900")
+            cs = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", eff, rate)
+            barrier.wait()
+            try:
+                # Allocate through the REAL path (advisory lock + next-revision), then roll the whole tx back —
+                # the lock must release and leave no partial row, without any IntegrityError escaping.
+                with transaction.atomic():
+                    append_fx_observation(effective_date=eff, rate=rate, observation_checksum=cs,
+                                          raw_line="%s,%s" % (eff, rate), source_url="x",
+                                          retrieved_at=timezone.now())
+                    raise _Rollback()
+            except _Rollback:
+                results[idx] = ("rolledback",)
+
+        other = self._ingest_fn(date(2026, 1, 5), "1.2600")
+        self._run_pair(roll, other)
+        rows = DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5))
+        self.assertEqual(rows.count(), 1)                                # rolled-back insert left nothing
+        self.assertEqual(rows.first().rate, Decimal("1.2600"))           # the committed writer landed one revision
+        self.assertEqual(rows.first().revision_number, 1)
 
 
 # ── Runtime immutability (app-layer guard; DB triggers are authoritative) ───────────────────────────────────────
