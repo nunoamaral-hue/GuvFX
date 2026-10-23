@@ -279,3 +279,28 @@ any production migration/deployment, and any `--execute` against real data. A se
 packet (backup + verified recovery point, provisioning plan, operator-identity custody, migration/rollback
 window, readiness-probe evidence, monitoring, named requester/verifier/approver/executor, a non-client canary,
 and explicit per-step Sponsor authorisation) is required before any of those steps.
+
+## Amendment — Interim migration-identity TRUNCATE governance decision (2026-10-23)
+
+Empirical PostgreSQL-15 testing (disposable; drivers `scratchpad/trunc/matrix2.sh`, `matrix3.sh`; summarised in
+`docs/WV1_RUNTIME_ROLE_TRUNCATE_DECISION_2026-10-23.md`) confirmed what this ADR anticipated: a role that can
+assume the object owner can destroy evidence regardless of any table-level control — it self-`GRANT`s TRUNCATE
+back after a REVOKE, `DISABLE`/`DROP`s a BEFORE-TRUNCATE trigger, and (because `guvfx_schema_owner` owns schema
+`public`) can `DROP` any table in `public`. `guvfx_migrate` assumes `guvfx_schema_owner` by design, so it
+retains effective TRUNCATE/DROP/DELETE over the protected evidence tables. Options A (trigger) and B
+(`REVOKE TRUNCATE`) therefore provide **no durable protection** against the migration identity and must not be
+represented as if they do.
+
+**Decision (PD, 2026-10-23): `ACCEPT_TRUSTED_MIGRATION_IDENTITY` — INTERIM & CONDITIONAL.** The trusted
+migration identity is accepted as an interim governance boundary under the ten binding conditions recorded in
+`WV1_RUNTIME_ROLE_TRUNCATE_DECISION_2026-10-23.md` §5 (never used by a persistent service; credential only for an
+approved window, recorded per use, revoked/rotated after; NOINHERIT with explicit `SET ROLE`; reviewed plan +
+immutable transcript per window; destructive evidence ops operationally prohibited; **audit logging for
+TRUNCATE/DROP/DELETE on protected evidence verified before production cutover — if pgAudit is unavailable the
+disposition is CHANGES REQUIRED with a tested alternative**). **This acceptance expires before general customer
+availability.**
+
+**Required stronger target before general release:** Option **D′** — relocate the protected evidence tables into
+a dedicated schema owned by a role the migration identity is **not** a member of and cannot `SET ROLE` to
+(proven effective: `matrix3.sh` Dp1–Dp6). D′ is **not** implemented in this increment; it is the recorded target
+architecture. This amendment records the interim decision only; it does not authorise any production change.
