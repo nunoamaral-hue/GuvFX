@@ -72,8 +72,16 @@ authorised.
 2. Pause broker_intelligence writers (minimal — no WV1 worker runs today).
 3. **Mint credentials (secret store):** compute client-side SCRAM verifiers for `guvfx_app` and `guvfx_migrate`
    (cleartext never in SQL/argv/logs/Git); custody + rotation per the secret-store procedure.
-4. **Run `separate_runtime_role.sql`** (as bootstrap `guvfx`): `-v bootstrap_role=guvfx -v app_role=guvfx_app
-   -v app_schema=public -v app_scram=… -v migrate_scram=…`. Transactional; refuses on unexpected topology.
+4. **Run the separation via `ops/erasure/cutover.sh --execute`** (as bootstrap `guvfx`), NEVER by passing verifiers
+   on the psql command line. The SCRAM verifiers are read from the environment (`GUVFX_APP_SCRAM`,
+   `GUVFX_MIGRATE_SCRAM`) via `\getenv`, never argv/history/logs; export them from a 0600 file
+   (`umask 077; set -a; . ./cutover_secrets.env; set +a`) then delete it. Example:
+   `cutover.sh --execute --db guvfx --bootstrap-role guvfx --app-role guvfx_app --app-schema public
+   --manifest <reviewed.psv> [--expect-manifest-sha256 <hex>]`. Transactional; refuses on unexpected topology,
+   manifest mismatch, or missing/malformed verifiers (all fail-closed, nonzero exit). See
+   `ops/erasure/README_runtime_role_cutover.md` and the 2026-10-23 CHANGES-REQUIRED return for the credential
+   contract. (The earlier `-v app_scram=…/-v migrate_scram=…` form is SUPERSEDED — it would place verifiers on
+   argv and in shell history.)
 5. **Migrate (app-scoped, as `guvfx_migrate`)**: `migrate --plan` first (abort if any non-broker_intelligence
    app); `migrate broker_intelligence 0022`.
 6. **Provision erasure** (app_role=`guvfx_app`) + `verify_erasure_privilege.sql`.
@@ -94,7 +102,14 @@ STOP/GO + evidence + abort + rollback per stage as in the rollback table; T0 = s
   backend + ~9 worker containers; a missed worker would keep connecting as the superuser. Validation (stage 8)
   is mandatory.
 - Disk `/` at 90% (standing); single logical recovery point (re-take in-window); #552 + this PR not yet deployed.
-- SCRAM-verifier custody: verifiers are safe in SQL/logs, but the cleartext must come from the secret store.
+- SCRAM-verifier custody: a SCRAM verifier is NOT cleartext, but it is still sensitive (it carries the salt +
+  ServerKey). CORRECTION to an earlier claim here that "verifiers are safe in SQL/logs": `ALTER ROLE … PASSWORD
+  '<verifier>'` WOULD be written to the server statement log under `log_statement`/`log_min_duration_statement`,
+  so `separate_runtime_role.sql` now wraps the cutover transaction in `SET LOCAL log_statement='none'` +
+  `log_min_duration_statement=-1`, validates verifier format in bash before psql, and reads them only via env
+  `\getenv`. Residual: a separately-configured auditor (pgAudit) is NOT governed by those GUCs and must be handled
+  by operational config for the cutover window. Cleartext never enters SQL/argv/logs/Git; it comes from the
+  secret store and is destroyed after minting.
 
 ## 1 / 8 / 12 / 13
 - **1. New PR + head SHA:** **PR #554**, head **`3401062a`** (branch `fix/runtime-role-separation`, base

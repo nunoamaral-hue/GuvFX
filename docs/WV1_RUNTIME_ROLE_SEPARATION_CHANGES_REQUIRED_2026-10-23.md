@@ -170,7 +170,9 @@ carried real lower-severity residuals). Every confirmed/verified item was then f
   no-op - verified and corrected); manifest re-validation + bare-`\.` rejection on `--execute`/`--rollback`
   (closes a `\copy`-FROM-STDIN injection); optional `--expect-manifest-sha256` pin; rollback precondition extended
   to routine ownership; broadened pre-F8 teardown guard; fail-closed guard for standalone enum/domain/composite
-  types; trap HUP/QUIT; history-safe verifier-export documented.
+  types; trap HUP/QUIT; history-safe verifier-export documented; and the stale 2026-10-22 runbook corrected -
+  step 4 now invokes `cutover.sh --execute` with env-only verifiers (the `-v app_scram=…` argv form is marked
+  SUPERSEDED) and the "verifiers are safe in SQL/logs" claim is corrected to the log-suppression contract.
 - **Two findings verified as false-positive-as-P1** (recorded, not silently dropped): (a) "PUBLIC EXECUTE lets the
   app run the erasure proc" - the governed proc is absent at cutover and provisioning REVOKEs PUBLIC+app, with
   `verify`/readiness asserting it; the real residual (future SECDEF) is closed by the global default-priv REVOKE
