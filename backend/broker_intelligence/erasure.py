@@ -380,6 +380,25 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                 if cur.fetchone()[0]:
                     reasons.append("guvfx_erasure must not have INSERT on the execution-grant table (consume-only)")
 
+            # (7e) F-2.8: generalised privileged-routine containment. No SECURITY DEFINER routine in the
+            # application schema may be EXECUTE-able by PUBLIC or by the runtime app role. The governed erasure
+            # procedure is checked specifically above; this catches ANY SECURITY DEFINER function a migration
+            # might introduce. A runtime role that could execute a definer-rights routine would run with that
+            # owner's privileges, bypassing the REVOKEs — so cutover must fail until no such grant exists.
+            cur.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = 'public' AND p.prosecdef "
+                        "AND has_function_privilege('public', p.oid, 'EXECUTE')")
+            if cur.fetchone()[0]:
+                reasons.append("PUBLIC can EXECUTE a SECURITY DEFINER routine in 'public'")
+            cur.execute("SELECT coalesce(array_agg(p.proname ORDER BY p.proname), ARRAY[]::text[]) "
+                        "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = 'public' AND p.prosecdef "
+                        "AND has_function_privilege(%s, p.oid, 'EXECUTE')", [app_role])
+            secdef = cur.fetchone()[0] or []
+            if secdef:
+                reasons.append(f"application role '{app_role}' can EXECUTE SECURITY DEFINER routine(s) "
+                               f"{list(secdef)} — privileged-routine escalation")
+
             # (8) Required migrations applied (exact names — a differently-named 00NN_* must not false-pass).
             for mig in _REQUIRED_MIGRATIONS:
                 if not _exists("SELECT 1 FROM django_migrations WHERE app = 'broker_intelligence' AND name = %s",

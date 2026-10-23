@@ -573,6 +573,25 @@ class ReadinessAppRolePostureTests(TestCase):
         self.assertFalse(ready)
         self.assertTrue(self._has(reasons, "must own nothing"), reasons)
 
+    def test_refuses_app_role_that_can_execute_a_security_definer_routine(self):
+        # F-2.8: no SECURITY DEFINER routine in 'public' may be EXECUTE-able by the runtime app role. A runtime
+        # role that could run a definer-rights routine would run with that owner's privileges, bypassing the
+        # REVOKEs. (PUBLIC's default EXECUTE is revoked first so this proves the app-role-specific path.)
+        self._mkrole("relp_secdef", "NOLOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS")
+        with connection.cursor() as cur:
+            cur.execute("CREATE FUNCTION public._relp_sd() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'")
+            cur.execute("REVOKE EXECUTE ON FUNCTION public._relp_sd() FROM PUBLIC")
+            cur.execute("GRANT EXECUTE ON FUNCTION public._relp_sd() TO relp_secdef")
+        self.addCleanup(lambda: self._exec("DROP FUNCTION IF EXISTS public._relp_sd()"))
+        ready, reasons = self._readiness_as("relp_secdef")
+        self.assertFalse(ready)
+        self.assertTrue(self._has(reasons, "can EXECUTE SECURITY DEFINER"), reasons)
+        # positive control: once the grant is removed, the escalation reason is gone (PUBLIC still cannot execute).
+        self._exec("REVOKE EXECUTE ON FUNCTION public._relp_sd() FROM relp_secdef")
+        _, reasons2 = self._readiness_as("relp_secdef")
+        self.assertFalse(self._has(reasons2, "can EXECUTE SECURITY DEFINER"), reasons2)
+        self.assertFalse(self._has(reasons2, "PUBLIC can EXECUTE a SECURITY DEFINER"), reasons2)
+
     def _exec(self, sql):
         with connection.cursor() as cur:
             cur.execute(sql)

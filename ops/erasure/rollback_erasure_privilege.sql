@@ -1,4 +1,4 @@
--- ADR-0054 — Reverse the controlled-erasure privilege provisioning (REHEARSAL rollback).
+-- ADR-0054 -- Reverse the controlled-erasure privilege provisioning (REHEARSAL rollback).
 -- Restores the original arrangement: evidence tables + trigger functions + sequences owned by the application
 -- role again, the procedure + helpers dropped, and the privileged roles removed. SUPERUSER-ONLY. Transactional.
 --   psql "$DSN" -v ON_ERROR_STOP=1 -v target_db=guvfx_rehearsal -v app_role=guvfx_app \
@@ -24,6 +24,27 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
   \quit
+\endif
+
+-- F-8 SAFETY GUARD (adopted with the runtime-role separation). This REHEARSAL teardown predates F-8 and assumes
+-- the app role owns the evidence objects and guvfx_schema_owner owns ONLY the handful of erasure objects. In the
+-- F-8 runtime-role-separation model guvfx_schema_owner owns the ENTIRE application schema, so this script would
+-- (a) hand schema + evidence ownership to the runtime app role and (b) `DROP OWNED BY guvfx_schema_owner`,
+-- DESTROYING every application table. Refuse fail-closed if that model is detected.
+SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
+      AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+      AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
+                            'broker_intelligence_erasureexecutiongrant')
+  ) THEN 'true' ELSE 'false' END AS _f8model \gset
+\if :_f8model
+  \echo '*** REFUSED: guvfx_schema_owner owns general application tables -- this is the F-8 runtime-role'
+  \echo '    separation model. This DISPOSABLE-REHEARSAL teardown would hand schema/evidence ownership to the'
+  \echo '    app role and DROP OWNED BY guvfx_schema_owner (destroying the application schema). For the F-8'
+  \echo '    model use production_rollback_erasure.sql, THEN ops/erasure/separate_runtime_role_rollback.sql.'
+  ROLLBACK;
+  DO $refuse$ BEGIN RAISE EXCEPTION 'rollback refused (fail-closed): F-8 model detected; see message above'; END $refuse$;
 \endif
 
 -- 1) Drop the governed procedure + helpers (owned by guvfx_erasure). Both signatures, for any prior version.

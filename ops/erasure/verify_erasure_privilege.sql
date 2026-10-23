@@ -153,6 +153,19 @@ BEGIN
     IF has_table_privilege(v_app, r, 'TRUNCATE') THEN problems := problems || format('app has TRUNCATE on %s', r); END IF;
   END LOOP;
 
+  -- (9) F-2.8: generalised privileged-routine containment. No SECURITY DEFINER routine in the application schema
+  -- may be EXECUTE-able by PUBLIC or by the runtime app role. The erasure procedure is one such routine (covered
+  -- specifically above); this catches ANY SECURITY DEFINER function a migration might add. Trigger functions
+  -- need no invoker EXECUTE and the app calls no custom DB routine, so the runtime role should execute none.
+  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('public', p.oid, 'EXECUTE')) THEN
+    problems := problems || 'PUBLIC can EXECUTE a SECURITY DEFINER routine in public'::text; END IF;
+  SELECT coalesce(string_agg(n.nspname||'.'||p.proname, ', '), '') INTO v_args
+    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege(v_app, p.oid, 'EXECUTE');
+  IF v_args <> '' THEN
+    problems := problems || format('app role can EXECUTE SECURITY DEFINER routine(s) [privileged-routine escalation]: %s', v_args); END IF;
+
   IF array_length(problems,1) > 0 THEN
     RAISE EXCEPTION 'VERIFY FAILED (% problems): %', array_length(problems,1), array_to_string(problems, ' | ');
   END IF;
