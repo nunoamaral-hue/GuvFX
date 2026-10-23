@@ -39,12 +39,16 @@ def _rate_source() -> FX.FxRateSource:
     return FX.NullFxRateSource()
 
 
-def _balance_fetcher(account):
-    return _fetch_mt5_account_balance(account, _account_windows_username(account))
+# The aggregation (``portfolio.open_positions`` / ``build_summary``) passes a deadline-aware ``timeout`` so one
+# hung bridge can neither blow the request's wall-clock budget nor starve the healthy accounts' reads. Default
+# preserved for any caller that does not supply one; the single-account trade-history path keeps the fetchers'
+# own 10s default (it is unchanged).
+def _balance_fetcher(account, timeout: float = 10.0):
+    return _fetch_mt5_account_balance(account, _account_windows_username(account), timeout=timeout)
 
 
-def _positions_fetcher(account):
-    return _fetch_mt5_open_positions(account, _account_windows_username(account))
+def _positions_fetcher(account, timeout: float = 10.0):
+    return _fetch_mt5_open_positions(account, _account_windows_username(account), timeout=timeout)
 
 
 class PortfolioSummaryView(APIView):

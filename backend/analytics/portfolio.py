@@ -25,13 +25,23 @@ logger = logging.getLogger("guvfx.portfolio")
 
 _MAGIC_BASE = 1_000_000_000   # magic = base + StrategyAssignment.id (Phase-A allocator)
 
-# Overall wall-clock budget for the per-account LIVE-read fan-out (open positions + balances). Each account's
-# bridge read is individually capped (urlopen timeout=10 in views_trade_history), but without an OVERALL deadline
-# a down account makes the whole dashboard request pay a fresh ~10s per account in series. This budget bounds the
-# total: once elapsed, remaining accounts are marked STALE (the same partial-result path as a failed read, never
-# dropped) so the dashboard settles promptly with the slow/unreachable accounts named. Kept below the client's
-# fetch timeout so the browser receives the bounded partial rather than aborting.
-_AGG_BUDGET_SECONDS = 12.0
+# Overall wall-clock budget for the per-account LIVE-read fan-out (open positions + balances). Once elapsed,
+# remaining accounts are marked STALE (the same partial-result path as a failed read, never dropped) so the
+# dashboard settles promptly with the slow/unreachable accounts named. Kept below the client's fetch timeout so
+# the browser receives the bounded partial rather than aborting.
+_AGG_BUDGET_SECONDS = 10.0
+
+# Per-account live-read cap, passed to each fetcher as a deadline-aware socket timeout. The fetchers' own default
+# (urlopen timeout=10 in views_trade_history) is NOT enough on its own: the summary makes TWO serial live passes
+# (positions, then balances), and a HUNG bridge blocks the full per-read timeout in EACH pass — so a single down
+# account cost ~2x10s and (a) tipped the whole summary past the client's 18s deadline AND (b) consumed the budget
+# so the HEALTHY accounts' balance reads were skipped (marked stale). Capping each read well below the budget keeps
+# a hung account cheap (fails fast) so the healthy accounts are still read in both passes: with 2*cap < budget the
+# second pass still has budget left for the fast accounts after the hung one fails. Worst-case total wall-clock is
+# bounded to ~_AGG_BUDGET_SECONDS + one in-flight read, comfortably under the client deadline. (Design point: one
+# hung account among healthy ones — the production topology; several simultaneously-hung accounts still settle
+# bounded and honest-partial, only sooner-stale.)
+_PER_READ_TIMEOUT_SECONDS = 3.0
 
 # ``source_stage`` is a COMMENT-TAG CLASSIFIER inferred at ingest (TEST/LIVE/UNKNOWN — default UNKNOWN when the
 # broker deal comment carries no recognised tag). It is NOT a performance dimension: virtually every real
@@ -291,15 +301,18 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
     for a in accounts:
         cur = FX.normalise_currency(getattr(a, "account_currency", None))
         res = None
-        # Overall wall-clock budget: once the deadline is passed, do NOT pay another ~10s per-account live-read
-        # timeout — mark the remaining accounts stale (identical to a failed read) so the dashboard settles in
-        # bounded time with the slow/unreachable accounts named, never silently dropped.
-        if time.monotonic() > deadline:
+        # Overall wall-clock budget: once the deadline is passed, do NOT start another per-account live read —
+        # mark the remaining accounts stale (identical to a failed read) so the dashboard settles in bounded time
+        # with the slow/unreachable accounts named, never silently dropped. A read that DOES start is given a
+        # deadline-aware socket timeout (capped at _PER_READ_TIMEOUT_SECONDS) so one hung bridge can neither blow
+        # the budget nor starve the accounts after it.
+        budget_left = deadline - time.monotonic()
+        if budget_left <= 0:
             per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE",
                                  "stale": True, "pl_items": []}
             continue
         try:
-            res = fetch_positions(a)
+            res = fetch_positions(a, timeout=min(_PER_READ_TIMEOUT_SECONDS, budget_left))
         except Exception:  # noqa: BLE001 — a broker read must never break the dashboard
             logger.warning("portfolio: open-positions fetch raised for account %s", a.id)
             res = None
@@ -389,11 +402,12 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     #                               path's currency exclusion so metrics.basis agrees with balance_usd.basis (H1).
     for a in accounts:
         snap = None
-        if time.monotonic() > deadline:
-            snap = None  # budget exhausted — skip the ~10s live balance read; this account reads stale
+        budget_left = deadline - time.monotonic()
+        if budget_left <= 0:
+            snap = None  # budget exhausted — skip the live balance read; this account reads stale
         else:
             try:
-                snap = fetch_balance(a)
+                snap = fetch_balance(a, timeout=min(_PER_READ_TIMEOUT_SECONDS, budget_left))
             except Exception:  # noqa: BLE001
                 logger.warning("portfolio: balance fetch raised for account %s", a.id)
                 snap = None

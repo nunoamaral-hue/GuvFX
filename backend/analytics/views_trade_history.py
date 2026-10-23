@@ -57,7 +57,7 @@ def _account_windows_username(account) -> str:
         return ""
 
 
-def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]:
+def _fetch_mt5_account_balance(account, windows_username: str, *, timeout: float = 10.0) -> Optional[dict]:
     """
     Fetch THIS account's OWN MT5 balance/equity/currency from its per-tenant bridge.
 
@@ -90,7 +90,7 @@ def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]
             method="GET",
             headers={"X-GuvFX-Agent-Token": token}
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode("utf-8", "ignore")
             data = json.loads(raw) if raw else {}
 
@@ -141,7 +141,7 @@ def _fetch_mt5_account_balance(account, windows_username: str) -> Optional[dict]
         logger.warning(f"Failed to fetch MT5 account balance: {e}")
         return None
 
-def _fetch_mt5_open_positions(account, windows_username: str) -> Optional[list]:
+def _fetch_mt5_open_positions(account, windows_username: str, *, timeout: float = 10.0) -> Optional[list]:
     """Fetch THIS account's OWN LIVE open positions (with floating P/L) from its per-tenant bridge — read-only,
     observation only (no order_send, no DB write). Same P0 data-isolation contract as ``_fetch_mt5_account_balance``:
     the destination is the account's OWN snapshot base (never the module-global agent), and the read is gated on the
@@ -166,7 +166,7 @@ def _fetch_mt5_open_positions(account, windows_username: str) -> Optional[list]:
     try:
         aurl = f"{base}/mt5/snapshots/account?username={urllib.parse.quote(windows_username)}"
         areq = urllib.request.Request(aurl, method="GET", headers={"X-GuvFX-Agent-Token": token})
-        with urllib.request.urlopen(areq, timeout=10) as r:
+        with urllib.request.urlopen(areq, timeout=timeout) as r:
             adata = json.loads(r.read().decode("utf-8", "ignore") or "{}")
         _inner = adata.get("data") if isinstance(adata.get("data"), dict) else {}
         obs_login = (adata.get("account_login") or _inner.get("account_login")
@@ -195,7 +195,7 @@ def _fetch_mt5_open_positions(account, windows_username: str) -> Optional[list]:
     try:
         purl = f"{base}/mt5/positions"
         preq = urllib.request.Request(purl, method="GET", headers={"X-GuvFX-Agent-Token": token})
-        with urllib.request.urlopen(preq, timeout=10) as r:
+        with urllib.request.urlopen(preq, timeout=timeout) as r:
             pdata = json.loads(r.read().decode("utf-8", "ignore") or "{}")
         if not (isinstance(pdata, dict) and pdata.get("ok")):
             return None
