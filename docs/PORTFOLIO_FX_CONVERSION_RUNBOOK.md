@@ -10,7 +10,13 @@ separate governed GO. Nothing here runs automatically; the request path never co
 - Parser `analytics.fx_fred` · stored source `analytics.fx_source.StoredFredFxRateSource` (DB-only, Europe/London).
 - Commands: `fetch_fx_daily` (ingest/backfill) · `fx_ingestion_health` (readiness, read-only).
 - Flag `PORTFOLIO_FX_CONVERSION_ENABLED` (settings/env; **default OFF**).
-- F-8 grants: `ops/fx/grants_fx_observation.sql` (SELECT-only runtime + INSERT-only ingestion writer).
+- F-8 grants: `ops/fx/grants_fx_observation.sql` (SELECT-only runtime + SELECT+INSERT ingestion writer + sequence USAGE).
+- A3 ingestion identity: a dedicated Django DB alias `fx_ingest`, configured ONLY from distinct `FX_INGEST_DB_USER`
+  / `FX_INGEST_DB_PASSWORD` (+ optional `FX_INGEST_DB_NAME/HOST/PORT`, defaulting to the same physical DB as
+  `default`). `fetch_fx_daily` routes its advisory lock + idempotency read + insert through `fx_ingest` on one
+  connection and **fails closed** (CommandError) when the alias is absent — it never falls back to the web-runtime
+  `default` connection. `analytics.fx_db_router.FxIngestRouter` blocks migrations on `fx_ingest`. The ingestion
+  credential MUST be injected ONLY into the FX cron job's environment, never the web/worker runtime.
 
 ## ENABLEMENT PRECONDITION (F-8) — BLOCKING
 Do not enable the flag in production until the runtime-role cutover is complete and `ops/fx/grants_fx_observation.sql`

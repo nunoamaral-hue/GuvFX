@@ -22,7 +22,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from analytics import fx_fred as FRED
-from analytics.fx_ingest import append_fx_observation
+from analytics.fx_ingest import FxIngestConfigError, append_fx_observation, resolve_fx_ingest_alias
 
 # Keyless FRED CSV download for the Fed H.10 DEXUSUK series (no API key). HTTPS only.
 DEFAULT_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXUSUK"
@@ -40,6 +40,15 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Parse + report; write nothing.")
 
     def handle(self, *args, **opts):
+        # A3: resolve the DEDICATED ingestion identity BEFORE any work when we will write — fail closed (never
+        # fall back to the web-runtime connection). A dry-run writes nothing, so it does not require the alias.
+        alias = None
+        if not opts["dry_run"]:
+            try:
+                alias = resolve_fx_ingest_alias()
+            except FxIngestConfigError as e:
+                raise CommandError(str(e))
+
         text, source_url = self._read_payload(opts)
         try:
             result = FRED.parse_dexusuk_csv(text)
@@ -54,13 +63,13 @@ class Command(BaseCommand):
                 written, _rev = append_fx_observation(
                     effective_date=obs.effective_date, rate=obs.rate,
                     observation_checksum=obs.observation_checksum, raw_line=obs.raw_line,
-                    source_url=source_url, retrieved_at=now)
+                    source_url=source_url, retrieved_at=now, using=alias)
                 new_rows += 1 if written else 0
                 dup_rows += 0 if written else 1
 
         summary = {
             "origin": source_url, "series": FRED.SERIES, "direction": FRED.DIRECTION,
-            "payload_sha256_prefix": result.payload_sha256[:12],
+            "ingest_alias": alias, "payload_sha256_prefix": result.payload_sha256[:12],
             "rows": result.row_count, "accepted": len(result.accepted),
             "missing": result.missing_count, "rejected": len(result.rejected),
             "rejected_reasons": sorted({r.reason for r in result.rejected}),
