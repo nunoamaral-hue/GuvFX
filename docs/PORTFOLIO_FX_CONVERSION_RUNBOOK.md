@@ -4,10 +4,19 @@ Operational procedure for the Fed H.10 `DEXUSUK` portfolio conversion. **DARK**:
 separate governed GO. Nothing here runs automatically; the request path never contacts FRED.
 
 ## Components
-- Model `analytics.DailyFxObservation` (append-only revisions) + migration `analytics/0002_dailyfxobservation`.
-- Parser `analytics.fx_fred` · stored source `analytics.fx_source.StoredFredFxRateSource` (DB-only).
+- Model `analytics.DailyFxObservation` (append-only revisions, DB check constraints, reproducibility fields)
+  + migrations `analytics/0002_dailyfxobservation` and `analytics/0003_fx_observation_append_only_triggers`
+  (BEFORE UPDATE/DELETE triggers).
+- Parser `analytics.fx_fred` · stored source `analytics.fx_source.StoredFredFxRateSource` (DB-only, Europe/London).
 - Commands: `fetch_fx_daily` (ingest/backfill) · `fx_ingestion_health` (readiness, read-only).
 - Flag `PORTFOLIO_FX_CONVERSION_ENABLED` (settings/env; **default OFF**).
+- F-8 grants: `ops/fx/grants_fx_observation.sql` (SELECT-only runtime + INSERT-only ingestion writer).
+
+## ENABLEMENT PRECONDITION (F-8) — BLOCKING
+Do not enable the flag in production until the runtime-role cutover is complete and `ops/fx/grants_fx_observation.sql`
+is applied (SELECT-only web runtime; INSERT-only governed ingestion writer). The append-only triggers hold
+against every ordinary role, but a superuser/owner app identity can still TRUNCATE or bypass triggers — so DB
+immutability is only authoritative once the runtime identity is separated (ADR-0058).
 
 ## State invariants
 - Flag OFF ⇒ dashboard byte-identical to today (`NullFxRateSource`); payload has no `fx` key.
@@ -16,11 +25,15 @@ separate governed GO. Nothing here runs automatically; the request path never co
 
 ## Procedure (each step needs a separate GO)
 
-### 1. Apply the migration (schema only)
+### 1. Apply the migrations (schema + append-only triggers)
 ```
-python manage.py migrate analytics 0002_dailyfxobservation
+python manage.py migrate analytics 0003_fx_observation_append_only_triggers
 ```
-Additive table only; no data change. Reversible: `migrate analytics 0001`.
+Additive table + check constraints (0002) and BEFORE UPDATE/DELETE triggers (0003); no data change. Reversal is
+explicit and audit-safe: `migrate analytics 0002` drops only the triggers (rows preserved); `migrate analytics
+0001` drops the table (destructive — export first; see Rollback). Forward/rollback rehearsed on a disposable
+PostgreSQL DB (triggers installed, UPDATE/DELETE blocked, rows survive trigger-reversal). Apply
+`ops/fx/grants_fx_observation.sql` as part of the F-8 cutover.
 
 ### 2. Seed / backfill the rate store (flag still OFF)
 Live (keyless, HTTPS) — ingests the full `DEXUSUK` history, idempotent:

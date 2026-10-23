@@ -102,6 +102,12 @@ class DailyFxObservation(models.Model):
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="superseded_by",
         help_text="The revision this one corrects, where applicable (informational; every prior revision retained).")
     acceptance_state = models.CharField(max_length=16, choices=STATE_CHOICES, default=STATE_ACCEPTED)
+    # Reproducibility evidence (F3): enough to reconstruct/verify the parsed observation later — never a checksum
+    # alone. ``raw_line`` is the exact source CSV line; ``source_url`` the exact retrieval endpoint.
+    source_url = models.CharField(max_length=512, blank=True, default="",
+                                  help_text="Exact source URL this observation was retrieved from (reproducibility).")
+    raw_line = models.CharField(max_length=256, blank=True, default="",
+                                help_text="Exact source CSV line (e.g. '2026-01-05,1.2710') to reconstruct/verify.")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -121,6 +127,19 @@ class DailyFxObservation(models.Model):
             models.UniqueConstraint(
                 fields=["source", "base_currency", "quote_currency", "effective_date", "revision_number"],
                 name="uniq_fx_obs_revision_number"),
+            # DB-level validation (F4) — authoritative, not merely application-side.
+            models.CheckConstraint(check=~models.Q(base_currency=models.F("quote_currency")),
+                                   name="fx_obs_base_ne_quote"),
+            models.CheckConstraint(check=models.Q(base_currency="GBP", quote_currency="USD"),
+                                   name="fx_obs_supported_pair"),          # the only governed pair in scope
+            models.CheckConstraint(check=models.Q(rate__gt=0), name="fx_obs_rate_positive"),
+            models.CheckConstraint(check=models.Q(revision_number__gte=1), name="fx_obs_revision_positive"),
+            models.CheckConstraint(check=models.Q(acceptance_state__in=["ACCEPTED", "REJECTED"]),
+                                   name="fx_obs_state_valid"),
+            models.CheckConstraint(check=models.Q(source__in=["FED_H10", "BOE", "ECB"]),
+                                   name="fx_obs_source_valid"),
+            models.CheckConstraint(check=models.Q(observation_checksum__regex=r"^[0-9a-f]{64}$"),
+                                   name="fx_obs_checksum_format"),
         ]
 
     def __str__(self):

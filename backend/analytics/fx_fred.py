@@ -44,6 +44,7 @@ class ParsedObservation:
     effective_date: date
     rate: Decimal              # exact, unrounded published value
     observation_checksum: str  # sha256 of the canonical tuple (idempotency / revision key)
+    raw_line: str = ""         # exact source CSV line (reproducibility evidence — never a checksum alone)
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,7 @@ def parse_dexusuk_csv(text: str) -> ParseResult:
             rejected.append(RejectedRow(raw_date, raw_val, "implausible"))
             continue
         accepted.append(ParsedObservation(
-            eff, rate, observation_checksum(SOURCE, SERIES, BASE, QUOTE, eff, rate)))
+            eff, rate, observation_checksum(SOURCE, SERIES, BASE, QUOTE, eff, rate),
+            raw_line=f"{raw_date},{raw_val}"))
     return ParseResult(accepted=accepted, rejected=rejected, missing_count=missing,
                        row_count=rows, payload_sha256=payload_sha)

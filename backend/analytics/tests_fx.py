@@ -1,15 +1,16 @@
 """analytics.tests_fx — GBP->USD portfolio conversion (ADR-0058, DARK). Fixture-driven; NO live-FRED dependency.
 
-Covers the PD Phase-4 matrix: weekday/weekend/holiday selection, year boundary, leap day, 7-day staleness
-boundary, empty store, fetch failure, malformed/wrong-series/implausible rejection, duplicate idempotency, an
-immutable revision, deterministic latest-accepted-revision selection, GBP->USD calculation, mixed aggregation,
-deterministic half-even rounding, API+UI provenance, flag-OFF identity, flag-ON honest-partial, runtime
-immutability, and no external network call from a dashboard request.
+Covers the PD Phase-4 matrix plus the F1–F5 hardening: DB-enforced append-only (negative controls for ORM/raw
+UPDATE+DELETE and a SELECT-only runtime role), Europe/London previous-day boundary (today/future never selected,
+DST, carry-forward, 7-day staleness from the target date), revision/concurrency + raw-line reproducibility,
+DB-level check constraints, Decimal half-even rounding, API/UI provenance, flag-OFF identity + zero FX queries,
+no network from a dashboard request, and no FX exception breaking the summary.
 """
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_tz
 from decimal import Decimal
 from io import StringIO
 from unittest import mock
@@ -17,15 +18,15 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase, override_settings
+from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from rest_framework.test import APIClient
 
 from analytics import fx_fred as FRED
-from analytics import fx_source as SRC
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
-from analytics.fx_source import StoredFredFxRateSource, fx_conversion_enabled, select_observation
+from analytics.fx_source import StoredFredFxRateSource, governed_today, select_observation
 from analytics.models import DailyFxObservation
 from trading.models import BrokerServer, TradingAccount
 
@@ -47,17 +48,32 @@ def _obs(eff: date, rate, *, rev: int = 1, state: str = DailyFxObservation.STATE
         base_currency=base, quote_currency=quote, effective_date=eff, rate=r, source=source,
         source_series=FRED.SERIES, retrieved_at=retrieved or timezone.now(),
         observation_checksum=FRED.observation_checksum(source, FRED.SERIES, base, quote, eff, r),
-        revision_number=rev, acceptance_state=state)
+        revision_number=rev, acceptance_state=state, source_url="https://example/fredgraph.csv?id=DEXUSUK",
+        raw_line=f"{eff.isoformat()},{r}")
+
+
+def _valid_kwargs(**overrides):
+    r = Decimal("1.2700")
+    eff = overrides.pop("effective_date", date(2026, 1, 5))
+    base = overrides.get("base_currency", "GBP")
+    quote = overrides.get("quote_currency", "USD")
+    kw = dict(base_currency=base, quote_currency=quote, effective_date=eff, rate=r, source=FRED.SOURCE,
+              source_series=FRED.SERIES, retrieved_at=timezone.now(),
+              observation_checksum=FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, base, quote, eff, r),
+              revision_number=1, acceptance_state=DailyFxObservation.STATE_ACCEPTED)
+    kw.update(overrides)
+    return kw
 
 
 # ── Parser + validation ───────────────────────────────────────────────────────────────────────────────────────
 class FxParserTests(TestCase):
-    def test_parses_valid_and_skips_missing(self):
+    def test_parses_valid_skips_missing_and_keeps_raw_line(self):
         res = FRED.parse_dexusuk_csv("DATE,DEXUSUK\n2026-01-01,.\n2026-01-02,1.2650\n")
         self.assertEqual(len(res.accepted), 1)
         self.assertEqual(res.missing_count, 1)
         self.assertEqual(res.accepted[0].effective_date, date(2026, 1, 2))
         self.assertEqual(res.accepted[0].rate, Decimal("1.2650"))
+        self.assertEqual(res.accepted[0].raw_line, "2026-01-02,1.2650")
 
     def test_wrong_series_raises(self):
         with self.assertRaises(FRED.FxParseError):
@@ -70,135 +86,275 @@ class FxParserTests(TestCase):
     def test_rejects_nonnumeric_zero_negative_implausible(self):
         res = FRED.parse_dexusuk_csv(
             "DATE,DEXUSUK\n2026-01-02,abc\n2026-01-05,0\n2026-01-06,-1.2\n2026-01-07,42.0\n2026-01-08,1.27\n")
-        self.assertEqual(len(res.accepted), 1)                      # only the plausible 1.27
+        self.assertEqual(len(res.accepted), 1)
         self.assertEqual(res.accepted[0].rate, Decimal("1.27"))
         self.assertEqual({r.reason for r in res.rejected}, {"nonnumeric", "nonpositive", "implausible"})
 
-    def test_checksum_identical_for_same_value_differs_on_revision(self):
+    def test_checksum_per_observation_scope(self):
         a = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 2), Decimal("1.2650"))
-        b = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 2), Decimal("1.2650"))
-        c = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 2), Decimal("1.2651"))
-        self.assertEqual(a, b)
-        self.assertNotEqual(a, c)
+        same = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 2), Decimal("1.2650"))
+        revised = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 2), Decimal("1.2651"))
+        other_day = FRED.observation_checksum(FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 3), Decimal("1.2650"))
+        self.assertEqual(a, same)
+        self.assertNotEqual(a, revised)   # a revised value for the SAME day differs
+        self.assertNotEqual(a, other_day)  # checksum is per-observation (date-scoped), not whole-payload
 
 
-# ── Deterministic selection (previous-day + carry-forward + staleness) ──────────────────────────────────────────
+# ── F2: governed timezone + previous-day + staleness ────────────────────────────────────────────────────────────
 class FxSelectionTests(TestCase):
-    def test_ordinary_weekday(self):
-        _obs(date(2026, 1, 5), "1.2710")                              # Mon
-        sel = select_observation("GBP", "USD", date(2026, 1, 6))      # Tue -> target Mon 01-05
-        self.assertIsNotNone(sel); self.assertEqual(sel.effective_date, date(2026, 1, 5))
+    def test_governed_today_uses_europe_london_dst(self):
+        # Summer (BST = UTC+1): 23:30 UTC is already the NEXT London day — proves the governed tz shifts the date.
+        self.assertEqual(governed_today(datetime(2026, 6, 15, 23, 30, tzinfo=dt_tz.utc)), date(2026, 6, 16))
+        # Winter (GMT = UTC): same instant-of-day stays the same London date.
+        self.assertEqual(governed_today(datetime(2026, 1, 15, 23, 30, tzinfo=dt_tz.utc)), date(2026, 1, 15))
+        # Across the spring-forward boundary (last Sunday March 2026 = 29th): still the correct London date.
+        self.assertEqual(governed_today(datetime(2026, 3, 29, 1, 30, tzinfo=dt_tz.utc)), date(2026, 3, 29))
 
-    def test_saturday_and_sunday_carry_forward(self):
-        _obs(date(2026, 1, 2), "1.2650")                              # Fri
-        sat = select_observation("GBP", "USD", date(2026, 1, 3))      # Sat -> target Fri 01-02
-        sun = select_observation("GBP", "USD", date(2026, 1, 4))      # Sun -> target Sat (absent) -> Fri
-        self.assertEqual(sat.effective_date, date(2026, 1, 2))
-        self.assertEqual(sun.effective_date, date(2026, 1, 2))
+    def test_today_exists_but_yesterday_selected(self):
+        _obs(date(2026, 1, 5), "1.2700")   # yesterday
+        _obs(date(2026, 1, 6), "9.9900")   # TODAY — must never be selected
+        sel = select_observation("GBP", "USD", date(2026, 1, 6))
+        self.assertEqual(sel.effective_date, date(2026, 1, 5))
+        self.assertEqual(sel.rate, Decimal("1.2700"))
 
-    def test_holiday_carry_forward(self):
-        _obs(date(2026, 1, 16), "1.30")                               # Fri before a long holiday weekend
-        # Mon 01-19 (US MLK holiday) dashboard load -> target Sun 01-18 (absent) -> carry forward to Fri 01-16.
-        sel = select_observation("GBP", "USD", date(2026, 1, 19))
+    def test_future_dated_never_selected(self):
+        _obs(date(2026, 1, 10), "1.30")    # future relative to current_date 2026-01-06
+        self.assertIsNone(select_observation("GBP", "USD", date(2026, 1, 6)))
+
+    def test_monday_selects_friday(self):
+        _obs(date(2026, 1, 2), "1.2650")   # Fri
+        self.assertEqual(select_observation("GBP", "USD", date(2026, 1, 5)).effective_date, date(2026, 1, 2))  # Mon
+
+    def test_tuesday_after_monday_us_holiday(self):
+        _obs(date(2026, 1, 16), "1.30")    # Fri; Mon 01-19 holiday absent
+        sel = select_observation("GBP", "USD", date(2026, 1, 20))  # Tue -> target Mon 01-19 (absent) -> Fri 01-16
         self.assertEqual(sel.effective_date, date(2026, 1, 16))
-        self.assertEqual(sel.age_days, 3)
 
     def test_year_boundary_carry_forward(self):
         _obs(date(2025, 12, 31), "1.26")
-        # 2026-01-02 load, 2026-01-01 is a holiday (absent) -> carry forward across the year boundary.
-        sel = select_observation("GBP", "USD", date(2026, 1, 2))
+        sel = select_observation("GBP", "USD", date(2026, 1, 2))  # 01-01 holiday absent -> carry across year
         self.assertEqual(sel.effective_date, date(2025, 12, 31))
 
     def test_leap_day(self):
-        _obs(date(2028, 2, 29), "1.28")                               # 2028 is a leap year
-        sel = select_observation("GBP", "USD", date(2028, 3, 1))      # target 2028-02-29
-        self.assertEqual(sel.effective_date, date(2028, 2, 29))
+        _obs(date(2028, 2, 29), "1.28")
+        self.assertEqual(select_observation("GBP", "USD", date(2028, 3, 1)).effective_date, date(2028, 2, 29))
 
-    def test_staleness_boundary_exactly_seven_days_ok(self):
+    def test_seven_day_boundary_from_target_ok(self):
+        # current_date 2026-01-09 -> target 2026-01-08; eff 2026-01-01 -> age = 7 (within limit).
         _obs(date(2026, 1, 1), "1.25")
-        sel = select_observation("GBP", "USD", date(2026, 1, 8))      # age 7 -> within limit
+        sel = select_observation("GBP", "USD", date(2026, 1, 9))
         self.assertIsNotNone(sel); self.assertEqual(sel.age_days, 7)
 
-    def test_older_than_seven_days_refused(self):
+    def test_older_than_seven_days_from_target_refused(self):
+        # current_date 2026-01-10 -> target 2026-01-09; eff 2026-01-01 -> age = 8 -> refused.
         _obs(date(2026, 1, 1), "1.25")
-        self.assertIsNone(select_observation("GBP", "USD", date(2026, 1, 9)))  # age 8 -> refused
+        self.assertIsNone(select_observation("GBP", "USD", date(2026, 1, 10)))
 
     def test_empty_store_unavailable(self):
         self.assertIsNone(select_observation("GBP", "USD", date(2026, 1, 6)))
 
-    def test_latest_accepted_revision_selected_deterministically(self):
+    def test_latest_accepted_revision_selected(self):
         _obs(date(2026, 1, 5), "1.2700", rev=1)
-        _obs(date(2026, 1, 5), "1.2750", rev=2)                       # revised value -> higher accepted revision
+        _obs(date(2026, 1, 5), "1.2750", rev=2)
         sel = select_observation("GBP", "USD", date(2026, 1, 6))
-        self.assertEqual(sel.revision_number, 2)
-        self.assertEqual(sel.rate, Decimal("1.2750"))
+        self.assertEqual(sel.revision_number, 2); self.assertEqual(sel.rate, Decimal("1.2750"))
 
     def test_rejected_revision_not_selected(self):
         _obs(date(2026, 1, 5), "1.2700", rev=1, state=DailyFxObservation.STATE_ACCEPTED)
         _obs(date(2026, 1, 5), "9.9900", rev=2, state=DailyFxObservation.STATE_REJECTED)
         sel = select_observation("GBP", "USD", date(2026, 1, 6))
-        self.assertEqual(sel.revision_number, 1)                     # latest ACCEPTED, not the rejected rev2
-        self.assertEqual(sel.rate, Decimal("1.2700"))
+        self.assertEqual(sel.revision_number, 1); self.assertEqual(sel.rate, Decimal("1.2700"))
 
 
-# ── Stored rate source + provenance + no-network ────────────────────────────────────────────────────────────────
+# ── F1: database-enforced append-only (negative controls) ───────────────────────────────────────────────────────
+class FxAppendOnlyTriggerTests(TestCase):
+    def test_orm_bulk_update_blocked(self):
+        o = _obs(date(2026, 1, 5), "1.27")
+        with self.assertRaises(DatabaseError), transaction.atomic():
+            DailyFxObservation.objects.filter(pk=o.pk).update(rate=Decimal("9.99"))
+
+    def test_orm_delete_blocked(self):
+        o = _obs(date(2026, 1, 5), "1.27")
+        with self.assertRaises(DatabaseError), transaction.atomic():
+            DailyFxObservation.objects.filter(pk=o.pk).delete()
+
+    def test_raw_update_blocked(self):
+        o = _obs(date(2026, 1, 5), "1.27")
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as c:
+            c.execute("UPDATE analytics_dailyfxobservation SET rate = 9.99 WHERE id = %s", [o.pk])
+
+    def test_raw_delete_blocked(self):
+        o = _obs(date(2026, 1, 5), "1.27")
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as c:
+            c.execute("DELETE FROM analytics_dailyfxobservation WHERE id = %s", [o.pk])
+
+    def test_insert_new_revision_allowed(self):
+        _obs(date(2026, 1, 5), "1.2700", rev=1)
+        _obs(date(2026, 1, 5), "1.2750", rev=2)   # a correction is an INSERT — permitted
+        self.assertEqual(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5)).count(), 2)
+
+
+class FxRuntimeGrantTests(TransactionTestCase):
+    """F1: prove the F-8 SELECT-only runtime boundary — a non-owner role granted only SELECT cannot
+    INSERT/UPDATE/DELETE/TRUNCATE the FX store. Skipped (not failed) where the test DB user cannot CREATE ROLE;
+    the grant boundary is then exercised under the F-8 cutover (ops/fx/grants_fx_observation.sql)."""
+
+    def test_select_only_role_cannot_mutate_or_truncate(self):
+        o = _obs(date(2026, 1, 5), "1.27")
+        role = "guvfx_fx_ro_test"
+        with connection.cursor() as c:
+            try:
+                c.execute("DROP ROLE IF EXISTS %s" % role)
+                c.execute("CREATE ROLE %s NOLOGIN" % role)
+            except Exception:
+                self.skipTest("test DB user cannot CREATE ROLE; SELECT-only boundary verified under F-8 grants")
+            try:
+                c.execute("GRANT SELECT ON analytics_dailyfxobservation TO %s" % role)
+                c.execute("SET ROLE %s" % role)
+                c.execute("SELECT count(*) FROM analytics_dailyfxobservation")
+                self.assertGreaterEqual(c.fetchone()[0], 1)                      # SELECT allowed
+                for sql in [
+                    "INSERT INTO analytics_dailyfxobservation (base_currency) VALUES ('GBP')",
+                    "UPDATE analytics_dailyfxobservation SET rate = 9.99 WHERE id = %d" % o.pk,
+                    "DELETE FROM analytics_dailyfxobservation WHERE id = %d" % o.pk,
+                    "TRUNCATE analytics_dailyfxobservation",
+                ]:
+                    with self.assertRaises(Exception):
+                        c.execute(sql)
+                    c.execute("RESET ROLE"); c.execute("SET ROLE %s" % role)     # clear any aborted state
+            finally:
+                c.execute("RESET ROLE")
+                c.execute("REVOKE ALL ON analytics_dailyfxobservation FROM %s" % role)
+                c.execute("DROP ROLE IF EXISTS %s" % role)
+
+
+# ── F3: revision + concurrency contract ─────────────────────────────────────────────────────────────────────────
+class FxRevisionConcurrencyTests(TestCase):
+    def test_duplicate_identical_observation_is_idempotent(self):
+        o1 = _obs(date(2026, 1, 5), "1.27", rev=1)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            # Same checksum (identical published value) + a new revision number still collides on the checksum
+            # uniqueness — an identical observation can never create a second row.
+            DailyFxObservation.objects.create(**_valid_kwargs(
+                effective_date=date(2026, 1, 5), rate=Decimal("1.2700"),
+                observation_checksum=o1.observation_checksum, revision_number=2))
+
+    def test_revision_number_cannot_collide(self):
+        _obs(date(2026, 1, 5), "1.2700", rev=1)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            DailyFxObservation.objects.create(**_valid_kwargs(
+                effective_date=date(2026, 1, 5), rate=Decimal("1.2750"),
+                observation_checksum=FRED.observation_checksum(
+                    FRED.SOURCE, FRED.SERIES, "GBP", "USD", date(2026, 1, 5), Decimal("1.2750")),
+                revision_number=1))   # a different value but the SAME revision number -> rejected
+
+    def test_raw_line_reconstructs_observation(self):
+        out = StringIO()
+        call_command("fetch_fx_daily", fixture=FIXTURE, stdout=out)
+        row = DailyFxObservation.objects.get(effective_date=date(2026, 1, 2))
+        self.assertEqual(row.raw_line, "2026-01-02,1.2650")
+        self.assertTrue(row.source_url.startswith("fixture:"))
+        d, v = row.raw_line.split(",")
+        self.assertEqual(date.fromisoformat(d), row.effective_date)
+        self.assertEqual(Decimal(v), row.rate)                      # reproduce the parsed observation from raw_line
+
+    def test_unrelated_changed_row_does_not_revise_target(self):
+        import tempfile
+        a = "DATE,DEXUSUK\n2026-01-05,1.2600\n2026-01-06,1.2700\n"
+        b = "DATE,DEXUSUK\n2026-01-05,1.2600\n2026-01-06,1.2800\n"   # only 01-06 changed
+        for payload in (a, b):
+            with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
+                fh.write(payload); path = fh.name
+            call_command("fetch_fx_daily", fixture=path, stdout=StringIO())
+        self.assertEqual(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 5)).count(), 1)  # no false revision
+        self.assertEqual(DailyFxObservation.objects.filter(effective_date=date(2026, 1, 6)).count(), 2)  # legitimately revised
+
+
+# ── F4: database check constraints ──────────────────────────────────────────────────────────────────────────────
+class FxConstraintTests(TestCase):
+    def _assert_rejected(self, **overrides):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            DailyFxObservation.objects.create(**_valid_kwargs(**overrides))
+
+    def test_base_equals_quote_rejected(self):
+        self._assert_rejected(base_currency="USD", quote_currency="USD")
+
+    def test_unsupported_pair_rejected(self):
+        self._assert_rejected(base_currency="EUR", quote_currency="USD")
+
+    def test_nonpositive_rate_rejected(self):
+        self._assert_rejected(rate=Decimal("0"))
+
+    def test_nonpositive_revision_rejected(self):
+        self._assert_rejected(revision_number=0)
+
+    def test_bad_source_rejected(self):
+        self._assert_rejected(source="HEARSAY")
+
+    def test_bad_state_rejected(self):
+        self._assert_rejected(acceptance_state="MAYBE")
+
+    def test_bad_checksum_format_rejected(self):
+        self._assert_rejected(observation_checksum="not-a-sha256")
+
+
+# ── Stored source + provenance + no-network ─────────────────────────────────────────────────────────────────────
 class FxStoredSourceTests(TestCase):
     def test_get_rate_gbp_usd_and_identity(self):
         _obs(date(2026, 1, 5), "1.2710")
-        src = StoredFredFxRateSource(as_of=date(2026, 1, 6))
+        src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
         fx = src.get_rate("GBP", "USD")
         self.assertIsNotNone(fx); self.assertAlmostEqual(fx.rate, 1.2710, places=6)
         self.assertEqual(fx.as_of, "2026-01-05")
         self.assertEqual(src.get_rate("USD", "USD").rate, 1.0)
 
     def test_get_rate_unavailable_returns_none(self):
-        src = StoredFredFxRateSource(as_of=date(2026, 1, 6))
-        self.assertIsNone(src.get_rate("GBP", "USD"))                 # empty store
-        self.assertIsNone(src.get_rate("EUR", "USD"))                 # unsupported pair
+        src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
+        self.assertIsNone(src.get_rate("GBP", "USD"))
+        self.assertIsNone(src.get_rate("EUR", "USD"))
 
     def test_provenance_available_and_unavailable(self):
-        src0 = StoredFredFxRateSource(as_of=date(2026, 1, 6))
-        p0 = src0.provenance()
-        self.assertFalse(p0["available"]); self.assertEqual(p0["source"], "FED_H10")
+        p0 = StoredFredFxRateSource(current_date=date(2026, 1, 6)).provenance()
+        self.assertFalse(p0["available"]); self.assertEqual(p0["governed_tz"], "Europe/London")
         _obs(date(2026, 1, 5), "1.2710")
-        src1 = StoredFredFxRateSource(as_of=date(2026, 1, 6))
-        p1 = src1.provenance()
+        p1 = StoredFredFxRateSource(current_date=date(2026, 1, 6)).provenance()
         self.assertTrue(p1["available"]); self.assertEqual(p1["rate"], "1.271")
-        self.assertEqual(p1["effective_date"], "2026-01-05")
-        self.assertEqual(p1["direction"], "USD_PER_GBP")
+        self.assertEqual(p1["effective_date"], "2026-01-05"); self.assertEqual(p1["target_date"], "2026-01-05")
+        self.assertTrue(p1["source_url"])
 
     def test_no_external_network_call_from_request_path(self):
         _obs(date(2026, 1, 5), "1.2710")
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("network call in request path!")):
-            src = StoredFredFxRateSource(as_of=date(2026, 1, 6))
-            self.assertIsNotNone(src.get_rate("GBP", "USD"))         # DB-only; never touches the network
+            src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
+            self.assertIsNotNone(src.get_rate("GBP", "USD"))
             self.assertTrue(src.provenance()["available"])
 
+    def test_fx_read_failure_degrades_to_unavailable_not_raise(self):
+        # F5: no FX fault can break the dashboard — a failed select degrades to honest unavailable.
+        with mock.patch("analytics.fx_source.select_observation", side_effect=RuntimeError("db boom")):
+            src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
+            self.assertIsNone(src.get_rate("GBP", "USD"))           # no exception escapes
+            self.assertFalse(src.provenance()["available"])
 
-# ── Fetch/backfill command (idempotent, safe) ───────────────────────────────────────────────────────────────────
+
+# ── Fetch/backfill command ──────────────────────────────────────────────────────────────────────────────────────
 class FxCommandTests(TestCase):
     def _run(self, **kw):
-        out = StringIO()
-        call_command("fetch_fx_daily", stdout=out, **kw)
-        return out.getvalue()
+        out = StringIO(); call_command("fetch_fx_daily", stdout=out, **kw); return out.getvalue()
 
     def test_fixture_ingest_then_idempotent(self):
         self._run(fixture=FIXTURE)
-        self.assertEqual(DailyFxObservation.objects.count(), 3)      # 3 accepted (1 missing "." skipped)
-        self._run(fixture=FIXTURE)                                   # re-run same payload
-        self.assertEqual(DailyFxObservation.objects.count(), 3)      # idempotent: no new rows
-
-    def test_revised_value_creates_new_immutable_revision(self):
+        self.assertEqual(DailyFxObservation.objects.count(), 3)
         self._run(fixture=FIXTURE)
-        base = DailyFxObservation.objects.filter(effective_date=date(2026, 1, 2)).count()
-        self.assertEqual(base, 1)
-        revised = "DATE,DEXUSUK\n2026-01-02,1.2699\n"                 # same date, revised value
+        self.assertEqual(DailyFxObservation.objects.count(), 3)
+
+    def test_revised_value_creates_new_revision(self):
+        self._run(fixture=FIXTURE)
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
-            fh.write(revised); path = fh.name
+            fh.write("DATE,DEXUSUK\n2026-01-02,1.2699\n"); path = fh.name
         self._run(fixture=path)
         revs = DailyFxObservation.objects.filter(effective_date=date(2026, 1, 2)).order_by("revision_number")
-        self.assertEqual(revs.count(), 2)
         self.assertEqual([r.revision_number for r in revs], [1, 2])
         self.assertEqual(revs[1].rate, Decimal("1.2699"))
 
@@ -220,10 +376,9 @@ class FxCommandTests(TestCase):
         self.assertEqual(DailyFxObservation.objects.count(), 0)
 
 
-# ── Decimal half-even rounding + GBP calculation + mixed aggregation ────────────────────────────────────────────
+# ── Decimal half-even rounding + GBP calc + mixed aggregation ───────────────────────────────────────────────────
 class FxAggregateRoundingTests(TestCase):
     def test_money_half_even_banker_rounding(self):
-        # Exact binary fractions so the decimal repr is unambiguous — ties resolve to the EVEN digit.
         self.assertEqual(FX._money_half_even(0.125), 0.12)
         self.assertEqual(FX._money_half_even(0.375), 0.38)
         self.assertEqual(FX._money_half_even(0.625), 0.62)
@@ -231,51 +386,51 @@ class FxAggregateRoundingTests(TestCase):
 
     def test_gbp_to_usd_calculation_and_rounding(self):
         _obs(date(2026, 1, 5), "1.3400")
-        src = StoredFredFxRateSource(as_of=date(2026, 1, 6))
+        src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
         agg = FX.aggregate_usd([{"account_id": 1, "amount": 446.19, "currency": "GBP"}], src)
-        self.assertEqual(agg.state, FX.STATE_OK)                     # converted
-        self.assertEqual(agg.as_dict()["total_usd"], 597.89)         # 446.19 * 1.34 = 597.8946 -> 597.89
+        self.assertEqual(agg.state, FX.STATE_OK)
+        self.assertEqual(agg.as_dict()["total_usd"], 597.89)       # 446.19 * 1.34
 
     def test_mixed_gbp_usd_both_convert_when_rate_present(self):
         _obs(date(2026, 1, 5), "1.3000")
-        src = StoredFredFxRateSource(as_of=date(2026, 1, 6))
+        src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
         agg = FX.aggregate_usd([{"account_id": 1, "amount": 100.0, "currency": "USD"},
                                 {"account_id": 2, "amount": 100.0, "currency": "GBP"}], src)
-        self.assertEqual(agg.state, FX.STATE_OK)                     # both included — not PARTIAL
-        self.assertEqual(agg.as_dict()["total_usd"], 230.0)          # 100 + 100*1.30
-        self.assertEqual(agg.as_dict()["included_count"], 2)
+        self.assertEqual(agg.state, FX.STATE_OK)
+        self.assertEqual(agg.as_dict()["total_usd"], 230.0); self.assertEqual(agg.as_dict()["included_count"], 2)
 
     def test_mixed_gbp_usd_partial_when_no_rate(self):
-        src = StoredFredFxRateSource(as_of=date(2026, 1, 6))         # empty store
+        src = StoredFredFxRateSource(current_date=date(2026, 1, 6))
         agg = FX.aggregate_usd([{"account_id": 1, "amount": 100.0, "currency": "USD"},
                                 {"account_id": 2, "amount": 100.0, "currency": "GBP"}], src)
-        self.assertEqual(agg.state, FX.STATE_PARTIAL)               # GBP excluded honestly
-        self.assertEqual(agg.as_dict()["total_usd"], 100.0)
-        self.assertEqual(agg.as_dict()["excluded_count"], 1)
+        self.assertEqual(agg.state, FX.STATE_PARTIAL)
+        self.assertEqual(agg.as_dict()["total_usd"], 100.0); self.assertEqual(agg.as_dict()["excluded_count"], 1)
 
 
-# ── View / API provenance + flag gating ─────────────────────────────────────────────────────────────────────────
+# ── View / API provenance + flag gating + F5 proofs ─────────────────────────────────────────────────────────────
 class FxViewTests(TestCase):
     def setUp(self):
         self.u = U.objects.create_user(username="fxv", email="fxv@x.invalid", password="x")
         srv, _ = BrokerServer.objects.get_or_create(server_name="Pepperstone-Demo-fxv")
         TradingAccount.objects.create(user=self.u, name="P", broker_name="Pepperstone",
                                       account_number=_uniq(), is_demo=True, is_active=True, broker_server=srv)
+        from rest_framework.test import APIClient
         self.client = APIClient(); self.client.force_authenticate(self.u)
 
-    def test_flag_off_has_no_fx_key(self):
-        r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
+    def test_flag_off_has_no_fx_key_and_zero_fx_queries(self):
+        with CaptureQueriesContext(connection) as ctx:
+            r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
         self.assertEqual(r.status_code, 200)
-        self.assertNotIn("fx", r.json())                            # byte-compatible with today
+        self.assertNotIn("fx", r.json())
+        self.assertFalse(any("dailyfxobservation" in q["sql"].lower() for q in ctx.captured_queries))
 
     @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1")
     def test_flag_on_surfaces_provenance(self):
-        _obs(date.today().replace(day=1), "1.2710")                 # a recent accepted obs (<=7d of some as_of)
-        _obs(timezone.now().date(), "1.2710")                       # ensure a within-staleness obs exists
+        _obs(governed_today() - timedelta(days=1), "1.2710")    # yesterday (governed tz) -> selected
         r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
         self.assertEqual(r.status_code, 200)
         fx = r.json().get("fx")
-        self.assertIsNotNone(fx); self.assertTrue(fx["enabled"])
+        self.assertIsNotNone(fx); self.assertTrue(fx["available"])
         self.assertEqual(fx["source"], "FED_H10"); self.assertEqual(fx["source_series"], "DEXUSUK")
 
     @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1")
@@ -285,15 +440,32 @@ class FxViewTests(TestCase):
         fx = r.json().get("fx")
         self.assertIsNotNone(fx); self.assertTrue(fx["enabled"]); self.assertFalse(fx["available"])
 
+    @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1")
+    def test_no_network_from_summary_request(self):
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("network!")):
+            r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
+        self.assertEqual(r.status_code, 200)
 
-# ── Runtime immutability (append-only) ──────────────────────────────────────────────────────────────────────────
-class FxImmutabilityTests(TestCase):
-    def test_delete_blocked(self):
+    @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1")
+    def test_fx_exception_does_not_break_summary(self):
+        with mock.patch("analytics.fx_source.select_observation", side_effect=RuntimeError("boom")):
+            r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
+        self.assertEqual(r.status_code, 200)   # summary still settles; honest unavailable
+
+    @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1")
+    def test_equity_curve_endpoint_ok_under_flag(self):
+        r = self.client.get("/api/analytics/portfolio/equity-curve/?scope=ALL")
+        self.assertEqual(r.status_code, 200)   # curve stays on the USD-only source (point-in-time)
+
+
+# ── Runtime immutability (app-layer guard; DB triggers are authoritative) ───────────────────────────────────────
+class FxModelGuardTests(TestCase):
+    def test_delete_blocked_app_layer(self):
         o = _obs(date(2026, 1, 5), "1.27")
         with self.assertRaises(ValueError):
             o.delete()
 
-    def test_inplace_edit_of_immutable_field_blocked(self):
+    def test_inplace_edit_blocked_app_layer(self):
         o = _obs(date(2026, 1, 5), "1.27")
         o.rate = Decimal("9.99")
         with self.assertRaises(ValueError):

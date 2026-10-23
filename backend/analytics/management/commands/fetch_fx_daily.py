@@ -41,7 +41,7 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Parse + report; write nothing.")
 
     def handle(self, *args, **opts):
-        text, origin = self._read_payload(opts)
+        text, source_url = self._read_payload(opts)
         try:
             result = FRED.parse_dexusuk_csv(text)
         except FRED.FxParseError as e:
@@ -52,13 +52,13 @@ class Command(BaseCommand):
         new_rows = dup_rows = 0
         if not opts["dry_run"]:
             for obs in result.accepted:
-                if self._append_revision(obs, now):
+                if self._append_revision(obs, now, source_url):
                     new_rows += 1
                 else:
                     dup_rows += 1
 
         summary = {
-            "origin": origin, "series": FRED.SERIES, "direction": FRED.DIRECTION,
+            "origin": source_url, "series": FRED.SERIES, "direction": FRED.DIRECTION,
             "payload_sha256_prefix": result.payload_sha256[:12],
             "rows": result.row_count, "accepted": len(result.accepted),
             "missing": result.missing_count, "rejected": len(result.rejected),
@@ -85,13 +85,13 @@ class Command(BaseCommand):
             raise CommandError(f"fetch failed ({type(e).__name__}); store unchanged")
         if len(raw) > _MAX_BYTES:
             raise CommandError("response exceeds size limit; store unchanged")
-        return raw.decode("utf-8", "ignore"), "fred_https"
+        return raw.decode("utf-8", "ignore"), url
 
     # ── append-only revision write ──
-    def _append_revision(self, obs, now) -> bool:
+    def _append_revision(self, obs, now, source_url) -> bool:
         """Insert a new ACCEPTED revision for this observation, or skip if the IDENTICAL payload is already stored.
         Returns True when a row was written, False when it was a duplicate. The group rows are locked so revision
-        numbering is serialised (single-writer daily job; the unique constraints are the backstop)."""
+        numbering is serialised (single-writer daily job; the unique constraints are the DB backstop)."""
         with transaction.atomic():
             grp = list(DailyFxObservation.objects.select_for_update().filter(
                 source=FRED.SOURCE, base_currency=FRED.BASE, quote_currency=FRED.QUOTE,
@@ -103,5 +103,6 @@ class Command(BaseCommand):
                 base_currency=FRED.BASE, quote_currency=FRED.QUOTE, effective_date=obs.effective_date,
                 rate=obs.rate, source=FRED.SOURCE, source_series=FRED.SERIES, retrieved_at=now,
                 observation_checksum=obs.observation_checksum, revision_number=next_rev,
-                acceptance_state=DailyFxObservation.STATE_ACCEPTED)
+                acceptance_state=DailyFxObservation.STATE_ACCEPTED,
+                source_url=source_url, raw_line=obs.raw_line)
             return True

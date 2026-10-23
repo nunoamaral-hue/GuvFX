@@ -5,6 +5,11 @@
 - **Decision class:** **Amber** — it changes *what the dashboard sums* (a GBP account's equity/floating-P&L
   would enter the USD portfolio total instead of being honestly excluded). Requires this recorded decision
   before any enablement.
+- **ENABLEMENT PRECONDITION (F-8):** FX enablement is **BLOCKED until the runtime-role cutover is complete** (the
+  web runtime connects as a SELECT-only non-owner identity). DB triggers make the store append-only against
+  every ordinary role, but while the application still connects as a superuser/owner identity that identity can
+  TRUNCATE or bypass triggers; meaningful database immutability is therefore not claimed until F-8 (or an
+  equivalent authoritative boundary) is proven. See `ops/fx/grants_fx_observation.sql`.
 - **Supersedes/relates:** extends `analytics.portfolio_fx` (the `NullFxRateSource` honest-PARTIAL behaviour;
   see [Portfolio honest reporting]/#550 and the R2 bounded-read fix #556). Does not change Copy Trader,
   Withdrawal Intelligence, MT5 bridges, workers or schedulers.
@@ -33,15 +38,17 @@ When the flag is OFF (default) behaviour is **byte-identical** to today.
   **never** auto-substituted into a Fed-based total; switching the portfolio source is a separate governed
   decision.
 
-### Selection rule (prior-day + carry-forward + staleness)
-For a dashboard load on date `D`:
-1. Target the **previous calendar day** `D−1`.
-2. If that date has no accepted observation (weekend/holiday/gap), **carry forward** the most recent *earlier*
-   accepted observation.
-3. **Refuse** (no conversion) if the selected observation's effective date is **more than 7 calendar days**
-   before `D`.
-4. When refused, keep today's honest **PARTIAL/UNAVAILABLE** behaviour.
-5. Never interpolate, fabricate, or substitute zero.
+### Selection rule (governed timezone + prior-day + carry-forward + staleness)
+1. Determine the current calendar date in the **governed timezone `Europe/London`** (DST-correct; overridable via
+   `PORTFOLIO_FX_BUSINESS_TZ` for a future platform-wide business-date policy).
+2. `target_date = current_date − 1 calendar day`.
+3. Select the latest **ACCEPTED** Fed H.10 observation with `effective_date <= target_date` — so an observation
+   dated **today or in the future is never selected**; carry **forward** the most recent earlier accepted
+   observation across weekends/holidays/gaps.
+4. **Refuse** (no conversion) when the selected observation is **more than 7 calendar days older than the
+   `target_date`**.
+5. When refused, keep today's honest **PARTIAL/UNAVAILABLE** behaviour. Never interpolate, fabricate, or
+   substitute zero.
 
 ### Revision handling (append-only)
 `DailyFxObservation` is **append-only and immutable**. A source may revise a published rate; each revision is a
@@ -52,9 +59,21 @@ For a dashboard load on date `D`:
 - **Selection:** the effective observation for a date is the **latest ACCEPTED revision**; every prior revision
   is retained; REJECTED revisions are kept for audit but never selected. The selected `observation_id` +
   `revision_number` are surfaced in provenance/audit.
-- **Runtime immutability:** the request path never writes this model; model-level guards block in-place edits of
-  immutable fields and all deletes. The **authoritative** control is the DB runtime-role grant (the app role has
-  no UPDATE/DELETE on the table — ops/erasure runtime-role separation).
+- **Runtime immutability (DB-enforced, F1):** migration `0003` installs PostgreSQL **BEFORE UPDATE and BEFORE
+  DELETE row triggers** that reject every UPDATE/DELETE for all ordinary roles (including the owner) — so
+  `QuerySet.update()`/`delete()`, `save(force_update=True)` and raw SQL all fail, not merely the app-layer
+  `save()`/`delete()` guards. A correction is INSERT-only. **TRUNCATE** is not trigger-blocked (a `BEFORE
+  TRUNCATE` trigger would break Django's `TransactionTestCase` flush, which issues a multi-table TRUNCATE);
+  TRUNCATE is instead owner-only in PostgreSQL, and under F-8 the SELECT-only runtime role (a non-owner without
+  the TRUNCATE privilege) cannot TRUNCATE/UPDATE/DELETE/INSERT — proven by a role-based negative-control test and
+  `ops/fx/grants_fx_observation.sql`. The authoritative immutability boundary is this trigger layer **plus** the
+  F-8 grant model; see the enablement precondition above.
+- **DB-level constraints (F4):** `CheckConstraint`s enforce supported pair (GBP/USD), `base != quote`, positive
+  rate, `revision_number >= 1`, valid `source`/`acceptance_state`, and a 64-hex `observation_checksum` — at the
+  database, not merely in application code.
+- **Reproducibility (F3):** each row stores `source_url` and the exact `raw_line` (e.g. `2026-01-05,1.2710`) in
+  addition to effective date / series / retrieved_at / exact rate — enough to reconstruct and verify the parsed
+  observation later, never a checksum alone.
 
 ### Rounding
 Displayed portfolio money is quantised to **2 dp with Decimal `ROUND_HALF_EVEN`** (`portfolio_fx._money_half_even`).
