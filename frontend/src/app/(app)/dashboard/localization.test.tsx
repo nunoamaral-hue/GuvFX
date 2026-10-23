@@ -2,9 +2,9 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
-const { apiFetch, locale } = vi.hoisted(() => ({
-  locale: { value: "ja" as "en" | "ja" },
-  apiFetch: vi.fn(async (path: string) => {
+const { apiFetch, locale, defaultApiFetch } = vi.hoisted(() => {
+  const locale = { value: "ja" as "en" | "ja" };
+  const defaultApiFetch = async (path: string) => {
     if (path.startsWith("/api/reliability/trading-health")) return { ok: true, state: "HEALTHY", can_trade: true };
     if (path.startsWith("/api/strategies/strategies/")) return [{ id: 12, name: "Wayond WIM Strategy", symbol_universe: "XAUUSD", is_active: true }];
     if (path.startsWith("/api/trading/accounts/")) return [{ id: 28, name: "Hosted Workspace", broker_name: "Hosted Workspace", account_number: "1302575", is_active: true }];
@@ -49,8 +49,9 @@ const { apiFetch, locale } = vi.hoisted(() => ({
       warnings: [],
     };
     return {};
-  }),
-}));
+  };
+  return { locale, defaultApiFetch, apiFetch: vi.fn(defaultApiFetch) };
+});
 
 vi.mock("@/lib/api", () => ({ apiFetch }));
 vi.mock("@/components/AppShell", () => ({ useLang: () => locale.value }));
@@ -62,6 +63,7 @@ import DashboardPage from "./page";
 describe("Dashboard authenticated EN/JA presentation", () => {
   beforeEach(() => {
     apiFetch.mockClear();
+    apiFetch.mockImplementation(defaultApiFetch);   // restore the default so a per-test override never leaks
     window.localStorage.clear();
     window.localStorage.setItem("guvfx.focus.symbol", "XAUUSD");
     // View the specific account (not the default ALL-portfolio scope) so the per-account identity + metrics render;
@@ -109,5 +111,19 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     await waitFor(() => expect(container.textContent).toContain("Buyers and sellers are balanced and price is spending more time inside established ranges than breaking away from them."));
     expect(container.textContent).toContain("Based on 3 similar historical observations · average past quality 63%.");
     expect(apiFetch.mock.calls.some(([path]) => String(path).includes("account_id=28"))).toBe(true);
+  });
+
+  it("shows an honest 'Couldn't load' when the ALL-portfolio summary fails (never an indefinite blank —)", async () => {
+    // Pre-existing defect the honest UI exposed: a failed/timed-out ALL summary left `portfolio` null — identical
+    // to still-pending — so equity/daily/status sat on "—" forever. The summaryError flag distinguishes failed from
+    // pending and renders an explicit "Couldn't load" (no fabricated zero).
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "ALL");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) throw new Error("network_unreachable");
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Couldn't load"));
   });
 });

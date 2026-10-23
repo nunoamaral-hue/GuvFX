@@ -362,6 +362,9 @@ function SectionCard({ icon, title, info, children, action, style }: { icon: str
 }
 
 const SCOPE_LS = "guvfx.dashboard.scope";
+// Client-side deadline for the portfolio summary read (fans out across accounts server-side). Bounds the pending
+// state so a slow/unreachable account can never leave the equity/daily/performance cards blank ("—") forever.
+const SUMMARY_TIMEOUT_MS = 18_000;
 
 export default function DashboardPage() {
   const lang = useLang();
@@ -380,15 +383,23 @@ export default function DashboardPage() {
   // Portfolio summary for the current scope. The payload echoes its scope, so we only render it when it matches the
   // selected scope (a stale-scope response can never drive the header). No synchronous reset in the effect body.
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
+  // Distinguish "still loading" from "load failed/timed out": both leave `portfolio` null, so without this a
+  // failed/timed-out ALL summary is indistinguishable from pending and the cards sit on "—" indefinitely. We
+  // record the SCOPE that failed (set only inside the async then/catch — never synchronously in the effect body,
+  // which React discourages) and derive the flag by matching the current scope, so a stale error from a previous
+  // scope can never show for a newly-selected one.
+  const [summaryErrorScope, setSummaryErrorScope] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    apiFetch<PortfolioSummary>(`/api/analytics/portfolio/summary/?scope=${encodeURIComponent(scope)}`, {})
-      .then((p) => { if (live) setPortfolio(p || null); })
-      .catch(() => { if (live) setPortfolio(null); });
+    const forScope = scope;
+    apiFetch<PortfolioSummary>(`/api/analytics/portfolio/summary/?scope=${encodeURIComponent(scope)}`, {}, SUMMARY_TIMEOUT_MS)
+      .then((p) => { if (live) { setPortfolio(p || null); setSummaryErrorScope(null); } })
+      .catch(() => { if (live) { setPortfolio(null); setSummaryErrorScope(forScope); } });
     return () => { live = false; };
   }, [scope]);
   // Only trust the summary when it belongs to the current scope (guards the scope-change window).
   const portfolioForScope = portfolio && String(portfolio.scope) === String(scope) ? portfolio : null;
+  const summaryError = summaryErrorScope === scope;   // the CURRENT scope's summary fetch failed/timed out
   // Truthful equity curve from the durable snapshot ledger (ALL = portfolio curve; account = that account's curve).
   // Empty/one-point ledger -> state BUILDING/SINGLE so the UI shows "history is building", never a fake trend.
   type EquityCurve = { state?: string; count?: number; points?: { equity_usd?: number; equity?: number | null }[] };
@@ -677,12 +688,17 @@ export default function DashboardPage() {
               // (equityRef != null) is broker-connected and being observed, even with no reliability snapshot
               // (so trading-health is UNKNOWN). Show the truthful "Monitoring only" instead of the alarming
               // "Status unavailable" — it asserts observation, NOT trade capability (execution stays separate).
-              const monitoringOnly = !isAll && equityRef != null;
+              // ALL scope: once the portfolio summary has loaded (healthy accounts observed), the portfolio IS being
+              // monitored — show "Monitoring only" + the account mix below, never a blanket "Status unavailable"
+              // that hides healthy accounts. A failed/timed-out ALL summary shows an honest "Couldn't load".
+              const monitoringOnly = (!isAll && equityRef != null) || (isAll && portfolioForScope != null);
+              const summaryFailed = isAll && summaryError && !portfolioForScope;
               const view =
                 st === "HEALTHY" && tradingHealth?.can_trade ? { text: "Able to trade", c: "#86efac", dot: "#34d399", known: true }
                 : st === "DEGRADED" || st === "IMPAIRED" ? { text: "Attention needed", c: "#fbbf24", dot: "#fbbf24", known: true }
                 : st === "DOWN" || (tradingHealth?.ok && tradingHealth?.can_trade === false) ? { text: "Unavailable", c: "#fca5a5", dot: "#f87171", known: true }
                 : monitoringOnly ? { text: "Monitoring only", c: "#9fb4d6", dot: "#60a5fa", known: true }
+                : summaryFailed ? { text: (lang === "ja" ? "読み込めませんでした" : "Couldn't load"), c: "#fca5a5", dot: "#f87171", known: true }
                 : { text: "Status unavailable", c: "#8b9bb4", dot: "#64748b", known: false };
               return (
                 <div title={(tradingHealth?.reasons || []).length ? localizeBackendCustomerText(lang, tradingHealth?.reasons?.[0], "account-detail") : undefined} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: view.known ? "0.95rem" : "0.85rem", fontWeight: view.known ? 600 : 500, color: view.c }}>
@@ -732,7 +748,9 @@ export default function DashboardPage() {
               return (
                 <div style={{ fontSize: unavailable ? "0.8rem" : "0.95rem", fontWeight: 600, color: unavailable ? "#9fb4d6" : "#f0f6ff" }}
                      title={isAll ? view?.title : undefined}>
-                  {isAll ? (portfolioForScope ? view!.text : "—") : money(lang, equityRef, perf?.currency)}
+                  {isAll
+                    ? (portfolioForScope ? view!.text : (summaryError ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—"))
+                    : money(lang, equityRef, perf?.currency)}
                 </div>
               );
             })()}
@@ -753,7 +771,9 @@ export default function DashboardPage() {
               return (<>
                 <div style={microLabel}><i className={`ti ti-trending-${dp != null && dp < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL{isAll ? " (realized)" : ""}</div>
                 <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
-                  {dp == null ? "—" : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  {dp == null
+                    ? (isAll && summaryError && !portfolioForScope ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—")
+                    : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
               </>);
             })()}

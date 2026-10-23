@@ -41,7 +41,9 @@ export type OpenTrade = {
 };
 
 export type OpenTradesResult = {
-  reporting_currency: "USD";
+  // Usually "USD"; for a single non-USD account scope the backend reports that account's OBSERVED native
+  // currency (e.g. "GBP") so the floating-P/L card can render honestly in the account's own currency.
+  reporting_currency: string;
   scope: string;
   generated_at: string;
   count: number;                 // full number of open positions (the floating-P/L total covers all of them)

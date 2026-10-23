@@ -13,6 +13,7 @@ per-tenant bridge via injected fetchers (the views wire the identity-firewalled,
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, List, Optional
 
 from django.utils import timezone
@@ -23,6 +24,14 @@ from trading.models import Trade, TradingAccount
 logger = logging.getLogger("guvfx.portfolio")
 
 _MAGIC_BASE = 1_000_000_000   # magic = base + StrategyAssignment.id (Phase-A allocator)
+
+# Overall wall-clock budget for the per-account LIVE-read fan-out (open positions + balances). Each account's
+# bridge read is individually capped (urlopen timeout=10 in views_trade_history), but without an OVERALL deadline
+# a down account makes the whole dashboard request pay a fresh ~10s per account in series. This budget bounds the
+# total: once elapsed, remaining accounts are marked STALE (the same partial-result path as a failed read, never
+# dropped) so the dashboard settles promptly with the slow/unreachable accounts named. Kept below the client's
+# fetch timeout so the browser receives the bounded partial rather than aborting.
+_AGG_BUDGET_SECONDS = 12.0
 
 # ``source_stage`` is a COMMENT-TAG CLASSIFIER inferred at ingest (TEST/LIVE/UNKNOWN — default UNKNOWN when the
 # broker deal comment carries no recognised tag). It is NOT a performance dimension: virtually every real
@@ -267,17 +276,28 @@ def _strategy_for_magic(account, magic) -> str:
     return getattr(getattr(asn, "strategy", None), "name", "") or ""
 
 
-def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRateSource):
+def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRateSource,
+                   deadline: Optional[float] = None):
     """Live open positions across ``accounts`` with account attribution. ``fetch_positions(account)`` returns the
     broker position list (or None on failure). Position identity is ACCOUNT-SCOPED (``<account_id>:<ticket>``) so
     ticket 123 on two brokers never collides. Floating P/L is normalised to USD (PARTIAL if a currency can't
-    convert). Returns ``(rows, per_account_open)`` where per_account_open maps account_id -> {open_count,
-    open_pl_usd, open_pl_basis, stale}."""
+    convert). ``deadline`` (``time.monotonic()`` seconds) bounds the fan-out: once passed, remaining accounts are
+    marked STALE without another live read (defaults to a fresh ``_AGG_BUDGET_SECONDS`` budget). Returns ``(rows,
+    per_account_open)`` where per_account_open maps account_id -> {open_count, open_pl_usd, open_pl_basis, stale}."""
     rows: List[dict] = []
     per_account: dict = {}
+    if deadline is None:
+        deadline = time.monotonic() + _AGG_BUDGET_SECONDS
     for a in accounts:
         cur = FX.normalise_currency(getattr(a, "account_currency", None))
         res = None
+        # Overall wall-clock budget: once the deadline is passed, do NOT pay another ~10s per-account live-read
+        # timeout — mark the remaining accounts stale (identical to a failed read) so the dashboard settles in
+        # bounded time with the slow/unreachable accounts named, never silently dropped.
+        if time.monotonic() > deadline:
+            per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE",
+                                 "stale": True, "pl_items": []}
+            continue
         try:
             res = fetch_positions(a)
         except Exception:  # noqa: BLE001 — a broker read must never break the dashboard
@@ -356,7 +376,11 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     if err is not None:
         return None, err
 
-    open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source)
+    # One shared wall-clock budget across BOTH live-read passes (open positions + balances) so the whole summary
+    # settles in bounded time even when an account's bridge is down; accounts not reached in time read stale.
+    deadline = time.monotonic() + _AGG_BUDGET_SECONDS
+    open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source,
+                                         deadline=deadline)
 
     bal_items, eq_items = [], []
     acct_payloads = []
@@ -365,11 +389,14 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     #                               path's currency exclusion so metrics.basis agrees with balance_usd.basis (H1).
     for a in accounts:
         snap = None
-        try:
-            snap = fetch_balance(a)
-        except Exception:  # noqa: BLE001
-            logger.warning("portfolio: balance fetch raised for account %s", a.id)
-            snap = None
+        if time.monotonic() > deadline:
+            snap = None  # budget exhausted — skip the ~10s live balance read; this account reads stale
+        else:
+            try:
+                snap = fetch_balance(a)
+            except Exception:  # noqa: BLE001
+                logger.warning("portfolio: balance fetch raised for account %s", a.id)
+                snap = None
         cur = FX.normalise_currency((snap or {}).get("currency") or getattr(a, "account_currency", None))
         if cur != FX.USD:
             observed_nonusd_ids.add(a.id)

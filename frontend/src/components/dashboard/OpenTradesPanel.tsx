@@ -18,6 +18,10 @@ import type { OpenTradesResult, OpenTrade } from "@/types/portfolio";
  */
 const POLL_MS = 30_000;
 const PATH = "/api/analytics/portfolio/open-trades/";
+// Client-side deadline for the open-trades read. The backend fan-out is bounded server-side (portfolio
+// aggregation budget), but a slow/half-open upstream must never leave this panel on "Loading positions…"
+// forever — on timeout the fetch aborts, the catch marks it stale, and the panel settles to "unavailable".
+const FETCH_TIMEOUT_MS = 18_000;
 
 type Lang = "en" | "ja";
 const STR = {
@@ -42,7 +46,9 @@ function money(n: number | null | undefined, currency = "USD"): string {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
   const sign = n > 0 ? "+" : n < 0 ? "−" : "";
   const abs = Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${sign}${currency === "USD" ? "$" : ""}${abs}`;
+  // USD renders with a leading "$"; any other currency is labelled with its code (e.g. "+12.45 GBP") so a
+  // non-USD account's figure is never presented without a currency, nor mislabelled as USD.
+  return currency === "USD" ? `${sign}$${abs}` : `${sign}${abs} ${currency}`;
 }
 
 const card: React.CSSProperties = {
@@ -75,7 +81,7 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
     const forScope = scope;
     inFlight.current = true;
     try {
-      const res = await apiFetch<OpenTradesResult>(`${PATH}?scope=${encodeURIComponent(scope)}`, {});
+      const res = await apiFetch<OpenTradesResult>(`${PATH}?scope=${encodeURIComponent(scope)}`, {}, FETCH_TIMEOUT_MS);
       // Drop if superseded (a newer load/scope started) OR the scope changed under us (race safety).
       if (gen !== genRef.current || scopeRef.current !== forScope) return;
       if (res && Array.isArray(res.trades)) {
@@ -118,6 +124,13 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
 
   const trades: OpenTrade[] = data?.trades ?? [];
   const floating = data?.open_pl_usd;
+  // Single non-USD account scope: render the floating total in the account's OWN native currency (sum of the
+  // per-position native P/L) instead of asserting a USD figure the NullFxRateSource cannot produce. For ALL / USD
+  // scope keep the honest USD aggregate (null → "—", never "$0.00 USD"). Fixes a GBP account showing "$0.00 USD".
+  const reportingCcy = data?.reporting_currency || "USD";
+  const singleNonUsd = scope !== "ALL" && reportingCcy !== "USD";
+  const nativeTotal = singleNonUsd ? trades.reduce((s, t) => s + (t.pl_native ?? 0), 0) : null;
+  const floatTotalForColor = singleNonUsd ? nativeTotal : (floating?.total_usd ?? null);
   const agoSec = updatedAt ? Math.max(0, Math.round((Date.now() - updatedAt) / 1000)) : null;
   // M4: never-loaded (mount / just after a scope change) is NOT the same as a confirmed empty result.
   const loading = data === null && !stale;                 // fetch in flight, nothing to show yet
@@ -135,8 +148,10 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
         <div style={meta}>
           {STR.floating[L]}{" "}
-          <span style={{ color: floating?.total_usd == null ? "#9fb4d6" : floating.total_usd >= 0 ? "#5ad19a" : "#e88", fontWeight: 600 }}>
-            {money(floating?.total_usd ?? null)} USD
+          <span style={{ color: floatTotalForColor == null ? "#9fb4d6" : floatTotalForColor >= 0 ? "#5ad19a" : "#e88", fontWeight: 600 }}>
+            {singleNonUsd
+              ? money(nativeTotal, reportingCcy)
+              : (floating?.total_usd == null ? "—" : `${money(floating.total_usd)} USD`)}
           </span>
           {floating?.basis === "PARTIAL" && (
             // Attribute the PARTIAL basis to its ACTUAL reason: an unreadable account (stale_read — live positions

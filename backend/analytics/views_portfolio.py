@@ -89,9 +89,21 @@ class PortfolioOpenTradesView(APIView):
         open_pl, stale_ids = PF.portfolio_open_pl(per_open, _rate_source())
         total_count = len(rows)
         truncated = total_count > _MAX_OPEN_ROWS
+        # Single-account scope: report that account's OBSERVED native currency (from its latest equity snapshot —
+        # the authoritative source; the model's account_currency is unpopulated in prod) so the client renders the
+        # floating total honestly in the account's own currency instead of asserting USD. ALL scope, or an account
+        # with no snapshot yet, reports USD (unchanged).
+        reporting_currency = FX.USD
+        if scope.strip().upper() != "ALL" and len(accounts) == 1:
+            from analytics.models import AccountEquitySnapshot
+            observed = (AccountEquitySnapshot.objects
+                        .filter(trading_account_id=accounts[0].id)
+                        .order_by("-observed_at")
+                        .values_list("account_currency", flat=True).first())
+            reporting_currency = FX.normalise_currency(observed)
         from django.utils import timezone
         return Response({
-            "reporting_currency": FX.USD, "scope": scope, "generated_at": timezone.now().isoformat(),
+            "reporting_currency": reporting_currency, "scope": scope, "generated_at": timezone.now().isoformat(),
             "count": total_count,                       # full number of open positions (floating-P/L covers all)
             "truncated": truncated,                     # True when the row LIST below was capped at _MAX_OPEN_ROWS
             "open_pl_usd": open_pl.as_dict(),
