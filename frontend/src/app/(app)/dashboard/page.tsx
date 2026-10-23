@@ -407,7 +407,7 @@ export default function DashboardPage() {
   useEffect(() => {
     let live = true;
     const forScope = scope;
-    apiFetch<EquityCurve>(`/api/analytics/portfolio/equity-curve/?scope=${encodeURIComponent(scope)}`, {})
+    apiFetch<EquityCurve>(`/api/analytics/portfolio/equity-curve/?scope=${encodeURIComponent(scope)}`, {}, SUMMARY_TIMEOUT_MS)
       .then((d) => { if (live) setEqCurve({ forScope, data: d || {} }); })
       .catch(() => { if (live) setEqCurve({ forScope, data: {} }); });
     return () => { live = false; };
@@ -623,7 +623,14 @@ export default function DashboardPage() {
   // shows 0%. hasHistory is the single sufficiency gate.
   const hasHistory = (snap.totalTrades ?? 0) > 0;
 
-  const trend = !hasHistory ? { label: "Insufficient data", color: "#64748b", badge: "gray" as const, icon: "minus" }
+  // ALL-scope summary read failed/timed out (never loaded for the current scope). Drives an explicit "Couldn't
+  // load" across the dependent cards — including the Performance panel, which must settle to a failed state and
+  // never sit indefinitely on "Loading…" (requirement: performance never remains on Loading…). A VALID partial
+  // (portfolioForScope set) is NOT a failure: it renders the healthy accounts, so summaryFailed stays false.
+  const summaryFailed = isAll && summaryError && !portfolioForScope;
+
+  const trend = summaryFailed ? { label: (lang === "ja" ? "読み込めませんでした" : "Couldn't load"), color: "#fca5a5", badge: "red" as const, icon: "alert-triangle" }
+    : !hasHistory ? { label: "Insufficient data", color: "#64748b", badge: "gray" as const, icon: "minus" }
     : netPnl == null ? { label: "No data", color: "#64748b", badge: "gray" as const, icon: "minus" }
     : netPnl > 0 && rising ? { label: "Improving", color: "#86efac", badge: "green" as const, icon: "trending-up" }
     : netPnl < 0 ? { label: "Needs Attention", color: "#fca5a5", badge: "red" as const, icon: "trending-down" }
@@ -692,7 +699,6 @@ export default function DashboardPage() {
               // monitored — show "Monitoring only" + the account mix below, never a blanket "Status unavailable"
               // that hides healthy accounts. A failed/timed-out ALL summary shows an honest "Couldn't load".
               const monitoringOnly = (!isAll && equityRef != null) || (isAll && portfolioForScope != null);
-              const summaryFailed = isAll && summaryError && !portfolioForScope;
               const view =
                 st === "HEALTHY" && tradingHealth?.can_trade ? { text: "Able to trade", c: "#86efac", dot: "#34d399", known: true }
                 : st === "DEGRADED" || st === "IMPAIRED" ? { text: "Attention needed", c: "#fbbf24", dot: "#fbbf24", known: true }
@@ -822,6 +828,7 @@ export default function DashboardPage() {
             </div>
             <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 2, whiteSpace: "nowrap" }}>
               {netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, snap.currency), snap.totalTrades ?? undefined)
+                : summaryFailed ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load")
                 : snap.loaded ? "No observed trades yet" : "Loading…"}
             </div>
           </div>

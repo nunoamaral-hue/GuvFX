@@ -239,7 +239,7 @@ class ObservedCurrencyTests(TestCase):
         _closed_trade(usd, 10.0); _closed_trade(eur, 999.0)
         bal = {usd.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
                eur.id: {"balance": 800, "equity": 800, "currency": "EUR"}}   # observed EUR
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
                                       fetch_positions=_fake_positions({usd.id: [], eur.id: []}),
                                       rate_source=FX.NullFxRateSource())
         m = payload["aggregate"]["metrics"]
@@ -255,7 +255,7 @@ class ObservedCurrencyTests(TestCase):
         u = _user("oc2"); a = _acct(u)
         _closed_trade(a, 9.65)
         bal = {a.id: {"balance": 50009.65, "equity": 50009.65, "currency": "USD"}}
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: bal.get(x.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: bal.get(x.id),
                                       fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
         m = payload["aggregate"]["metrics"]
         self.assertEqual(m["basis"], "USD"); self.assertEqual(m["excluded_accounts"], [])
@@ -307,8 +307,9 @@ class ScopeTests(TestCase):
 
 # ── Open positions (multi-account, isolation) ────────────────────────────────────────────────────────────────
 def _fake_positions(mapping):
-    """mapping: {account_id: [position dicts]}; returns a fetch_positions(account) fake."""
-    def _f(account):
+    """mapping: {account_id: [position dicts]}; returns a fetch_positions(account, *, timeout) fake. The
+    aggregation passes a deadline-aware ``timeout``; the fake accepts and ignores it (no real socket)."""
+    def _f(account, timeout=None):
         return mapping.get(account.id)
     return _f
 
@@ -359,7 +360,7 @@ class OpenTradesTests(TestCase):
         u = _user("o_deadline"); a1 = _acct(u); a2 = _acct(u); a3 = _acct(u)
         calls = []
 
-        def fetch(account):
+        def fetch(account, timeout=None):
             calls.append(account.id)
             return [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1, "profit": 10.0, "magic": 0}]
 
@@ -414,7 +415,7 @@ class SummaryTests(TestCase):
                a2.id: {"balance": 2000, "equity": 1990, "currency": "USD"},
                a3.id: {"balance": 500, "equity": 500, "currency": "USD"}}
         payload, err = PF.build_summary(
-            u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+            u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
             fetch_positions=_fake_positions({}), rate_source=FX.NullFxRateSource())
         self.assertIsNone(err)
         self.assertEqual(payload["account_count"], 3)
@@ -423,7 +424,7 @@ class SummaryTests(TestCase):
 
     def test_balance_fetch_failure_marks_account_stale(self):
         u = _user("b2"); a = _acct(u)
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: None,
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: None,
                                       fetch_positions=_fake_positions({}), rate_source=FX.NullFxRateSource())
         self.assertTrue(payload["accounts"][0]["stale"])
 
@@ -432,20 +433,81 @@ class SummaryTests(TestCase):
         a1 = _acct(u); a2 = _acct(u)
         bal = {a1.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
                a2.id: {"balance": 800, "equity": 800, "currency": "GBP"}}
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
                                       fetch_positions=_fake_positions({}), rate_source=FX.NullFxRateSource())
         agg = payload["aggregate"]["balance_usd"]
         self.assertEqual(agg["total_usd"], 1000.0); self.assertEqual(agg["basis"], "PARTIAL")
 
     def test_summary_carries_daily_basis_and_stale_accounts(self):
         u = _user("b4"); a = _acct(u)
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: {"balance": 1, "equity": 1, "currency": "USD"},
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: {"balance": 1, "equity": 1, "currency": "USD"},
                                       fetch_positions=_fake_positions({a.id: []}),   # healthy: reachable, no positions
                                       rate_source=FX.NullFxRateSource())
         self.assertEqual(payload["aggregate"]["daily_realized_pnl_basis"], "USD")
         self.assertEqual(payload["stale_accounts"], [])           # reachable -> nothing dropped
         self.assertIn("metrics", payload["aggregate"])
         self.assertEqual(payload["aggregate"]["metrics"]["basis"], "USD")
+
+
+# ── R1 incident regression: a hung bridge must not starve healthy accounts or blow the client deadline ────────
+class BoundedReadFanOutTests(TestCase):
+    """The R1 incident: ONE hung bridge (TradersWay/46 in prod, ~10s per live read) left the whole ALL-scope
+    summary slower than the client's deadline AND starved the healthy accounts' balance reads (they were skipped
+    as 'budget exhausted' -> stale -> equity UNAVAILABLE). Root cause: the summary does TWO serial live passes
+    (positions, then balances) and, with no per-read cap, the hung account cost the full timeout in EACH pass.
+    The fix gives every live read a deadline-aware timeout capped at _PER_READ_TIMEOUT_SECONDS, with
+    2*cap < _AGG_BUDGET_SECONDS so the balance pass still has budget for the fast accounts after the hung one
+    fails. This test DISCRIMINATES: on the pre-fix code the fetchers received no timeout (None), the hung account
+    consumed the budget across both passes, the healthy balances were skipped (stale), and the simulated clock
+    blew past the budget — so every assertion below would fail."""
+
+    def test_hung_account_does_not_starve_healthy_or_blow_budget(self):
+        u = _user("bf1")
+        hung = _acct(u); h1 = _acct(u); h2 = _acct(u)
+        # A mutable simulated monotonic clock shared by portfolio.py and the fakes. Each live read advances the
+        # clock by min(latency, timeout) and RAISES once it reaches its timeout — exactly how urlopen(timeout=t)
+        # behaves against a half-open bridge. hung_latency (8s) models a bridge slower than the per-read cap but,
+        # when UNCAPPED (timeout=None -> the fetchers' own 10s default), still "succeeds" late and eats the budget.
+        clock = {"t": 1000.0}
+        seen = []
+
+        def _read(account, timeout):
+            seen.append(timeout)
+            t = timeout if timeout is not None else 10.0
+            lat = 8.0 if account.id == hung.id else 0.05
+            if lat > t:
+                clock["t"] += t
+                raise TimeoutError("simulated hung bridge")
+            clock["t"] += lat
+
+        def bal(account, timeout=None):
+            _read(account, timeout)
+            return {"balance": 100.0, "equity": 100.0, "currency": "USD"}
+
+        def pos(account, timeout=None):
+            _read(account, timeout)
+            return []
+
+        # hung is FIRST (worst case: read before the healthy accounts in BOTH passes).
+        with mock.patch("analytics.portfolio.resolve_scope", return_value=([hung, h1, h2], None)), \
+                mock.patch("analytics.portfolio.time.monotonic", side_effect=lambda: clock["t"]):
+            payload, err = PF.build_summary(u, "ALL", fetch_balance=bal, fetch_positions=pos,
+                                            rate_source=FX.NullFxRateSource())
+        self.assertIsNone(err)
+        # (1) Every live read got a bounded, deadline-aware timeout — never uncapped (pre-fix passed None).
+        self.assertTrue(seen)
+        self.assertTrue(all(t is not None and 0 < t <= PF._PER_READ_TIMEOUT_SECONDS for t in seen))
+        # (2) Total simulated wall-clock stayed within the budget (pre-fix: ~2x the hung reads blows past it).
+        self.assertLessEqual(clock["t"] - 1000.0, PF._AGG_BUDGET_SECONDS)
+        acct = {a["account_id"]: a for a in payload["accounts"]}
+        # (3) The hung account reads stale; the HEALTHY accounts are NOT starved.
+        self.assertTrue(acct[hung.id]["stale"])
+        self.assertFalse(acct[h1.id]["stale"]); self.assertFalse(acct[h2.id]["stale"])
+        self.assertEqual(acct[h1.id]["equity_native"], 100.0); self.assertEqual(acct[h2.id]["equity_native"], 100.0)
+        # (4) The USD aggregate is a measured PARTIAL over the healthy subset — never UNAVAILABLE, never a fake 0.
+        eq = payload["aggregate"]["equity_usd"]
+        self.assertEqual(eq["state"], "PARTIAL")
+        self.assertEqual(eq["included_count"], 2); self.assertEqual(eq["excluded_count"], 1)
 
 
 # ── Endpoints (ownership + default scope) ────────────────────────────────────────────────────────────────────
@@ -565,7 +627,7 @@ class BuildSummaryHonestStateTests(TestCase):
         _closed_trade(g1, 123.0); _closed_trade(g2, 456.0)       # real GBP trades that must NOT surface as USD
         bal = {g1.id: {"balance": 1000, "equity": 1010, "currency": "GBP"},
                g2.id: {"balance": 2000, "equity": 2005, "currency": "GBP"}}
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
                                       fetch_positions=_fake_positions({g1.id: [], g2.id: []}), rate_source=FX.NullFxRateSource())
         agg = payload["aggregate"]
         self.assertIsNone(agg["balance_usd"]["total_usd"]); self.assertEqual(agg["balance_usd"]["state"], "UNAVAILABLE")
@@ -581,7 +643,7 @@ class BuildSummaryHonestStateTests(TestCase):
         # Scenario: missing/stale snapshot — the only account's live balance read fails. The balance aggregate is
         # UNAVAILABLE with a SAFE category (no credentials/account-number/login), and the account is marked stale.
         u = _user("hs2"); a = _acct(u)
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: None,
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: None,
                                       fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
         bal = payload["aggregate"]["balance_usd"]
         self.assertIsNone(bal["total_usd"]); self.assertEqual(bal["state"], "UNAVAILABLE")
@@ -592,7 +654,7 @@ class BuildSummaryHonestStateTests(TestCase):
         # Scenario: stale observation — the only account's live POSITIONS read fails. The floating-P/L aggregate is
         # UNAVAILABLE with the stale_observation category (distinct safe code from the currency/missing ones).
         u = _user("hs3"); a = _acct(u)
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: {"balance": 10, "equity": 10, "currency": "USD"},
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: {"balance": 10, "equity": 10, "currency": "USD"},
                                       fetch_positions=_fake_positions({}),   # None -> stale
                                       rate_source=FX.NullFxRateSource())
         opl = payload["aggregate"]["open_pl_usd"]
@@ -606,7 +668,7 @@ class BuildSummaryHonestStateTests(TestCase):
         _closed_trade(usd, 10.0); _closed_trade(gbp, 999.0)
         bal = {usd.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
                gbp.id: {"balance": 800, "equity": 800, "currency": "GBP"}}
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
                                       fetch_positions=_fake_positions({usd.id: [], gbp.id: []}), rate_source=FX.NullFxRateSource())
         agg = payload["aggregate"]
         self.assertEqual(agg["balance_usd"]["total_usd"], 1000.0); self.assertEqual(agg["balance_usd"]["state"], "PARTIAL")
@@ -619,7 +681,7 @@ class BuildSummaryHonestStateTests(TestCase):
         # authoritative data exists — never blanked, never forced through USD (the USD aggregate is Unavailable).
         u = _user("hs5"); gbp = _acct(u)
         payload, err = PF.build_summary(u, str(gbp.id),
-                                        fetch_balance=lambda a: {"balance": 812.34, "equity": 820.0, "currency": "GBP"},
+                                        fetch_balance=lambda a, timeout=None: {"balance": 812.34, "equity": 820.0, "currency": "GBP"},
                                         fetch_positions=_fake_positions({gbp.id: []}), rate_source=FX.NullFxRateSource())
         self.assertIsNone(err)
         row = payload["accounts"][0]
@@ -634,7 +696,7 @@ class BuildSummaryHonestStateTests(TestCase):
         u = _user("hs6"); a = _acct(u)
         _closed_trade(a, 9.65)
         payload, _ = PF.build_summary(u, "ALL",
-                                      fetch_balance=lambda x: {"balance": 50009.65, "equity": 50009.65, "currency": "USD"},
+                                      fetch_balance=lambda x, timeout=None: {"balance": 50009.65, "equity": 50009.65, "currency": "USD"},
                                       fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
         agg = payload["aggregate"]
         self.assertEqual(agg["balance_usd"]["total_usd"], 50009.65); self.assertEqual(agg["balance_usd"]["state"], "OK")
@@ -645,7 +707,7 @@ class BuildSummaryHonestStateTests(TestCase):
         # Requirement 4: exclusion reasons are safe CATEGORY CODES only — never a login/account-number/credential.
         u = _user("hs7"); gbp = _acct(u, number="1302599")
         payload, _ = PF.build_summary(u, "ALL",
-                                      fetch_balance=lambda a: {"balance": 1, "equity": 1, "currency": "GBP"},
+                                      fetch_balance=lambda a, timeout=None: {"balance": 1, "equity": 1, "currency": "GBP"},
                                       fetch_positions=_fake_positions({gbp.id: []}), rate_source=FX.NullFxRateSource())
         import json as _json
         blob = _json.dumps(payload["aggregate"]["balance_usd"]["unconverted"])

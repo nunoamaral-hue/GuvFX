@@ -126,4 +126,54 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     const { container } = render(<DashboardPage />);
     await waitFor(() => expect(container.textContent || "").toContain("Couldn't load"));
   });
+
+  it("settles the Performance panel to a failed state — never an indefinite 'Loading…' — when the ALL summary fails", async () => {
+    // The Performance Trend panel had NO failed state: on a failed ALL summary its label fell to "Insufficient
+    // data" and its subline to "Loading…" indefinitely (Sponsor: performance must never remain on Loading…). The
+    // fix settles both to "Couldn't load". Discriminating: the pre-fix states below must be ABSENT after settle.
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "ALL");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) throw new Error("network_unreachable");
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Couldn't load"));
+    const text = container.textContent || "";
+    expect(text).not.toContain("Insufficient data");   // pre-fix trend label on summary failure
+    expect(text).not.toContain("Loading…");             // pre-fix performance subline (indefinite)
+  });
+
+  it("renders healthy accounts from a VALID partial ALL summary (a partial is not a total failure)", async () => {
+    // One unavailable account (46, stale) + two healthy (48 USD, 49 GBP): the summary returns a measured PARTIAL,
+    // which must render the healthy portfolio (Monitoring only + account mix + a measured USD equity), NEVER the
+    // blanket "Couldn't load" that hides healthy accounts.
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "ALL");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) return {
+        reporting_currency: "USD", scope: "ALL", generated_at: new Date().toISOString(),
+        account_count: 3, trading_count: 0, stale_accounts: [46],
+        accounts: [
+          { account_id: 48, broker: "IS6FX", account_masked: "••••", currency: "USD", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: 100, equity_native: 100, net_pnl: 0, open_count: 0, open_pl_usd: null, stale: false },
+          { account_id: 49, broker: "Pepperstone", account_masked: "••••", currency: "GBP", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: 400, equity_native: 446.19, net_pnl: 0, open_count: 0, open_pl_usd: null, stale: false },
+          { account_id: 46, broker: "TradersWay", account_masked: "••••", currency: "USD", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: null, equity_native: null, net_pnl: null, open_count: 0, open_pl_usd: null, stale: true },
+        ],
+        aggregate: {
+          balance_usd: { total_usd: 100, state: "PARTIAL", basis: "PARTIAL", included_count: 1, excluded_count: 2, converted_count: 1, unconverted: [] },
+          equity_usd: { total_usd: 100, state: "PARTIAL", basis: "PARTIAL", included_count: 1, excluded_count: 2, converted_count: 1, unconverted: [] },
+          open_pl_usd: { total_usd: 0, state: "OK", basis: "USD", converted_count: 0, unconverted: [] },
+          daily_realized_pnl_usd: 0, daily_realized_pnl_basis: "USD",
+          metrics: { state: "OK", basis: "USD", net_pnl_total: 0, win_rate_pct: null, wins: null, losses: null, total_trades: 0, profit_factor: null, profit_factor_infinite: false, expectancy: null, max_drawdown_money: null, included_count: null, excluded_count: null },
+        },
+      };
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    // The portfolio mix + a MEASURED partial USD equity render from the valid partial (independent of status).
+    await waitFor(() => expect(container.textContent || "").toContain("3 broker accounts"));
+    const text = container.textContent || "";
+    expect(text).not.toContain("Couldn't load");    // a valid partial is not a failure
+    expect(text).toContain("$100.00");               // healthy USD account's equity contributes (PARTIAL, measured)
+  });
 });
