@@ -23,6 +23,7 @@ from rest_framework.views import APIView
 
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
+from analytics.fx_source import StoredFredFxRateSource, fx_conversion_enabled
 from analytics.views_trade_history import (
     _account_windows_username, _fetch_mt5_account_balance, _fetch_mt5_open_positions,
 )
@@ -35,8 +36,12 @@ _MAX_OPEN_ROWS = 300
 
 
 def _rate_source() -> FX.FxRateSource:
-    # No vetted internal FX feed exists yet; USD->USD only, honest PARTIAL for anything else.
-    return FX.NullFxRateSource()
+    """Rate source for CURRENT monetary figures (portfolio summary total + open floating P/L). When the DARK
+    ``PORTFOLIO_FX_CONVERSION_ENABLED`` flag is ON, GBP->USD converts from the DB-only Fed H.10 ``DEXUSUK`` store
+    (today's selected rate — appropriate for a *current* value, with honest refusal when stale/missing). OFF
+    (default) is the USD->USD-only ``NullFxRateSource`` — byte-identical to today. Point-in-time HISTORICAL curves
+    must NOT use a single spot rate, so ``PortfolioEquityCurveView`` deliberately does not (data.md point-in-time)."""
+    return StoredFredFxRateSource() if fx_conversion_enabled() else FX.NullFxRateSource()
 
 
 # The aggregation (``portfolio.open_positions`` / ``build_summary``) passes a deadline-aware ``timeout`` so one
@@ -69,12 +74,18 @@ class PortfolioSummaryView(APIView):
 
     def get(self, request):
         scope = request.query_params.get("scope", "ALL")
+        rate_source = _rate_source()
         payload, err = PF.build_summary(
             request.user, scope,
             fetch_balance=_balance_fetcher, fetch_positions=_positions_fetcher,
-            rate_source=_rate_source(), stage="ALL")
+            rate_source=rate_source, stage="ALL")
         if err is not None:
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
+        # DARK FX disclosure: when conversion is enabled, surface the rate provenance (source, exact rate,
+        # effective date, staleness/availability) so the UI can disclose it. Additive + flag-gated — when the flag
+        # is OFF the payload carries no ``fx`` key, so default behaviour is byte-identical to today.
+        if fx_conversion_enabled() and hasattr(rate_source, "provenance"):
+            payload["fx"] = rate_source.provenance()
         return Response(payload)
 
 
@@ -139,5 +150,8 @@ class PortfolioEquityCurveView(APIView):
             days = 90
         since = timezone.now() - timedelta(days=days)
         if scope.strip().upper() == "ALL":
-            return Response(EQ.portfolio_equity_curve(accounts, rate_source=_rate_source(), since=since))
+            # Point-in-time correctness (data.md): a HISTORICAL curve must never be converted with a single
+            # today's spot rate, so the equity curve stays on the honest USD->USD-only source regardless of the
+            # FX flag — a non-USD account's historical points remain honestly excluded (PARTIAL), never distorted.
+            return Response(EQ.portfolio_equity_curve(accounts, rate_source=FX.NullFxRateSource(), since=since))
         return Response(EQ.account_equity_curve(accounts[0], since=since))

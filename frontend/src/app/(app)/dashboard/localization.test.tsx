@@ -176,4 +176,53 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     expect(text).not.toContain("Couldn't load");    // a valid partial is not a failure
     expect(text).toContain("$100.00");               // healthy USD account's equity contributes (PARTIAL, measured)
   });
+
+  const _fxSummary = (fx: Record<string, unknown>) => ({
+    reporting_currency: "USD", scope: "ALL", generated_at: new Date().toISOString(),
+    account_count: 2, trading_count: 0, stale_accounts: [],
+    accounts: [
+      { account_id: 48, broker: "IS6FX", account_masked: "••••", currency: "USD", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: 100, equity_native: 100, net_pnl: 0, open_count: 0, open_pl_usd: null, stale: false },
+      { account_id: 49, broker: "Pepperstone", account_masked: "••••", currency: "GBP", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: 446.19, equity_native: 446.19, net_pnl: 0, open_count: 0, open_pl_usd: null, stale: false },
+    ],
+    aggregate: {
+      balance_usd: { total_usd: 697.89, state: "OK", basis: "USD", included_count: 2, excluded_count: 0, converted_count: 2, unconverted: [] },
+      equity_usd: { total_usd: 697.89, state: "OK", basis: "USD", included_count: 2, excluded_count: 0, converted_count: 2, unconverted: [] },
+      open_pl_usd: { total_usd: 0, state: "OK", basis: "USD", converted_count: 0, unconverted: [] },
+      daily_realized_pnl_usd: 0, daily_realized_pnl_basis: "USD",
+      metrics: { state: "OK", basis: "USD", net_pnl_total: 0, win_rate_pct: null, wins: null, losses: null, total_trades: 0, profit_factor: null, profit_factor_infinite: false, expectancy: null, max_drawdown_money: null, included_count: null, excluded_count: null },
+    },
+    fx,
+  });
+
+  it("discloses the FX rate, effective date and source when conversion is ON and a rate is available", async () => {
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "ALL");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) return _fxSummary({
+        enabled: true, pair: "GBPUSD", available: true, source: "FED_H10", source_series: "DEXUSUK",
+        direction: "USD_PER_GBP", as_of: "2026-01-06", rate: "1.2710", effective_date: "2026-01-05",
+        revision_number: 1, observation_id: 1, retrieved_at: "2026-01-06T00:00:00Z", age_days: 1,
+      });
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("GBP→USD 1.2710"));
+    const text = container.textContent || "";
+    expect(text).toContain("2026-01-05");   // effective date disclosed
+    expect(text).toContain("Fed H.10");      // source disclosed
+  });
+
+  it("discloses an honest 'rate unavailable' when conversion is ON but no valid rate exists", async () => {
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "ALL");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) return _fxSummary({
+        enabled: true, pair: "GBPUSD", available: false, source: "FED_H10", source_series: "DEXUSUK",
+        direction: "USD_PER_GBP", as_of: "2026-01-06", reason: "no_rate_within_staleness",
+      });
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("GBP→USD rate unavailable"));
+  });
 });

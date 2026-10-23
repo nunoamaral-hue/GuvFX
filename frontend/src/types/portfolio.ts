@@ -84,6 +84,26 @@ export type PortfolioMetrics = {
   included_count?: number; excluded_count?: number;
 };
 
+/** DARK GBP->USD conversion provenance (ADR-0058). Present ONLY when PORTFOLIO_FX_CONVERSION_ENABLED is ON; the
+ *  payload carries no `fx` key when the flag is OFF (default), so flag-OFF behaviour is unchanged. The request
+ *  path is DB-only (never calls FRED). `rate` is the EXACT published rate as a decimal STRING (USD per GBP). */
+export type FxProvenance = {
+  enabled: boolean;
+  pair: string;                 // "GBPUSD"
+  available: boolean;           // false => honest unavailable (stale/missing); conversion refused, never faked
+  source: string;               // "FED_H10"
+  source_series: string;        // "DEXUSUK"
+  direction: string;            // "USD_PER_GBP"
+  as_of: string;
+  rate?: string;                // exact decimal string, USD per GBP (only when available)
+  effective_date?: string;      // the rate's publication date (only when available)
+  revision_number?: number;
+  observation_id?: number;
+  retrieved_at?: string;
+  age_days?: number;
+  reason?: string;              // category when !available (e.g. "no_rate_within_staleness")
+};
+
 export type PortfolioSummary = {
   reporting_currency: "USD";
   scope: string;
@@ -100,4 +120,5 @@ export type PortfolioSummary = {
     daily_realized_pnl_basis: "USD" | "PARTIAL";
     metrics: PortfolioMetrics;
   };
+  fx?: FxProvenance;            // present only when the DARK FX-conversion flag is ON
 };

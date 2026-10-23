@@ -51,3 +51,98 @@ class AccountEquitySnapshot(models.Model):
 
     def __str__(self):
         return f"AccountEquitySnapshot(acct={self.trading_account_id}, at={self.observed_at}, eq={self.equity})"
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# DailyFxObservation — append-only daily FX rate revisions (ADR-0058, GBP->USD portfolio conversion, DARK).
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+class DailyFxObservation(models.Model):
+    """One IMMUTABLE revision of one source's official daily FX rate for (base, quote, effective_date).
+
+    APPEND-ONLY: a source may REVISE a published rate; each revision is a NEW immutable row — never an in-place
+    edit or delete (data.md: raw evidence is immutable; corrections are new records). ``rate`` is the EXACT
+    published rate, quote units per 1 base (USD per GBP for the Fed H.10 ``DEXUSUK`` series), stored UNROUNDED at
+    full precision for calculation and audit; displayed portfolio money is quantised separately with Decimal
+    ROUND_HALF_EVEN at read time.
+
+    Idempotency vs revision: ``observation_checksum`` is the sha256 of the canonical observation tuple
+    (source|series|base|quote|effective_date|exact-rate-string). Re-ingesting the IDENTICAL published value is a
+    no-op (the unique constraint rejects the duplicate); a genuinely REVISED value has a different checksum and is
+    stored as a NEW revision (``revision_number`` increments per (source, base, quote, effective_date)).
+
+    Selection (``analytics.fx_source``): the EFFECTIVE revision for a date is the latest ACCEPTED revision (max
+    ``revision_number`` with ``acceptance_state == ACCEPTED``); every prior revision is retained. The selected
+    revision id is surfaced in audit/provenance evidence.
+    """
+    SOURCE_FED_H10 = "FED_H10"
+    SOURCE_BOE = "BOE"            # monitoring / discrepancy alerts ONLY — never auto-substituted into a Fed total
+    SOURCE_ECB = "ECB"
+    SOURCE_CHOICES = [(SOURCE_FED_H10, "Federal Reserve H.10"), (SOURCE_BOE, "Bank of England"),
+                      (SOURCE_ECB, "European Central Bank")]
+
+    STATE_ACCEPTED = "ACCEPTED"
+    STATE_REJECTED = "REJECTED"  # retained for audit; never selected for conversion
+    STATE_CHOICES = [(STATE_ACCEPTED, "Accepted"), (STATE_REJECTED, "Rejected")]
+
+    base_currency = models.CharField(max_length=3)
+    quote_currency = models.CharField(max_length=3)
+    effective_date = models.DateField(help_text="Source publication date for this rate (the rate's 'as of' day).")
+    rate = models.DecimalField(max_digits=20, decimal_places=10,
+                               help_text="EXACT published rate: quote units per 1 base (USD per GBP). Unrounded.")
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES)
+    source_series = models.CharField(max_length=32, help_text="e.g. DEXUSUK (Fed H.10).")
+    source_revision_id = models.CharField(max_length=64, blank=True, default="",
+                                          help_text="Source's own publication/revision id where available.")
+    retrieved_at = models.DateTimeField(help_text="When GuvFX fetched this observation from the source.")
+    observation_checksum = models.CharField(
+        max_length=64, help_text="sha256 of the canonical observation tuple (dedup / revision key).")
+    revision_number = models.PositiveIntegerField(
+        default=1, help_text="1,2,3... per (source, base, quote, effective_date).")
+    supersedes = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="superseded_by",
+        help_text="The revision this one corrects, where applicable (informational; every prior revision retained).")
+    acceptance_state = models.CharField(max_length=16, choices=STATE_CHOICES, default=STATE_ACCEPTED)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["base_currency", "quote_currency", "effective_date", "revision_number"]
+        indexes = [
+            models.Index(fields=["base_currency", "quote_currency", "source", "effective_date"],
+                         name="fx_obs_sel_idx"),
+            models.Index(fields=["source", "effective_date"], name="fx_obs_src_date_idx"),
+        ]
+        constraints = [
+            # Reject an IDENTICAL duplicate payload (idempotent re-ingest) while ALLOWING multiple immutable
+            # revisions for the same source/date (a genuinely revised value carries a different checksum).
+            models.UniqueConstraint(
+                fields=["source", "base_currency", "quote_currency", "effective_date", "observation_checksum"],
+                name="uniq_fx_obs_no_identical_duplicate"),
+            # Exactly one row per revision number within a (source, base, quote, effective_date) group.
+            models.UniqueConstraint(
+                fields=["source", "base_currency", "quote_currency", "effective_date", "revision_number"],
+                name="uniq_fx_obs_revision_number"),
+        ]
+
+    def __str__(self):
+        return (f"DailyFxObservation({self.base_currency}->{self.quote_currency} {self.effective_date} "
+                f"rev{self.revision_number} {self.source}:{self.source_series} {self.acceptance_state})")
+
+    # Append-only guard (defence in depth). The AUTHORITATIVE control is the database runtime-role grant (the app
+    # runtime role has no UPDATE/DELETE on this table — see ops/erasure runtime-role separation). The request path
+    # never writes this model; the daily ingestion command is the only writer and only ever CREATES rows.
+    _IMMUTABLE = ("base_currency", "quote_currency", "effective_date", "rate", "source", "source_series",
+                  "observation_checksum", "revision_number")
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            orig = type(self).objects.filter(pk=self.pk).values(*self._IMMUTABLE).first()
+            if orig is not None:
+                for f in self._IMMUTABLE:
+                    if getattr(self, f) != orig[f]:
+                        raise ValueError(
+                            "DailyFxObservation is append-only: insert a new revision, never edit the immutable "
+                            f"field {f!r} in place.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("DailyFxObservation is append-only and immutable: deletion is not permitted.")
