@@ -15,22 +15,22 @@
 \if :{?target_db}
 \else
   \echo '*** REFUSED: pass -v target_db.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?allow_destructive_provisioning}
 \else
   \echo '*** REFUSED: pass -v allow_destructive_provisioning=1.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?app_role}
 \else
   \echo '*** REFUSED: pass -v app_role.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?prior_posture}
 \else
   \echo '*** REFUSED: pass -v prior_posture=SUPERUSER (the exact prior attribute to restore). Never guessed.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 BEGIN;
@@ -39,7 +39,7 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
 \else
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- Ordering guard (adversarial-review C5): refuse while the erasure capability is still provisioned (the
@@ -52,7 +52,40 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.
   \echo '*** REFUSED: erasure capability still provisioned (bi_governed_erase_owner present). Run'
   \echo '    production_rollback_erasure.sql FIRST to disable it, THEN re-run this demotion rollback. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
+\endif
+
+-- F-8 SAFETY GUARD (adopted with the runtime-role separation). This demotion rollback predates F-8: it does
+-- REASSIGN OWNED BY guvfx_schema_owner TO <app_role> (L67) and restores an elevated posture (L72). In the pre-F-8
+-- model guvfx_schema_owner owned only a handful of evidence objects and the app role WAS the elevated owner. In
+-- the F-8 runtime-role-separation model guvfx_schema_owner owns the ENTIRE application schema and the runtime
+-- guvfx_app must OWN NOTHING, so running this would hand the whole schema + the immutable-evidence tables to the
+-- runtime role and re-elevate it -- collapsing the ADR-0054 boundary. Refuse fail-closed if that model is
+-- detected. DISCRIMINATOR (same as rollback_erasure_privilege.sql): guvfx_schema_owner owns a GENERAL relation
+-- (any relkind) or routine beyond the erasure allowlist -- present only in the F-8 model. We do NOT key on schema
+-- ownership (schema_owner owns public in the legit pre-F-8 model too, which would false-positive).
+SELECT CASE WHEN
+     EXISTS (
+       SELECT 1 FROM pg_class c
+       WHERE c.relkind IN ('r','p','S','v','m','f')
+         AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
+                               'broker_intelligence_erasureexecutiongrant',
+                               'broker_intelligence_evidenceblob_id_seq','broker_intelligence_brokerevent_id_seq',
+                               'broker_intelligence_erasureexecutiongrant_id_seq'))
+  OR EXISTS (
+       SELECT 1 FROM pg_proc p
+       WHERE p.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND p.proname NOT IN ('bi_evidenceblob_block_delete','bi_brokerevent_block_delete',
+                               'bi_evidenceblob_block_evidence_update','bi_brokerevent_block_evidence_update'))
+  THEN 'true' ELSE 'false' END AS _f8model \gset
+\if :_f8model
+  \echo '*** REFUSED: guvfx_schema_owner owns general application tables -- this is the F-8 runtime-role'
+  \echo '    separation model. This pre-F-8 demotion rollback would REASSIGN the whole schema + evidence tables'
+  \echo '    to the app role and restore an elevated posture. Use ops/erasure/separate_runtime_role_rollback.sql'
+  \echo '    (reverts ownership to the bootstrap role, never the app role). Rolling back.'
+  ROLLBACK;
+  DO $refuse$ BEGIN RAISE EXCEPTION 'rollback refused (fail-closed): F-8 model detected; see message above'; END $refuse$;
 \endif
 
 -- 1) Revoke the runtime grants + default privileges the demotion added.

@@ -1,9 +1,9 @@
--- ADR-0054 — PRODUCTION capability rollback for controlled erasure. SUPERUSER-ONLY. SEPARATELY AUTHORISED.
+-- ADR-0054 -- PRODUCTION capability rollback for controlled erasure. SUPERUSER-ONLY. SEPARATELY AUTHORISED.
 -- ============================================================================================================
 -- This is DISTINCT from ops/erasure/rollback_erasure_privilege.sql (the DISPOSABLE-REHEARSAL teardown, which
 -- restores the database to its original pre-provision arrangement). A PRODUCTION rollback must NOT return the
 -- evidence tables or schema `public` to the runtime application role, and must NOT re-grant the app role
--- DELETE/TRUNCATE/DDL — doing so would re-open the very owner-level destruction vectors the provisioning closed.
+-- DELETE/TRUNCATE/DDL -- doing so would re-open the very owner-level destruction vectors the provisioning closed.
 --
 -- This runbook DISABLES the erasure capability while PRESERVING the secure ownership + privilege boundary:
 --   1. Operator (out of band, FIRST): set BROKER_INTELLIGENCE_ERASURE_ENABLED off and remove the
@@ -21,12 +21,12 @@
 \if :{?target_db}
 \else
   \echo '*** REFUSED: pass -v target_db=<current database name>'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?allow_destructive_provisioning}
 \else
   \echo '*** REFUSED: pass -v allow_destructive_provisioning=1 to acknowledge.'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 BEGIN;
@@ -36,7 +36,7 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
 \else
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 -- 1) Remove the ONLY path that can delete immutable evidence.

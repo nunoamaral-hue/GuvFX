@@ -336,6 +336,22 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
             if escalatable:
                 reasons.append(f"application role '{app_role}' can assume elevated role(s) {list(escalatable)} "
                                "— membership in a role with SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS")
+            # (7c) F-8: the runtime app role must OWN NOTHING in the application schema — ownership lives on
+            # guvfx_schema_owner and the runtime operates via grants only. A role that still owns objects could
+            # ALTER/DROP/disable them (incl. the immutability triggers' tables). (The bootstrap superuser is
+            # NEVER demoted in the accepted model; the runtime is a separate least-privilege role that owns nothing.)
+            cur.execute("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = 'public' AND c.relkind IN ('r','S','v','m','f','p') "
+                        "AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = %s)", [app_role])
+            owned_rel = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = 'public' AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = %s)",
+                        [app_role])
+            owned_fn = cur.fetchone()[0]
+            if owned_rel or owned_fn:
+                reasons.append(f"application role '{app_role}' must own nothing in 'public' "
+                               f"(owns {owned_rel} relation(s), {owned_fn} function(s)); ownership belongs to "
+                               f"'{_SCHEMA_OWNER_ROLE}'")
             for tbl in _EVIDENCE_TABLES:
                 for priv in ("DELETE", "TRUNCATE"):
                     cur.execute("SELECT has_table_privilege(%s, %s, %s)", [app_role, tbl, priv])
@@ -363,6 +379,25 @@ def privileged_backend_readiness(using: str = "default") -> tuple[bool, list[str
                 cur.execute("SELECT has_table_privilege(%s, %s, 'INSERT')", [_PRIVILEGED_ROLE, _GRANT_TABLE])
                 if cur.fetchone()[0]:
                     reasons.append("guvfx_erasure must not have INSERT on the execution-grant table (consume-only)")
+
+            # (7e) F-2.8: generalised privileged-routine containment. No SECURITY DEFINER routine in the
+            # application schema may be EXECUTE-able by PUBLIC or by the runtime app role. The governed erasure
+            # procedure is checked specifically above; this catches ANY SECURITY DEFINER function a migration
+            # might introduce. A runtime role that could execute a definer-rights routine would run with that
+            # owner's privileges, bypassing the REVOKEs — so cutover must fail until no such grant exists.
+            cur.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = 'public' AND p.prosecdef "
+                        "AND has_function_privilege('public', p.oid, 'EXECUTE')")
+            if cur.fetchone()[0]:
+                reasons.append("PUBLIC can EXECUTE a SECURITY DEFINER routine in 'public'")
+            cur.execute("SELECT coalesce(array_agg(p.proname ORDER BY p.proname), ARRAY[]::text[]) "
+                        "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = 'public' AND p.prosecdef "
+                        "AND has_function_privilege(%s, p.oid, 'EXECUTE')", [app_role])
+            secdef = cur.fetchone()[0] or []
+            if secdef:
+                reasons.append(f"application role '{app_role}' can EXECUTE SECURITY DEFINER routine(s) "
+                               f"{list(secdef)} — privileged-routine escalation")
 
             # (8) Required migrations applied (exact names — a differently-named 00NN_* must not false-pass).
             for mig in _REQUIRED_MIGRATIONS:

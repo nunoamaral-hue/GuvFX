@@ -1,4 +1,4 @@
--- ADR-0054 — Reverse the controlled-erasure privilege provisioning (REHEARSAL rollback).
+-- ADR-0054 -- Reverse the controlled-erasure privilege provisioning (REHEARSAL rollback).
 -- Restores the original arrangement: evidence tables + trigger functions + sequences owned by the application
 -- role again, the procedure + helpers dropped, and the privileged roles removed. SUPERUSER-ONLY. Transactional.
 --   psql "$DSN" -v ON_ERROR_STOP=1 -v target_db=guvfx_rehearsal -v app_role=guvfx_app \
@@ -7,12 +7,12 @@
 \if :{?target_db}
 \else
   \echo '*** REFUSED: pass -v target_db=<current database name>'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 \if :{?app_role}
 \else
   \echo '*** REFUSED: pass -v app_role=<application runtime role>'
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
 \endif
 
 BEGIN;
@@ -23,7 +23,42 @@ SELECT CASE WHEN current_database() = :'target_db' THEN 'true' ELSE 'false' END 
 \else
   \echo '*** REFUSED: current_database() does not match -v target_db. Rolling back.'
   ROLLBACK;
-  \quit
+  DO $refuse$ BEGIN RAISE EXCEPTION 'refused (fail-closed): see the REFUSED message above'; END $refuse$;
+\endif
+
+-- F-8 SAFETY GUARD (adopted with the runtime-role separation). This REHEARSAL teardown predates F-8 and assumes
+-- the app role owns the evidence objects and guvfx_schema_owner owns ONLY the handful of erasure objects. In the
+-- F-8 runtime-role-separation model guvfx_schema_owner owns the ENTIRE application schema, so this script would
+-- (a) hand schema + evidence ownership to the runtime app role and (b) `DROP OWNED BY guvfx_schema_owner` (which
+-- is role-GLOBAL across ALL schemas), DESTROYING every application object. The F-8 DISCRIMINATOR is that
+-- guvfx_schema_owner owns GENERAL application objects beyond the handful of erasure objects: refuse if it owns
+-- ANY relation (any relkind) or routine outside the known erasure allowlist. (We deliberately do NOT key on
+-- schema OWNERSHIP: in the legitimate pre-F-8 rehearsal model guvfx_schema_owner ALSO owns schema public after
+-- provisioning, so a schema-ownership arm would false-positive and brick the documented rehearsal reset. The
+-- general-object signal is present only in the F-8 model, where separation transfers all 155 tables.) Refuse
+-- fail-closed if that model is detected. app_schema is fixed to 'public' throughout this codebase.
+SELECT CASE WHEN
+     EXISTS (
+       SELECT 1 FROM pg_class c
+       WHERE c.relkind IN ('r','p','S','v','m','f')
+         AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND c.relname NOT IN ('broker_intelligence_evidenceblob','broker_intelligence_brokerevent',
+                               'broker_intelligence_erasureexecutiongrant',
+                               'broker_intelligence_evidenceblob_id_seq','broker_intelligence_brokerevent_id_seq',
+                               'broker_intelligence_erasureexecutiongrant_id_seq'))
+  OR EXISTS (
+       SELECT 1 FROM pg_proc p
+       WHERE p.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'guvfx_schema_owner')
+         AND p.proname NOT IN ('bi_evidenceblob_block_delete','bi_brokerevent_block_delete',
+                               'bi_evidenceblob_block_evidence_update','bi_brokerevent_block_evidence_update'))
+  THEN 'true' ELSE 'false' END AS _f8model \gset
+\if :_f8model
+  \echo '*** REFUSED: guvfx_schema_owner owns general application tables -- this is the F-8 runtime-role'
+  \echo '    separation model. This DISPOSABLE-REHEARSAL teardown would hand schema/evidence ownership to the'
+  \echo '    app role and DROP OWNED BY guvfx_schema_owner (destroying the application schema). For the F-8'
+  \echo '    model use production_rollback_erasure.sql, THEN ops/erasure/separate_runtime_role_rollback.sql.'
+  ROLLBACK;
+  DO $refuse$ BEGIN RAISE EXCEPTION 'rollback refused (fail-closed): F-8 model detected; see message above'; END $refuse$;
 \endif
 
 -- 1) Drop the governed procedure + helpers (owned by guvfx_erasure). Both signatures, for any prior version.

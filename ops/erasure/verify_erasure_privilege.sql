@@ -1,12 +1,12 @@
--- ADR-0054 — Post-provision verification of the controlled-erasure privilege boundary.
+-- ADR-0054 -- Post-provision verification of the controlled-erasure privilege boundary.
 -- Run after provision_erasure_privilege.sql. Read-only. Exits NONZERO (RAISE) if ANY invariant is unmet, so it
 -- can gate a rehearsal/deploy. Mirrors erasure.privileged_backend_readiness().
 --   psql "$DSN" -v ON_ERROR_STOP=1 -v app_role=guvfx_app -f ops/erasure/verify_erasure_privilege.sql
 \set ON_ERROR_STOP on
 \if :{?app_role}
 \else
-  \echo '*** pass -v app_role=<application runtime role>'
-  \quit
+  \echo '*** REFUSED: pass -v app_role=<application runtime role>'
+  DO $refuse$ BEGIN RAISE EXCEPTION 'verify refused (fail-closed): missing -v app_role; no invariant was checked'; END $refuse$;
 \endif
 
 -- Pass app_role into the DO block via a GUC (psql does not interpolate :vars inside dollar-quoted blocks).
@@ -137,11 +137,34 @@ BEGIN
              AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls)) THEN
     problems := problems || 'app role can assume a role with an elevated attribute (SUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS) -- transitive escalation'::text; END IF;
 
+  -- (7d) F-8: the runtime app role must OWN NOTHING in the application schema (ownership lives on the schema
+  -- owner; the app role operates via grants only). Catches a role that is still an object owner.
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+             WHERE n.nspname='public' AND c.relowner=(SELECT oid FROM pg_roles WHERE rolname=v_app)
+               AND c.relkind IN ('r','S','v','m','f','p')) THEN
+    problems := problems || 'app role owns relation(s) in public -- runtime role must own nothing'::text; END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='public' AND p.proowner=(SELECT oid FROM pg_roles WHERE rolname=v_app)) THEN
+    problems := problems || 'app role owns function(s) in public -- runtime role must own nothing'::text; END IF;
+
   -- (8) app role: no DELETE/TRUNCATE on evidence tables
   FOREACH r IN ARRAY ARRAY['broker_intelligence_evidenceblob','broker_intelligence_brokerevent'] LOOP
     IF has_table_privilege(v_app, r, 'DELETE') THEN problems := problems || format('app has DELETE on %s', r); END IF;
     IF has_table_privilege(v_app, r, 'TRUNCATE') THEN problems := problems || format('app has TRUNCATE on %s', r); END IF;
   END LOOP;
+
+  -- (9) F-2.8: generalised privileged-routine containment. No SECURITY DEFINER routine in the application schema
+  -- may be EXECUTE-able by PUBLIC or by the runtime app role. The erasure procedure is one such routine (covered
+  -- specifically above); this catches ANY SECURITY DEFINER function a migration might add. Trigger functions
+  -- need no invoker EXECUTE and the app calls no custom DB routine, so the runtime role should execute none.
+  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('public', p.oid, 'EXECUTE')) THEN
+    problems := problems || 'PUBLIC can EXECUTE a SECURITY DEFINER routine in public'::text; END IF;
+  SELECT coalesce(string_agg(n.nspname||'.'||p.proname, ', '), '') INTO v_args
+    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege(v_app, p.oid, 'EXECUTE');
+  IF v_args <> '' THEN
+    problems := problems || format('app role can EXECUTE SECURITY DEFINER routine(s) [privileged-routine escalation]: %s', v_args); END IF;
 
   IF array_length(problems,1) > 0 THEN
     RAISE EXCEPTION 'VERIFY FAILED (% problems): %', array_length(problems,1), array_to_string(problems, ' | ');

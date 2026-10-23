@@ -238,6 +238,19 @@ Every element is placed in exactly one category, so no reader mistakes a design 
   role membership. Demotion of a currently-privileged production role to this posture is
   a **separate, explicit production operation with its own rollback** — the provisioning script never demotes a
   role automatically.
+- **F-8 — bootstrap-superuser topology (production): separate the runtime role, do NOT demote the bootstrap.**
+  In production the application currently connects AS the PostgreSQL BOOTSTRAP role (`guvfx`, OID 10, the sole
+  superuser, the database owner, and owner of the system catalog). An in-place demotion of that role (or a
+  blanket `REASSIGN OWNED BY guvfx`) is PROHIBITED: it would leave the cluster with no superuser and would target
+  pinned `pg_catalog`/`information_schema` objects. The accepted cutover (`ops/erasure/separate_runtime_role.sql`
+  + its rollback) instead: keeps bootstrap `guvfx` as the controlled superuser/recovery identity (never used by
+  app/worker/migration after cutover); creates a NEW least-privilege runtime role (`guvfx_app`, owning
+  **nothing**), `guvfx_schema_owner` (owns the application objects + schema) and `guvfx_migrate` (acts AS the
+  schema owner for migrations); transfers ownership of ONLY the application objects in the approved schema by
+  **explicit enumeration** (never system/extension objects; owned/identity sequences follow their table); grants
+  `guvfx_app` runtime DML + default privileges; and re-points the application `DB_USER` to `guvfx_app` by a
+  separate configuration cutover. `demote_app_role.sql` now **refuses** against a bootstrap/sole-superuser role.
+  Readiness/verify additionally require the runtime role to **own nothing** in the application schema.
 - **PER-OPERATOR EXECUTOR LOGIN LIFECYCLE (F-5, mandatory convention):** each short-lived executor login (a
   member of the NOLOGIN `guvfx_erasure_exec` group) MUST be named `guvfx_erx_<suffix>` and MUST carry a hard
   `VALID UNTIL` expiry. The prefix is enforced fail-closed by `broker_intelligence.erasure_operators` and the
