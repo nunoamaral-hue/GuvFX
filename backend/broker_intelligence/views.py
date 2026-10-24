@@ -19,8 +19,10 @@ from rest_framework.views import APIView
 from .flags import (broker_account_contact_enabled, broker_identity_verification_enabled,
                     broker_mailbox_connect_enabled, broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
                     broker_multi_mailbox_enabled_for,
-                    broker_withdrawal_demo_include_synthetic, broker_withdrawal_ux_enabled)
+                    broker_withdrawal_demo_include_synthetic, broker_withdrawal_speed_enabled_for,
+                    broker_withdrawal_ux_enabled)
 from .metrics import withdrawal_history, withdrawal_metrics
+from .withdrawal_speed import withdrawal_speed
 
 _STATE_SALT = "broker_intelligence.mailbox_connect.state"
 _STATE_MAX_AGE = 600   # seconds the signed CSRF state is valid for the connect->callback round trip
@@ -167,6 +169,30 @@ class WithdrawalHistoryView(APIView):
         # include_demonstration is OFF in prod (GENUINE-only); ON only in an isolated demo env (labelled synthetic).
         return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id, owner=request.user,
                                            include_demonstration=broker_withdrawal_demo_include_synthetic()))
+
+
+class WithdrawalSpeedView(APIView):
+    """GET /api/broker-intelligence/withdrawals/speed/ — the member's own withdrawal-PROCESSING-SPEED analytics (WS3):
+    the typical (median/average) completed processing time, a per-completed-withdrawal trend series, per-broker
+    comparison, and live in-progress elapsed ages — computed ONLY from the member's own confidently-paired completed
+    withdrawals (pending ages are separate, never mixed in). Owner-scoped (``user=request.user``, no staff bypass) and
+    gated by the OWNER-SCOPED, default-DENY cohort flag ``broker_withdrawal_speed_enabled_for`` → 404 while the member
+    is outside the cohort (and the GA global is off), so the new section ships DARK and is enabled for one cohort first.
+    Observation-only: reads the withdrawal projection; NO mutation, no broker contact, no execution/credential/financial
+    authority, no new Gmail scope."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_withdrawal_speed_enabled_for(request.user):
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from django.utils import timezone
+        from trading.models import TradingAccount
+        # ALL of the member's OWN accounts (INCLUDING disconnected/tombstoned) — a past withdrawal is durable history
+        # and must not vanish from speed stats. Strictly owner-scoped; never another member's data. owner=request.user
+        # ALSO includes owner-attributed, account-UNRESOLVED withdrawals (ADR-0050). include_demonstration OFF in prod.
+        accounts = TradingAccount.objects.filter(user=request.user)
+        return Response(withdrawal_speed(accounts, owner=request.user, now=timezone.now(),
+                                         include_demonstration=broker_withdrawal_demo_include_synthetic()))
 
 
 def _identity_json(i) -> dict:

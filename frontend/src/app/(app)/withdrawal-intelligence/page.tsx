@@ -20,6 +20,7 @@
 import { useLang } from "@/components/AppShell";
 import { ConnectedEmailAccounts } from "@/components/accounts/ConnectedEmailAccounts";
 import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
+import { WithdrawalSpeed } from "@/components/dashboard/WithdrawalSpeed";
 import { WithdrawalsHistory } from "@/components/dashboard/WithdrawalsHistory";
 
 type Lang = "en" | "ja";
@@ -37,6 +38,7 @@ const S = {
   },
   connectionH: { en: "Email connection", ja: "メール接続" },
   overviewH: { en: "Overview", ja: "概要" },
+  speedH: { en: "Processing speed", ja: "処理スピード" },
   historyH: { en: "Withdrawal history", ja: "出金履歴" },
   emptyTitle: { en: "No withdrawal activity observed yet", ja: "出金活動はまだ観測されていません" },
   empty: {
@@ -102,6 +104,14 @@ export default function WithdrawalIntelligencePage() {
         <div style={sectionLabel}>{S.overviewH[L]}</div>
         <WithdrawalsPanel lang={L} />
       </section>
+
+      {/* Processing-speed analytics (WS3) — self-hides (null) until the member is in the WS3 cohort
+          (BROKER_WITHDRAWAL_SPEED_* ), so the section ships DARK and is enabled for one cohort first. */}
+      <section>
+        <div style={sectionLabel}>{S.speedH[L]}</div>
+        <WithdrawalSpeed lang={L} />
+      </section>
+
       <section>
         <div style={sectionLabel}>{S.historyH[L]}</div>
         <WithdrawalsHistory lang={L} />
