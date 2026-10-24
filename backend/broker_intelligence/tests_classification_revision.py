@@ -190,3 +190,18 @@ class ClassificationRevisionTests(TestCase):
         out2 = self._run(ev)
         self.assertNotIn(_FAKE_TOKEN, out2)
         self.assertNotIn(_FAKE_REF, out2)
+
+    # 14. DB-level append-only: a bulk QuerySet.update()/delete() (which bypass save()/delete()) is blocked by the
+    # trigger, so the effective category cannot be silently flipped (over-claim) nor a correction erased.
+    def test_db_trigger_blocks_bulk_update_and_delete(self):
+        from django.db import Error
+        ev = self._event(_raw_external(), category=TransactionCategory.UNKNOWN)
+        self._run(ev)
+        with self.assertRaises(Error):
+            with transaction.atomic():
+                ev.classification_revisions.update(derived_category=TransactionCategory.INTERNAL_TRANSFER)
+        with self.assertRaises(Error):
+            with transaction.atomic():
+                ev.classification_revisions.all().delete()
+        rev = ev.classification_revisions.get()
+        self.assertEqual(rev.derived_category, TransactionCategory.EXTERNAL_WITHDRAWAL)   # unchanged + still present

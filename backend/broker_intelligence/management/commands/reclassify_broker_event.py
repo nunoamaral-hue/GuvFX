@@ -68,8 +68,8 @@ class Command(BaseCommand):
         # Re-read the IMMUTABLE evidence (EvidenceStore.read integrity-checks the bytes against the stored hash).
         try:
             raw = EvidenceStore().read(blob)
-        except EvidenceStoreError:
-            raise CommandError("REFUSED: evidence integrity check failed (fail-closed).")
+        except (EvidenceStoreError, OSError):
+            raise CommandError("REFUSED: evidence unreadable or integrity check failed (fail-closed).")
         recomputed = hashlib.sha256(raw).hexdigest()
         if blob.sha256 != recomputed or (ev.evidence_hash and ev.evidence_hash != recomputed):
             raise CommandError("REFUSED: evidence hash mismatch (fail-closed).")
@@ -107,12 +107,15 @@ class Command(BaseCommand):
             self.stdout.write(f"DRY_RUN: would append revision {effective} -> {derived} (nothing written).")
             return
 
-        current_effective_rev = ev.classification_revisions.order_by("-id").first()
         try:
             with transaction.atomic():
+                # Lock the event row so concurrent appends for the SAME event serialise — supersedes then points at
+                # the true latest revision, and the idempotency re-check sees any sibling committed by a racing run.
+                BrokerEvent.objects.select_for_update().filter(pk=ev.pk).first()
                 if BrokerEventClassificationRevision.objects.filter(idempotency_key=idem).exists():
                     self.stdout.write("IDEMPOTENT: a revision with this key already exists; no-op.")
                     return
+                current_effective_rev = ev.classification_revisions.order_by("-id").first()
                 BrokerEventClassificationRevision.objects.create(
                     event=ev, derived_category=derived, original_category=ev.transaction_category,
                     original_parser_version=ev.parser_version or "", parser_name=getattr(parser, "name", ""),

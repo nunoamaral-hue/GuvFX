@@ -26,7 +26,9 @@ Introduce a write-once **`BrokerEventClassificationRevision`** linked to the ori
 - Fields: `event`, `derived_category`, `original_category` (audit snapshot), `original_parser_version`,
   corrected `parser_name`/`parser_version`, `classification_rule_version`, `reason` code, `source_evidence_sha256`,
   `actor`, `supersedes` (self FK), a deterministic unique `idempotency_key`, `created_at`. Write-once (no update)
-  and never deleted — like the evidence it corrects.
+  and never deleted — **DB-enforced** by BEFORE-UPDATE / BEFORE-DELETE triggers (migration 0024), exactly like the
+  evidence it corrects, so `QuerySet.update()` / `QuerySet.delete()` / raw SQL cannot silently flip the effective
+  category (over-claim) or erase a correction — not app-layer (`save()`/`delete()`) only.
 - **Effective category** = the latest valid revision's `derived_category`, else the original immutable
   `transaction_category` (`BrokerEvent.effective_transaction_category()`; deterministic = newest revision by id).
 - The **withdrawal projection consumes the effective category only through the correlation engine** (a batch job):
@@ -49,6 +51,11 @@ Introduce a write-once **`BrokerEventClassificationRevision`** linked to the ori
   the history is never rewritten.
 - Internal transfers are untouched (the parser still derives `INTERNAL_TRANSFER` for them; no revision is appended).
 - No change to Copy Trader, FX, erasure, audit controls, dedup, or the evidence-immutability invariant.
+- **Known limitation (no retraction).** The withdrawal projection is monotonic / positive-evidence-only: a later
+  revision that flips an *already-correlated* event to a non-external category does NOT retract the `Withdrawal`
+  already created from it (correlation pass 1 only reprocesses UNRESOLVED/AMBIGUOUS events). The intended and
+  exercised use is `UNKNOWN → EXTERNAL_WITHDRAWAL` surfacing; retracting a surfaced withdrawal is out of scope and
+  not claimed here.
 
 ## Alternatives rejected
 - **Mutate the stored category** — violates the append-only evidence invariant (and the DB trigger forbids it).
