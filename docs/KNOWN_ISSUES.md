@@ -1097,6 +1097,15 @@ believing a negative result. Full write-up: `evidence/b3p2-install/baseline_2026
   (late Oct 2026) for a year-round mapping. Downstream must READ the recorded offset,
   never hardcode; no winter entry exists yet, so do not rely on the mapping across a
   DST boundary.
+- **2026-10-24 winter pre-check is PARTIAL / TIME-GATED.** Sponsor authority was
+  granted and the strictly read-only controls passed: Tailnet/bridge reachable,
+  unauthenticated request rejected with 401, authenticated M1 path returned three
+  60-second bars, bridge healthy, and Windows clock NTP-synchronised. The market was
+  closed and the EU DST transition had not yet occurred, so the bar was stale and
+  no winter offset can be inferred. Bridge payloads also did not independently
+  expose the current broker account identity. Complete after market open with a
+  broker-truth TradersWay-Demo identity check; evidence is in
+  `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
 - **MT5 runtime is desktop-session dependent.** `initialize()` succeeds only with
   the autologon/kiosk console session present (H1 confirmed a single logoff is
   re-created by autologon within seconds). Headless/service-managed model unproven

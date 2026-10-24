@@ -45,7 +45,7 @@ GuvFXData; `p4_digest_match = true`. Validated by `scripts/check_data_root.py` (
 | Gate | Type | Owner | Blocks |
 |---|---|---|---|
 | ~~S1 — provision `GuvFXData` / `GUVFX_DATA_ROOT`~~ | ✅ DONE 2026-06-28 | — | (cleared) |
-| Broker-server timezone verification (TradersWay-Demo) | RED, data | Nuno to approve probe | **next** — any normalised dataset publication / broad backfill |
+| Broker-server timezone verification (TradersWay-Demo) | RED, data | Approved 2026-10-24; pre-transition controls passed, winter result time-gated until market-open post-DST probe | **next** — any normalised dataset publication / broad backfill |
 | Windows MT5 headless / service-hardening | future ADR | Nuno | durable unattended acquisition |
 | Blueprint ratification (Proposed v0.1 → Approved) | lifecycle | Nuno | stable target for downstream packets |
 | Any model promotion to limited-live / production | RED | Nuno | strategy go-live |

@@ -4891,3 +4891,20 @@ This repository uses the following canonical mapping:
 | Incident / edge-case tracking | `docs/KNOWN_ISSUES.md` |
 
 All references to `GUVFX_*` documents map to these files. The `docs/` directory is the single source of truth. Do not create duplicate documents with alternate naming or introduce parallel canonical structures.
+
+# 2026-10-24 — Winter broker-timezone pre-transition control
+
+Sponsor approved the Red, strictly read-only timezone probe. Tailnet access and
+SSH were healthy; the `:8788` bridge rejected an unauthenticated request with 401
+and the production backend's existing credential path returned three EURUSD M1
+bars at exact 60-second cadence. Bridge health was green and the Windows clock
+was NTP-synchronised. No secret value was printed.
+
+**Verdict: PARTIAL / TIME-GATED.** The probe ran on Saturday before the
+2026-10-25 DST transition, so the newest bar was stale and cannot determine the
+winter offset. The bridge response also did not independently expose current
+TradersWay-Demo broker identity. No order, login, account/config change, restart,
+deployment, workflow execution, normalisation, backfill, or data write occurred.
+The bounded next action is a fresh, broker-identity-pinned M1 comparison after
+the post-transition market opens. Evidence:
+`docs/evidence/broker_timezone_evidence_v2_pretransition.md`.

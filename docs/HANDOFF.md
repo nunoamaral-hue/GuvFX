@@ -1529,3 +1529,22 @@ or operational state changed.
 
 Run the new verifier against this packet's committed evidence manifest, then
 submit the isolated branch for GitHub review.
+
+# 2026-10-24 — Winter broker-timezone probe handoff
+
+- **Authority used:** Sponsor-approved Red read-only timezone probe only.
+- **Verified:** `100.79.101.19:8788` reachable; listener is
+  `C:\GuvFX\mt5_signal_bridge.py`; unauthenticated rates call = 401;
+  authenticated existing-service path = three M1 bars with 60-second cadence;
+  bridge health green; Windows clock NTP-synchronised.
+- **Not verified:** winter broker offset and current TradersWay-Demo broker-truth
+  binding. Saturday's bar was stale, the DST change is 2026-10-25, bridge payloads
+  expose no account identity, and the current production DB has no TradersWay-Demo
+  row/sample.
+- **Decision:** do not infer UTC+2, do not create a winter mapping, and do not
+  normalise/backfill across DST. The valid v1 UTC+3 finding remains summer-only.
+- **Next:** after the market opens post-transition, pin the intended demo
+  login/server from broker truth and repeat the fresh M1-vs-UTC measurement.
+- **Impact:** no trade/order/login/restart/deploy/config/data mutation; no secret
+  disclosed. Full evidence:
+  `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
