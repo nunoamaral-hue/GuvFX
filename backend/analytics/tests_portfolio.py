@@ -865,3 +865,27 @@ class CurrencyIntegrityTests(TestCase):
         acct_ids = {t["account_id"] for t in body["trades"]}
         self.assertIn(mine.id, acct_ids); self.assertNotIn(foreign.id, acct_ids)       # IDOR: foreign excluded
         self.assertEqual(body["open_pl_usd"]["total_usd"], 13.83)                      # only my USD position
+
+    # the integrity must not be re-opened one layer up, at the equity-ledger capture ---------
+    def test_capture_does_not_default_unknown_currency_to_usd(self):
+        from analytics import equity_snapshots as EQ
+        from analytics.models import AccountEquitySnapshot
+        u = _user("ci9"); a = _acct(u)                           # stored account_currency is NULL
+        # bridge read omitted currency + stored null -> must store BLANK (not "USD") so downstream fails closed
+        row, reason = EQ.capture_account_snapshot(a, balance=400, equity=388, currency=None, verify_identity=False)
+        self.assertEqual(reason, "created")
+        self.assertEqual(row.account_currency, "")               # NOT "USD"
+        self.assertNotIn(a.id, PF.observed_currency_map([a]))     # blank -> absent -> caller marks UNKNOWN (excluded)
+        # positive controls: a real observed/stored currency is preserved verbatim
+        row2, _ = EQ.capture_account_snapshot(a, balance=400, equity=388, currency="GBP", verify_identity=False,
+                                              min_interval_seconds=0)
+        self.assertEqual(row2.account_currency, "GBP")
+        self.assertEqual(PF.observed_currency_map([a]).get(a.id), "GBP")
+
+    def test_per_account_open_pl_usd_is_null_not_fabricated_zero(self):
+        # An all-excluded (non-USD) account's per-account open_pl_usd must be None, never a measured 0.0.
+        u = _user("ci10"); a = _acct(u, broker="Pepperstone")
+        _, per = PF.open_positions([a], fetch_positions=_fake_positions({a.id: [self._pos(-12.24)]}),
+                                   rate_source=self._NULL, observed_currency={a.id: "GBP"})
+        self.assertIsNone(per[a.id]["open_pl_usd"])              # not 0.0
+        self.assertEqual(per[a.id]["open_pl_basis"], "PARTIAL")

@@ -287,23 +287,22 @@ def _strategy_for_magic(account, magic) -> str:
 
 
 def observed_currency_map(accounts) -> dict:
-    """``{account_id: bridge-OBSERVED currency}`` from the latest durable equity-ledger snapshot — the estate's
-    authoritative observed-currency store (written by the identity-verified equity ledger from the live bridge
-    snapshot; the model's ``account_currency`` is unpopulated in prod). Used to label open-position P/L honestly so
-    a GBP account is never silently reported as USD. Missing snapshot ⇒ no entry (caller falls back / marks unknown).
-    Read-only; a single indexed query, no broker contact."""
+    """``{account_id: bridge-OBSERVED currency}`` from each account's LATEST durable equity-ledger snapshot — the
+    estate's authoritative observed-currency store (written by the identity-verified equity ledger from the live
+    bridge snapshot; the model's ``account_currency`` is unpopulated in prod). Used to label open-position P/L
+    honestly so a GBP account is never silently reported as USD. A blank snapshot currency (unknown — never defaulted
+    to USD at capture) and a missing snapshot both yield NO entry, so the caller falls back / marks the position
+    UNKNOWN and fails closed. Read-only; ONE query (Postgres DISTINCT ON), no broker contact."""
     from analytics.models import AccountEquitySnapshot
     ids = [a.id for a in accounts]
-    out: dict = {}
-    for aid in ids:
-        cur = (AccountEquitySnapshot.objects
-               .filter(trading_account_id=aid)
-               .order_by("-observed_at")
-               .values_list("account_currency", flat=True)
-               .first())
-        if cur:
-            out[aid] = cur
-    return out
+    if not ids:
+        return {}
+    rows = (AccountEquitySnapshot.objects
+            .filter(trading_account_id__in=ids)
+            .order_by("trading_account_id", "-observed_at")
+            .distinct("trading_account_id")
+            .values_list("trading_account_id", "account_currency"))
+    return {aid: cur for aid, cur in rows if cur}
 
 
 def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRateSource,
@@ -374,7 +373,10 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
         rows.extend(acct_rows)
         agg = FX.aggregate_usd(pl_items, rate_source)
         per_account[a.id] = {"open_count": len(acct_rows),
-                             "open_pl_usd": round(agg.total_usd, 2),
+                             # None (never a fabricated measured 0.0) when EVERY position was excluded as
+                             # non-USD/unknown — a round(0.0) here would read as a real "$0.00" for e.g. a GBP account.
+                             "open_pl_usd": (None if (agg.converted_count == 0 and agg.unconverted)
+                                             else round(agg.total_usd, 2)),
                              "open_pl_basis": agg.basis, "stale": False,
                              # native per-position items kept so the TOP-LEVEL aggregate can preserve PARTIAL
                              # rather than re-summing an already-USD number (which would always read "USD"). (M1)
