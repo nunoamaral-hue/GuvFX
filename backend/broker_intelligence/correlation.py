@@ -67,6 +67,11 @@ logger = logging.getLogger("guvfx.broker_intelligence.correlation")
 # record (two distinct ref-less requests are two withdrawals), while an advancing event attaches to exactly one.
 _OPENING_EVENTS = {"WITHDRAWAL_REQUESTED"}
 _REQUESTED_EVENTS = {"WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED"}
+# Requesting-family lifecycles that are, for some brokers (e.g. TradersWay), the FIRST observable step of a genuine
+# external withdrawal — no separate WITHDRAWAL_REQUESTED email precedes them. In the ref-less heuristic path, when
+# there is NO existing candidate to advance, such an event OPENS the record (advance-ELSE-open). Reached only after
+# ZERO candidates, so it can never double-count a withdrawal a WITHDRAWAL_REQUESTED already opened (ADR-0060).
+_REQUEST_OPENING_FALLBACK = {"WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED"}
 _PROCESSING_EVENTS = {"WITHDRAWAL_PROCESSING", "WITHDRAWAL_APPROVED"}
 _COMPLETED_EVENTS = {"WITHDRAWAL_COMPLETED"}
 
@@ -378,7 +383,13 @@ def _correlate_by_heuristic(event: BrokerEvent, target_status: str) -> Correlati
     if len(cands) >= 2:
         _mark_event(event, BrokerEvent.CorrelationStatus.AMBIGUOUS)
         return CorrelationResult(event.id, OUT_AMBIGUOUS)
-    # zero candidates: an advancing event with no matching request is never fabricated into a record.
+    # zero candidates: an advancing event with no matching request is not fabricated into a record — EXCEPT a
+    # requesting-family lifecycle that is itself the first observable step of a genuine external withdrawal (no
+    # earlier request to advance), which OPENS the record. Reached ONLY after finding ZERO candidates, so it can
+    # never double-count a withdrawal a WITHDRAWAL_REQUESTED already opened; and only for an EXTERNAL_WITHDRAWAL event
+    # with amount+currency (guarded above). Any other lifecycle with no request stays UNRESOLVED (under-claim-safe).
+    if (event.event_type or "").strip() in _REQUEST_OPENING_FALLBACK:
+        return _create_heuristic(event, target_status)
     return CorrelationResult(event.id, OUT_UNRESOLVED)
 
 

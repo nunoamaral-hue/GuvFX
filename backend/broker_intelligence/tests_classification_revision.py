@@ -205,3 +205,45 @@ class ClassificationRevisionTests(TestCase):
                 ev.classification_revisions.all().delete()
         rev = ev.classification_revisions.get()
         self.assertEqual(rev.derived_category, TransactionCategory.EXTERNAL_WITHDRAWAL)   # unchanged + still present
+
+    def _direct_event(self, *, event_type, amount, occurred_at=None, owner=None):
+        """Create an EXTERNAL_WITHDRAWAL event directly (ref-less, owner-attributed, account-unresolved) to exercise
+        correlation opening semantics without going through the parser."""
+        from decimal import Decimal
+        blob, _ = self.store.put(f"X|{event_type}|{amount}|{occurred_at}".encode(),
+                                 source=BrokerEvent.source.field.default)
+        return BrokerEvent.objects.create(
+            event_type=event_type, transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL, broker="TradersWay",
+            source="EMAIL", received_at=timezone.now(), occurred_at=(occurred_at or timezone.now()),
+            owner=(owner or self.owner), evidence=blob, evidence_hash=blob.sha256, parser_name="tradersway",
+            parser_version="v1", amount=Decimal(amount), currency="USD", broker_reference_id="",
+            provenance=Provenance.REAL)
+
+    # 15. ADR-0060: a ref-less external WITHDRAWAL_CONFIRMATION_REQUIRED (the TradersWay first-step, no prior request)
+    # OPENS a withdrawal (advance-else-open) instead of staying unresolved.
+    def test_refless_confirmation_required_opens_withdrawal(self):
+        from broker_intelligence.correlation import run_correlation
+        from broker_intelligence.models import Withdrawal
+        self._direct_event(event_type="WITHDRAWAL_CONFIRMATION_REQUIRED", amount="250.00")
+        run_correlation()
+        self.assertEqual(Withdrawal.objects.filter(owner=self.owner).count(), 1)
+
+    # 16. No double-count: a WITHDRAWAL_REQUESTED then a CONFIRMATION_REQUIRED for the SAME withdrawal (same owner,
+    # amount, currency, window) yields exactly ONE withdrawal — the confirmation advances, never opens a second.
+    def test_no_double_count_requested_then_confirmation(self):
+        from broker_intelligence.correlation import run_correlation
+        from broker_intelligence.models import Withdrawal
+        t = timezone.now()
+        self._direct_event(event_type="WITHDRAWAL_REQUESTED", amount="250.00", occurred_at=t)
+        self._direct_event(event_type="WITHDRAWAL_CONFIRMATION_REQUIRED", amount="250.00", occurred_at=t)
+        run_correlation()
+        self.assertEqual(Withdrawal.objects.filter(owner=self.owner).count(), 1)
+
+    # 17. A lone non-requesting advancing lifecycle (e.g. PROCESSING) with no request still stays UNRESOLVED
+    # (under-claim-safe — the fallback opens ONLY the requesting family).
+    def test_lone_processing_does_not_open(self):
+        from broker_intelligence.correlation import run_correlation
+        from broker_intelligence.models import Withdrawal
+        self._direct_event(event_type="WITHDRAWAL_PROCESSING", amount="250.00")
+        run_correlation()
+        self.assertEqual(Withdrawal.objects.filter(owner=self.owner).count(), 0)
