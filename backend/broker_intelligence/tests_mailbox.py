@@ -1302,3 +1302,59 @@ class MultiMailbox(TransactionTestCase):
             connections.close_all()
         finally:
             O.exchange_code, S.fetch_profile = orig
+
+
+@override_settings(**ENV, BROKER_MAILBOX_STATUS_ENABLED="1",
+                   BROKER_MULTI_MAILBOX_OWNER_ALLOWLIST="allowed@x.invalid")
+class MultiMailboxCohortGate(TestCase):
+    """WS2 — the OWNER-SCOPED allowlist (default-DENY) is the multi-mailbox authorization boundary, NOT a global flag.
+    An allowlisted owner may ADD_NEW; a non-allowlisted owner is refused even with the same server state."""
+
+    def _mb(self, user, pmid):
+        return ConnectedMailbox.objects.create(
+            user=user, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id=pmid,
+            primary_email=pmid, credential_ref="cr-" + pmid, status=ConnectedMailbox.Status.CONNECTED)
+
+    def _client(self, email):
+        u = User.objects.create_user(username="u" + _uniq(), email=email, password="x")
+        c = APIClient(); c.force_authenticate(u)
+        return u, c
+
+    def test_allowlisted_owner_can_add_new_and_status_true(self):
+        u, c = self._client("allowed@x.invalid"); self._mb(u, "a@gmail.com")
+        r = c.get("/api/broker-intelligence/mailboxes/connect/?op=ADD_NEW_MAILBOX")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["op"], "ADD_NEW_MAILBOX")
+        s = c.get("/api/broker-intelligence/mailboxes/status/")
+        self.assertTrue(s.json()["can_add_mailbox"])
+
+    def test_non_allowlisted_owner_refused_and_status_false(self):
+        u, c = self._client("other@x.invalid"); self._mb(u, "b@gmail.com")
+        r = c.get("/api/broker-intelligence/mailboxes/connect/?op=ADD_NEW_MAILBOX")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json().get("error"), "single_mailbox_only")
+        s = c.get("/api/broker-intelligence/mailboxes/status/")
+        self.assertFalse(s.json()["can_add_mailbox"])
+
+    def test_cohort_does_not_leak_to_a_different_owner(self):
+        u, c = self._client("notlisted@x.invalid"); self._mb(u, "c@gmail.com")
+        s = c.get("/api/broker-intelligence/mailboxes/status/")
+        self.assertFalse(s.json()["can_add_mailbox"])     # another owner is NOT in the cohort
+
+
+@override_settings(**ENV, BROKER_MAILBOX_STATUS_ENABLED="1")   # no allowlist, no global flag -> default DENY
+class MultiMailboxDefaultDeny(TestCase):
+    """WS2 — with neither the allowlist nor the legacy global flag set, multi-mailbox is OFF for everyone (the V1
+    single-mailbox behaviour is preserved): can_add_mailbox is False and ADD_NEW is refused."""
+
+    def test_default_deny_preserves_single_mailbox(self):
+        u = User.objects.create_user(username="dd" + _uniq(), email="dd@x.invalid", password="x")
+        ConnectedMailbox.objects.create(
+            user=u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id="d@gmail.com",
+            primary_email="d@gmail.com", credential_ref="cr-d", status=ConnectedMailbox.Status.CONNECTED)
+        c = APIClient(); c.force_authenticate(u)
+        r = c.get("/api/broker-intelligence/mailboxes/connect/?op=ADD_NEW_MAILBOX")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json().get("error"), "single_mailbox_only")
+        s = c.get("/api/broker-intelligence/mailboxes/status/")
+        self.assertFalse(s.json()["can_add_mailbox"])

@@ -225,4 +225,69 @@ describe("ConnectedEmailAccounts", () => {
     await screen.findByTestId("connected-email-panel");
     expect(screen.queryByTestId("connected-email-notice")).toBeNull();
   });
+
+  // --- WS2 multi-mailbox: Add email account control (owner-scoped cohort via can_add_mailbox) ---------------------
+  it("shows 'Add email account' ONLY when can_add_mailbox is true, and adds via ADD_NEW_MAILBOX (no mailbox id)", async () => {
+    const connectCalls: string[] = [];
+    const url = "https://accounts.google.com/o/oauth2/v2/auth?state=SIGNED";
+    api.apiFetch.mockImplementation((u: string) => {
+      if (u === STATUS) return Promise.resolve({ connected: true, can_add_mailbox: true, mailbox_limit: 5, mailboxes: [
+        { mailbox_id: 1, provider: "GMAIL", masked_email: "aa…@gmail.com", state: "HEALTHY",
+          connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+          reconnect_required: false, has_verified_broker_bindings: false }] });
+      if (u.startsWith(CONNECT)) { connectCalls.push(u); return Promise.resolve({ authorization_url: url }); }
+      return Promise.resolve({});
+    });
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", { value: { assign, href: "" }, writable: true });
+    render(<ConnectedEmailAccounts />);
+    await screen.findByTestId("connected-email-panel");
+    fireEvent.click(screen.getByTestId("add-account-btn"));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(url));
+    expect(connectCalls[0]).toContain("op=ADD_NEW_MAILBOX");
+    expect(connectCalls[0]).not.toContain("mailbox_id");      // ADD_NEW names no target — never retargets a row
+  });
+
+  it("hides 'Add email account' when can_add_mailbox is absent/false (not in cohort, or at the cap)", async () => {
+    statusOf([{ mailbox_id: 1, provider: "GMAIL", masked_email: "aa…@gmail.com", state: "HEALTHY",
+      connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+      reconnect_required: false, has_verified_broker_bindings: false }]);   // statusOf omits can_add_mailbox
+    render(<ConnectedEmailAccounts />);
+    await screen.findByTestId("connected-email-panel");
+    expect(screen.queryByTestId("add-account-btn")).toBeNull();
+  });
+
+  it("shows an 'already connected' banner on a duplicate add", async () => {
+    statusOf([{ mailbox_id: 1, provider: "GMAIL", masked_email: "aa…@gmail.com", state: "HEALTHY",
+      connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+      reconnect_required: false, has_verified_broker_bindings: false }]);
+    atReturn("?mailbox_connect=mailbox_already_connected");
+    render(<ConnectedEmailAccounts />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/already connected/i);
+  });
+
+  it("shows a 'limit reached' banner when the mailbox cap is hit", async () => {
+    statusOf([{ mailbox_id: 1, provider: "GMAIL", masked_email: "aa…@gmail.com", state: "HEALTHY",
+      connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+      reconnect_required: false, has_verified_broker_bindings: false }]);
+    atReturn("?mailbox_connect=mailbox_limit_reached");
+    render(<ConnectedEmailAccounts />);
+    const notice = await screen.findByTestId("connected-email-notice");
+    expect(notice.textContent).toMatch(/maximum/i);
+  });
+
+  it("one unhealthy mailbox row does not hide the healthy mailboxes", async () => {
+    statusOf([
+      { mailbox_id: 1, provider: "GMAIL", masked_email: "aa…@gmail.com", state: "HEALTHY",
+        connection_status: "CONNECTED", last_successful_sync: "2026-10-18T10:00:00Z",
+        reconnect_required: false, has_verified_broker_bindings: false },
+      { mailbox_id: 2, provider: "GMAIL", masked_email: "bb…@gmail.com", state: "RECONNECT_REQUIRED",
+        connection_status: "CONNECTED", last_successful_sync: null,
+        reconnect_required: true, has_verified_broker_bindings: false },
+    ]);
+    render(<ConnectedEmailAccounts />);
+    await screen.findByTestId("connected-email-panel");
+    expect(screen.getAllByTestId("connected-email-row")).toHaveLength(2);
+  });
 });

@@ -118,8 +118,36 @@ def broker_multi_mailbox_enabled() -> bool:
     ``BROKER_MAX_MAILBOXES_PER_OWNER`` enforced atomically at the OAuth callback (under the per-owner advisory lock).
     The cross-user ``(provider, provider_mailbox_id)`` uniqueness (anti-hijack), signed OAuth state, gmail.readonly
     scope, encrypted credentials, per-mailbox cursors and independent health/revocation are all unchanged. Kept
-    SEPARATE from ``broker_mailbox_connect_enabled`` so multi-connect is armed deliberately."""
+    SEPARATE from ``broker_mailbox_connect_enabled`` so multi-connect is armed deliberately.
+
+    NOTE: this is the LEGACY GLOBAL master switch. In production the authoritative cohort boundary is the
+    OWNER-SCOPED, default-DENY allowlist (``broker_multi_mailbox_enabled_for`` below) — a global boolean must never be
+    the production authorization gate (it would expose an unfinished flow to every member)."""
     return _flag("BROKER_MULTI_MAILBOX_ENABLED")
+
+
+def broker_multi_mailbox_allowlist() -> frozenset:
+    """Owner-scoped multi-mailbox COHORT allowlist (default-DENY). Lowercased emails parsed from
+    ``BROKER_MULTI_MAILBOX_OWNER_ALLOWLIST`` (comma-separated), settings-override-then-env. Plain config, never a
+    secret/token. Empty ⇒ no owner is in the cohort."""
+    raw = getattr(settings, "BROKER_MULTI_MAILBOX_OWNER_ALLOWLIST", None)
+    if raw is None:
+        raw = os.getenv("BROKER_MULTI_MAILBOX_OWNER_ALLOWLIST", "")
+    return frozenset(e.strip().lower() for e in str(raw).split(",") if e.strip())
+
+
+def broker_multi_mailbox_enabled_for(user) -> bool:
+    """OWNER-SCOPED multi-mailbox gate — the production cohort boundary, default-DENY. A member may connect more than
+    one mailbox ONLY when their email is in ``broker_multi_mailbox_allowlist()``. When NO allowlist is configured, fall
+    back to the legacy global master flag so dev/test can exercise the mechanics with a single switch; in production
+    the allowlist is set (and the global flag stays unset), so the feature is enabled for the named cohort ONLY and is
+    NEVER globally exposed. Fail-closed on a missing/anonymous user."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    allow = broker_multi_mailbox_allowlist()
+    if allow:
+        return (getattr(user, "email", "") or "").strip().lower() in allow
+    return broker_multi_mailbox_enabled()
 
 
 def broker_account_contact_enabled() -> bool:
