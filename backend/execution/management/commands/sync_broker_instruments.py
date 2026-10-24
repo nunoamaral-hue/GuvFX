@@ -82,9 +82,13 @@ def upsert_broker_instruments(account, raw_symbols, *, provenance=None) -> dict:
                 defaults={"base_symbol": base_symbol(name), "enabled": _tradeable(sym), "metadata": meta},
             )
             counts["created" if created else "updated"] += 1
-        # Symbols no longer offered by the broker -> disabled (fail-closed), preserved for audit.
-        stale = BrokerInstrument.objects.filter(account=account, enabled=True).exclude(broker_symbol__in=seen_names)
-        counts["disabled"] = stale.update(enabled=False)
+        # Symbols no longer offered by the broker -> disabled (fail-closed), preserved for audit. GUARDED: when
+        # NO valid symbol name was parsed (garbage/partial response), ``seen_names`` is empty and
+        # ``.exclude(broker_symbol__in=set())`` would exclude nothing and disable EVERY enabled row — wiping a
+        # valid cache. Skip the stale-disable entirely in that case; the handler treats seen==0 as a failed sync.
+        if seen_names:
+            stale = BrokerInstrument.objects.filter(account=account, enabled=True).exclude(broker_symbol__in=seen_names)
+            counts["disabled"] = stale.update(enabled=False)
     return counts
 
 
@@ -119,7 +123,7 @@ def _fetch_symbols(account):
     # 1) IDENTITY FIREWALL FIRST — confirm the bridge serves THIS account before trusting any symbols.
     try:
         adata = _get_json(f"{base}/mt5/snapshots/account?username={urllib.parse.quote(wu)}", token)
-    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:  # HTTP/URL error, socket timeout, malformed JSON
         raise CommandError(
             f"identity read failed for account {account.id}: {exc}. Cache left unchanged.") from exc
     inner = adata.get("data") if isinstance(adata.get("data"), dict) else {}
@@ -142,13 +146,15 @@ def _fetch_symbols(account):
         raise CommandError(
             f"bridge GET /mt5/symbols failed for account {account.id}: HTTP {exc.code}. Cache left unchanged."
         ) from exc
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:  # unreachable, socket timeout, malformed JSON
         raise CommandError(
-            f"bridge GET /mt5/symbols unreachable for account {account.id}: {exc.reason}. Cache left unchanged."
+            f"bridge GET /mt5/symbols failed for account {account.id}: {exc}. Cache left unchanged."
         ) from exc
-    symbols = payload.get("symbols", payload if isinstance(payload, list) else [])
+    symbols = (payload.get("symbols", []) if isinstance(payload, dict)
+               else (payload if isinstance(payload, list) else []))
     provenance = {
-        "source_login_tail": ("***" + str(obs_login)[-4:]) if obs_login else "",
+        "source_login_tail": (("***" + str(obs_login)[-4:]) if obs_login and len(str(obs_login)) > 4
+                              else ("***" if obs_login else "")),
         "source_server": obs_server or "",
         "per_tenant": bool(st.per_tenant),
         "observed_at": timezone.now().isoformat(),
@@ -186,6 +192,11 @@ class Command(BaseCommand):
             raise CommandError(
                 f"broker-symbols: acct#{account.id} empty symbol set — refusing to erase a valid cache.")
         counts = upsert_broker_instruments(account, raw, provenance=provenance)
+        # A non-empty response that yielded ZERO usable symbol names is a garbage/partial sync — the upsert
+        # changed nothing (stale-disable is guarded off), so the cache is untouched; signal failure, don't claim success.
+        if counts["seen"] == 0:
+            raise CommandError(
+                f"broker-symbols: acct#{account.id} no usable symbol names in bridge response — cache left unchanged.")
         self.stdout.write(
             "broker-symbols: acct#{a} seen={seen} created={created} updated={updated} "
             "disabled={disabled} (identity-verified; cache synced; no order)".format(a=account.id, **counts)

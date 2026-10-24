@@ -128,6 +128,24 @@ class IdentityRoutingTests(TestCase):
                 call_command("sync_broker_instruments", "--account", str(self.a.id))
         self.assertTrue(BrokerInstrument.objects.filter(account=self.a, broker_symbol="XAUUSD", enabled=True).exists())
 
+    def test_malformed_symbols_json_fails_closed_cleanly(self):
+        # A 200 with unparseable JSON must raise CommandError (not a raw traceback) and leave the cache intact.
+        BrokerInstrument.objects.create(account=self.a, broker_symbol="XAUUSD", base_symbol="XAUUSD", enabled=True)
+
+        def _fake(req, timeout=None):
+            if "/mt5/snapshots/account" in req.full_url:
+                return _resp(b'{"ok": true, "account_login": "5442", "account_server": "TradersWay-Live", "trade_mode": 2}')
+            return _resp(b'{ this is not valid json ')
+        with mock.patch.dict("os.environ", _ENV, clear=False), \
+             mock.patch.object(cmd, "resolve_account_snapshot_base",
+                               return_value=SnapshotTransport(True, "ok", "http://T:8806", per_tenant=True)), \
+             mock.patch.object(cmd, "account_windows_username", return_value="wu"), \
+             mock.patch.object(cmd, "verify_snapshot_identity", return_value=_OK_IDENT), \
+             mock.patch.object(cmd.urllib.request, "urlopen", _fake):
+            with self.assertRaises(CommandError):
+                call_command("sync_broker_instruments", "--account", str(self.a.id))
+        self.assertTrue(BrokerInstrument.objects.filter(account=self.a, broker_symbol="XAUUSD", enabled=True).exists())
+
 
 class UpsertExactnessTests(TestCase):
     def setUp(self):
@@ -146,6 +164,14 @@ class UpsertExactnessTests(TestCase):
         self.assertEqual(std.base_symbol, "XAUUSD")                     # base strips the suffix for matching
         sb = BrokerInstrument.objects.get(account=self.a, broker_symbol="XAUUSD_SB")
         self.assertEqual(sb.base_symbol, "XAUUSD")                      # distinct symbol; never treated as XAUUSD
+
+    def test_zero_valid_names_does_not_erase_cache(self):
+        # Non-empty but nameless/garbage response: must NOT disable the whole valid cache (fail-closed-on-partial).
+        BrokerInstrument.objects.create(account=self.a, broker_symbol="XAUUSD", base_symbol="XAUUSD", enabled=True)
+        counts = upsert_broker_instruments(self.a, [{"symbol": "EURUSD"}, {"description": "Gold"}, {}])
+        self.assertEqual(counts["seen"], 0)
+        self.assertEqual(counts["disabled"], 0)
+        self.assertTrue(BrokerInstrument.objects.filter(account=self.a, broker_symbol="XAUUSD", enabled=True).exists())
 
     def test_replay_is_idempotent(self):
         rows = [{"name": "XAUUSD", "visible": True, "trade_mode": 4}]
