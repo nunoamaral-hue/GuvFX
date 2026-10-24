@@ -323,7 +323,8 @@ class OpenTradesTests(TestCase):
             a2.id: [{"ticket": 123, "symbol": "EURUSD", "side": "SELL", "volume": 0.02,
                      "price_open": 1.1, "price_current": 1.101, "profit": -3.14, "magic": 0}],
         })
-        rows, per = PF.open_positions([a1, a2], fetch_positions=fetch, rate_source=FX.NullFxRateSource())
+        rows, per = PF.open_positions([a1, a2], fetch_positions=fetch, rate_source=FX.NullFxRateSource(),
+                                      observed_currency={a1.id: "USD", a2.id: "USD"})   # USD accounts (explicit)
         self.assertEqual(len(rows), 2)
         ids = {r["position_id"] for r in rows}
         self.assertEqual(ids, {f"{a1.id}:123", f"{a2.id}:123"})     # same ticket, distinct account-scoped id
@@ -380,7 +381,8 @@ class OpenTradesTests(TestCase):
             a1.id: [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1, "profit": 10.0, "magic": 0}],
             a2.id: [{"ticket": 2, "symbol": "Y", "side": "SELL", "volume": 1, "profit": -4.0, "magic": 0}],
         })
-        _, per = PF.open_positions([a1, a2], fetch_positions=fetch, rate_source=FX.NullFxRateSource())
+        _, per = PF.open_positions([a1, a2], fetch_positions=fetch, rate_source=FX.NullFxRateSource(),
+                                   observed_currency={a1.id: "USD", a2.id: "USD"})   # USD accounts (explicit)
         self.assertEqual(per[a1.id]["open_pl_usd"], 10.0); self.assertEqual(per[a2.id]["open_pl_usd"], -4.0)
 
     def test_top_level_open_pl_marks_stale_partial(self):
@@ -388,7 +390,8 @@ class OpenTradesTests(TestCase):
         u = _user("o6"); ok = _acct(u); down = _acct(u)
         fetch = _fake_positions({ok.id: [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1,
                                           "profit": 10.0, "magic": 0}]})   # down returns None (stale)
-        _, per = PF.open_positions([ok, down], fetch_positions=fetch, rate_source=FX.NullFxRateSource())
+        _, per = PF.open_positions([ok, down], fetch_positions=fetch, rate_source=FX.NullFxRateSource(),
+                                   observed_currency={ok.id: "USD"})   # ok is a USD account (explicit)
         agg, stale = PF.portfolio_open_pl(per, FX.NullFxRateSource())
         self.assertEqual(agg.total_usd, 10.0); self.assertEqual(agg.basis, "PARTIAL")
         self.assertEqual(stale, [down.id])
@@ -715,3 +718,150 @@ class BuildSummaryHonestStateTests(TestCase):
         for u_entry in payload["aggregate"]["balance_usd"]["unconverted"]:
             self.assertIn(u_entry["category"], {"currency_unconvertible", "stale_observation",
                                                 "missing_snapshot", "read_refused"})
+
+
+# ── Currency-integrity: open-position P/L is labelled by the OBSERVED currency, never defaulted to USD ─────────
+# Confirmed prod defect: an account with a NULL stored currency had its open-position P/L defaulted to USD
+# (normalise_currency(None)->USD) and silently mixed into the All-Accounts USD total (a GBP -12.24 summed with a
+# USD +13.83 as "+$1.50"). Each test DISCRIMINATES: reverting the fix (default unknown->USD) flips the assertion.
+class CurrencyIntegrityTests(TestCase):
+    _NULL = FX.NullFxRateSource()
+
+    def _pos(self, profit, symbol="XAUUSD"):
+        return {"ticket": 1, "symbol": symbol, "side": "BUY", "volume": 1.0,
+                "price_open": 4000, "price_current": 4000, "profit": profit, "magic": 0}
+
+    # resolve_position_currency ---------------------------------------------------------------
+    def test_resolve_prefers_observed_then_stored_then_unknown(self):
+        self.assertEqual(FX.resolve_position_currency("GBP", "USD"), "GBP")            # observed wins
+        self.assertEqual(FX.resolve_position_currency(None, "EUR"), "EUR")             # fall back to stored
+        self.assertEqual(FX.resolve_position_currency("", "  "), FX.UNKNOWN_CURRENCY)  # neither -> UNKNOWN
+        self.assertEqual(FX.resolve_position_currency(None, None), FX.UNKNOWN_CURRENCY)
+        self.assertNotEqual(FX.resolve_position_currency(None, None), FX.USD)          # NEVER defaults to USD
+
+    # open_positions currency labelling -------------------------------------------------------
+    def test_gbp_observed_position_excluded_not_usd(self):
+        u = _user("ci1"); a = _acct(u, broker="Pepperstone")                           # stored currency null
+        rows, per = PF.open_positions([a], fetch_positions=_fake_positions({a.id: [self._pos(-12.24)]}),
+                                      rate_source=self._NULL, observed_currency={a.id: "GBP"})
+        self.assertEqual(rows[0]["pl_native_currency"], "GBP")
+        self.assertEqual(rows[0]["pl_native"], -12.24)
+        self.assertIsNone(rows[0]["pl_usd"])                                           # NOT summed as USD
+        self.assertEqual(per[a.id]["open_pl_basis"], "PARTIAL")
+
+    def test_null_currency_position_is_unknown_not_usd(self):
+        # The exact prod regression: null stored currency + no observed entry -> UNKNOWN, excluded (pre-fix: USD).
+        u = _user("ci2"); a = _acct(u)                                                 # account_currency null
+        rows, per = PF.open_positions([a], fetch_positions=_fake_positions({a.id: [self._pos(50.0)]}),
+                                      rate_source=self._NULL)
+        self.assertEqual(rows[0]["pl_native_currency"], FX.UNKNOWN_CURRENCY)
+        self.assertIsNone(rows[0]["pl_usd"])
+        self.assertEqual(per[a.id]["open_pl_basis"], "PARTIAL")
+
+    def test_usd_observed_position_included(self):
+        u = _user("ci3"); a = _acct(u)
+        rows, per = PF.open_positions([a], fetch_positions=_fake_positions({a.id: [self._pos(13.83)]}),
+                                      rate_source=self._NULL, observed_currency={a.id: "USD"})
+        self.assertEqual(rows[0]["pl_native_currency"], "USD")
+        self.assertEqual(rows[0]["pl_usd"], 13.83)
+        self.assertEqual(per[a.id]["open_pl_basis"], "USD")
+
+    # the "+$1.50" mixed-currency aggregate regression ---------------------------------------
+    def test_mixed_usd_gbp_all_accounts_is_partial_usd_only(self):
+        u = _user("ci4"); usd = _acct(u, broker="TradersWay"); gbp = _acct(u, broker="Pepperstone")
+        fetch = _fake_positions({usd.id: [self._pos(13.83)], gbp.id: [self._pos(-12.24), self._pos(-0.09)]})
+        _, per = PF.open_positions([usd, gbp], fetch_positions=fetch, rate_source=self._NULL,
+                                   observed_currency={usd.id: "USD", gbp.id: "GBP"})
+        d, _stale = PF.portfolio_open_pl(per, self._NULL)
+        dd = d.as_dict()
+        self.assertEqual(dd["total_usd"], 13.83)                 # USD-only, NOT 13.83-12.24-0.09
+        self.assertNotEqual(dd["total_usd"], 1.5)                # the exact contamination value, rejected
+        self.assertEqual(dd["state"], "PARTIAL")
+        self.assertEqual(dd["excluded_count"], 2)                # both GBP positions excluded
+        self.assertTrue(all(x["native_currency"] == "GBP" for x in dd["unconverted"]))
+        self.assertEqual(d.reason, "currency_unconvertible")
+
+    # observed_currency_map reads the verified equity ledger ---------------------------------
+    def test_observed_currency_map_from_equity_ledger(self):
+        from analytics.models import AccountEquitySnapshot
+        u = _user("ci5"); a_usd = _acct(u); a_gbp = _acct(u); a_none = _acct(u)
+        now = timezone.now()
+        AccountEquitySnapshot.objects.create(trading_account=a_usd, observed_at=now, account_currency="USD",
+                                             balance=100, equity=100)
+        AccountEquitySnapshot.objects.create(trading_account=a_gbp, observed_at=now - timedelta(hours=2),
+                                             account_currency="USD", balance=1, equity=1)   # older WRONG value
+        AccountEquitySnapshot.objects.create(trading_account=a_gbp, observed_at=now, account_currency="GBP",
+                                             balance=400, equity=400)
+        m = PF.observed_currency_map([a_usd, a_gbp, a_none])
+        self.assertEqual(m.get(a_usd.id), "USD")
+        self.assertEqual(m.get(a_gbp.id), "GBP")                 # latest snapshot wins over the older USD
+        self.assertNotIn(a_none.id, m)                           # no snapshot -> absent (caller falls back)
+
+    def test_build_summary_excludes_gbp_via_ledger_no_fabricated_zero(self):
+        from analytics.models import AccountEquitySnapshot
+        u = _user("ci6"); gbp = _acct(u, broker="Pepperstone")
+        AccountEquitySnapshot.objects.create(trading_account=gbp, observed_at=timezone.now(),
+                                             account_currency="GBP", balance=400, equity=400)
+        payload, _ = PF.build_summary(
+            u, "ALL", fetch_balance=lambda a, timeout=None: {"balance": 400, "equity": 400, "currency": "GBP"},
+            fetch_positions=_fake_positions({gbp.id: [self._pos(-12.24)]}), rate_source=self._NULL)
+        opl = payload["aggregate"]["open_pl_usd"]
+        self.assertEqual(opl["state"], "UNAVAILABLE")            # the ONLY account is GBP -> no measured USD number
+        self.assertIsNone(opl["total_usd"])                      # never a fabricated measured 0.0
+        self.assertEqual(opl["excluded_count"], 1)
+
+    # the live open-trades VIEW: mixed scope is honest ---------------------------------------
+    def test_open_trades_view_mixed_currency_partial(self):
+        from analytics.models import AccountEquitySnapshot
+        u = _user("ci7"); usd = _acct(u, broker="TradersWay"); gbp = _acct(u, broker="Pepperstone")
+        now = timezone.now()
+        AccountEquitySnapshot.objects.create(trading_account=usd, observed_at=now, account_currency="USD",
+                                             balance=250, equity=264)
+        AccountEquitySnapshot.objects.create(trading_account=gbp, observed_at=now, account_currency="GBP",
+                                             balance=446, equity=432)
+        pos = {usd.id: [self._pos(13.83)], gbp.id: [self._pos(-12.24), self._pos(-0.09)]}
+
+        def _fake(account, windows_username, timeout=10.0):
+            return pos.get(account.id)
+        c = APIClient(); c.force_authenticate(u)
+        with mock.patch("analytics.views_portfolio._fetch_mt5_open_positions", side_effect=_fake), \
+                mock.patch("analytics.views_portfolio._account_windows_username", return_value="wu"):
+            r = c.get("/api/analytics/portfolio/open-trades/?scope=ALL")
+        self.assertEqual(r.status_code, 200)
+        body = r.json(); opl = body["open_pl_usd"]
+        self.assertEqual(opl["total_usd"], 13.83)                # USD-only; GBP P/L is NOT mixed in
+        self.assertEqual(opl["state"], "PARTIAL")
+        self.assertEqual(opl["excluded_count"], 2)
+        gbp_row = next(t for t in body["trades"] if t["account_id"] == gbp.id and t["pl_native"] == -12.24)
+        self.assertEqual(gbp_row["pl_native_currency"], "GBP")
+        self.assertIsNone(gbp_row["pl_usd"])                     # UI renders "-12.24 GBP", never "$"
+
+    # no FX enablement + tenant isolation ----------------------------------------------------
+    def test_no_fx_enablement_gbp_stays_excluded(self):
+        # The fix must NOT silently enable FX conversion: with the default source a GBP figure is EXCLUDED
+        # (unconvertible), never converted into the USD total.
+        from analytics.views_portfolio import _rate_source
+        rec = FX.to_usd(-12.24, "GBP", _rate_source())
+        self.assertFalse(rec["ok"]); self.assertIsNone(rec["usd"])
+
+    def test_tenant_isolation_foreign_gbp_not_in_aggregate(self):
+        from analytics.models import AccountEquitySnapshot
+        u = _user("ci8"); other = _user("ci8b")
+        mine = _acct(u, broker="TradersWay"); foreign = _acct(other, broker="Pepperstone")
+        now = timezone.now()
+        AccountEquitySnapshot.objects.create(trading_account=mine, observed_at=now, account_currency="USD",
+                                             balance=250, equity=264)
+        AccountEquitySnapshot.objects.create(trading_account=foreign, observed_at=now, account_currency="GBP",
+                                             balance=400, equity=400)
+        pos = {mine.id: [self._pos(13.83)], foreign.id: [self._pos(-99.0)]}
+
+        def _fake(account, windows_username, timeout=10.0):
+            return pos.get(account.id)
+        c = APIClient(); c.force_authenticate(u)
+        with mock.patch("analytics.views_portfolio._fetch_mt5_open_positions", side_effect=_fake), \
+                mock.patch("analytics.views_portfolio._account_windows_username", return_value="wu"):
+            r = c.get("/api/analytics/portfolio/open-trades/?scope=ALL")
+        body = r.json()
+        acct_ids = {t["account_id"] for t in body["trades"]}
+        self.assertIn(mine.id, acct_ids); self.assertNotIn(foreign.id, acct_ids)       # IDOR: foreign excluded
+        self.assertEqual(body["open_pl_usd"]["total_usd"], 13.83)                      # only my USD position

@@ -98,7 +98,10 @@ class PortfolioOpenTradesView(APIView):
         accounts, err = PF.resolve_scope(request.user, scope)
         if err is not None:
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
-        rows, per_open = PF.open_positions(accounts, fetch_positions=_positions_fetcher, rate_source=_rate_source())
+        # Bridge-observed currency per account (verified equity ledger) so each open position's P/L is labelled in
+        # its true currency; a non-USD account is then excluded from the USD total (PARTIAL), never summed as USD.
+        rows, per_open = PF.open_positions(accounts, fetch_positions=_positions_fetcher, rate_source=_rate_source(),
+                                           observed_currency=PF.observed_currency_map(accounts))
         # Preserve per-account PARTIAL/STALE in the top-level total (M1): a floating-P/L total that dropped a
         # non-convertible or unreadable account is reported PARTIAL with those accounts surfaced, never "USD".
         open_pl, stale_ids = PF.portfolio_open_pl(per_open, _rate_source())
