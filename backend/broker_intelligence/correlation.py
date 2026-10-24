@@ -169,16 +169,28 @@ def _apply_event(withdrawal: Withdrawal, event: BrokerEvent, target_status: str,
     if not withdrawal.currency and event.currency:
         withdrawal.currency = event.currency
         dirty = True
-    # Requested anchor: first requested/processing-class observation sets requested_at + requested_event.
+    # Requested anchor: first requested/processing-class observation sets requested_at + requested_event. SYMMETRIC
+    # with the completion anchor below (ADR-0061): use the broker-STATED transaction time when present, else the
+    # OBSERVED email time (``received_at`` = the broker's email Date header). Without this fallback a broker that
+    # states no in-body transaction time — e.g. TradersWay, whose request/completion emails carry only a Date header —
+    # would leave ``requested_at`` NULL forever, so NO processing duration could ever be computed even though the
+    # observable interval between the two notification emails is known. ``received_at`` is never NULL (required field),
+    # so a non-terminal event always supplies a requested anchor. This matches the member-facing semantic (the interval
+    # between the request and completion notification emails, not an internal transaction clock).
     if not _is_terminal(target_status):
-        if withdrawal.requested_at is None and event.occurred_at is not None:
-            withdrawal.requested_at = event.occurred_at
+        if withdrawal.requested_at is None:
+            withdrawal.requested_at = _event_time(event)
             dirty = True
         if withdrawal.requested_event_id is None:
             withdrawal.requested_event = event
             dirty = True
-    # Completion anchor: only a COMPLETED event sets completed_at/completed_event (for duration_seconds()).
-    if _is_completion(target_status):
+    # Completion anchor: set completed_at/completed_event ONLY when the withdrawal is now actually COMPLETED — i.e. a
+    # COMPLETED event that advanced (or already was) the status. A COMPLETED event that hits an already-TERMINAL row
+    # (REJECTED/CANCELLED — same rank, so status monotonically stays put) must NOT stamp a completion timestamp or a
+    # duration onto a rejected/cancelled withdrawal (that would be an internally-contradictory member record: a
+    # 'rejected' withdrawal showing a positive processing time). Guarded on the post-advance status, not merely on the
+    # event type.
+    if _is_completion(target_status) and withdrawal.status == Withdrawal.Status.COMPLETED:
         if withdrawal.completed_at is None:
             withdrawal.completed_at = _event_time(event)
             dirty = True
@@ -273,7 +285,8 @@ def _correlate_by_reference(event: BrokerEvent, target_status: str) -> Correlati
                 amount=event.amount, currency=event.currency or "",
                 status=target_status, correlation_method=Withdrawal.CorrelationMethod.REFERENCE_ID,
                 provenance=event.provenance,
-                requested_at=event.occurred_at if not _is_terminal(target_status) else None,
+                # Requested anchor = broker-stated time else observed email Date (ADR-0061; symmetric with _apply_event).
+                requested_at=_event_time(event) if not _is_terminal(target_status) else None,
                 requested_event=event if not _is_terminal(target_status) else None,
                 completed_at=_event_time(event) if _is_completion(target_status) else None,
                 completed_event=event if _is_completion(target_status) else None,
@@ -317,7 +330,7 @@ def _create_heuristic(event: BrokerEvent, target_status: str) -> CorrelationResu
         amount=event.amount, currency=event.currency or "",
         status=target_status, correlation_method=Withdrawal.CorrelationMethod.HEURISTIC,
         provenance=event.provenance,
-        requested_at=event.occurred_at,
+        requested_at=_event_time(event),   # broker-stated time else observed email Date (ADR-0061)
         requested_event=event,
     )
     _mark_event(event, BrokerEvent.CorrelationStatus.CORRELATED)

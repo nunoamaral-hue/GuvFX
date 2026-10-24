@@ -7,14 +7,14 @@ existing lifecycle+duration model — it adds NO schema, NO ingestion/correlatio
 
 Truthfulness rules (Sponsor WS3 §3):
 * **Speed is measured ONLY from confidently-TIMED COMPLETED withdrawals.** A completed withdrawal enters the headline,
-  the chart and the broker aggregates only when it carries BOTH anchors (``requested_at`` + ``completed_at``), is not
-  impossible, AND its completion time is broker-STATED (the completion event carried its own ``occurred_at``, not the
-  ingestion-receipt fallback — an ingestion backfill/outage lag could otherwise inflate the interval). Everything else
-  is DISCLOSED by count and never charted/averaged — missing an anchor (``untimed_count``), completion time only
-  observed (``observed_timing_count``), impossible (``quarantined_impossible_count``). A missing duration is NEVER
-  coerced to zero. Among the charted samples, reference- vs heuristic-matched counts are disclosed
-  (``headline.reference_count`` / ``heuristic_count``): the bounded account+amount+currency+time heuristic is a
-  legitimate correlation (never amount-only, single-candidate) but lower-confidence than a deterministic broker
+  the chart and the broker aggregates only when it carries BOTH anchors (``requested_at`` + ``completed_at``) and is
+  not impossible. The duration is the OBSERVED interval between the broker's two notification emails — each anchor is
+  the broker's email Date header (``received_at``), i.e. a broker-stated email time, NOT an internal/ingestion clock
+  (the member label makes this explicit). A completion missing an anchor is DISCLOSED (``untimed_count``) and never
+  charted/averaged; an impossible one (completion before request) is quarantined (``quarantined_impossible_count``).
+  A missing duration is NEVER coerced to zero. Among the charted samples, reference- vs heuristic-matched counts are
+  disclosed (``headline.reference_count`` / ``heuristic_count``): the bounded account+amount+currency+time heuristic
+  is a legitimate correlation (never amount-only, single-candidate) but lower-confidence than a deterministic broker
   reference, so its contribution is surfaced rather than weighted silently.
 * **Pending is never a failure and never a speed sample.** In-progress (REQUESTED/PROCESSING/PENDING) ages are the
   LIVE elapsed time (``now − requested_at``), returned SEPARATELY and never folded into completed averages.
@@ -122,17 +122,6 @@ def _completed_duration(w: Withdrawal):
     return secs, False
 
 
-def _completion_broker_stated(w: Withdrawal) -> bool:
-    """True when the COMPLETION time is broker-STATED, i.e. the completion event carried its own ``occurred_at`` so
-    ``completed_at`` is the broker's own time — NOT the ingestion-receipt fallback. (The correlation engine sets
-    ``completed_at = completed_event.occurred_at or completed_event.received_at``; when occurred_at is absent the
-    interval can be inflated by an ingestion backfill/outage lag, so such a completion is disclosed but never charted
-    or averaged.) ``requested_at`` is always broker-stated — it is set only from a request event's occurred_at — so
-    only the completion anchor needs this check. Fail-safe: a missing completed_event is treated as NOT broker-stated."""
-    ev = w.completed_event
-    return ev is not None and ev.occurred_at is not None
-
-
 def _iso(dt):
     return dt.isoformat() if dt else None
 
@@ -160,12 +149,12 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
 
     # --- completed speed samples → the trend series + aggregates ---
     # A completed withdrawal feeds the headline / chart / broker aggregates ONLY when it is CONFIDENTLY TIMEABLE:
-    # both anchors present, not impossible, AND the completion time is broker-STATED (not the ingestion-receipt
-    # fallback — see _completion_broker_stated). Everything else is DISCLOSED by count, never charted/averaged and
-    # never coerced to 0:
+    # both anchors present AND the interval is not impossible (ADR-0061). The duration is the OBSERVED interval between
+    # the broker's two notification emails (each anchor is the broker's email Date header); the member label frames it
+    # as such ("observed from notification emails … not fund arrival"). Everything else is DISCLOSED by count, never
+    # charted/averaged and never coerced to 0:
     #   * impossible (completed before requested) → quarantined_impossible
     #   * missing an anchor                        → untimed
-    #   * completion time only OBSERVED (ingestion) → observed_timing (could be inflated by a backfill/outage lag)
     # Among the charted samples we also count REFERENCE vs HEURISTIC matches: the bounded account+amount+currency+time
     # heuristic is a legitimate correlation (never amount-only, single-candidate), but it is lower-confidence than a
     # deterministic broker-reference match, so the UI discloses when it contributes rather than weighting it silently.
@@ -173,7 +162,6 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
     by_broker_durations: dict = defaultdict(list)
     all_durations = []
     quarantined_impossible = 0
-    observed_timing = 0
     untimed = 0
     reference_samples = 0
     heuristic_samples = 0
@@ -184,9 +172,6 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
             continue
         if secs is None:
             untimed += 1          # completed but missing an anchor — NOT a sample, never coerced to 0
-            continue
-        if not _completion_broker_stated(w):
-            observed_timing += 1  # completion time only observed (ingestion) — disclosed, never charted/averaged
             continue
         bname = _row_broker(w)
         acct = w.trading_account
@@ -302,8 +287,7 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
             "slowest_seconds": overall["slowest_seconds"],
             "coverage": {"measured": overall["count"], "completed": len(completed)},
             "quarantined_impossible_count": quarantined_impossible,
-            # Completed but excluded from the speed sample (each DISCLOSED, never zeroed, never charted):
-            "observed_timing_count": observed_timing,   # completion time only observed (ingestion), not broker-stated
+            # Completed but NOT a speed sample because an anchor is missing (DISCLOSED, never zeroed, never charted):
             "untimed_count": untimed,                    # completed but missing a request/completion anchor
         },
         "series": series,
