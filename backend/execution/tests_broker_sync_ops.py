@@ -26,32 +26,45 @@ class SyncAuthHeaderTests(TestCase):
             user=self.user, name="Demo", account_number="D1", is_demo=True, broker_name="DemoBroker",
         )
 
-    def test_fetch_symbols_uses_agent_token_header(self):
+    def test_fetch_symbols_identity_verified_uses_agent_token_and_per_tenant_base(self):
         from execution.management.commands import sync_broker_instruments as cmd
+        from execution.snapshot_transport import SnapshotTransport, IdentityCheck
 
-        captured = {}
+        captured = {"urls": [], "headers": []}
 
-        class _Resp:
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self): return b'{"symbols": [{"name": "BTCUSD", "visible": true, "trade_mode": 4}]}'
+        def _resp(body):
+            class _R:
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self): return body
+            return _R()
 
         def _fake_urlopen(req, timeout=None):
-            captured["headers"] = {k.lower(): v for k, v in req.headers.items()}
-            captured["url"] = req.full_url
-            return _Resp()
+            captured["urls"].append(req.full_url)
+            captured["headers"].append({k.lower(): v for k, v in req.headers.items()})
+            if "/mt5/snapshots/account" in req.full_url:
+                return _resp(b'{"ok": true, "account_login": "5442", "account_server": "TradersWay-Live", "trade_mode": 2}')
+            return _resp(b'{"symbols": [{"name": "XAUUSD", "visible": true, "trade_mode": 4}]}')
 
-        env = {"GUVFX_WINDOWS_AGENT_BASE_URL": "http://bridge:8788", "GUVFX_WINDOWS_AGENT_TOKEN": "AGENTTOK"}
+        env = {"GUVFX_WINDOWS_AGENT_BASE_URL": "http://global:8788", "GUVFX_WINDOWS_AGENT_TOKEN": "AGENTTOK"}
         with mock.patch.dict("os.environ", env, clear=False), \
+             mock.patch.object(cmd, "resolve_account_snapshot_base",
+                               return_value=SnapshotTransport(True, "ok", "http://bridge-8806:8806", per_tenant=True)), \
+             mock.patch.object(cmd, "account_windows_username", return_value="wu"), \
+             mock.patch.object(cmd, "verify_snapshot_identity", return_value=IdentityCheck(True, "ok", "5442", "5442")), \
              mock.patch.object(cmd.urllib.request, "urlopen", _fake_urlopen):
-            syms = cmd._fetch_symbols(self.acct)
+            syms, prov = cmd._fetch_symbols(self.acct)
 
-        self.assertEqual([s["name"] for s in syms], ["BTCUSD"])
-        # The bridge GET endpoints authenticate via X-GuvFX-Agent-Token — NOT X-Worker-Token.
-        self.assertIn("x-guvfx-agent-token", captured["headers"])
-        self.assertEqual(captured["headers"]["x-guvfx-agent-token"], "AGENTTOK")
-        self.assertNotIn("x-worker-token", captured["headers"])
-        self.assertTrue(captured["url"].endswith("/mt5/symbols"))
+        self.assertEqual([s["name"] for s in syms], ["XAUUSD"])
+        # Reads the account's OWN per-tenant base (never the global agent) for BOTH the identity check and the
+        # symbols fetch; identity is checked FIRST; the bridge auth header is X-GuvFX-Agent-Token (not X-Worker-Token).
+        self.assertTrue(all(u.startswith("http://bridge-8806:8806/") for u in captured["urls"]))
+        self.assertIn("/mt5/snapshots/account", captured["urls"][0])
+        self.assertTrue(captured["urls"][-1].endswith("/mt5/symbols"))
+        for h in captured["headers"]:
+            self.assertEqual(h.get("x-guvfx-agent-token"), "AGENTTOK")
+            self.assertNotIn("x-worker-token", h)
+        self.assertTrue(prov["per_tenant"])
 
 
 class StalenessTests(TestCase):

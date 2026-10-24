@@ -222,3 +222,25 @@ def verify_snapshot_identity(account, observed_login, observed_server, *, requir
             if obs_demo != exp_demo:
                 return IdentityCheck(False, ID_ENVIRONMENT_MISMATCH, exp_login, obs_login)
     return IdentityCheck(True, ID_OK, exp_login, obs_login)
+
+
+def account_windows_username(account) -> str:
+    """Canonical Windows tenant identity for an account's per-tenant MT5 read — hosted-aware, fail-closed.
+
+    Legacy accounts carry it on ``mt5_instance``; HOSTED per-tenant accounts carry it on a PROVISIONED,
+    non-admin ``AccountProvisioning`` (server-derived). Returns "" when none exists — the caller MUST then
+    skip the read (an honest "unavailable", never a foreign account). Single source of truth for this
+    resolution (``analytics.views_trade_history`` and ``sync_broker_instruments`` both delegate here)."""
+    inst = getattr(account, "mt5_instance", None)
+    wu = getattr(inst, "windows_username", "") if inst else ""
+    if wu:
+        return wu
+    try:
+        from terminal_provisioning.models import AccountProvisioning
+        prov = (AccountProvisioning.objects
+                .filter(trading_account_id=getattr(account, "id", None),
+                        status=AccountProvisioning.Status.PROVISIONED, is_admin=False)
+                .only("windows_username").first())
+        return (getattr(prov, "windows_username", "") or "") if prov else ""
+    except Exception:  # pragma: no cover - defensive; a resolution error must not break the caller
+        return ""
