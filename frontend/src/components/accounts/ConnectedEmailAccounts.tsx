@@ -28,11 +28,17 @@ type Mailbox = {
   has_verified_broker_bindings: boolean;
 };
 
-type StatusResponse = { connected: boolean; mailboxes: Mailbox[] };
+type StatusResponse = {
+  connected: boolean;
+  mailboxes: Mailbox[];
+  can_add_mailbox?: boolean;   // owner-scoped multi-mailbox cohort gate AND below the per-owner cap (default false)
+  mailbox_limit?: number;
+};
 
 // Explicit connect operations — MUST match the backend contract (views.py). A reconnect ALWAYS names the mailbox so
-// the backend binds its canonical identity and can never retarget another account; a first connect names no target.
-type ConnectOp = "CONNECT_FIRST_MAILBOX" | "RECONNECT_EXISTING_MAILBOX";
+// the backend binds its canonical identity and can never retarget another account; a first connect names no target;
+// ADD_NEW connects an ADDITIONAL mailbox without touching existing rows (multi-mailbox cohort only).
+type ConnectOp = "CONNECT_FIRST_MAILBOX" | "RECONNECT_EXISTING_MAILBOX" | "ADD_NEW_MAILBOX";
 
 const STATUS = "/api/broker-intelligence/mailboxes/status/";
 const CONNECT = "/api/broker-intelligence/mailboxes/connect/";
@@ -50,6 +56,11 @@ const STR = {
   },
   none: { en: "No mailbox connected yet.", ja: "接続済みのメールボックスはまだありません。" },
   connect: { en: "Connect Gmail", ja: "Gmail を接続" },
+  addAccount: { en: "Add email account", ja: "メールアカウントを追加" },
+  addHint: {
+    en: "You can connect an additional Gmail mailbox. The mailbox's Google account must be an approved OAuth test user while the app is in Testing; otherwise Google will say the app isn't available — ask the operator to add it.",
+    ja: "追加の Gmail を接続できます。アプリが「テスト中」の間は、対象 Google アカウントが承認済みの OAuth テストユーザーである必要があります。未承認の場合は Google が「アプリを利用できません」と表示するため、運用者に追加を依頼してください。",
+  },
   reconnect: { en: "Reconnect", ja: "再接続" },
   disconnect: { en: "Disconnect", ja: "切断" },
   confirm: { en: "Confirm disconnect", ja: "切断を確認" },
@@ -84,15 +95,26 @@ const STR = {
     en: "We couldn’t complete the Google connection. Please try again.",
     ja: "Google 接続を完了できませんでした。もう一度お試しください。",
   },
+  returnAlready: {
+    en: "That Gmail account is already connected to your GuvFX account.",
+    ja: "その Gmail アカウントは、すでにお客様の GuvFX アカウントに接続されています。",
+  },
+  returnLimit: {
+    en: "You’ve reached the maximum number of connected mailboxes. Disconnect one before adding another.",
+    ja: "接続できるメールボックスの上限に達しました。別のものを追加する前に、いずれかを切断してください。",
+  },
 };
 
 // Map a backend outcome marker to a customer-safe banner message. Anything not listed (every other error code) maps
 // to the generic returnError — a member never sees a raw diagnostic. The marker is ONLY a hint; the mailbox list is
 // driven by the authoritative owner-scoped status API, never by this query parameter.
-const OUTCOME_MSG: Record<string, "returnConnected" | "returnDenied" | "returnMismatch" | "returnError"> = {
+const OUTCOME_MSG: Record<string,
+  "returnConnected" | "returnDenied" | "returnMismatch" | "returnError" | "returnAlready" | "returnLimit"> = {
   connected: "returnConnected",
   consent_denied: "returnDenied",
   oauth_account_mismatch: "returnMismatch",
+  mailbox_already_connected: "returnAlready",
+  mailbox_limit_reached: "returnLimit",
 };
 
 const STATE_LABEL: Record<MailboxState, { en: string; ja: string }> = {
@@ -293,6 +315,20 @@ export const ConnectedEmailAccounts: React.FC<{ lang?: Lang }> = ({ lang = "en" 
           onClick={() => startConnect("CONNECT_FIRST_MAILBOX")}>
           {busy ? STR.working[L] : STR.connect[L]}
         </button>
+      )}
+
+      {/* ADD ANOTHER mailbox — shown ONLY when a live mailbox already exists AND the backend says this owner may add
+          one (owner-scoped multi-mailbox cohort gate + below the per-owner cap). A DISTINCT action that connects an
+          ADDITIONAL mailbox via ADD_NEW_MAILBOX and never touches the existing rows. Absent for single-mailbox members
+          (can_add_mailbox falsy), so the unfinished multi flow is never shown outside the cohort. */}
+      {hasLive && data.can_add_mailbox && (
+        <div data-testid="add-account-block">
+          <button style={primaryBtn} disabled={busy} data-testid="add-account-btn"
+            onClick={() => startConnect("ADD_NEW_MAILBOX")}>
+            {busy ? STR.working[L] : STR.addAccount[L]}
+          </button>
+          <div style={{ ...meta, marginTop: 6, lineHeight: 1.4 }}>{STR.addHint[L]}</div>
+        </div>
       )}
 
       {error && (
