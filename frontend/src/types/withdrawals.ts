@@ -60,3 +60,100 @@ export type WithdrawalHistory = {
   accounts: WithdrawalAccountRef[];
   demonstration?: boolean;             // DEMO env only: true => the list contains labelled synthetic rows
 };
+
+/** WS3 — withdrawal-SPEED analytics; shape of GET /api/broker-intelligence/withdrawals/speed/.
+ *
+ * Truthful by contract (mirrors backend `broker_intelligence.withdrawal_speed`): speed figures come ONLY from
+ * confidently-paired completed withdrawals with both anchors; `headline.state` is "empty" (no sample) / "insufficient"
+ * (1..min_sample-1, shown but not yet "typical") / "ok" (>= min_sample); medians/averages are null — never 0 — until a
+ * sample exists; pending ages (`in_progress`) are live `now − requested_at` and are NEVER part of any completed figure;
+ * impossible durations are quarantined (`quarantined_impossible_count`); currency is preserved (duration is seconds,
+ * amounts keep their own currency, no FX). This is a reusable metric-series shape (future dimensions reuse `metric` +
+ * `headline` + `summary` + `series` + `brokers`). */
+export type SpeedMetric = {
+  key: string; unit: string; domain: string; direction: string; label: string;
+};
+
+export type SpeedHeadline = {
+  state: "empty" | "insufficient" | "ok";
+  median_seconds: number | null;
+  median_human: string | null;
+  average_seconds: number | null;
+  average_human: string | null;
+  sample_count: number;
+  min_sample: number;
+  qualifier: string;
+  reference_count: number;   // charted samples matched deterministically by a broker reference
+  heuristic_count: number;   // charted samples matched by the bounded account+amount+currency+time heuristic
+};
+
+export type SpeedSummary = {
+  total: number;
+  in_progress_count: number;
+  completed_count: number;
+  completed_with_duration_count: number;
+  failed_count: number;
+  unresolved_count: number;
+  median_seconds: number | null;
+  average_seconds: number | null;
+  fastest_seconds: number | null;
+  slowest_seconds: number | null;
+  coverage: { measured: number; completed: number };
+  quarantined_impossible_count: number;
+  observed_timing_count: number;   // completed, but completion time only observed (ingestion) — not charted/averaged
+  untimed_count: number;           // completed, but missing a request/completion anchor — never zeroed
+};
+
+export type SpeedSeriesPoint = {
+  withdrawal_id: number;
+  broker: string;
+  account_masked: string;
+  account_unresolved: boolean;
+  amount: string | null;
+  currency: string;
+  requested_at: string | null;
+  completed_at: string | null;
+  duration_seconds: number;      // valid, non-negative (impossible durations are excluded server-side)
+  duration_human: string | null;
+  match_basis: "reference" | "heuristic";
+  demonstration?: boolean;
+};
+
+export type SpeedBrokerRow = {
+  broker: string;
+  sample_count: number;
+  median_seconds: number | null;
+  median_human: string | null;
+  average_seconds: number | null;
+  fastest_seconds: number | null;
+  slowest_seconds: number | null;
+  data_quality: "sufficient" | "limited" | "insufficient";
+  min_sample: number;
+};
+
+export type SpeedInProgressRow = {
+  withdrawal_id: number;
+  broker: string;
+  account_masked: string;
+  account_unresolved: boolean;
+  amount: string | null;
+  currency: string;
+  requested_at: string | null;
+  elapsed_seconds: number | null;
+  elapsed_human: string | null;
+  status: string;
+  demonstration?: boolean;
+};
+
+export type WithdrawalSpeed = {
+  metric: SpeedMetric;
+  headline: SpeedHeadline;
+  summary: SpeedSummary;
+  series: SpeedSeriesPoint[];
+  brokers: SpeedBrokerRow[];
+  in_progress: SpeedInProgressRow[];
+  currencies: string[];
+  excluded_non_genuine_count?: number;
+  demonstration?: boolean;
+  generated_at: string | null;
+};

@@ -148,6 +148,40 @@ def broker_multi_mailbox_enabled_for(user) -> bool:
     return (getattr(user, "email", "") or "").strip().lower() in broker_multi_mailbox_allowlist()
 
 
+def broker_withdrawal_speed_enabled() -> bool:
+    """GA (general-availability) global switch for the WS3 withdrawal-SPEED analytics section + its ``withdrawals/speed/``
+    API. DEFAULT OFF. This is the eventual whole-member-base enable; until it is armed, the ONLY way a member reaches
+    the speed section is the owner-scoped cohort allowlist below (``broker_withdrawal_speed_enabled_for``). Read-only
+    member analytics over the member's OWN already-projected withdrawals — NO execution/strategy/credential authority,
+    never a financial action, no new Gmail scope. Kept SEPARATE from ``broker_withdrawal_ux_enabled`` (already armed in
+    production for the base withdrawal UX) so the new speed section can ship DARK and be enabled for one cohort first."""
+    return _flag("BROKER_WITHDRAWAL_SPEED_ENABLED")
+
+
+def broker_withdrawal_speed_allowlist() -> frozenset:
+    """Owner-scoped withdrawal-SPEED COHORT allowlist (default-DENY). Lowercased emails parsed from
+    ``BROKER_WITHDRAWAL_SPEED_OWNER_ALLOWLIST`` (comma-separated), settings-override-then-env. Plain config, never a
+    secret/token. Empty ⇒ no owner is in the cohort (and the GA global above is then the only path)."""
+    raw = getattr(settings, "BROKER_WITHDRAWAL_SPEED_OWNER_ALLOWLIST", None)
+    if raw is None:
+        raw = os.getenv("BROKER_WITHDRAWAL_SPEED_OWNER_ALLOWLIST", "")
+    return frozenset(e.strip().lower() for e in str(raw).split(",") if e.strip())
+
+
+def broker_withdrawal_speed_enabled_for(user) -> bool:
+    """OWNER-SCOPED withdrawal-speed gate, default-DENY. A member reaches the WS3 speed section when EITHER the GA
+    global (``broker_withdrawal_speed_enabled``) is armed for everyone, OR their email is in
+    ``broker_withdrawal_speed_allowlist()`` (the controlled cohort). Both unset ⇒ every member is denied (the section
+    stays DARK). The global here is a DEDICATED GA switch for THIS feature only (never shared with another gate), so it
+    is not the WS2 'global-fallback footgun' — it means exactly 'speed section on for all'. Fail-closed on a missing/
+    anonymous user."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if broker_withdrawal_speed_enabled():
+        return True
+    return (getattr(user, "email", "") or "").strip().lower() in broker_withdrawal_speed_allowlist()
+
+
 def broker_account_contact_enabled() -> bool:
     """Gate for the ACCOUNT-LEVEL broker-email contact HTTP surface (list / create / verify a
     ``TradingAccountBrokerContact`` binding, scoped to one of the member's OWN trading accounts). DEFAULT OFF → the
