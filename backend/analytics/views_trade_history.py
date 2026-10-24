@@ -42,19 +42,9 @@ def _account_windows_username(account) -> str:
     previously never fetched and the chart fell back to a synthetic 10,000 opening balance). Only a fully
     PROVISIONED, non-admin customer identity is used. Empty string when none exists (the caller then skips
     the balance read — an honest "unavailable" state, never a foreign account)."""
-    inst = getattr(account, "mt5_instance", None)
-    wu = getattr(inst, "windows_username", "") if inst else ""
-    if wu:
-        return wu
-    try:
-        from terminal_provisioning.models import AccountProvisioning
-        prov = (AccountProvisioning.objects
-                .filter(trading_account_id=getattr(account, "id", None),
-                        status=AccountProvisioning.Status.PROVISIONED, is_admin=False)
-                .only("windows_username").first())
-        return (getattr(prov, "windows_username", "") or "") if prov else ""
-    except Exception:  # pragma: no cover - defensive; a resolution error must not break the page
-        return ""
+    # Single source of truth lives in execution.snapshot_transport (sync_broker_instruments delegates there too).
+    from execution.snapshot_transport import account_windows_username
+    return account_windows_username(account)
 
 
 def _fetch_mt5_account_balance(account, windows_username: str, *, timeout: float = 10.0) -> Optional[dict]:
