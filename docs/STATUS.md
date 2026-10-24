@@ -14,6 +14,14 @@
 
 ## Execution workstream log
 
+- **2026-10-24 — EVIDENCE FACTUALITY LINTER (D; DARK/repository-only).** Added an
+  authoring-time verifier that checks a manifest against immutable bytes at its
+  recorded Git commit: artefact existence, SHA-256 values, tracked-file count,
+  saved unittest count/PASS output, commit ancestry, safe repository-relative
+  paths, and optional clean handoff tree. Manifest commands remain inert data and
+  are never executed. Focused tests 5/5 and `make governance-check` passed. No
+  application, production, MT5, broker, credential, deployment, or Notion access.
+
 - **2026-10-23 - WV1 RUNTIME-ROLE (F-8) PRODUCTION-PREP — Stage-8 (DARK, CHANGES REQUIRED).** Interim
   `ACCEPT_TRUSTED_MIGRATION_IDENTITY` (conditional, expires before GA; Option D′ = required stronger target) +
   production-prep executed read-only/disposable: fresh encrypted recovery point **certified** (off-host NAS,

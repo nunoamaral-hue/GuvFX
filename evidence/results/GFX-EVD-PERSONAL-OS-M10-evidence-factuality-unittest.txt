@@ -1,0 +1,10 @@
+test_checksum_and_test_count_mismatch_fail (test_evidence_factuality.EvidenceFactualityTests.test_checksum_and_test_count_mismatch_fail) ... ok
+test_dirty_tree_is_rejected (test_evidence_factuality.EvidenceFactualityTests.test_dirty_tree_is_rejected) ... ok
+test_non_ancestor_commit_is_rejected (test_evidence_factuality.EvidenceFactualityTests.test_non_ancestor_commit_is_rejected) ... ok
+test_unsafe_path_is_rejected (test_evidence_factuality.EvidenceFactualityTests.test_unsafe_path_is_rejected) ... ok
+test_verified_commit_claims_pass (test_evidence_factuality.EvidenceFactualityTests.test_verified_commit_claims_pass) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.667s
+
+OK

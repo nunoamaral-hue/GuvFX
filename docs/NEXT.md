@@ -1097,7 +1097,7 @@ Green/Amber items proceed autonomously; Red items are flagged for Nuno's approva
 - [x] **B — `docs/PROGRAMME_STATE.md`** consolidated packet→repo→status→evidence index.
 - [x] **C — `GUVFX_DATA_ROOT` preflight validator** — `scripts/check_data_root.py`
   + `tests/test_data_root.py`, wired into `make governance-check` + CI.
-- [ ] **D — evidence-factuality linter** (file/test counts, clean-tree, checksums).
+- [x] **D — evidence-factuality linter** (file/test counts, clean-tree, checksums).
 - [ ] **E — enforce read-only MT5 boundary** (verify/added CI AST guard).
 - [ ] **F — broker-server timezone probe** — **NEEDS NUNO APPROVAL (Red, data)** — *next gate*.
 - [ ] **G — live Trading path standing risk-watch** (kill-switch, failure modes).

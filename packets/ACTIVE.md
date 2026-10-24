@@ -40,7 +40,7 @@ autonomously; Red items require Nuno's explicit approval.
 - **A** — reconcile stale handoff docs to the true 006D/S1 state. *(this change)*
 - **B** — `docs/PROGRAMME_STATE.md` consolidated state index. *(this change)*
 - **C** — `GUVFX_DATA_ROOT` preflight validator (boolean storage-gate check).
-- **D** — evidence-factuality linter (file/test counts, clean-tree, checksums).
+- **D** — evidence-factuality linter (file/test counts, clean-tree, checksums). *(implemented; PR pending)*
 - **E** — verify/enforce the read-only MT5 boundary (CI AST guard).
 - **F** — broker-server timezone determination probe — **Red, needs Nuno's approval**.
 - **G** — live Trading path standing risk-watch.

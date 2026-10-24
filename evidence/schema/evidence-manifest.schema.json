@@ -92,6 +92,33 @@
     },
     "reviewer": {
       "type": ["string", "null"]
+    },
+    "factuality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tracked_file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_clean_tree": {
+          "type": "boolean"
+        },
+        "test_runs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["output_path", "framework", "expected_count", "expected_status"],
+            "properties": {
+              "output_path": {"type": "string", "minLength": 1},
+              "framework": {"const": "unittest"},
+              "expected_count": {"type": "integer", "minimum": 0},
+              "expected_status": {"const": "PASS"}
+            }
+          }
+        }
+      }
     }
   }
 }
