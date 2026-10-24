@@ -1183,7 +1183,7 @@ class MailboxConnectConcurrency(TransactionTestCase):
             O.exchange_code, S.fetch_profile = orig
 
 
-@override_settings(**ENV, BROKER_MULTI_MAILBOX_ENABLED="1")
+@override_settings(**ENV, BROKER_MULTI_MAILBOX_OWNER_ALLOWLIST="mm@x.invalid")
 class MultiMailbox(TransactionTestCase):
     """MULTI_ACCOUNT §3 — multiple independent Gmail inboxes per member (flag ON). Preserves explicit ADD_NEW vs
     RECONNECT, owner-scoped ops, signed state, gmail.readonly, encrypted creds, per-mailbox cursors, the per-owner

@@ -137,17 +137,15 @@ def broker_multi_mailbox_allowlist() -> frozenset:
 
 
 def broker_multi_mailbox_enabled_for(user) -> bool:
-    """OWNER-SCOPED multi-mailbox gate — the production cohort boundary, default-DENY. A member may connect more than
-    one mailbox ONLY when their email is in ``broker_multi_mailbox_allowlist()``. When NO allowlist is configured, fall
-    back to the legacy global master flag so dev/test can exercise the mechanics with a single switch; in production
-    the allowlist is set (and the global flag stays unset), so the feature is enabled for the named cohort ONLY and is
-    NEVER globally exposed. Fail-closed on a missing/anonymous user."""
+    """OWNER-SCOPED multi-mailbox gate — the SOLE authorization boundary, default-DENY. A member may connect more than
+    one mailbox ONLY when their email is in ``broker_multi_mailbox_allowlist()``. There is deliberately NO global-flag
+    path: a global boolean must never expose this flow to the whole member base, so the legacy
+    ``broker_multi_mailbox_enabled`` is NOT consulted here (it is retained only for documentation/back-compat). An
+    empty/unset allowlist therefore denies every member (the V1 single-mailbox policy is preserved). Fail-closed on a
+    missing/anonymous user."""
     if user is None or not getattr(user, "is_authenticated", False):
         return False
-    allow = broker_multi_mailbox_allowlist()
-    if allow:
-        return (getattr(user, "email", "") or "").strip().lower() in allow
-    return broker_multi_mailbox_enabled()
+    return (getattr(user, "email", "") or "").strip().lower() in broker_multi_mailbox_allowlist()
 
 
 def broker_account_contact_enabled() -> bool:
