@@ -31,6 +31,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("apiFetch error metadata", () => {
@@ -63,5 +64,61 @@ describe("apiFetch error metadata", () => {
     target = mockResponse(400, { magic_number: ["bad"] });
     const err = await apiFetch("/api/x/", { method: "POST", body: "{}" }).catch((e) => e);
     expect((err as { message?: string }).message).toBe(JSON.stringify({ magic_number: ["bad"] }));
+  });
+});
+
+describe("apiFetch client deadline (timeoutMs)", () => {
+  it("aborts a hanging request after the deadline and rejects as a tagged network error", async () => {
+    vi.useFakeTimers();
+    // The target call hangs until its abort signal fires (a slow/half-open upstream). Real fetch rejects on
+    // abort — mirror that so the deadline path is exercised; the CSRF/refresh preflights still resolve.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: unknown, init?: RequestInit) => {
+        if (String(url).includes("/api/auth/cookie/")) return Promise.resolve(mockResponse(200, {}));
+        return new Promise<Response>((_resolve, reject) => {
+          const sig = init?.signal;
+          if (sig) sig.addEventListener("abort", () => {
+            const e = new Error("aborted") as Error & { name: string };
+            e.name = "AbortError";
+            reject(e);
+          });
+        });
+      }),
+    );
+    const p = apiFetch("/api/analytics/portfolio/open-trades/?scope=ALL", {}, 5_000);
+    const assertion = expect(p).rejects.toMatchObject({ kind: "network", message: "network_unreachable" });
+    await vi.advanceTimersByTimeAsync(5_000);   // fire the deadline → abort → reject
+    await assertion;
+  });
+
+  it("never fires the deadline when timeoutMs is omitted (unchanged behaviour)", async () => {
+    target = mockResponse(200, { ok: true });
+    await expect(apiFetch<{ ok: boolean }>("/api/x/")).resolves.toMatchObject({ ok: true });
+  });
+
+  it("a deadline-aborted read NEVER forces a login redirect — even if the upstream answers 401", async () => {
+    // Regression for the R1 incident class: a slow fan-out read that the client aborts is a TRANSIENT failure,
+    // not an invalid session. Even on the belt-and-suspenders path where the upstream answers 401 concurrently
+    // with the abort, apiFetch must reject as network_unreachable and must NOT navigate to /login.
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: unknown, init?: RequestInit) => {
+        if (String(url).includes("/api/auth/cookie/")) return Promise.resolve(mockResponse(200, {}));
+        const sig = init?.signal;
+        // Upstream only ever answers 401, and does so as soon as the deadline aborts (immediately on the retry,
+        // whose signal is already aborted).
+        if (sig?.aborted) return Promise.resolve(mockResponse(401, { detail: "x" }));
+        return new Promise<Response>((resolve) =>
+          sig?.addEventListener("abort", () => resolve(mockResponse(401, { detail: "x" }))));
+      }),
+    );
+    const p = apiFetch("/api/analytics/portfolio/summary/?scope=ALL", {}, 5_000);
+    // The abort guard rejects as network_unreachable. The redirect path would instead throw Error("Unauthorized")
+    // AFTER navigating to /login — so a network_unreachable rejection proves no login redirect was taken.
+    const assertion = expect(p).rejects.toMatchObject({ kind: "network", message: "network_unreachable" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
   });
 });

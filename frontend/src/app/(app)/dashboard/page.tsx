@@ -21,7 +21,7 @@ import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
 import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
 import { WithdrawalsHistory } from "@/components/dashboard/WithdrawalsHistory";
 import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
-import type { PortfolioSummary } from "@/types/portfolio";
+import type { PortfolioSummary, UsdAggregate, AggregateState } from "@/types/portfolio";
 import { localeFor, type Lang } from "@/lib/i18n";
 import {
   formatCustomerAccountDisplay,
@@ -74,6 +74,41 @@ function greeting() { const h = new Date().getHours(); return h < 12 ? "Good mor
 function observedPnlSummary(lang: Lang, value: string, trades?: number): string {
   if (lang === "ja") return `観測損益: ${value}${trades ? `（${trades}件の取引）` : ""}`;
   return `Observed PnL: ${value}${trades ? ` (${trades} trades)` : ""}`;
+}
+
+// ─── Honest-aggregate presentation (EN/JA) ───
+// A USD aggregate that dropped EVERY eligible account must read as an explicit state, NEVER a measured "$0". The
+// backend supplies a machine `state` (+ safe `reason` category); we render the human label here. The three labels
+// mirror the backend contract: "Unavailable" (all excluded), "Partial — currency conversion unavailable",
+// "Partial — stale or missing account data". Only `currency_unconvertible` maps to the currency label; every other
+// reason (stale/missing/read_refused/mixed) is "stale or missing account data".
+function aggregateStateLabel(lang: Lang, state: AggregateState | undefined, reason?: string | null): string {
+  if (state === "UNAVAILABLE") return lang === "ja" ? "利用不可" : "Unavailable";
+  if (state === "PARTIAL") {
+    return reason === "currency_unconvertible"
+      ? (lang === "ja" ? "一部 — 通貨換算が利用できません" : "Partial — currency conversion unavailable")
+      : (lang === "ja" ? "一部 — 口座データが古いか取得できません" : "Partial — stale or missing account data");
+  }
+  return "";
+}
+// Tooltip detail = the state label plus the honest account split (requirement 3: included vs excluded).
+function aggregateStateTitle(lang: Lang, agg: UsdAggregate): string {
+  const inc = agg.included_count ?? agg.converted_count ?? 0;
+  const exc = agg.excluded_count ?? (agg.unconverted?.length ?? 0);
+  const label = aggregateStateLabel(lang, agg.state, agg.reason);
+  const counts = lang === "ja" ? `対象 ${inc}口座 / 除外 ${exc}口座` : `${inc} included · ${exc} excluded`;
+  return label ? `${label} · ${counts}` : counts;
+}
+// Render a USD aggregate as either its measured number (with a PARTIAL asterisk) or an explicit state label — and
+// never call .toLocaleString on a null (UNAVAILABLE) total.
+function usdAggregateView(lang: Lang, agg: UsdAggregate | null | undefined): { text: string; title?: string } {
+  if (!agg) return { text: "—" };
+  if (agg.total_usd == null || agg.state === "UNAVAILABLE") {
+    return { text: aggregateStateLabel(lang, "UNAVAILABLE", agg.reason), title: aggregateStateTitle(lang, agg) };
+  }
+  const n = `$${agg.total_usd.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const partial = agg.state === "PARTIAL" || agg.basis === "PARTIAL";
+  return { text: partial ? `${n} *` : n, title: partial ? aggregateStateTitle(lang, agg) : undefined };
 }
 
 // ─── Phase 2: Human translation layer (market state → Market Mood) ───
@@ -327,6 +362,9 @@ function SectionCard({ icon, title, info, children, action, style }: { icon: str
 }
 
 const SCOPE_LS = "guvfx.dashboard.scope";
+// Client-side deadline for the portfolio summary read (fans out across accounts server-side). Bounds the pending
+// state so a slow/unreachable account can never leave the equity/daily/performance cards blank ("—") forever.
+const SUMMARY_TIMEOUT_MS = 18_000;
 
 export default function DashboardPage() {
   const lang = useLang();
@@ -345,15 +383,23 @@ export default function DashboardPage() {
   // Portfolio summary for the current scope. The payload echoes its scope, so we only render it when it matches the
   // selected scope (a stale-scope response can never drive the header). No synchronous reset in the effect body.
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
+  // Distinguish "still loading" from "load failed/timed out": both leave `portfolio` null, so without this a
+  // failed/timed-out ALL summary is indistinguishable from pending and the cards sit on "—" indefinitely. We
+  // record the SCOPE that failed (set only inside the async then/catch — never synchronously in the effect body,
+  // which React discourages) and derive the flag by matching the current scope, so a stale error from a previous
+  // scope can never show for a newly-selected one.
+  const [summaryErrorScope, setSummaryErrorScope] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    apiFetch<PortfolioSummary>(`/api/analytics/portfolio/summary/?scope=${encodeURIComponent(scope)}`, {})
-      .then((p) => { if (live) setPortfolio(p || null); })
-      .catch(() => { if (live) setPortfolio(null); });
+    const forScope = scope;
+    apiFetch<PortfolioSummary>(`/api/analytics/portfolio/summary/?scope=${encodeURIComponent(scope)}`, {}, SUMMARY_TIMEOUT_MS)
+      .then((p) => { if (live) { setPortfolio(p || null); setSummaryErrorScope(null); } })
+      .catch(() => { if (live) { setPortfolio(null); setSummaryErrorScope(forScope); } });
     return () => { live = false; };
   }, [scope]);
   // Only trust the summary when it belongs to the current scope (guards the scope-change window).
   const portfolioForScope = portfolio && String(portfolio.scope) === String(scope) ? portfolio : null;
+  const summaryError = summaryErrorScope === scope;   // the CURRENT scope's summary fetch failed/timed out
   // Truthful equity curve from the durable snapshot ledger (ALL = portfolio curve; account = that account's curve).
   // Empty/one-point ledger -> state BUILDING/SINGLE so the UI shows "history is building", never a fake trend.
   type EquityCurve = { state?: string; count?: number; points?: { equity_usd?: number; equity?: number | null }[] };
@@ -361,7 +407,7 @@ export default function DashboardPage() {
   useEffect(() => {
     let live = true;
     const forScope = scope;
-    apiFetch<EquityCurve>(`/api/analytics/portfolio/equity-curve/?scope=${encodeURIComponent(scope)}`, {})
+    apiFetch<EquityCurve>(`/api/analytics/portfolio/equity-curve/?scope=${encodeURIComponent(scope)}`, {}, SUMMARY_TIMEOUT_MS)
       .then((d) => { if (live) setEqCurve({ forScope, data: d || {} }); })
       .catch(() => { if (live) setEqCurve({ forScope, data: {} }); });
     return () => { live = false; };
@@ -558,7 +604,12 @@ export default function DashboardPage() {
     currency: isAll ? "" : (perf?.currency || ""),                                    // "" -> "$" (USD portfolio)
     equity: isAll ? (portfolioForScope?.aggregate.equity_usd.total_usd ?? null) : equityRef,
     series: isAll ? [] as number[] : equitySeries,
-    partial: isAll ? (aggM?.basis === "PARTIAL") : false,
+    // Explicit statistics state (requirement 1/2): OK / PARTIAL / UNAVAILABLE. UNAVAILABLE = every account excluded
+    // -> the strip shows N/A + an "Unavailable" context line, never measured 0 trades / $0 / 0% win-rate.
+    metricsState: (isAll ? (aggM?.state ?? (aggM?.basis === "PARTIAL" ? "PARTIAL" : "OK")) : "OK") as AggregateState,
+    metricsReason: isAll ? (aggM?.reason ?? null) : null,
+    includedCount: isAll ? (aggM?.included_count ?? null) : null,
+    excludedCount: isAll ? (aggM?.excluded_count ?? null) : null,
   };
 
   const netPnl = snap.netPnl;
@@ -572,7 +623,14 @@ export default function DashboardPage() {
   // shows 0%. hasHistory is the single sufficiency gate.
   const hasHistory = (snap.totalTrades ?? 0) > 0;
 
-  const trend = !hasHistory ? { label: "Insufficient data", color: "#64748b", badge: "gray" as const, icon: "minus" }
+  // ALL-scope summary read failed/timed out (never loaded for the current scope). Drives an explicit "Couldn't
+  // load" across the dependent cards — including the Performance panel, which must settle to a failed state and
+  // never sit indefinitely on "Loading…" (requirement: performance never remains on Loading…). A VALID partial
+  // (portfolioForScope set) is NOT a failure: it renders the healthy accounts, so summaryFailed stays false.
+  const summaryFailed = isAll && summaryError && !portfolioForScope;
+
+  const trend = summaryFailed ? { label: (lang === "ja" ? "読み込めませんでした" : "Couldn't load"), color: "#fca5a5", badge: "red" as const, icon: "alert-triangle" }
+    : !hasHistory ? { label: "Insufficient data", color: "#64748b", badge: "gray" as const, icon: "minus" }
     : netPnl == null ? { label: "No data", color: "#64748b", badge: "gray" as const, icon: "minus" }
     : netPnl > 0 && rising ? { label: "Improving", color: "#86efac", badge: "green" as const, icon: "trending-up" }
     : netPnl < 0 ? { label: "Needs Attention", color: "#fca5a5", badge: "red" as const, icon: "trending-down" }
@@ -637,12 +695,16 @@ export default function DashboardPage() {
               // (equityRef != null) is broker-connected and being observed, even with no reliability snapshot
               // (so trading-health is UNKNOWN). Show the truthful "Monitoring only" instead of the alarming
               // "Status unavailable" — it asserts observation, NOT trade capability (execution stays separate).
-              const monitoringOnly = !isAll && equityRef != null;
+              // ALL scope: once the portfolio summary has loaded (healthy accounts observed), the portfolio IS being
+              // monitored — show "Monitoring only" + the account mix below, never a blanket "Status unavailable"
+              // that hides healthy accounts. A failed/timed-out ALL summary shows an honest "Couldn't load".
+              const monitoringOnly = (!isAll && equityRef != null) || (isAll && portfolioForScope != null);
               const view =
                 st === "HEALTHY" && tradingHealth?.can_trade ? { text: "Able to trade", c: "#86efac", dot: "#34d399", known: true }
                 : st === "DEGRADED" || st === "IMPAIRED" ? { text: "Attention needed", c: "#fbbf24", dot: "#fbbf24", known: true }
                 : st === "DOWN" || (tradingHealth?.ok && tradingHealth?.can_trade === false) ? { text: "Unavailable", c: "#fca5a5", dot: "#f87171", known: true }
                 : monitoringOnly ? { text: "Monitoring only", c: "#9fb4d6", dot: "#60a5fa", known: true }
+                : summaryFailed ? { text: (lang === "ja" ? "読み込めませんでした" : "Couldn't load"), c: "#fca5a5", dot: "#f87171", known: true }
                 : { text: "Status unavailable", c: "#8b9bb4", dot: "#64748b", known: false };
               return (
                 <div title={(tradingHealth?.reasons || []).length ? localizeBackendCustomerText(lang, tradingHealth?.reasons?.[0], "account-detail") : undefined} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: view.known ? "0.95rem" : "0.85rem", fontWeight: view.known ? 600 : 500, color: view.c }}>
@@ -682,24 +744,59 @@ export default function DashboardPage() {
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 110 }}>
             <div style={microLabel}><i className="ti ti-wallet" aria-hidden="true" style={{ marginRight: 5 }} />Equity{isAll ? " (USD)" : ""}</div>
-            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#f0f6ff" }}
-                 title={isAll && portfolioForScope?.aggregate.equity_usd.basis === "PARTIAL" ? "Some accounts use a currency that could not be converted to USD and are excluded" : undefined}>
-              {isAll
-                ? (portfolioForScope
-                    ? `$${portfolioForScope.aggregate.equity_usd.total_usd.toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${portfolioForScope.aggregate.equity_usd.basis === "PARTIAL" ? " *" : ""}`
-                    : "—")
-                : money(lang, equityRef, perf?.currency)}
-            </div>
+            {(() => {
+              // ALL scope: honest USD equity — a measured number, or an explicit "Unavailable"/"Partial …" state
+              // (never a measured $0 when every eligible account was excluded). Specific scope: the account's
+              // NATIVE equity in its NATIVE currency (requirement 5 — never forced through USD / blanked).
+              const view = isAll ? usdAggregateView(lang, portfolioForScope?.aggregate.equity_usd) : null;
+              const unavailable = isAll && (portfolioForScope?.aggregate.equity_usd.state === "UNAVAILABLE"
+                || portfolioForScope?.aggregate.equity_usd.total_usd == null);
+              return (
+                <div style={{ fontSize: unavailable ? "0.8rem" : "0.95rem", fontWeight: 600, color: unavailable ? "#9fb4d6" : "#f0f6ff" }}
+                     title={isAll ? view?.title : undefined}>
+                  {isAll
+                    ? (portfolioForScope ? view!.text : (summaryError ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—"))
+                    : money(lang, equityRef, perf?.currency)}
+                </div>
+              );
+            })()}
+            {/* DARK FX disclosure (ADR-0058): present only when the backend sends an `fx` block (flag ON). Shows
+                the exact rate, its effective date and the source, or an honest "unavailable" — never a fabricated
+                conversion. Absent entirely when the flag is OFF, so default rendering is unchanged. */}
+            {isAll && portfolioForScope?.fx ? (() => {
+              const fx = portfolioForScope.fx!;
+              const srcLabel = fx.source === "FED_H10" ? "Fed H.10" : fx.source;
+              return (
+                <div style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                     title={fx.available
+                       ? `GBP→USD ${fx.rate} (USD per GBP) · rate ${fx.effective_date} · ${srcLabel} ${fx.source_series}`
+                       : "GBP→USD conversion rate unavailable (stale or missing) — non-USD equity is not converted"}>
+                  {fx.available
+                    ? `GBP→USD ${fx.rate} · ${fx.effective_date} · ${srcLabel}`
+                    : (lang === "ja" ? "GBP→USD レート利用不可" : "GBP→USD rate unavailable")}
+                </div>
+              );
+            })() : null}
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 120 }}>
             {(() => {
               // ALL scope: portfolio REALIZED daily P/L (USD, from the trade set). Specific account: per-account daily.
               const dp = isAll ? (portfolioForScope ? portfolioForScope.aggregate.daily_realized_pnl_usd : null) : dailyPnl;
               const unit = isAll ? "$" : (perf?.currency ? perf.currency + " " : "$");
+              // ALL scope with a withheld (null) daily figure means today's realized P/L cannot be expressed in USD
+              // for every account (a non-USD account, or a mixed-currency trade). A dedicated honest line, so "—"
+              // is never read as "$0" regardless of the specific cause.
+              const dpTitle = isAll && dp == null && portfolioForScope
+                ? (lang === "ja"
+                    ? "本日の確定損益を全口座についてUSDで表示できません（通貨換算が利用できない口座があります）"
+                    : "Today's realized P/L cannot be shown in USD for every account (currency conversion unavailable)")
+                : undefined;
               return (<>
                 <div style={microLabel}><i className={`ti ti-trending-${dp != null && dp < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL{isAll ? " (realized)" : ""}</div>
-                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }}>
-                  {dp == null ? "—" : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
+                  {dp == null
+                    ? (isAll && summaryError && !portfolioForScope ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—")
+                    : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
               </>);
             })()}
@@ -723,11 +820,20 @@ export default function DashboardPage() {
         {/* H3: label WHOSE performance this is — the whole portfolio (ALL) vs the single selected account (shown in
             the header above) — so portfolio-wide figures are never read as one account's, nor one account's as the
             portfolio's. Localised so the JA view leaks no English. */}
-        <div style={{ fontSize: "0.66rem", color: "#64748b", marginTop: -4, marginBottom: 8 }}>
+        <div style={{ fontSize: "0.66rem", color: snap.metricsState === "UNAVAILABLE" ? "#9fb4d6" : "#64748b", marginTop: -4, marginBottom: 8 }}>
           {isAll
-            ? (lang === "ja"
-                ? `ポートフォリオ全体${portfolioForScope ? ` · ${portfolioForScope.account_count}口座` : ""} · USD・確定${snap.partial ? "（USD以外の口座を除外）" : ""}`
-                : `Whole portfolio${portfolioForScope ? ` · ${portfolioForScope.account_count} account${portfolioForScope.account_count === 1 ? "" : "s"}` : ""} · USD, realized${snap.partial ? " · partial (non-USD accounts excluded)" : ""}`)
+            ? (() => {
+                // Explicit statistics state, localised: measured ("USD, realized"), or an "Unavailable" / "Partial — …"
+                // label with the included/excluded account split — never a silent measured zero.
+                const stateLabel = aggregateStateLabel(lang, snap.metricsState, snap.metricsReason);
+                const counts = (snap.includedCount != null && snap.excludedCount != null && snap.excludedCount > 0)
+                  ? (lang === "ja" ? `（対象${snap.includedCount} / 除外${snap.excludedCount}）` : ` (${snap.includedCount} included · ${snap.excludedCount} excluded)`)
+                  : "";
+                const base = lang === "ja"
+                  ? `ポートフォリオ全体${portfolioForScope ? ` · ${portfolioForScope.account_count}口座` : ""} · USD・確定`
+                  : `Whole portfolio${portfolioForScope ? ` · ${portfolioForScope.account_count} account${portfolioForScope.account_count === 1 ? "" : "s"}` : ""} · USD, realized`;
+                return stateLabel ? `${base} · ${stateLabel}${counts}` : base;
+              })()
             : (lang === "ja" ? "選択した口座 · 確定損益" : "Selected account · realized")}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
@@ -739,6 +845,7 @@ export default function DashboardPage() {
             </div>
             <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 2, whiteSpace: "nowrap" }}>
               {netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, snap.currency), snap.totalTrades ?? undefined)
+                : summaryFailed ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load")
                 : snap.loaded ? "No observed trades yet" : "Loading…"}
             </div>
           </div>

@@ -2,11 +2,24 @@
  *  Reporting currency is USD; monetary aggregates carry a `basis` ("USD" fully converted, "PARTIAL" if any
  *  account currency could not be converted and was excluded). Observation-only. */
 
+/** Machine reporting state of a USD aggregate. OK = all converted (trustworthy number); PARTIAL = measured over the
+ *  INCLUDED subset, some excluded; UNAVAILABLE = items existed but NONE converted (total_usd is null — never a
+ *  measured 0); EMPTY = no items at all. The frontend renders an explicit label for anything but OK/EMPTY. */
+export type AggregateState = "OK" | "PARTIAL" | "UNAVAILABLE" | "EMPTY";
+/** Safe, non-identifying exclusion category (no credentials/account-numbers/logins). "mixed" = more than one. */
+export type ExclusionReason =
+  | "currency_unconvertible" | "stale_observation" | "missing_snapshot" | "read_refused" | "mixed";
+
 export type UsdAggregate = {
-  total_usd: number;
+  total_usd: number | null;      // null when state === "UNAVAILABLE" (all eligible accounts excluded) — never 0
   basis: "USD" | "PARTIAL";
   converted_count: number;
-  unconverted: { account_id: number; native: number | null; native_currency: string; reason: string }[];
+  // Additive honesty fields (optional for backward-compatibility with older payloads / test fixtures).
+  state?: AggregateState;
+  reason?: ExclusionReason | null;
+  included_count?: number;
+  excluded_count?: number;
+  unconverted: { account_id: number; native: number | null; native_currency: string; reason: string; category?: ExclusionReason }[];
 };
 
 /** GET /api/analytics/portfolio/open-trades/?scope=ALL|<id> */
@@ -28,7 +41,9 @@ export type OpenTrade = {
 };
 
 export type OpenTradesResult = {
-  reporting_currency: "USD";
+  // Usually "USD"; for a single non-USD account scope the backend reports that account's OBSERVED native
+  // currency (e.g. "GBP") so the floating-P/L card can render honestly in the account's own currency.
+  reporting_currency: string;
   scope: string;
   generated_at: string;
   count: number;                 // full number of open positions (the floating-P/L total covers all of them)
@@ -57,13 +72,36 @@ export type PortfolioAccountRow = {
 /** Portfolio realized-performance metrics. Monetary/classified fields are null when the money `basis` is PARTIAL
  *  (a non-USD account excluded, or a mixed-currency trade) — never a mixed-denomination sum. Counts stay valid. */
 export type PortfolioMetrics = {
-  total_trades: number;
+  total_trades: number | null;   // null when state === "UNAVAILABLE" (all accounts excluded) — never a measured 0
   wins: number | null; losses: number | null; breakeven: number | null;
   win_rate_pct: number | null; profit_factor: number | null; profit_factor_infinite: boolean;
   expectancy: number | null; net_pnl_total: number | null;
   gross_profit: number | null; gross_loss: number | null;
   max_drawdown_money: number | null; breakeven_rule: string;
   basis: "USD" | "PARTIAL"; excluded_accounts: number[];
+  // Additive honesty fields (optional for backward-compatibility).
+  state?: AggregateState; reason?: ExclusionReason | null;
+  included_count?: number; excluded_count?: number;
+};
+
+/** DARK GBP->USD conversion provenance (ADR-0058). Present ONLY when PORTFOLIO_FX_CONVERSION_ENABLED is ON; the
+ *  payload carries no `fx` key when the flag is OFF (default), so flag-OFF behaviour is unchanged. The request
+ *  path is DB-only (never calls FRED). `rate` is the EXACT published rate as a decimal STRING (USD per GBP). */
+export type FxProvenance = {
+  enabled: boolean;
+  pair: string;                 // "GBPUSD"
+  available: boolean;           // false => honest unavailable (stale/missing); conversion refused, never faked
+  source: string;               // "FED_H10"
+  source_series: string;        // "DEXUSUK"
+  direction: string;            // "USD_PER_GBP"
+  as_of: string;
+  rate?: string;                // exact decimal string, USD per GBP (only when available)
+  effective_date?: string;      // the rate's publication date (only when available)
+  revision_number?: number;
+  observation_id?: number;
+  retrieved_at?: string;
+  age_days?: number;
+  reason?: string;              // category when !available (e.g. "no_rate_within_staleness")
 };
 
 export type PortfolioSummary = {
@@ -82,4 +120,5 @@ export type PortfolioSummary = {
     daily_realized_pnl_basis: "USD" | "PARTIAL";
     metrics: PortfolioMetrics;
   };
+  fx?: FxProvenance;            // present only when the DARK FX-conversion flag is ON
 };

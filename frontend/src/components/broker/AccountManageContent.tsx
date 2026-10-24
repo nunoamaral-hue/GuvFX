@@ -187,6 +187,7 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
               : <Button disabled>Open MT5</Button>)
           : <Button onClick={() => void handleViewMt5()} disabled={busy}>View MT5</Button>}
         <Link href={`/accounts/${account.id}/strategies`} style={btnLink}>Manage strategies</Link>
+        <Link href={`/accounts/${account.id}/copy-trading`} style={btnLink}>Copy Trading</Link>
         <Button variant="secondary" onClick={onToggleTrading} disabled={busy}>
           {isActive ? "Stop trading" : "Start trading"}
         </Button>

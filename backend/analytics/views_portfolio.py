@@ -23,6 +23,7 @@ from rest_framework.views import APIView
 
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
+from analytics.fx_source import StoredFredFxRateSource, fx_conversion_enabled
 from analytics.views_trade_history import (
     _account_windows_username, _fetch_mt5_account_balance, _fetch_mt5_open_positions,
 )
@@ -35,16 +36,24 @@ _MAX_OPEN_ROWS = 300
 
 
 def _rate_source() -> FX.FxRateSource:
-    # No vetted internal FX feed exists yet; USD->USD only, honest PARTIAL for anything else.
-    return FX.NullFxRateSource()
+    """Rate source for CURRENT monetary figures (portfolio summary total + open floating P/L). When the DARK
+    ``PORTFOLIO_FX_CONVERSION_ENABLED`` flag is ON, GBP->USD converts from the DB-only Fed H.10 ``DEXUSUK`` store
+    (today's selected rate — appropriate for a *current* value, with honest refusal when stale/missing). OFF
+    (default) is the USD->USD-only ``NullFxRateSource`` — byte-identical to today. Point-in-time HISTORICAL curves
+    must NOT use a single spot rate, so ``PortfolioEquityCurveView`` deliberately does not (data.md point-in-time)."""
+    return StoredFredFxRateSource() if fx_conversion_enabled() else FX.NullFxRateSource()
 
 
-def _balance_fetcher(account):
-    return _fetch_mt5_account_balance(account, _account_windows_username(account))
+# The aggregation (``portfolio.open_positions`` / ``build_summary``) passes a deadline-aware ``timeout`` so one
+# hung bridge can neither blow the request's wall-clock budget nor starve the healthy accounts' reads. Default
+# preserved for any caller that does not supply one; the single-account trade-history path keeps the fetchers'
+# own 10s default (it is unchanged).
+def _balance_fetcher(account, timeout: float = 10.0):
+    return _fetch_mt5_account_balance(account, _account_windows_username(account), timeout=timeout)
 
 
-def _positions_fetcher(account):
-    return _fetch_mt5_open_positions(account, _account_windows_username(account))
+def _positions_fetcher(account, timeout: float = 10.0):
+    return _fetch_mt5_open_positions(account, _account_windows_username(account), timeout=timeout)
 
 
 class PortfolioSummaryView(APIView):
@@ -65,12 +74,18 @@ class PortfolioSummaryView(APIView):
 
     def get(self, request):
         scope = request.query_params.get("scope", "ALL")
+        rate_source = _rate_source()
         payload, err = PF.build_summary(
             request.user, scope,
             fetch_balance=_balance_fetcher, fetch_positions=_positions_fetcher,
-            rate_source=_rate_source(), stage="ALL")
+            rate_source=rate_source, stage="ALL")
         if err is not None:
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
+        # DARK FX disclosure: when conversion is enabled, surface the rate provenance (source, exact rate,
+        # effective date, staleness/availability) so the UI can disclose it. Additive + flag-gated — when the flag
+        # is OFF the payload carries no ``fx`` key, so default behaviour is byte-identical to today.
+        if fx_conversion_enabled() and hasattr(rate_source, "provenance"):
+            payload["fx"] = rate_source.provenance()
         return Response(payload)
 
 
@@ -89,9 +104,21 @@ class PortfolioOpenTradesView(APIView):
         open_pl, stale_ids = PF.portfolio_open_pl(per_open, _rate_source())
         total_count = len(rows)
         truncated = total_count > _MAX_OPEN_ROWS
+        # Single-account scope: report that account's OBSERVED native currency (from its latest equity snapshot —
+        # the authoritative source; the model's account_currency is unpopulated in prod) so the client renders the
+        # floating total honestly in the account's own currency instead of asserting USD. ALL scope, or an account
+        # with no snapshot yet, reports USD (unchanged).
+        reporting_currency = FX.USD
+        if scope.strip().upper() != "ALL" and len(accounts) == 1:
+            from analytics.models import AccountEquitySnapshot
+            observed = (AccountEquitySnapshot.objects
+                        .filter(trading_account_id=accounts[0].id)
+                        .order_by("-observed_at")
+                        .values_list("account_currency", flat=True).first())
+            reporting_currency = FX.normalise_currency(observed)
         from django.utils import timezone
         return Response({
-            "reporting_currency": FX.USD, "scope": scope, "generated_at": timezone.now().isoformat(),
+            "reporting_currency": reporting_currency, "scope": scope, "generated_at": timezone.now().isoformat(),
             "count": total_count,                       # full number of open positions (floating-P/L covers all)
             "truncated": truncated,                     # True when the row LIST below was capped at _MAX_OPEN_ROWS
             "open_pl_usd": open_pl.as_dict(),
@@ -123,5 +150,8 @@ class PortfolioEquityCurveView(APIView):
             days = 90
         since = timezone.now() - timedelta(days=days)
         if scope.strip().upper() == "ALL":
-            return Response(EQ.portfolio_equity_curve(accounts, rate_source=_rate_source(), since=since))
+            # Point-in-time correctness (data.md): a HISTORICAL curve must never be converted with a single
+            # today's spot rate, so the equity curve stays on the honest USD->USD-only source regardless of the
+            # FX flag — a non-USD account's historical points remain honestly excluded (PARTIAL), never distorted.
+            return Response(EQ.portfolio_equity_curve(accounts, rate_source=FX.NullFxRateSource(), since=since))
         return Response(EQ.account_equity_curve(accounts[0], since=since))

@@ -123,6 +123,51 @@ DATABASES = {
     }
 }
 
+# --- Controlled-erasure executor connection (ADR-0054, Finding C) -------------------------------------------
+# A SEPARATE, tightly-scoped DB alias used ONLY by the governed erasure management command to invoke the
+# privileged SECURITY DEFINER procedure. It connects as a SHORT-LIVED per-operator LOGIN role that is a member of
+# the NOLOGIN `guvfx_erasure_exec` group (which holds the sole EXECUTE grant); the procedure then authenticates
+# the human operator via session_user + a single-use grant. The credential MUST NOT be present in the web/worker
+# runtime environment — it is injected only into the governed job's environment for one operation. When
+# these env vars are absent (the normal case: web, workers, CI, local dev), the alias is NOT defined and erasure
+# fails closed (erasure.erasure_executor_alias() returns None). It must never reuse DB_USER/DB_PASSWORD.
+_ERASURE_EXEC_USER = env("ERASURE_EXECUTOR_DB_USER", "")
+_ERASURE_EXEC_PASSWORD = env("ERASURE_EXECUTOR_DB_PASSWORD", "")
+if _ERASURE_EXEC_USER and _ERASURE_EXEC_PASSWORD:
+    DATABASES["erasure_executor"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": env("ERASURE_EXECUTOR_DB_NAME", "") or DATABASES["default"]["NAME"],
+        "USER": _ERASURE_EXEC_USER,
+        "PASSWORD": _ERASURE_EXEC_PASSWORD,
+        "HOST": env("ERASURE_EXECUTOR_DB_HOST", "") or DATABASES["default"]["HOST"],
+        "PORT": env("ERASURE_EXECUTOR_DB_PORT", "") or DATABASES["default"]["PORT"],
+        "TEST": {"MIRROR": "default"},   # never provision a separate test DB for this alias
+    }
+
+# --- FX ingestion connection (ADR-0058 / A3, DARK) ----------------------------------------------------------
+# A SEPARATE least-privilege identity used ONLY by `fetch_fx_daily` to APPEND FX observations. Its DB role holds
+# SELECT + INSERT on analytics_dailyfxobservation only (never UPDATE/DELETE/TRUNCATE; it is NOT the table owner).
+# It MUST NOT reuse the web-runtime DB_USER/DB_PASSWORD. When FX_INGEST_DB_USER/PASSWORD are absent (web, workers,
+# CI, local dev — the normal case), the alias is NOT defined and `fetch_fx_daily` fails closed (never falls back
+# to `default`). It points at the SAME physical database as `default` (NAME/HOST/PORT default to default's), so
+# schema migrations are NEVER run through it — enforced by analytics.fx_db_router.FxIngestRouter.
+_FX_INGEST_USER = env("FX_INGEST_DB_USER", "")
+_FX_INGEST_PASSWORD = env("FX_INGEST_DB_PASSWORD", "")
+if _FX_INGEST_USER and _FX_INGEST_PASSWORD:
+    DATABASES["fx_ingest"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": env("FX_INGEST_DB_NAME", "") or DATABASES["default"]["NAME"],
+        "USER": _FX_INGEST_USER,
+        "PASSWORD": _FX_INGEST_PASSWORD,
+        "HOST": env("FX_INGEST_DB_HOST", "") or DATABASES["default"]["HOST"],
+        "PORT": env("FX_INGEST_DB_PORT", "") or DATABASES["default"]["PORT"],
+        "TEST": {"MIRROR": "default"},   # never provision a separate test DB; mirrors the default test DB
+    }
+
+# Guard the FX ingestion alias: it is used ONLY via an explicit ``.using("fx_ingest")`` by the ingestion command,
+# never auto-routed, and migrations are blocked on it (both aliases target the same physical DB).
+DATABASE_ROUTERS = ["analytics.fx_db_router.FxIngestRouter"]
+
 GUAC_BASE_URL = os.environ.get(
     "GUAC_BASE_URL",
     "http://127.0.0.1:8081/guacamole",

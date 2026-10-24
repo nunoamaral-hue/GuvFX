@@ -60,6 +60,42 @@ rec_sha256() {
   else rec_die "no sha256 tool (sha256sum/shasum) available"; fi
 }
 
+# --- client/server MAJOR compatibility (recovery-point correctness) --------
+# rec_require_client_server_compat DUMP_MAJOR SERVER_MAJOR CLASS
+#
+# A recovery point must restore cleanly back into a server of the PRODUCTION major. Two independent
+# failure modes are gated here, BEFORE any dump:
+#   (a) client OLDER than server  -> an older pg_dump can emit an INCOMPLETE / incompatible archive.
+#       Refused for every class (hard floor).
+#   (b) client NEWER than server  -> a newer pg_dump can emit statements the same-major restore target
+#       REJECTS. This is not hypothetical: pg_dump 17 emits `SET transaction_timeout = 0;` (a PG17-only
+#       GUC) which a strict PG15 restore rejects, so a pg_dump-17 recovery point is UNUSABLE for a PG15
+#       (production-major) restore under the governed strict gate.
+# Therefore a PRODUCTION recovery point REQUIRES EXACT major parity (dump_major == server_major) by
+# default, refused before the dump otherwise. The mismatch may be accepted only by an explicit,
+# deliberate operator override (GUVFX_BACKUP_ALLOW_CLIENT_MAJOR_MISMATCH=1), which asserts the operator
+# has validated restore compatibility for that specific pairing. dev/test PREFER parity (warn only).
+# Pure: takes majors as arguments, so it is unit-testable with positive AND negative controls (RULE 11).
+rec_require_client_server_compat() {
+  local dmaj="$1" smaj="$2" cls="$3"
+  case "$dmaj" in ''|*[!0-9]*) rec_die "client (pg_dump) major '$dmaj' is not numeric -- cannot assert recovery compatibility. Fail-closed." ;; esac
+  case "$smaj" in ''|*[!0-9]*) rec_die "server major '$smaj' is not numeric -- cannot assert recovery compatibility. Fail-closed." ;; esac
+  if [ "$dmaj" -lt "$smaj" ]; then
+    rec_die "REFUSED: pg_dump major ($dmaj) < server major ($smaj) -- an older client can produce an incomplete/incompatible recovery point. Fail-closed."
+  fi
+  if [ "$dmaj" = "$smaj" ]; then return 0; fi
+  # client major > server major
+  if [ "$cls" = "production" ]; then
+    if [ "${GUVFX_BACKUP_ALLOW_CLIENT_MAJOR_MISMATCH:-0}" = "1" ]; then
+      rec_log "WARNING: production recovery dump client major ($dmaj) != server major ($smaj); proceeding under GUVFX_BACKUP_ALLOW_CLIENT_MAJOR_MISMATCH=1. A newer client can emit statements the production-major restore target rejects (e.g. pg_dump 17 'transaction_timeout' into PG15); this override asserts the operator has validated restore compatibility for this pairing."
+      return 0
+    fi
+    rec_die "REFUSED: a production recovery point requires pg_dump major == server major (got client $dmaj vs server $smaj). A newer client can emit statements the production-major restore target rejects (pg_dump 17 'transaction_timeout' broke a strict PG15 restore). Install a matching pg_dump, or set GUVFX_BACKUP_ALLOW_CLIENT_MAJOR_MISMATCH=1 to accept the risk after validating restore compatibility. Fail-closed."
+  fi
+  rec_log "NOTE: client major ($dmaj) > server major ($smaj) for class '$cls' -- exact parity is preferred for a recovery point, but not required for a non-production class."
+  return 0
+}
+
 # --- target class / connection (no secrets) -------------------------------
 # Connection comes from standard libpq env: PGHOST PGPORT PGUSER PGDATABASE.
 # We never read or print PGPASSWORD.

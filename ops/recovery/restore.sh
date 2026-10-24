@@ -65,6 +65,29 @@ tgt_major="${tgt_ver%%.*}"
 rec_log "preflight: target_server=$tgt_ver archive_server=$arch_srv"
 [ "$tgt_major" -ge "$arch_major" ] || rec_die "target major ($tgt_major) < archive major ($arch_major) -- incompatible restore target. Fail-closed."
 
+# Record the RESTORE client/server versions (companion to the backup sidecar's dump client/server
+# versions). Always logged; optionally written as a structured attestation when GUVFX_RESTORE_ATTEST_OUT
+# is set (owner-only). A restore client OLDER than the archive's producing client is refused.
+rst_ver="$(pg_restore --version | grep -oE '[0-9]+(\.[0-9]+)*' | head -1)"; rst_major="${rst_ver%%.*}"
+rec_log "restore-attestation: pg_restore=$rst_ver target_server=$tgt_ver archive_server=$arch_srv restore_target_major_parity=$([ "$rst_major" = "$tgt_major" ] && echo true || echo false)"
+if [ -n "${GUVFX_RESTORE_ATTEST_OUT:-}" ]; then
+  ( umask 077; cat > "$GUVFX_RESTORE_ATTEST_OUT" <<JSON
+{
+  "schema": "guvfx.recovery.restore_attestation/1",
+  "utc": "$(rec_ts)",
+  "pg_restore_version": "$rst_ver",
+  "pg_restore_major": "$rst_major",
+  "target_server_version": "$tgt_ver",
+  "target_server_major": "$tgt_major",
+  "archive_server_version": "$arch_srv",
+  "archive_server_major": "$arch_major",
+  "artifact": "$(basename "$artifact")"
+}
+JSON
+  ) || rec_die "could not write restore attestation to GUVFX_RESTORE_ATTEST_OUT. Fail-closed."
+  rec_log "restore attestation written: $GUVFX_RESTORE_ATTEST_OUT"
+fi
+
 if rec_target_is_empty; then
   rec_log "target verified EMPTY (no user relations in any non-system schema)."
 else

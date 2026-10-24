@@ -250,6 +250,13 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         worker_identity = getattr(request, "_worker_identity", None)
         perms = (worker_identity.worker_permissions or {}) if worker_identity else {}
 
+        # ADR-0056 worker-class separation: an identity carrying the dedicated ``partial_close_worker``
+        # permission is CATEGORICALLY refused at this generic endpoint — even if it was also (mis)granted
+        # generic permissions — so the dedicated DEMO partial-close class can never claim OPEN/CLOSE/MODIFY
+        # or any other job here. It is served ONLY by its own reviewed consumer endpoint.
+        if perms.get("partial_close_worker"):
+            return Response({"detail": "partial_close_worker_forbidden_on_generic_endpoint"}, status=403)
+
         # ADR-0034 capstone isolation invariant (defence-in-depth): the SHARED ``legacy-worker`` identity —
         # to which every legacy X-Worker-Token bridge resolves — must NEVER be treated as node-aware, or a
         # shared/legacy bridge could claim a hosted (node-bound) job. A dedicated per-node bridge uses its
@@ -272,6 +279,14 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # carries this permission today, so no shadow job is ever served.
         if not bool(perms.get("shadow_worker")):
             base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PLACE_ORDER_SHADOW)
+
+        # ADR-0055/0056 endpoint guard: the copier partial-close job type is served ONLY by its dedicated,
+        # reviewed DEMO consumer (ADR-0056: /api/copy-trading/partial-close/{claim,authorize-send,complete}/),
+        # never this generic dispatch. Exclude it UNCONDITIONALLY from the claim set so "no generic worker
+        # executes a partial close" is an ENFORCED endpoint property (not merely the emergent "nothing asks
+        # for it"), mirroring the PLACE_ORDER_SHADOW guard above. (The dedicated consumer is built + merged
+        # DARK; it still requires a separate Sponsor grant + arming before any job reaches a broker.)
+        base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE)
 
         # Determine routing mode for audit trail
         routing_mode = "node_aware" if authorized_nodes else "legacy_null_node"
@@ -329,6 +344,11 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
                 )
                 if account_id:
                     audit_qs = audit_qs.filter(account_id=account_id)
+                # ADR-0055 (audit classification): a deliberately-unclaimable PARTIAL_CLOSE_TRADE is an
+                # UNSUPPORTED job type at this generic endpoint, NOT a node-routing violation. Exclude it
+                # from the wrong-node detection so it never emits a misleading NODE_WRONG_CLAIM (it is
+                # served only by its dedicated DEMO consumer path, never here).
+                audit_qs = audit_qs.exclude(job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE)
 
                 # Peek at the first excluded job (without locking) for
                 # audit context.  Do NOT expose its payload to the worker.

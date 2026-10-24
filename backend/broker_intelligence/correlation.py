@@ -50,6 +50,7 @@ from typing import Optional
 
 from django.db import IntegrityError, transaction
 
+from .erasure_lock import acquire_owner_erasure_lock
 from .models import BrokerEvent, BrokerMessageObservation, TransactionCategory, Withdrawal
 
 logger = logging.getLogger("guvfx.broker_intelligence.correlation")
@@ -386,6 +387,10 @@ def correlate_event(event: BrokerEvent) -> CorrelationResult:
     if target_status is None:
         return CorrelationResult(event.id, OUT_SKIP_NOT_LIFECYCLE)
     with transaction.atomic():
+        # P0 (ADR-0054): serialise withdrawal creation against governed erasure on the same per-owner advisory
+        # lock. If erasure committed first, the event row below is gone (re-lock returns None) and nothing is
+        # projected; if this pass holds the lock first, erasure waits and then removes what we just wrote.
+        acquire_owner_erasure_lock(event.owner_id)
         # Lock the event row and re-read correlation_status (the only mutable field; evidential fields are immutable
         # so the guards above still hold) so a concurrent/duplicate pass cannot re-create or double-advance.
         locked = BrokerEvent.objects.select_for_update().filter(pk=event.pk).first()
@@ -417,6 +422,7 @@ def correlate_completion_event(event: BrokerEvent) -> CorrelationResult:
     if event.trading_account_id is None and event.owner_id is None:
         return CorrelationResult(event.id, OUT_SKIP_NO_ACCOUNT)
     with transaction.atomic():
+        acquire_owner_erasure_lock(event.owner_id)   # P0 (ADR-0054): serialise against governed erasure
         locked = BrokerEvent.objects.select_for_update().filter(pk=event.pk).first()
         if locked is None:
             return CorrelationResult(event.id, OUT_SKIP_NOT_LIFECYCLE)

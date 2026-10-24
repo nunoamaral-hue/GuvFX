@@ -4,6 +4,7 @@ averaged), scope/ownership (IDOR), and multi-account open-trades attribution. Ob
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -238,7 +239,7 @@ class ObservedCurrencyTests(TestCase):
         _closed_trade(usd, 10.0); _closed_trade(eur, 999.0)
         bal = {usd.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
                eur.id: {"balance": 800, "equity": 800, "currency": "EUR"}}   # observed EUR
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
                                       fetch_positions=_fake_positions({usd.id: [], eur.id: []}),
                                       rate_source=FX.NullFxRateSource())
         m = payload["aggregate"]["metrics"]
@@ -254,7 +255,7 @@ class ObservedCurrencyTests(TestCase):
         u = _user("oc2"); a = _acct(u)
         _closed_trade(a, 9.65)
         bal = {a.id: {"balance": 50009.65, "equity": 50009.65, "currency": "USD"}}
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: bal.get(x.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: bal.get(x.id),
                                       fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
         m = payload["aggregate"]["metrics"]
         self.assertEqual(m["basis"], "USD"); self.assertEqual(m["excluded_accounts"], [])
@@ -306,8 +307,9 @@ class ScopeTests(TestCase):
 
 # ── Open positions (multi-account, isolation) ────────────────────────────────────────────────────────────────
 def _fake_positions(mapping):
-    """mapping: {account_id: [position dicts]}; returns a fetch_positions(account) fake."""
-    def _f(account):
+    """mapping: {account_id: [position dicts]}; returns a fetch_positions(account, *, timeout) fake. The
+    aggregation passes a deadline-aware ``timeout``; the fake accepts and ignores it (no real socket)."""
+    def _f(account, timeout=None):
         return mapping.get(account.id)
     return _f
 
@@ -351,6 +353,27 @@ class OpenTradesTests(TestCase):
                                       rate_source=FX.NullFxRateSource())
         self.assertEqual(rows, []); self.assertTrue(per[a.id]["stale"])
 
+    def test_aggregation_deadline_bounds_fan_out(self):
+        # Overall wall-clock budget: once the deadline is passed, remaining accounts are marked STALE WITHOUT
+        # another ~10s live read. Healthy accounts already fetched still contribute; the slow ones are named
+        # (present + stale), never dropped — so the dashboard settles in bounded time with a labelled partial.
+        u = _user("o_deadline"); a1 = _acct(u); a2 = _acct(u); a3 = _acct(u)
+        calls = []
+
+        def fetch(account, timeout=None):
+            calls.append(account.id)
+            return [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1, "profit": 10.0, "magic": 0}]
+
+        # deadline=100.0; monotonic() returns 50 (a1 in budget → fetched), then 150, 151 (a2, a3 past → stale).
+        with mock.patch("analytics.portfolio.time.monotonic", side_effect=[50.0, 150.0, 151.0]):
+            rows, per = PF.open_positions([a1, a2, a3], fetch_positions=fetch,
+                                          rate_source=FX.NullFxRateSource(), deadline=100.0)
+        self.assertEqual(calls, [a1.id])                                  # only the in-budget account was read
+        self.assertFalse(per[a1.id]["stale"]); self.assertEqual(per[a1.id]["open_count"], 1)
+        self.assertTrue(per[a2.id]["stale"]); self.assertTrue(per[a3.id]["stale"])   # named, not dropped
+        self.assertEqual(set(per.keys()), {a1.id, a2.id, a3.id})
+        self.assertEqual(len(rows), 1)                                    # a1's position contributed
+
     def test_open_pl_aggregation(self):
         u = _user("o5"); a1 = _acct(u); a2 = _acct(u)
         fetch = _fake_positions({
@@ -392,7 +415,7 @@ class SummaryTests(TestCase):
                a2.id: {"balance": 2000, "equity": 1990, "currency": "USD"},
                a3.id: {"balance": 500, "equity": 500, "currency": "USD"}}
         payload, err = PF.build_summary(
-            u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+            u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
             fetch_positions=_fake_positions({}), rate_source=FX.NullFxRateSource())
         self.assertIsNone(err)
         self.assertEqual(payload["account_count"], 3)
@@ -401,7 +424,7 @@ class SummaryTests(TestCase):
 
     def test_balance_fetch_failure_marks_account_stale(self):
         u = _user("b2"); a = _acct(u)
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: None,
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: None,
                                       fetch_positions=_fake_positions({}), rate_source=FX.NullFxRateSource())
         self.assertTrue(payload["accounts"][0]["stale"])
 
@@ -410,20 +433,81 @@ class SummaryTests(TestCase):
         a1 = _acct(u); a2 = _acct(u)
         bal = {a1.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
                a2.id: {"balance": 800, "equity": 800, "currency": "GBP"}}
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a: bal.get(a.id),
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
                                       fetch_positions=_fake_positions({}), rate_source=FX.NullFxRateSource())
         agg = payload["aggregate"]["balance_usd"]
         self.assertEqual(agg["total_usd"], 1000.0); self.assertEqual(agg["basis"], "PARTIAL")
 
     def test_summary_carries_daily_basis_and_stale_accounts(self):
         u = _user("b4"); a = _acct(u)
-        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x: {"balance": 1, "equity": 1, "currency": "USD"},
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: {"balance": 1, "equity": 1, "currency": "USD"},
                                       fetch_positions=_fake_positions({a.id: []}),   # healthy: reachable, no positions
                                       rate_source=FX.NullFxRateSource())
         self.assertEqual(payload["aggregate"]["daily_realized_pnl_basis"], "USD")
         self.assertEqual(payload["stale_accounts"], [])           # reachable -> nothing dropped
         self.assertIn("metrics", payload["aggregate"])
         self.assertEqual(payload["aggregate"]["metrics"]["basis"], "USD")
+
+
+# ── R1 incident regression: a hung bridge must not starve healthy accounts or blow the client deadline ────────
+class BoundedReadFanOutTests(TestCase):
+    """The R1 incident: ONE hung bridge (TradersWay/46 in prod, ~10s per live read) left the whole ALL-scope
+    summary slower than the client's deadline AND starved the healthy accounts' balance reads (they were skipped
+    as 'budget exhausted' -> stale -> equity UNAVAILABLE). Root cause: the summary does TWO serial live passes
+    (positions, then balances) and, with no per-read cap, the hung account cost the full timeout in EACH pass.
+    The fix gives every live read a deadline-aware timeout capped at _PER_READ_TIMEOUT_SECONDS, with
+    2*cap < _AGG_BUDGET_SECONDS so the balance pass still has budget for the fast accounts after the hung one
+    fails. This test DISCRIMINATES: on the pre-fix code the fetchers received no timeout (None), the hung account
+    consumed the budget across both passes, the healthy balances were skipped (stale), and the simulated clock
+    blew past the budget — so every assertion below would fail."""
+
+    def test_hung_account_does_not_starve_healthy_or_blow_budget(self):
+        u = _user("bf1")
+        hung = _acct(u); h1 = _acct(u); h2 = _acct(u)
+        # A mutable simulated monotonic clock shared by portfolio.py and the fakes. Each live read advances the
+        # clock by min(latency, timeout) and RAISES once it reaches its timeout — exactly how urlopen(timeout=t)
+        # behaves against a half-open bridge. hung_latency (8s) models a bridge slower than the per-read cap but,
+        # when UNCAPPED (timeout=None -> the fetchers' own 10s default), still "succeeds" late and eats the budget.
+        clock = {"t": 1000.0}
+        seen = []
+
+        def _read(account, timeout):
+            seen.append(timeout)
+            t = timeout if timeout is not None else 10.0
+            lat = 8.0 if account.id == hung.id else 0.05
+            if lat > t:
+                clock["t"] += t
+                raise TimeoutError("simulated hung bridge")
+            clock["t"] += lat
+
+        def bal(account, timeout=None):
+            _read(account, timeout)
+            return {"balance": 100.0, "equity": 100.0, "currency": "USD"}
+
+        def pos(account, timeout=None):
+            _read(account, timeout)
+            return []
+
+        # hung is FIRST (worst case: read before the healthy accounts in BOTH passes).
+        with mock.patch("analytics.portfolio.resolve_scope", return_value=([hung, h1, h2], None)), \
+                mock.patch("analytics.portfolio.time.monotonic", side_effect=lambda: clock["t"]):
+            payload, err = PF.build_summary(u, "ALL", fetch_balance=bal, fetch_positions=pos,
+                                            rate_source=FX.NullFxRateSource())
+        self.assertIsNone(err)
+        # (1) Every live read got a bounded, deadline-aware timeout — never uncapped (pre-fix passed None).
+        self.assertTrue(seen)
+        self.assertTrue(all(t is not None and 0 < t <= PF._PER_READ_TIMEOUT_SECONDS for t in seen))
+        # (2) Total simulated wall-clock stayed within the budget (pre-fix: ~2x the hung reads blows past it).
+        self.assertLessEqual(clock["t"] - 1000.0, PF._AGG_BUDGET_SECONDS)
+        acct = {a["account_id"]: a for a in payload["accounts"]}
+        # (3) The hung account reads stale; the HEALTHY accounts are NOT starved.
+        self.assertTrue(acct[hung.id]["stale"])
+        self.assertFalse(acct[h1.id]["stale"]); self.assertFalse(acct[h2.id]["stale"])
+        self.assertEqual(acct[h1.id]["equity_native"], 100.0); self.assertEqual(acct[h2.id]["equity_native"], 100.0)
+        # (4) The USD aggregate is a measured PARTIAL over the healthy subset — never UNAVAILABLE, never a fake 0.
+        eq = payload["aggregate"]["equity_usd"]
+        self.assertEqual(eq["state"], "PARTIAL")
+        self.assertEqual(eq["included_count"], 2); self.assertEqual(eq["excluded_count"], 1)
 
 
 # ── Endpoints (ownership + default scope) ────────────────────────────────────────────────────────────────────
@@ -459,3 +543,175 @@ class ViewTests(TestCase):
         # Observation-only: POST must not be accepted (no execution/mutation surface on these endpoints).
         self.assertEqual(self.c.post("/api/analytics/portfolio/summary/").status_code, 405)
         self.assertEqual(self.c.post("/api/analytics/portfolio/open-trades/").status_code, 405)
+
+
+# ── Honest reporting when all eligible accounts are excluded (no measured $0) ─────────────────────────────────
+# A USD aggregate / statistics set that dropped EVERY eligible account (FX-unconvertible, or no live observation)
+# must surface an explicit state — Unavailable / Partial — never a measured 0 / 0% / $0.00 that reads as real.
+# Each test is DISCRIMINATING: deleting the honesty guard flips the assertion back to the old measured-zero.
+class AggregateStateTests(TestCase):
+    _NULL = FX.NullFxRateSource()
+
+    def test_all_usd_aggregate_is_ok_byte_for_byte(self):
+        # Requirement 8: a pure, fresh, convertible USD portfolio is preserved EXACTLY — existing keys unchanged,
+        # new state keys are the no-exclusion identity (OK / 0 excluded / no reason).
+        agg = FX.aggregate_usd([{"account_id": 1, "amount": 100.0, "currency": "USD"},
+                                {"account_id": 2, "amount": 250.5, "currency": "USD"}], self._NULL)
+        d = agg.as_dict()
+        self.assertEqual(d["total_usd"], 350.5)                 # existing value unchanged
+        self.assertEqual(d["basis"], "USD")
+        self.assertEqual(d["converted_count"], 2)
+        self.assertEqual(d["unconverted"], [])
+        self.assertEqual(d["state"], "OK")                      # additive, no-exclusion identity
+        self.assertIsNone(d["reason"])
+        self.assertEqual(d["included_count"], 2)
+        self.assertEqual(d["excluded_count"], 0)
+
+    def test_all_excluded_currency_is_unavailable_not_zero(self):
+        # Scenario: all accounts excluded (every figure non-USD, no rate). UNAVAILABLE, null total — NOT a measured 0.
+        agg = FX.aggregate_usd([{"account_id": 1, "amount": 100.0, "currency": "GBP"},
+                                {"account_id": 2, "amount": 200.0, "currency": "EUR"}], self._NULL)
+        d = agg.as_dict()
+        self.assertIsNone(d["total_usd"])                       # DISCRIMINATING: old behaviour serialised 0.0
+        self.assertEqual(d["state"], "UNAVAILABLE")
+        self.assertEqual(d["reason"], "currency_unconvertible")
+        self.assertEqual(d["included_count"], 0)
+        self.assertEqual(d["excluded_count"], 2)
+        self.assertEqual(agg.total_usd, 0.0)                    # the raw running sum is 0.0; only the guard nulls it
+        self.assertTrue(all(u.get("category") == "currency_unconvertible" for u in d["unconverted"]))
+
+    def test_partial_mixed_is_measured_over_included_subset(self):
+        # Scenario: mixed USD + GBP. A measured total over the INCLUDED (USD) subset, flagged PARTIAL — the GBP
+        # figure is never summed as if USD, and the counts expose the split (requirement 3).
+        agg = FX.aggregate_usd([{"account_id": 1, "amount": 100.0, "currency": "USD"},
+                                {"account_id": 2, "amount": 999.0, "currency": "GBP"}], self._NULL)
+        d = agg.as_dict()
+        self.assertEqual(d["total_usd"], 100.0)                 # GBP excluded, never summed as if USD
+        self.assertEqual(d["state"], "PARTIAL")
+        self.assertEqual(d["reason"], "currency_unconvertible")
+        self.assertEqual(d["included_count"], 1)
+        self.assertEqual(d["excluded_count"], 1)
+
+    def test_empty_aggregate_is_empty_state(self):
+        # No items at all (no accounts) is EMPTY, not UNAVAILABLE: genuinely nothing to report (keeps 0.0).
+        agg = FX.aggregate_usd([], self._NULL)
+        d = agg.as_dict()
+        self.assertEqual(d["state"], "EMPTY"); self.assertEqual(d["total_usd"], 0.0); self.assertIsNone(d["reason"])
+
+    def test_vetted_rate_source_makes_gbp_available_opt_in(self):
+        # Opt-in governance path: a vetted MappingFxRateSource (operator-provided, never default 1.0) converts the
+        # SAME GBP figure that NullFxRateSource (the default) must degrade. Proves the honest-degrade is a missing
+        # feed, not a code floor, and that wiring a rate source is the single lever that flips UNAVAILABLE -> OK.
+        items = [{"account_id": 1, "amount": 100.0, "currency": "GBP"}]
+        self.assertEqual(FX.aggregate_usd(items, self._NULL).as_dict()["state"], "UNAVAILABLE")
+        vetted = FX.MappingFxRateSource({("GBP", "USD"): 1.25}, as_of="2026-10-22T00:00:00Z", source="operator")
+        d = FX.aggregate_usd(items, vetted).as_dict()
+        self.assertEqual(d["state"], "OK"); self.assertEqual(d["total_usd"], 125.0)
+
+    def test_reason_category_mixed_when_currency_and_stale(self):
+        # Stale (open-P/L) + currency exclusions in one aggregate -> reason "mixed" (UI maps mixed to stale/missing).
+        agg = FX.UsdAggregate()
+        agg.unconverted = [{"account_id": 1, "category": "currency_unconvertible"},
+                           {"account_id": 2, "category": "stale_observation"}]
+        self.assertEqual(agg.reason, "mixed")
+
+
+class BuildSummaryHonestStateTests(TestCase):
+    """build_summary end-to-end: the dashboard payload must carry explicit states, never measured zeros, whenever
+    every eligible account is excluded — and must keep NATIVE figures for a single-account scope."""
+
+    def test_all_gbp_portfolio_unavailable_everywhere(self):
+        # Scenario: the production shape (account 49 is GBP). ALL accounts non-USD -> balance/equity UNAVAILABLE
+        # (null, never $0), metrics UNAVAILABLE (net/total_trades null, never 0 / 0%), daily withheld (None).
+        u = _user("hs1"); g1 = _acct(u); g2 = _acct(u)
+        _closed_trade(g1, 123.0); _closed_trade(g2, 456.0)       # real GBP trades that must NOT surface as USD
+        bal = {g1.id: {"balance": 1000, "equity": 1010, "currency": "GBP"},
+               g2.id: {"balance": 2000, "equity": 2005, "currency": "GBP"}}
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
+                                      fetch_positions=_fake_positions({g1.id: [], g2.id: []}), rate_source=FX.NullFxRateSource())
+        agg = payload["aggregate"]
+        self.assertIsNone(agg["balance_usd"]["total_usd"]); self.assertEqual(agg["balance_usd"]["state"], "UNAVAILABLE")
+        self.assertEqual(agg["balance_usd"]["reason"], "currency_unconvertible")
+        self.assertEqual(agg["balance_usd"]["excluded_count"], 2); self.assertEqual(agg["balance_usd"]["included_count"], 0)
+        self.assertIsNone(agg["equity_usd"]["total_usd"]); self.assertEqual(agg["equity_usd"]["state"], "UNAVAILABLE")
+        m = agg["metrics"]
+        self.assertEqual(m["state"], "UNAVAILABLE")
+        self.assertIsNone(m["net_pnl_total"]); self.assertIsNone(m["total_trades"]); self.assertIsNone(m["win_rate_pct"])
+        self.assertIsNone(agg["daily_realized_pnl_usd"]); self.assertEqual(agg["daily_realized_pnl_basis"], "PARTIAL")
+
+    def test_missing_balance_observation_is_unavailable_missing_snapshot(self):
+        # Scenario: missing/stale snapshot — the only account's live balance read fails. The balance aggregate is
+        # UNAVAILABLE with a SAFE category (no credentials/account-number/login), and the account is marked stale.
+        u = _user("hs2"); a = _acct(u)
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: None,
+                                      fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
+        bal = payload["aggregate"]["balance_usd"]
+        self.assertIsNone(bal["total_usd"]); self.assertEqual(bal["state"], "UNAVAILABLE")
+        self.assertEqual(bal["reason"], "missing_snapshot")
+        self.assertTrue(payload["accounts"][0]["stale"])
+
+    def test_stale_open_positions_is_unavailable_stale_observation(self):
+        # Scenario: stale observation — the only account's live POSITIONS read fails. The floating-P/L aggregate is
+        # UNAVAILABLE with the stale_observation category (distinct safe code from the currency/missing ones).
+        u = _user("hs3"); a = _acct(u)
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda x, timeout=None: {"balance": 10, "equity": 10, "currency": "USD"},
+                                      fetch_positions=_fake_positions({}),   # None -> stale
+                                      rate_source=FX.NullFxRateSource())
+        opl = payload["aggregate"]["open_pl_usd"]
+        self.assertIsNone(opl["total_usd"]); self.assertEqual(opl["state"], "UNAVAILABLE")
+        self.assertEqual(opl["reason"], "stale_observation")
+
+    def test_partial_portfolio_shows_included_and_flags(self):
+        # Scenario: partial portfolio (one USD + one GBP). Measured USD over the included account, PARTIAL, counts
+        # expose 1 included / 1 excluded; metrics likewise measured over the USD account only.
+        u = _user("hs4"); usd = _acct(u); gbp = _acct(u)
+        _closed_trade(usd, 10.0); _closed_trade(gbp, 999.0)
+        bal = {usd.id: {"balance": 1000, "equity": 1000, "currency": "USD"},
+               gbp.id: {"balance": 800, "equity": 800, "currency": "GBP"}}
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
+                                      fetch_positions=_fake_positions({usd.id: [], gbp.id: []}), rate_source=FX.NullFxRateSource())
+        agg = payload["aggregate"]
+        self.assertEqual(agg["balance_usd"]["total_usd"], 1000.0); self.assertEqual(agg["balance_usd"]["state"], "PARTIAL")
+        self.assertEqual(agg["balance_usd"]["included_count"], 1); self.assertEqual(agg["balance_usd"]["excluded_count"], 1)
+        m = agg["metrics"]
+        self.assertEqual(m["state"], "PARTIAL"); self.assertEqual(m["net_pnl_total"], 10.0); self.assertEqual(m["included_count"], 1)
+
+    def test_single_account_native_gbp_shown_not_blanked_or_converted(self):
+        # Requirement 5: a single-account GBP scope must show the NATIVE currency and NATIVE balance where
+        # authoritative data exists — never blanked, never forced through USD (the USD aggregate is Unavailable).
+        u = _user("hs5"); gbp = _acct(u)
+        payload, err = PF.build_summary(u, str(gbp.id),
+                                        fetch_balance=lambda a, timeout=None: {"balance": 812.34, "equity": 820.0, "currency": "GBP"},
+                                        fetch_positions=_fake_positions({gbp.id: []}), rate_source=FX.NullFxRateSource())
+        self.assertIsNone(err)
+        row = payload["accounts"][0]
+        self.assertEqual(row["currency"], "GBP")
+        self.assertEqual(row["balance_native"], 812.34)         # native figure preserved, not blanked
+        self.assertEqual(row["equity_native"], 820.0)
+        self.assertEqual(payload["aggregate"]["balance_usd"]["state"], "UNAVAILABLE")   # USD aggregate honest-unavailable
+
+    def test_all_usd_portfolio_regression_unchanged(self):
+        # Requirement 8 end-to-end: a fully valid USD portfolio reports measured numbers exactly as before, with the
+        # additive state = OK (DISCRIMINATING: the all-excluded guard must not touch the healthy path).
+        u = _user("hs6"); a = _acct(u)
+        _closed_trade(a, 9.65)
+        payload, _ = PF.build_summary(u, "ALL",
+                                      fetch_balance=lambda x, timeout=None: {"balance": 50009.65, "equity": 50009.65, "currency": "USD"},
+                                      fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
+        agg = payload["aggregate"]
+        self.assertEqual(agg["balance_usd"]["total_usd"], 50009.65); self.assertEqual(agg["balance_usd"]["state"], "OK")
+        self.assertEqual(agg["metrics"]["state"], "OK"); self.assertEqual(agg["metrics"]["net_pnl_total"], 9.65)
+        self.assertEqual(agg["daily_realized_pnl_basis"], "USD")
+
+    def test_no_safe_reason_leaks_identifiers(self):
+        # Requirement 4: exclusion reasons are safe CATEGORY CODES only — never a login/account-number/credential.
+        u = _user("hs7"); gbp = _acct(u, number="1302599")
+        payload, _ = PF.build_summary(u, "ALL",
+                                      fetch_balance=lambda a, timeout=None: {"balance": 1, "equity": 1, "currency": "GBP"},
+                                      fetch_positions=_fake_positions({gbp.id: []}), rate_source=FX.NullFxRateSource())
+        import json as _json
+        blob = _json.dumps(payload["aggregate"]["balance_usd"]["unconverted"])
+        self.assertNotIn("1302599", blob)                       # the broker account number never appears
+        for u_entry in payload["aggregate"]["balance_usd"]["unconverted"]:
+            self.assertIn(u_entry["category"], {"currency_unconvertible", "stale_observation",
+                                                "missing_snapshot", "read_refused"})

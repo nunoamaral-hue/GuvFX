@@ -13,6 +13,7 @@ per-tenant bridge via injected fetchers (the views wire the identity-firewalled,
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, List, Optional
 
 from django.utils import timezone
@@ -23,6 +24,24 @@ from trading.models import Trade, TradingAccount
 logger = logging.getLogger("guvfx.portfolio")
 
 _MAGIC_BASE = 1_000_000_000   # magic = base + StrategyAssignment.id (Phase-A allocator)
+
+# Overall wall-clock budget for the per-account LIVE-read fan-out (open positions + balances). Once elapsed,
+# remaining accounts are marked STALE (the same partial-result path as a failed read, never dropped) so the
+# dashboard settles promptly with the slow/unreachable accounts named. Kept below the client's fetch timeout so
+# the browser receives the bounded partial rather than aborting.
+_AGG_BUDGET_SECONDS = 10.0
+
+# Per-account live-read cap, passed to each fetcher as a deadline-aware socket timeout. The fetchers' own default
+# (urlopen timeout=10 in views_trade_history) is NOT enough on its own: the summary makes TWO serial live passes
+# (positions, then balances), and a HUNG bridge blocks the full per-read timeout in EACH pass — so a single down
+# account cost ~2x10s and (a) tipped the whole summary past the client's 18s deadline AND (b) consumed the budget
+# so the HEALTHY accounts' balance reads were skipped (marked stale). Capping each read well below the budget keeps
+# a hung account cheap (fails fast) so the healthy accounts are still read in both passes: with 2*cap < budget the
+# second pass still has budget left for the fast accounts after the hung one fails. Worst-case total wall-clock is
+# bounded to ~_AGG_BUDGET_SECONDS + one in-flight read, comfortably under the client deadline. (Design point: one
+# hung account among healthy ones — the production topology; several simultaneously-hung accounts still settle
+# bounded and honest-partial, only sooner-stale.)
+_PER_READ_TIMEOUT_SECONDS = 3.0
 
 # ``source_stage`` is a COMMENT-TAG CLASSIFIER inferred at ingest (TEST/LIVE/UNKNOWN — default UNKNOWN when the
 # broker deal comment carries no recognised tag). It is NOT a performance dimension: virtually every real
@@ -106,9 +125,12 @@ def _trade_currencies_all_usd(ids, *, stage: str) -> bool:
     return not qs.filter(bad).exists()
 
 
-def _empty_metrics(total: int, basis: str, excluded) -> dict:
-    """Counts-only metrics with every MONETARY/classified field withheld — used when the realized figures cannot be
-    trusted as a single USD denomination (fail-closed: never emit a mixed-currency money number)."""
+def _empty_metrics(total, basis: str, excluded, *, state: str, reason, included_count: int) -> dict:
+    """Metrics with every MONETARY/classified field withheld — used when the realized figures cannot be trusted as
+    a single USD denomination (fail-closed: never emit a mixed-currency money number). ``total`` (trade count) is
+    kept when it is still meaningful (mixed-currency PARTIAL) and ``None`` when there is no USD-eligible account at
+    all (UNAVAILABLE) so the UI shows an explicit state, never a measured zero. ``state``/``reason`` are the
+    machine state + safe category code; ``included_count``/``excluded_count`` expose the account split."""
     return {
         "total_trades": total, "wins": None, "losses": None, "breakeven": None,
         "win_rate_pct": None, "profit_factor": None, "profit_factor_infinite": False,
@@ -116,6 +138,8 @@ def _empty_metrics(total: int, basis: str, excluded) -> dict:
         "max_drawdown_money": None,
         "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
         "basis": basis, "excluded_accounts": list(excluded),
+        "state": state, "reason": reason,
+        "included_count": included_count, "excluded_count": len(excluded),
     }
 
 
@@ -137,12 +161,21 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
     excluded = [a.id for a in non_usd]
     ids = [a.id for a in usd_accounts]
 
+    if not ids and excluded:
+        # Every eligible account was excluded (observed non-USD) and there is no vetted FX feed: the statistics
+        # cannot be expressed in USD at all. Return an explicit UNAVAILABLE state with EVERY field (including the
+        # trade count) withheld — NEVER measured zeros (the all-excluded dashboard bug reported 0 trades / $0 net /
+        # 0% win rate as if real). An empty scope (no accounts, nothing excluded) falls through to the 0-trade path.
+        return _empty_metrics(None, "PARTIAL", excluded, state=FX.STATE_UNAVAILABLE,
+                              reason=FX.CURRENCY_UNCONVERTIBLE, included_count=0)
+
     if not _trade_currencies_all_usd(ids, stage=stage):
         # Mixed trade currencies within the (USD-account) set: cannot classify or sum honestly -> counts only.
         cqs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
         if stage in ("LIVE", "TEST"):
             cqs = cqs.filter(source_stage=stage)
-        return _empty_metrics(cqs.count(), "PARTIAL", excluded)
+        return _empty_metrics(cqs.count(), "PARTIAL", excluded, state=FX.STATE_PARTIAL,
+                              reason=FX.CURRENCY_UNCONVERTIBLE, included_count=len(ids))
 
     qs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
     if stage in ("LIVE", "TEST"):
@@ -188,6 +221,9 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
         "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
         # basis is USD only when the whole scope is a single USD denomination; excluded non-USD accounts surfaced.
         "basis": ("USD" if not excluded else "PARTIAL"), "excluded_accounts": excluded,
+        "state": (FX.STATE_PARTIAL if excluded else FX.STATE_OK),
+        "reason": (FX.CURRENCY_UNCONVERTIBLE if excluded else None),
+        "included_count": len(ids), "excluded_count": len(excluded),
     }
 
 
@@ -207,6 +243,10 @@ def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=
     usd_accounts, non_usd = _partition_usd(accounts, observed_nonusd_ids)
     excluded = [a.id for a in non_usd]
     ids = [a.id for a in usd_accounts]
+    if not ids and excluded:
+        # All eligible accounts excluded (observed non-USD): no USD-eligible trade set -> withhold the number
+        # entirely (None), never a measured 0.0. (No accounts at all falls through to the honest empty 0.0 below.)
+        return None, "PARTIAL"
     if not _trade_currencies_all_usd(ids, stage=stage):
         return None, "PARTIAL"
     today = timezone.now().date()
@@ -246,19 +286,33 @@ def _strategy_for_magic(account, magic) -> str:
     return getattr(getattr(asn, "strategy", None), "name", "") or ""
 
 
-def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRateSource):
+def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRateSource,
+                   deadline: Optional[float] = None):
     """Live open positions across ``accounts`` with account attribution. ``fetch_positions(account)`` returns the
     broker position list (or None on failure). Position identity is ACCOUNT-SCOPED (``<account_id>:<ticket>``) so
     ticket 123 on two brokers never collides. Floating P/L is normalised to USD (PARTIAL if a currency can't
-    convert). Returns ``(rows, per_account_open)`` where per_account_open maps account_id -> {open_count,
-    open_pl_usd, open_pl_basis, stale}."""
+    convert). ``deadline`` (``time.monotonic()`` seconds) bounds the fan-out: once passed, remaining accounts are
+    marked STALE without another live read (defaults to a fresh ``_AGG_BUDGET_SECONDS`` budget). Returns ``(rows,
+    per_account_open)`` where per_account_open maps account_id -> {open_count, open_pl_usd, open_pl_basis, stale}."""
     rows: List[dict] = []
     per_account: dict = {}
+    if deadline is None:
+        deadline = time.monotonic() + _AGG_BUDGET_SECONDS
     for a in accounts:
         cur = FX.normalise_currency(getattr(a, "account_currency", None))
         res = None
+        # Overall wall-clock budget: once the deadline is passed, do NOT start another per-account live read —
+        # mark the remaining accounts stale (identical to a failed read) so the dashboard settles in bounded time
+        # with the slow/unreachable accounts named, never silently dropped. A read that DOES start is given a
+        # deadline-aware socket timeout (capped at _PER_READ_TIMEOUT_SECONDS) so one hung bridge can neither blow
+        # the budget nor starve the accounts after it.
+        budget_left = deadline - time.monotonic()
+        if budget_left <= 0:
+            per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE",
+                                 "stale": True, "pl_items": []}
+            continue
         try:
-            res = fetch_positions(a)
+            res = fetch_positions(a, timeout=min(_PER_READ_TIMEOUT_SECONDS, budget_left))
         except Exception:  # noqa: BLE001 — a broker read must never break the dashboard
             logger.warning("portfolio: open-positions fetch raised for account %s", a.id)
             res = None
@@ -323,7 +377,7 @@ def portfolio_open_pl(per_account, rate_source: FX.FxRateSource):
         agg.basis = "PARTIAL"
         for aid in stale_ids:
             agg.unconverted.append({"account_id": aid, "native": None, "native_currency": "",
-                                    "reason": "stale_read"})
+                                    "reason": "stale_read", "category": FX.STALE_OBSERVATION})
     return agg, stale_ids
 
 
@@ -335,7 +389,11 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     if err is not None:
         return None, err
 
-    open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source)
+    # One shared wall-clock budget across BOTH live-read passes (open positions + balances) so the whole summary
+    # settles in bounded time even when an account's bridge is down; accounts not reached in time read stale.
+    deadline = time.monotonic() + _AGG_BUDGET_SECONDS
+    open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source,
+                                         deadline=deadline)
 
     bal_items, eq_items = [], []
     acct_payloads = []
@@ -344,11 +402,15 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     #                               path's currency exclusion so metrics.basis agrees with balance_usd.basis (H1).
     for a in accounts:
         snap = None
-        try:
-            snap = fetch_balance(a)
-        except Exception:  # noqa: BLE001
-            logger.warning("portfolio: balance fetch raised for account %s", a.id)
-            snap = None
+        budget_left = deadline - time.monotonic()
+        if budget_left <= 0:
+            snap = None  # budget exhausted — skip the live balance read; this account reads stale
+        else:
+            try:
+                snap = fetch_balance(a, timeout=min(_PER_READ_TIMEOUT_SECONDS, budget_left))
+            except Exception:  # noqa: BLE001
+                logger.warning("portfolio: balance fetch raised for account %s", a.id)
+                snap = None
         cur = FX.normalise_currency((snap or {}).get("currency") or getattr(a, "account_currency", None))
         if cur != FX.USD:
             observed_nonusd_ids.add(a.id)

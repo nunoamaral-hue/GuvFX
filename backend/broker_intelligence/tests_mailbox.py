@@ -1033,9 +1033,18 @@ class MailboxStatusPhysicalSchema0010(TransactionTestCase):
         from django.db.migrations.executor import MigrationExecutor
         MigrationExecutor(connection).migrate([(self._APP, target)])
 
+    def _restore_latest(self):
+        # Restore to the app's CURRENT leaf migration (not a hardcoded version): this TransactionTestCase shares
+        # the real DB with later tests, so leaving it at 0011 would hide every column/table added after 0011
+        # (e.g. the erasure grant table + ConnectedMailbox.generation). Future-proof against new migrations.
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes(self._APP))
+
     def setUp(self):
         self._migrate(self._V0010)                 # physically drop the 0011 health columns (prod schema 0010)
-        self.addCleanup(self._migrate, self._V0011)  # always restore, even if the test fails
+        self.addCleanup(self._restore_latest)        # always restore to the LATEST schema, even if the test fails
 
     def test_status_endpoint_certified_on_physical_schema_0010(self):
         from django.db import connection

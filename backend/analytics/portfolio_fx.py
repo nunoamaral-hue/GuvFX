@@ -18,9 +18,48 @@ degrades everything else to PARTIAL — correct and honest until a vetted rate s
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Dict, List, Optional, Protocol
 
 USD = "USD"
+
+
+def _money_half_even(value: float) -> float:
+    """Quantise a USD money amount to 2 decimal places with Decimal ROUND_HALF_EVEN — deterministic banker's
+    rounding on the exact decimal value, not float-binary rounding (ADR-0058 / PD: displayed portfolio money uses
+    Decimal ROUND_HALF_EVEN). For values already exact at ≤2dp (every USD-only total) the result is identical to
+    the prior ``round(x, 2)``, so flag-OFF behaviour is unchanged (guarded by the analytics regression suite)."""
+    return float(Decimal(repr(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN))
+
+# ── Safe, non-identifying exclusion categories ────────────────────────────────────────────────────────────────
+# Why a figure could not enter a USD aggregate, expressed as a stable CATEGORY CODE the UI maps to a human label.
+# These are deliberately coarse and carry NO credentials, account numbers, logins or any PII (security.md: redact
+# in evidence; evidence.md: state limitations — say what was not covered). The UI rolls them into two buckets: a
+# currency bucket (CURRENCY_UNCONVERTIBLE) and a "stale or missing account data" bucket (everything else).
+CURRENCY_UNCONVERTIBLE = "currency_unconvertible"   # a non-USD figure with no authoritative rate
+STALE_OBSERVATION = "stale_observation"             # the account's live read could not be completed (stale)
+MISSING_SNAPSHOT = "missing_snapshot"               # no observed figure to convert (balance/equity unavailable)
+READ_REFUSED = "read_refused"                        # an identity-firewall / permission refusal (reserved)
+
+# A figure's low-level ``reason`` (from ``to_usd`` and the open-P/L path) -> its safe UI category.
+_REASON_CATEGORY = {
+    "rate_unavailable": CURRENCY_UNCONVERTIBLE,
+    "amount_unavailable": MISSING_SNAPSHOT,
+    "amount_invalid": MISSING_SNAPSHOT,
+    "stale_read": STALE_OBSERVATION,
+    "read_refused": READ_REFUSED,
+}
+
+# Aggregate reporting states (machine codes the UI maps to labels):
+STATE_OK = "OK"                     # every item converted — a trustworthy measured USD total
+STATE_PARTIAL = "PARTIAL"           # some items converted, some excluded — a measured total over the INCLUDED subset
+STATE_UNAVAILABLE = "UNAVAILABLE"   # items existed but NONE could be converted — NO measured number (never 0.0)
+STATE_EMPTY = "EMPTY"               # no items at all (e.g. no accounts in scope) — genuinely nothing to report
+
+
+def reason_category(reason: Optional[str]) -> str:
+    """Map a low-level ``reason`` to its safe, non-identifying UI category code."""
+    return _REASON_CATEGORY.get(reason or "", MISSING_SNAPSHOT)
 
 
 def normalise_currency(cur: Optional[str]) -> str:
@@ -113,11 +152,45 @@ class UsdAggregate:
     total_usd: float = 0.0
     basis: str = "USD"                                   # "USD" (all converted) or "PARTIAL" (some excluded)
     converted_count: int = 0
-    unconverted: List[dict] = field(default_factory=list)  # [{account_id, native, native_currency, reason}]
+    unconverted: List[dict] = field(default_factory=list)  # [{account_id, native, native_currency, reason, category}]
+
+    @property
+    def excluded_count(self) -> int:
+        return len(self.unconverted)
+
+    @property
+    def state(self) -> str:
+        """OK/PARTIAL/UNAVAILABLE/EMPTY. Distinguishes "all eligible items excluded" (UNAVAILABLE — there is no
+        honest number, so ``as_dict`` emits ``null``, never a misleading 0.0) from "no items at all" (EMPTY —
+        genuinely nothing to report). ``converted_count`` is the number of items that actually entered the sum."""
+        if self.converted_count > 0:
+            return STATE_PARTIAL if self.unconverted else STATE_OK
+        return STATE_UNAVAILABLE if self.unconverted else STATE_EMPTY
+
+    @property
+    def reason(self) -> Optional[str]:
+        """The dominant exclusion category (``None`` when nothing was excluded; ``"mixed"`` when exclusions span
+        more than one category). The UI treats only ``currency_unconvertible`` specially; everything else means
+        "stale or missing account data"."""
+        cats = {u.get("category") for u in self.unconverted if u.get("category")}
+        if not cats:
+            return None
+        return next(iter(cats)) if len(cats) == 1 else "mixed"
 
     def as_dict(self) -> dict:
-        return {"total_usd": round(self.total_usd, 2), "basis": self.basis,
-                "converted_count": self.converted_count, "unconverted": self.unconverted}
+        st = self.state
+        return {
+            # A measured number ONLY when at least one item converted. UNAVAILABLE carries ``null`` so an
+            # all-excluded portfolio can never read as a measured "$0"; EMPTY (no accounts) keeps 0.0.
+            "total_usd": (None if st == STATE_UNAVAILABLE else _money_half_even(self.total_usd)),
+            "basis": self.basis,
+            "state": st,
+            "reason": self.reason,
+            "converted_count": self.converted_count,   # preserved (existing consumers) == included_count
+            "included_count": self.converted_count,
+            "excluded_count": self.excluded_count,
+            "unconverted": self.unconverted,
+        }
 
 
 def aggregate_usd(items: List[dict], rate_source: FxRateSource) -> UsdAggregate:
@@ -133,5 +206,6 @@ def aggregate_usd(items: List[dict], rate_source: FxRateSource) -> UsdAggregate:
         else:
             agg.basis = "PARTIAL"
             agg.unconverted.append({"account_id": it.get("account_id"), "native": rec["native"],
-                                    "native_currency": rec["native_currency"], "reason": rec["reason"]})
+                                    "native_currency": rec["native_currency"], "reason": rec["reason"],
+                                    "category": reason_category(rec["reason"])})
     return agg
