@@ -1494,3 +1494,38 @@ The P0 closed-beta activation journey and EN/JA contract tests are on `feat/beta
 viewer, Hosted Workspace account status, activation confirmation, core plan/onboarding copy, customer-safe
 errors, and locale helpers are localized. See `docs/product/BETA_EN_JA_AUDIT_2026-08-18.md` for the verified
 14-image acceptance matrix and the remaining P1/P2 backlog. Production was not touched.
+# 2026-10-24 — Evidence factuality linter (D)
+
+## Scope
+
+Additive, repository-only evidence authoring controls. No application behaviour
+or operational state changed.
+
+## Verified
+
+- Immutable-commit artefact, checksum, file-count, unittest-output, ancestry,
+  safe-path, and clean-tree checks implemented.
+- Manifest commands are never executed.
+- `python3 -m unittest discover -s tests -p 'test_evidence_factuality.py' -v`:
+  5 tests passed.
+- `make governance-check`: passed.
+- `python3 scripts/check_no_secrets.py`: no findings.
+- `git diff --check`: passed.
+
+## Assumptions and limitations
+
+- Saved unittest output is evidence of the recorded run, not independent proof
+  of test semantics.
+- Historical manifests are not retroactively factuality-verified.
+- Full application `make check` is deferred to GitHub CI for this repository-only
+  package; no backend or frontend behaviour changed.
+
+## Decision and recovery
+
+- Green/additive item D from `packets/ACTIVE.md`; no Red authority used.
+- Rollback is the single repository commit/PR. No production rollback exists.
+
+## One bounded next action
+
+Run the new verifier against this packet's committed evidence manifest, then
+submit the isolated branch for GitHub review.
