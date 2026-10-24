@@ -59,7 +59,13 @@ def capture_account_snapshot(account, *, balance, equity, currency=None, observe
         return None, "no_values"           # never write an empty/manufactured row
 
     now = observed_at or timezone.now()
-    cur = FX.normalise_currency(currency or getattr(account, "account_currency", None))
+    # Currency-integrity: store the OBSERVED currency (else the stored account currency), but NEVER default an
+    # UNKNOWN currency to USD. A blank is kept blank so downstream (``portfolio.observed_currency_map``) fails closed
+    # and excludes the position from the USD total, instead of a bridge read that omitted ``currency`` on a GBP
+    # account being silently persisted — and later summed — as dollars. (The equity-curve paths normalise a blank to
+    # USD as before; only the stored value for a genuinely-unknown currency changes, "USD" -> "".)
+    _raw = currency if (currency and str(currency).strip()) else getattr(account, "account_currency", None)
+    cur = FX.normalise_currency(_raw) if (_raw and str(_raw).strip()) else ""
     floating = _dec(floating_pnl)
     if floating is None and eq is not None and bal is not None:
         # Approximation: equity = balance + floating (EXACT for a cash/demo account with no broker credit; it

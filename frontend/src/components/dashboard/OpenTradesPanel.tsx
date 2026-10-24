@@ -188,7 +188,7 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
                 {t.open_price != null ? `@ ${t.open_price}` : ""}{t.current_price != null ? ` → ${t.current_price}` : ""}
               </div>
               <div style={{ textAlign: "right", fontWeight: 600,
-                            color: (t.pl_usd ?? 0) >= 0 ? "#5ad19a" : "#e88" }}>
+                            color: (t.pl_usd ?? t.pl_native ?? 0) >= 0 ? "#5ad19a" : "#e88" }}>
                 {t.pl_usd != null ? money(t.pl_usd) : money(t.pl_native, t.pl_native_currency)}
               </div>
             </div>
