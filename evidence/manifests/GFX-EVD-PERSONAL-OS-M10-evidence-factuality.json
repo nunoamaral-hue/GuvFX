@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-PERSONAL-OS-M10-evidence-factuality",
+  "packet_id": "PERSONAL-OS-M10-GUVFX-SANDBOX",
+  "created_at_utc": "2026-10-24T10:16:00Z",
+  "branch": "chore/evidence-factuality-linter",
+  "base_commit": "a13e503bc8c0f2c32e32e1b74ded55708aa92008",
+  "head_commit": "27f062ac5ffc3f4d26128882c5b3ffa32743186f",
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_evidence_factuality.py' -v",
+    "make governance-check",
+    "python3 scripts/check_no_secrets.py",
+    "git diff --check",
+    "python3 scripts/check_evidence_factuality.py evidence/manifests/GFX-EVD-PERSONAL-OS-M10-evidence-factuality.json"
+  ],
+  "expected_results": [
+    "Five factuality-verifier tests pass",
+    "Governance checks pass",
+    "Secret scan reports no findings",
+    "No whitespace errors",
+    "Immutable-commit evidence factuality verification passes"
+  ],
+  "actual_results": [
+    "Evidence factuality tests: Ran 5 tests; OK",
+    "make governance-check: PASS",
+    "check_no_secrets: no findings",
+    "git diff --check: no output",
+    "Final immutable-commit factuality result recorded after this manifest commit"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "The verifier checks committed evidence integrity and declared counts; it does not execute commands stored in a manifest or prove semantic correctness.",
+    "Historical manifests remain format-checked and are not retroactively required to contain a factuality block.",
+    "Full backend/frontend make check was not run locally because this package changes repository governance tooling only; GitHub CI remains the independent integration gate.",
+    "No production, broker, MT5, credential, deployment, n8n, Telegram, NAS, or GuvFX runtime access was performed."
+  ],
+  "artefact_locations": [
+    "scripts/check_evidence_factuality.py",
+    "tests/test_evidence_factuality.py",
+    "evidence/results/GFX-EVD-PERSONAL-OS-M10-evidence-factuality-unittest.txt",
+    "evidence/schema/evidence-manifest.schema.json",
+    "evidence/README.md",
+    "docs/STATUS.md",
+    "docs/HANDOFF.md",
+    "docs/NEXT.md",
+    "docs/KNOWN_ISSUES.md",
+    "packets/ACTIVE.md"
+  ],
+  "checksums": {
+    "scripts/check_evidence_factuality.py": "sha256:b74e0f67ac4eb0fc4806d6f5d2daf3f4e3eb3385e98575f09b47aa6c3a81ea92",
+    "tests/test_evidence_factuality.py": "sha256:b2e16a20f8682d13bedbe81b6272172efd7d08a0284917a4e2cdc07b6e2c53d0",
+    "evidence/results/GFX-EVD-PERSONAL-OS-M10-evidence-factuality-unittest.txt": "sha256:6173752f17ff897b2fee5f51699091019dcd853bfbfb02a904e092b1e0f40a52"
+  },
+  "factuality": {
+    "tracked_file_count": 2213,
+    "require_clean_tree": true,
+    "test_runs": [
+      {
+        "output_path": "evidence/results/GFX-EVD-PERSONAL-OS-M10-evidence-factuality-unittest.txt",
+        "framework": "unittest",
+        "expected_count": 5,
+        "expected_status": "PASS"
+      }
+    ]
+  },
+  "reviewer": null
+}
