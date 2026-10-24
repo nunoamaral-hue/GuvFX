@@ -15,7 +15,7 @@ beforeEach(() => {
 });
 
 describe("public /terms", () => {
-  it("renders without authentication and states no-advice + never-withdrawal + draft status (EN)", () => {
+  it("renders without authentication and states no-advice + never-withdrawal (EN)", () => {
     render(<TermsPage />); // no auth provider — proves the route is public
     expect(screen.getByRole("heading", { level: 1, name: "Terms of Service" })).toBeTruthy();
     expect(screen.getByTestId("terms-never-statement").textContent).toMatch(
@@ -24,8 +24,8 @@ describe("public /terms", () => {
     expect(screen.getAllByText(/does not provide investment, financial, legal or tax advice/i).length).toBeGreaterThan(0);
     // read-only email connection described
     expect(screen.getAllByText(/read-only Gmail access only/i).length).toBeGreaterThan(0);
-    // contractual facts not invented — flagged for Sponsor review
-    expect(screen.getByTestId("terms-draft-notice").textContent).toMatch(/draft pending legal review/i);
+    // controlled launch: all fields resolved — no draft banner remains
+    expect(screen.queryByTestId("terms-draft-notice")).toBeNull();
     // approved UK values applied; liability resolved with conservative standard wording; effective date set
     expect(screen.getAllByText(/governed by the laws of England and Wales/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/total liability for any claim is limited to the amount/i).length).toBeGreaterThan(0);

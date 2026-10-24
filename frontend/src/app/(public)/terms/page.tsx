@@ -8,18 +8,15 @@ import { LegalFooter } from "@/components/LegalFooter";
 /**
  * Public Terms of Service (/terms) — accessible without authentication.
  *
- * Review-ready DRAFT grounded in the real service (a strategy-management and broker/withdrawal
- * analytics platform with an optional read-only email connection). The operator identity (Virtus Logic
- * UK Ltd, company no. 13318959, registered office) is the Sponsor-confirmed company information applied
- * on the Sponsor's instruction. Governing law and jurisdiction (England and Wales), the effective date
- * (24 October 2026) and conservative standard liability/warranty wording have been resolved on the
- * Sponsor's instruction. No contractual facts are invented. Do not merge/deploy until the full legal
- * pack (including the Privacy Policy's pending international data-transfer field) is reviewed.
+ * Grounded in the real service (a strategy-management and broker/withdrawal analytics platform with an
+ * optional read-only email connection). Operator identity (Virtus Logic UK Ltd, company no. 13318959,
+ * registered office), governing law and jurisdiction (England and Wales), effective date (24 October
+ * 2026) and conservative standard liability/warranty wording are all Sponsor-confirmed for this
+ * founder-controlled controlled launch. No contractual facts are invented and no placeholders remain.
  */
 type Section = { h: string; p: string[] };
 
 const copy: Record<Lang, {
-  draft: string;
   eyebrow: string;
   title: string;
   updated: string;
@@ -29,8 +26,6 @@ const copy: Record<Lang, {
   home: string;
 }> = {
   en: {
-    draft:
-      "Draft pending legal review; not for publication until that review is complete.",
     eyebrow: "Terms",
     title: "Terms of Service",
     updated: "Last updated: 24 October 2026",
@@ -111,8 +106,6 @@ const copy: Record<Lang, {
     home: "Back to GuvFX",
   },
   ja: {
-    draft:
-      "本規約は法務レビュー前のドラフトであり、レビュー完了まで公開しません。",
     eyebrow: "規約",
     title: "利用規約",
     updated: "最終更新日：2026年10月24日",
@@ -211,22 +204,6 @@ export default function TermsPage() {
         <Link href="/" style={{ color: "#7dd3fc", textDecoration: "none", fontWeight: 700 }}>
           GuvFX
         </Link>
-
-        <p
-          data-testid="terms-draft-notice"
-          style={{
-            marginTop: "1.25rem",
-            padding: "0.75rem 0.9rem",
-            borderRadius: 10,
-            background: "rgba(251,191,36,0.07)",
-            border: "1px solid rgba(251,191,36,0.2)",
-            color: "#fde68a",
-            lineHeight: 1.55,
-            fontSize: "0.82rem",
-          }}
-        >
-          {c.draft}
-        </p>
 
         <section
           style={{

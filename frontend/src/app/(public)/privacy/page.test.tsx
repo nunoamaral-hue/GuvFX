@@ -34,9 +34,10 @@ describe("public /privacy policy", () => {
     // disconnect + deletion path
     expect(screen.getAllByText(/myaccount\.google\.com/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/support@guvfx\.com/).length).toBeGreaterThan(0);
-    // unresolved legal fields are clearly flagged for Sponsor review, not invented
-    expect(screen.getByTestId("privacy-draft-notice").textContent).toMatch(/draft pending legal review/i);
-    expect(screen.getAllByText(/Sponsor to confirm/).length).toBeGreaterThan(0);
+    // controlled launch: legal pack resolved — no draft banner, no placeholders, approved transfer wording present
+    expect(screen.queryByTestId("privacy-draft-notice")).toBeNull();
+    expect(screen.queryByText(/Sponsor to confirm/)).toBeNull();
+    expect(screen.getAllByText(/transfers from the UK to the EEA are covered by UK adequacy/i).length).toBeGreaterThan(0);
     // corporate operator + data controller resolved; personal/residential wording must NOT be published
     expect(screen.getAllByText(/Virtus Logic UK Ltd/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/13318959/).length).toBeGreaterThan(0);
