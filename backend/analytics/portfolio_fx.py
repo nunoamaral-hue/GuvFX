@@ -68,6 +68,23 @@ def normalise_currency(cur: Optional[str]) -> str:
     return c or USD
 
 
+# A position whose denomination could not be determined from any verified source. It is DELIBERATELY not USD:
+# an unknown-currency figure must be EXCLUDED from the USD total (``to_usd`` cannot convert it ⇒ ``pl_usd=null`` ⇒
+# aggregate PARTIAL), never summed as if it were dollars. Distinct from ``normalise_currency`` whose blank→USD
+# default is the documented estate behaviour for BALANCE/EQUITY and is intentionally left unchanged.
+UNKNOWN_CURRENCY = "UNKNOWN"
+
+
+def resolve_position_currency(observed: Optional[str], stored: Optional[str]) -> str:
+    """Currency for an OPEN-POSITION P/L figure (dashboard currency-integrity). Prefer the live bridge-OBSERVED
+    currency, then the stored account currency; if NEITHER is populated return ``UNKNOWN_CURRENCY`` — NEVER silently
+    default an unknown position currency to USD (that is the mixed-currency contamination this guards against)."""
+    for c in (observed, stored):
+        if c and str(c).strip():
+            return normalise_currency(c)
+    return UNKNOWN_CURRENCY
+
+
 @dataclass(frozen=True)
 class FxRate:
     """An authoritative rate to multiply a ``base`` amount by to get a ``quote`` amount, with provenance."""

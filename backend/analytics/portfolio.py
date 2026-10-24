@@ -286,8 +286,27 @@ def _strategy_for_magic(account, magic) -> str:
     return getattr(getattr(asn, "strategy", None), "name", "") or ""
 
 
+def observed_currency_map(accounts) -> dict:
+    """``{account_id: bridge-OBSERVED currency}`` from each account's LATEST durable equity-ledger snapshot — the
+    estate's authoritative observed-currency store (written by the identity-verified equity ledger from the live
+    bridge snapshot; the model's ``account_currency`` is unpopulated in prod). Used to label open-position P/L
+    honestly so a GBP account is never silently reported as USD. A blank snapshot currency (unknown — never defaulted
+    to USD at capture) and a missing snapshot both yield NO entry, so the caller falls back / marks the position
+    UNKNOWN and fails closed. Read-only; ONE query (Postgres DISTINCT ON), no broker contact."""
+    from analytics.models import AccountEquitySnapshot
+    ids = [a.id for a in accounts]
+    if not ids:
+        return {}
+    rows = (AccountEquitySnapshot.objects
+            .filter(trading_account_id__in=ids)
+            .order_by("trading_account_id", "-observed_at")
+            .distinct("trading_account_id")
+            .values_list("trading_account_id", "account_currency"))
+    return {aid: cur for aid, cur in rows if cur}
+
+
 def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRateSource,
-                   deadline: Optional[float] = None):
+                   deadline: Optional[float] = None, observed_currency: Optional[dict] = None):
     """Live open positions across ``accounts`` with account attribution. ``fetch_positions(account)`` returns the
     broker position list (or None on failure). Position identity is ACCOUNT-SCOPED (``<account_id>:<ticket>``) so
     ticket 123 on two brokers never collides. Floating P/L is normalised to USD (PARTIAL if a currency can't
@@ -299,7 +318,11 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
     if deadline is None:
         deadline = time.monotonic() + _AGG_BUDGET_SECONDS
     for a in accounts:
-        cur = FX.normalise_currency(getattr(a, "account_currency", None))
+        # Currency-integrity: label this account's open-position P/L with the bridge-OBSERVED currency (passed in
+        # by the caller from the verified equity-ledger / live snapshot), falling back to the stored account
+        # currency, and NEVER defaulting an unknown currency to USD — an unknown/non-USD P/L must be excluded from
+        # the USD total (PARTIAL), not silently summed as dollars.
+        cur = FX.resolve_position_currency((observed_currency or {}).get(a.id), getattr(a, "account_currency", None))
         res = None
         # Overall wall-clock budget: once the deadline is passed, do NOT start another per-account live read —
         # mark the remaining accounts stale (identical to a failed read) so the dashboard settles in bounded time
@@ -350,7 +373,10 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
         rows.extend(acct_rows)
         agg = FX.aggregate_usd(pl_items, rate_source)
         per_account[a.id] = {"open_count": len(acct_rows),
-                             "open_pl_usd": round(agg.total_usd, 2),
+                             # None (never a fabricated measured 0.0) when EVERY position was excluded as
+                             # non-USD/unknown — a round(0.0) here would read as a real "$0.00" for e.g. a GBP account.
+                             "open_pl_usd": (None if (agg.converted_count == 0 and agg.unconverted)
+                                             else round(agg.total_usd, 2)),
                              "open_pl_basis": agg.basis, "stale": False,
                              # native per-position items kept so the TOP-LEVEL aggregate can preserve PARTIAL
                              # rather than re-summing an already-USD number (which would always read "USD"). (M1)
@@ -392,8 +418,10 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     # One shared wall-clock budget across BOTH live-read passes (open positions + balances) so the whole summary
     # settles in bounded time even when an account's bridge is down; accounts not reached in time read stale.
     deadline = time.monotonic() + _AGG_BUDGET_SECONDS
+    # Bridge-observed currency per account (verified equity ledger) so open-position P/L is labelled in its true
+    # currency and a non-USD account is excluded from the USD total, never defaulted to USD (currency-integrity).
     open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source,
-                                         deadline=deadline)
+                                         deadline=deadline, observed_currency=observed_currency_map(accounts))
 
     bal_items, eq_items = [], []
     acct_payloads = []

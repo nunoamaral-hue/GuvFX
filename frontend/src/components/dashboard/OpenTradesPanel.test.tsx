@@ -171,4 +171,25 @@ describe("OpenTradesPanel", () => {
     expect(screen.queryByText(/\d\.\d\d USD/)).toBeNull();                        // no USD money label (not XAUUSD)
     expect(screen.queryByText(/\$\d/)).toBeNull();                               // no $ figure anywhere
   });
+
+  it("All-Accounts: a GBP position shows in GBP and is excluded from the USD total — never mixed as +$1.50", async () => {
+    // The exact prod contamination: USD +13.83 and GBP −12.24/−0.09 must NOT be summed as a single "$1.50" USD.
+    // The honest total is the USD-only +13.83 marked PARTIAL, with the GBP position rendered in its own currency.
+    api.apiFetch.mockResolvedValue(result([
+      trade({ position_id: "46:1", account_id: 46, broker: "TradersWay", account_masked: "••••5442",
+              symbol: "XAUUSD", pl_native: 13.83, pl_native_currency: "USD", pl_usd: 13.83 }),
+      trade({ position_id: "49:1", account_id: 49, broker: "Pepperstone", account_masked: "••••5983",
+              symbol: "XAUUSD_SB", pl_native: -12.24, pl_native_currency: "GBP", pl_usd: null }),
+    ], {
+      scope: "ALL",
+      open_pl_usd: { total_usd: 13.83, basis: "PARTIAL", state: "PARTIAL", converted_count: 1,
+                     unconverted: [{ account_id: 49, native: -12.24, native_currency: "GBP",
+                                     reason: "currency_unconvertible", category: "currency_unconvertible" }] },
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getAllByText(/\$13\.83/).length).toBeGreaterThan(0));  // USD-only total (not $1.50)
+    expect(screen.getByText(/12\.24 GBP/)).toBeTruthy();                          // GBP position in GBP, no $
+    expect(screen.queryByText(/1\.50/)).toBeNull();                              // contamination value NEVER shown
+    expect(screen.queryByText(/\$12\.24/)).toBeNull();                           // GBP figure never carries a $
+  });
 });
