@@ -1056,10 +1056,13 @@ capacity + provisioning driver + Verification Report + broker-independent decoup
   48–72h trends once available.
 
 ## Current next action (single)
-- [ ] **Broker-server timezone determination probe (Red, needs Nuno's approval):**
-  verify the TradersWay-Demo server timezone before any normalisation or broad
-  backfill. MT5 bar times are broker-server time, not guaranteed UTC; no offset may
-  be hardcoded. This touches real data, so it is a Nuno-gated Red step.
+- [ ] **Complete the approved winter broker-timezone probe after market open following
+  the 2026-10-25 DST transition.** Pre-transition controls passed on 2026-10-24,
+  but Saturday's latest M1 bar was stale and current bridge account identity was
+  not independently exposed. Re-confirm TradersWay-Demo broker identity and capture
+  a fresh M1 bar vs NTP-synchronised UTC. Until then, do not add a winter offset,
+  normalise across the DST boundary, or run a broad backfill. See
+  `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
 
 > ✅ Done 2026-06-28: **S1** (approved `GuvFXData` storage root provisioned) and
 > **GFX-PKT-006D-A2-P5** (first durable immutable raw object + provenance manifest,
