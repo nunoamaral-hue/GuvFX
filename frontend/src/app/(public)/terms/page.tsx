@@ -11,9 +11,10 @@ import { LegalFooter } from "@/components/LegalFooter";
  * Review-ready DRAFT grounded in the real service (a strategy-management and broker/withdrawal
  * analytics platform with an optional read-only email connection). The operator identity (Virtus Logic
  * UK Ltd, company no. 13318959, registered office) is the Sponsor-confirmed company information applied
- * on the Sponsor's instruction. No OTHER contractual facts are invented: governing law, jurisdiction and
- * liability wording are left as bracketed [ ... — Sponsor to confirm] fields for Sponsor/legal
- * completion. Do not merge/deploy until resolved and reviewed.
+ * on the Sponsor's instruction. Governing law and jurisdiction (England and Wales), the effective date
+ * (24 October 2026) and conservative standard liability/warranty wording have been resolved on the
+ * Sponsor's instruction. No contractual facts are invented. Do not merge/deploy until the full legal
+ * pack (including the Privacy Policy's pending international data-transfer field) is reviewed.
  */
 type Section = { h: string; p: string[] };
 
@@ -29,10 +30,10 @@ const copy: Record<Lang, {
 }> = {
   en: {
     draft:
-      "Draft pending legal review. Fields shown in [brackets] are unresolved and require Sponsor/legal confirmation before publication.",
+      "Draft pending legal review; not for publication until that review is complete.",
     eyebrow: "Terms",
     title: "Terms of Service",
-    updated: "Last updated: [EFFECTIVE DATE — Sponsor to confirm]",
+    updated: "Last updated: 24 October 2026",
     intro:
       "These terms govern your use of the GuvFX platform at guvfx.com. By using GuvFX you agree to them.",
     never: "GuvFX never initiates, confirms, cancels or moves a withdrawal. You remain solely responsible for your own trading and withdrawal decisions.",
@@ -85,7 +86,7 @@ const copy: Record<Lang, {
       {
         h: "8. Disclaimers and limitation of liability",
         p: [
-          "To the extent permitted by law, GuvFX is provided without warranties, and our liability is limited as set out in [LIABILITY / WARRANTY TERMS — Sponsor/legal to confirm]. Nothing in these terms excludes liability that cannot be excluded by law.",
+          "To the extent permitted by law, GuvFX is provided \"as is\" and \"as available\", without warranties of any kind, whether express or implied, including any implied warranties of merchantability, fitness for a particular purpose and non-infringement. To the maximum extent permitted by law, neither GuvFX nor Virtus Logic UK Ltd will be liable for any indirect, incidental, special or consequential loss, or for any loss of profits, trading or investment losses, or loss of data, arising out of or in connection with your use of the service, and our total liability for any claim is limited to the amount (if any) you have paid to use the service. Nothing in these terms excludes or limits any liability that cannot lawfully be excluded or limited, including liability for death or personal injury caused by negligence, or for fraud or fraudulent misrepresentation.",
         ],
       },
       {
@@ -111,10 +112,10 @@ const copy: Record<Lang, {
   },
   ja: {
     draft:
-      "本規約は法務レビュー前のドラフトです。[角括弧]で示した項目は未確定であり、公開前にスポンサー／法務の確認が必要です。",
+      "本規約は法務レビュー前のドラフトであり、レビュー完了まで公開しません。",
     eyebrow: "規約",
     title: "利用規約",
-    updated: "最終更新日：[発効日 — スポンサー確認待ち]",
+    updated: "最終更新日：2026年10月24日",
     intro: "本規約は、guvfx.comで提供されるGuvFXプラットフォームの利用に適用されます。GuvFXを利用することで、本規約に同意したものとみなされます。",
     never: "GuvFXが出金を開始・確認・取消・送金することはありません。ご自身の取引および出金の判断については、お客様が単独で責任を負います。",
     sections: [
@@ -166,7 +167,7 @@ const copy: Record<Lang, {
       {
         h: "8. 免責と責任の制限",
         p: [
-          "法が認める範囲で、GuvFXは保証なしに提供され、当社の責任は[責任・保証条項 — スポンサー／法務確認待ち]に定めるとおり制限されます。法律上除外できない責任を本規約が除外することはありません。",
+          "法が認める範囲で、GuvFXは「現状有姿」かつ「提供可能な範囲」で、明示・黙示を問わずいかなる保証（商品性、特定目的への適合性、非侵害の黙示の保証を含みます）もなく提供されます。法が認める最大限の範囲で、GuvFXおよびVirtus Logic UK Ltdは、間接的・付随的・特別または結果的損害、ならびに逸失利益、取引・投資上の損失、データの損失について責任を負わず、当社の総責任は、お客様が本サービスの利用のために支払った金額（ある場合）を上限とします。法律上除外または制限できない責任（過失による死亡・人身傷害、詐欺または不実表示に関する責任を含みます）を本規約が除外・制限することはありません。",
         ],
       },
       {

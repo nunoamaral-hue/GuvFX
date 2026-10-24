@@ -26,9 +26,10 @@ describe("public /terms", () => {
     expect(screen.getAllByText(/read-only Gmail access only/i).length).toBeGreaterThan(0);
     // contractual facts not invented — flagged for Sponsor review
     expect(screen.getByTestId("terms-draft-notice").textContent).toMatch(/draft pending legal review/i);
-    // approved UK values applied; liability remains a counsel placeholder (still draft)
+    // approved UK values applied; liability resolved with conservative standard wording; effective date set
     expect(screen.getAllByText(/governed by the laws of England and Wales/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/LIABILITY \/ WARRANTY TERMS — Sponsor\/legal to confirm/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/total liability for any claim is limited to the amount/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/24 October 2026/).length).toBeGreaterThan(0);
     // corporate operator resolved; personal/residential wording must NOT be published
     expect(screen.getAllByText(/Virtus Logic UK Ltd/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/13318959/).length).toBeGreaterThan(0);

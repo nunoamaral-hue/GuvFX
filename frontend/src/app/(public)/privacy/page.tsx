@@ -18,8 +18,11 @@ import { LegalFooter } from "@/components/LegalFooter";
  * DRAFT: the operator / data-controller identity (Virtus Logic UK Ltd, company no. 13318959, its
  * registered office, and the data controller) is the Sponsor-confirmed company information, applied on
  * the Sponsor's explicit instruction; independent Companies House confirmation is recommended before
- * publication. All OTHER legal/business facts remain bracketed [ ... — Sponsor to confirm] and are not
- * invented. Do not merge/deploy until those bracketed fields are resolved and legal review is complete.
+ * publication. The effective date (24 October 2026), the sub-processor list (Google, OVHcloud) and the
+ * liability/warranty wording have been resolved on the Sponsor's explicit instruction. ONE field remains
+ * bracketed and is NOT invented: the international TRANSFER MECHANISM — it requires a Sponsor/legal
+ * decision or evidence of the Google/OVH data-transfer safeguards (see WV1_SUBPROCESSORS_TRANSFERS_LOGS).
+ * Do not merge/deploy until that field is resolved and legal review is complete.
  * A residential address is never published here.
  */
 type Section = { h: string; p: string[] };
@@ -41,7 +44,7 @@ const copy: Record<Lang, {
       "Draft pending legal review. Fields shown in [brackets] are unresolved and require Sponsor/legal confirmation before publication.",
     eyebrow: "Privacy",
     title: "Privacy Policy",
-    updated: "Last updated: [EFFECTIVE DATE — Sponsor to confirm]",
+    updated: "Last updated: 24 October 2026",
     intro:
       "This policy explains what personal data GuvFX processes and why, with particular detail on the optional email connection that powers Withdrawal Intelligence.",
     never: "GuvFX never initiates, confirms, cancels or moves a withdrawal. Withdrawal Intelligence is observation only.",
@@ -108,7 +111,7 @@ const copy: Record<Lang, {
       {
         h: "9. Sharing and international transfers",
         p: [
-          "We do not sell or rent your data. We share only with the service providers necessary to run the platform, under contract, and as required by law. Sub-processors: [SUB-PROCESSOR LIST — Sponsor to confirm]. Where data is transferred internationally, the transfer mechanism is [TRANSFER MECHANISM — Sponsor to confirm].",
+          "We do not sell or rent your data. We share only with the service providers necessary to run the platform, under contract, and as required by law. Sub-processors: Google (the Gmail API, for the optional read-only email connection, and Google's email service for our own email) and OVHcloud (hosting of the GuvFX platform and its databases within the European Economic Area). Where data is transferred internationally, the transfer mechanism is [TRANSFER MECHANISM — Sponsor to confirm].",
         ],
       },
       {
@@ -131,7 +134,7 @@ const copy: Record<Lang, {
       "本ポリシーは法務レビュー前のドラフトです。[角括弧]で示した項目は未確定であり、公開前にスポンサー／法務の確認が必要です。",
     eyebrow: "プライバシー",
     title: "プライバシーポリシー",
-    updated: "最終更新日：[発効日 — スポンサー確認待ち]",
+    updated: "最終更新日：2026年10月24日",
     intro:
       "本ポリシーは、GuvFXが取り扱う個人データとその目的について、特に出金インテリジェンスを支える任意のメール連携に焦点を当てて説明します。",
     never: "GuvFXが出金を開始・確認・取消・送金することはありません。出金インテリジェンスは観測のみを行います。",
@@ -198,7 +201,7 @@ const copy: Record<Lang, {
       {
         h: "9. 共有と国際移転",
         p: [
-          "お客様のデータを販売・貸与することはありません。プラットフォーム運用に必要なサービス提供者との間で、契約に基づき、また法令上必要な範囲でのみ共有します。サブプロセッサー：[サブプロセッサー一覧 — スポンサー確認待ち]。データを国際的に移転する場合の移転メカニズムは[移転メカニズム — スポンサー確認待ち]です。",
+          "お客様のデータを販売・貸与することはありません。プラットフォーム運用に必要なサービス提供者との間で、契約に基づき、また法令上必要な範囲でのみ共有します。サブプロセッサー：Google（任意の読み取り専用メール連携のためのGmail API、および当社自身のメールのためのGoogleのメールサービス）、ならびにOVHcloud（欧州経済領域（EEA）内でのGuvFXプラットフォームおよびそのデータベースのホスティング）。データを国際的に移転する場合の移転メカニズムは[移転メカニズム — スポンサー確認待ち]です。",
         ],
       },
       {
