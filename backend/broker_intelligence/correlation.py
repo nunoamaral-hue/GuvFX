@@ -49,9 +49,12 @@ from datetime import timedelta
 from typing import Optional
 
 from django.db import IntegrityError, transaction
+from django.db.models import CharField, F, OuterRef, Subquery
+from django.db.models.functions import Coalesce
 
 from .erasure_lock import acquire_owner_erasure_lock
-from .models import BrokerEvent, BrokerMessageObservation, TransactionCategory, Withdrawal
+from .models import (BrokerEvent, BrokerEventClassificationRevision, BrokerMessageObservation, TransactionCategory,
+                     Withdrawal)
 
 logger = logging.getLogger("guvfx.broker_intelligence.correlation")
 
@@ -66,6 +69,15 @@ _OPENING_EVENTS = {"WITHDRAWAL_REQUESTED"}
 _REQUESTED_EVENTS = {"WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED"}
 _PROCESSING_EVENTS = {"WITHDRAWAL_PROCESSING", "WITHDRAWAL_APPROVED"}
 _COMPLETED_EVENTS = {"WITHDRAWAL_COMPLETED"}
+
+
+def _with_effective_category(qs):
+    """Annotate ``_eff_category`` = the latest classification revision's ``derived_category`` (ADR-0059), else the
+    original immutable ``transaction_category`` — so the withdrawal projection consumes the EFFECTIVE category without
+    ever mutating the event. One batch Subquery (newest revision by id), never a per-row reclassify at read time."""
+    latest = (BrokerEventClassificationRevision.objects.filter(event=OuterRef("pk"))
+              .order_by("-id").values("derived_category")[:1])
+    return qs.annotate(_eff_category=Coalesce(Subquery(latest), F("transaction_category"), output_field=CharField()))
 _REJECTED_EVENTS = {"WITHDRAWAL_REJECTED"}
 _CANCELLED_EVENTS = {"WITHDRAWAL_CANCELLED"}
 
@@ -377,7 +389,7 @@ def correlate_event(event: BrokerEvent) -> CorrelationResult:
     CORRELATED event is never re-projected — this serializes concurrent passes and makes double-processing of the
     same event (including the ref-less heuristic-opening path, which has no DB uniqueness) a structural no-op, not
     merely a reliance on the ``run_correlation`` queryset filter (a TOCTOU)."""
-    if event.transaction_category != TransactionCategory.EXTERNAL_WITHDRAWAL:
+    if event.effective_transaction_category() != TransactionCategory.EXTERNAL_WITHDRAWAL:
         return CorrelationResult(event.id, OUT_SKIP_NOT_EXTERNAL)
     if event.trading_account_id is None and event.owner_id is None:
         # Neither a resolved account NOR an owner — unattributable, so never projected (ADR-0050: an owner-attributed,
@@ -457,16 +469,17 @@ def run_correlation(*, limit: Optional[int] = None) -> dict:
             summary["processed"] += 1
             summary[res.outcome] = summary.get(res.outcome, 0) + 1
 
-    # Pass 1: external-withdrawal lifecycle events.
-    _drain((BrokerEvent.objects
-            .filter(transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL,
+    # Pass 1: external-withdrawal lifecycle events, by EFFECTIVE category (ADR-0059: a stale category corrected to
+    # EXTERNAL_WITHDRAWAL by an append-only revision is picked up here, without the event ever being mutated).
+    _drain((_with_effective_category(BrokerEvent.objects)
+            .filter(_eff_category=TransactionCategory.EXTERNAL_WITHDRAWAL,
                     correlation_status__in=[BrokerEvent.CorrelationStatus.UNRESOLVED,
                                             BrokerEvent.CorrelationStatus.AMBIGUOUS])
             .order_by("id")), correlate_event)
-    # Pass 2: neutral (non-external) completion events carrying a reference — advance-only, never create.
-    _drain((BrokerEvent.objects
+    # Pass 2: neutral (non-external by EFFECTIVE category) completion events carrying a reference — advance-only.
+    _drain((_with_effective_category(BrokerEvent.objects)
             .filter(event_type__in=list(_COMPLETED_EVENTS), broker_reference_id__gt="",
                     correlation_status=BrokerEvent.CorrelationStatus.UNRESOLVED)
-            .exclude(transaction_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
+            .exclude(_eff_category=TransactionCategory.EXTERNAL_WITHDRAWAL)
             .order_by("id")), correlate_completion_event)
     return summary

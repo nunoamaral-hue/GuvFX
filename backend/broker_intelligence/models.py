@@ -289,8 +289,58 @@ class BrokerEvent(models.Model):
     def delete(self, *args, **kwargs):
         raise ValidationError("BrokerEvent is append-only evidence; it is never deleted")
 
+    def effective_transaction_category(self) -> str:
+        """The EFFECTIVE transaction category (ADR-0059): the latest valid append-only classification revision's
+        derived category when one exists, else the original (immutable) ``transaction_category``. Deterministic — the
+        newest revision by id (each revision supersedes the prior effective one). This NEVER mutates the stored
+        category; a correction is a new ``BrokerEventClassificationRevision`` row. The withdrawal projection consumes
+        this only through the correlation engine (a batch job), never a per-page reclassify."""
+        rev = self.classification_revisions.order_by("-id").values_list("derived_category", flat=True).first()
+        return rev or self.transaction_category
+
     def __str__(self) -> str:
         return f"BrokerEvent({self.event_type}, acct={self.trading_account_id}, {self.correlation_status})"
+
+
+class BrokerEventClassificationRevision(models.Model):
+    """WP6.1 / ADR-0059 — an append-only, write-once CLASSIFICATION CORRECTION for a ``BrokerEvent``.
+
+    The original ``BrokerEvent`` (and its stored ``transaction_category``) and the ``EvidenceBlob`` are NEVER mutated;
+    a revision records a category RE-DERIVED from the SAME immutable evidence under the current certified parser, with
+    full provenance. The EFFECTIVE category of an event (``BrokerEvent.effective_transaction_category``) is the latest
+    valid revision's ``derived_category``, else the original. A revision is ONLY ever parser-derived — there is NO
+    operator-supplied category override. Write-once + never-deleted, like the evidence it corrects (data.md: raw
+    evidence is immutable; corrections are new records). It carries NO email body, URL, token, full account or request
+    number — only a category, provenance, a safe evidence hash, and a deterministic idempotency key."""
+    event = models.ForeignKey("BrokerEvent", on_delete=models.PROTECT, related_name="classification_revisions")
+    derived_category = models.CharField(max_length=32, choices=TransactionCategory.choices)
+    original_category = models.CharField(max_length=32, editable=False)          # event's stored category at revision time (audit)
+    original_parser_version = models.CharField(max_length=32, blank=True, default="", editable=False)  # historical parser
+    parser_name = models.CharField(max_length=64, editable=False)                # corrected parser identity
+    parser_version = models.CharField(max_length=32, editable=False)
+    classification_rule_version = models.CharField(max_length=32, editable=False)
+    reason = models.CharField(max_length=64, editable=False)                     # reason CODE (e.g. stale_ingestion_reclassify)
+    source_evidence_sha256 = models.CharField(max_length=64, editable=False)     # re-read + integrity-verified evidence hash
+    actor = models.CharField(max_length=128, editable=False)                     # initiating process/actor (e.g. cmd:reclassify_broker_event)
+    supersedes = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT,
+                                   related_name="superseded_by", editable=False)
+    idempotency_key = models.CharField(max_length=64, unique=True, editable=False)  # deterministic; rerun → no duplicate
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["event", "id"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("BrokerEventClassificationRevision is write-once; a correction is a new row")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("BrokerEventClassificationRevision is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"ClassificationRevision(event={self.event_id}, {self.original_category}->{self.derived_category})"
 
 
 class Withdrawal(models.Model):
