@@ -67,10 +67,6 @@ const STR = {
     en: "{n} record(s) with an impossible time (completion before request) were excluded.",
     ja: "{n}件の不正な時間（申請前の完了）のレコードを除外しました。",
   },
-  observedTiming: {
-    en: "{n} completed withdrawal(s) have only observed (ingestion) timing and are not included in the typical time or chart.",
-    ja: "{n}件の完了出金は観測（取り込み）時刻のみのため、通常時間やグラフには含めていません。",
-  },
   untimed: {
     en: "{n} completed withdrawal(s) could not be timed (a request or completion email was not observed).",
     ja: "{n}件の完了出金は時間を計測できませんでした（申請または完了メールが観測されていません）。",
@@ -261,11 +257,6 @@ export const WithdrawalSpeed: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => {
           </p>
         )}
         <p style={{ ...meta, lineHeight: 1.6, margin: "8px 0 0" }}>{STR.observedFrom[L]}</p>
-        {summary.observed_timing_count > 0 && (
-          <p style={{ ...meta, color: "#c9b56b", margin: "6px 0 0" }} data-testid="speed-observed-timing">
-            {tmpl(STR.observedTiming[L], { n: summary.observed_timing_count })}
-          </p>
-        )}
         {summary.untimed_count > 0 && (
           <p style={{ ...meta, margin: "6px 0 0" }} data-testid="speed-untimed">
             {tmpl(STR.untimed[L], { n: summary.untimed_count })}

@@ -415,9 +415,14 @@ class Withdrawal(models.Model):
         ]
 
     def duration_seconds(self):
-        """Completed-minus-requested in whole seconds, or None if not both observed. Pure; no I/O."""
+        """Completed-minus-requested in whole seconds, or None if not both observed OR the interval is IMPOSSIBLE
+        (completion before request). The single chokepoint for every consumer (WS3 speed, metrics, public aggregation):
+        a negative/impossible duration is NEVER returned as a number, so an out-of-order / clock-skewed pair can never
+        enter an average or a per-row figure as a bogus value (it is treated exactly like a missing anchor — never a
+        fabricated 0). Pure; no I/O."""
         if self.requested_at and self.completed_at:
-            return int((self.completed_at - self.requested_at).total_seconds())
+            secs = int((self.completed_at - self.requested_at).total_seconds())
+            return secs if secs >= 0 else None
         return None
 
     def __str__(self) -> str:
