@@ -49,8 +49,10 @@
   "src/app/(public)/layout.tsx",
   "src/app/(public)/login/page.tsx",
   "src/app/(public)/pricing/page.tsx",
+  "src/app/(public)/privacy/page.tsx",
   "src/app/(public)/register/page.tsx",
   "src/app/(public)/support/page.tsx",
+  "src/app/(public)/terms/page.tsx",
   "src/app/layout.tsx",
   "src/app/page.tsx"
 ]
