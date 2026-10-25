@@ -6,6 +6,7 @@ from trade_copier.consumer_api import (
     PartialCloseClaimView,
     PartialCloseCompleteView,
 )
+from trade_copier.config_api import CopyTradingConfigView
 from trade_copier.views import (
     CopyTradingMastersView,
     CopyTradingOverviewView,
@@ -15,6 +16,8 @@ from trade_copier.views import (
 urlpatterns = [
     path("status/", CopyTradingStatusView.as_view(), name="copy-trading-status"),
     path("masters/", CopyTradingMastersView.as_view(), name="copy-trading-masters"),
+    # Founder-only SHADOW configuration (owner-scoped, audited, idempotent; cannot enable execution).
+    path("config/", CopyTradingConfigView.as_view(), name="copy-trading-config"),
     path("accounts/<int:account_id>/overview/", CopyTradingOverviewView.as_view(),
          name="copy-trading-overview"),
     # ADR-0056 — dedicated DEMO partial-close consumer (modern worker auth only; DARK, no worker granted

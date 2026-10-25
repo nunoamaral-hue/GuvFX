@@ -27,6 +27,7 @@
   "src/components/broker/AssignmentConfigContent.tsx",
   "src/components/broker/AccountWithdrawalMonitoring.tsx",
   "src/components/broker/CopyTradingContent.tsx",
+  "src/components/broker/CopyTradingConfigContent.tsx",
   "src/components/broker/BrokerAccountDetailContent.tsx",
   "src/components/broker/BrokerAccountWizard.tsx",
   "src/components/broker/BrokerAccountsContent.tsx",
