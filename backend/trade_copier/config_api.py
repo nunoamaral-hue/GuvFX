@@ -27,7 +27,15 @@ from trade_copier.serializers import _account_environment, _broker_label
 from trade_copier.symbols import broker_key
 from trading.models import TradingAccount
 
-_SHADOW_BANNER = "SHADOW — EXECUTION OFF"
+_SHADOW_BANNER = "SHADOW — EXECUTION OFF"   # retained for API back-compat; the UI uses the compact status below
+# Quiet, professional execution-status treatment (Workstream C): a factual state, not a full-width alarm banner.
+_EXECUTION_STATUS = {
+    "mode": "observation",
+    "execution": "off",
+    "label": "Observation mode",
+    "detail": "Copy execution off",
+    "note": "Saving configuration does not activate trading.",
+}
 _FRESH_SECONDS = 15 * 60   # an account/observation older than this is "stale", never shown as ready
 
 
@@ -96,29 +104,149 @@ def _verified_maps(master_account, follower_account):
     return [{"master_symbol": r.master_symbol, "follower_symbol": r.follower_symbol, "verified": True} for r in rows]
 
 
+def _map_status(master_account, follower_account):
+    """Structured instrument-map readiness for a master→follower broker pair. Pure evidence, nothing invented: the
+    exact source (master) symbol, the follower symbol, the verification state, the last verification time, and an
+    EXPLICIT failure reason when the pair is not map-ready. A same-broker pair is an identity mapping."""
+    mb, fb = broker_key(master_account), broker_key(follower_account)
+    if mb and fb and mb == fb:
+        return {"master_broker": mb, "follower_broker": fb, "same_broker": True,
+                "state": "identity", "ready": True, "failure_reason": None,
+                "last_verified_at": None, "pairs": []}
+    rows = list(CopierSymbolMap.objects.filter(master_broker=mb, follower_broker=fb).order_by("master_symbol"))
+    pairs = [{"master_symbol": r.master_symbol, "follower_symbol": r.follower_symbol,
+              "verified": bool(r.verified),
+              "verified_at": r.verified_at.isoformat() if r.verified_at else None} for r in rows]
+    verified = [p for p in pairs if p["verified"]]
+    if not rows:
+        state, ready, reason = "missing", False, "no_symbol_map"
+    elif not verified:
+        state, ready, reason = "unverified", False, "map_present_but_unverified"
+    else:
+        state, ready, reason = "verified", True, None
+    last_verified = max((r.verified_at for r in rows if r.verified and r.verified_at), default=None)
+    return {"master_broker": mb, "follower_broker": fb, "same_broker": False,
+            "state": state, "ready": ready, "failure_reason": reason,
+            "last_verified_at": last_verified.isoformat() if last_verified else None, "pairs": pairs}
+
+
+def _spec_dec(v):
+    if v in (None, ""):
+        return None
+    try:
+        d = Decimal(str(v))
+        return d if d.is_finite() else None
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _observed_constraints(follower_account, map_status):
+    """The follower's BROKER-OBSERVED volume constraints (from synced ``BrokerInstrument`` rows) for the symbols it
+    would actually trade — the VERIFIED follower symbols of the map. These are *observed* limits, kept deliberately
+    distinct from the operator's *configured* sizing so the UI never conflates the two. Unavailability is reported
+    honestly, with a reason — never defaulted to a hard-coded broker value."""
+    from execution.models import BrokerInstrument
+    out = {"available": False, "reason": None, "symbols": {}}
+    if map_status.get("same_broker"):
+        # Identity mapping: the follower's traded symbol set is the master's live set, which this read does not
+        # enumerate. Report it as not-independently-verified rather than invent a constraint.
+        out["reason"] = "identity_mapping_symbol_set_not_enumerated"
+        return out
+    follower_symbols = [p["follower_symbol"] for p in map_status.get("pairs", []) if p["verified"]]
+    if not follower_symbols:
+        out["reason"] = "no_verified_map"
+        return out
+    rows = {bi.broker_symbol: (bi.metadata or {}) for bi in
+            BrokerInstrument.objects.filter(account=follower_account, broker_symbol__in=follower_symbols)}
+    for sym in follower_symbols:
+        m = rows.get(sym)
+        if not m:
+            continue
+        out["symbols"][sym] = {k: m.get(k) for k in (
+            "volume_min", "volume_step", "volume_max", "contract_size",
+            "currency_base", "currency_profit", "trade_mode")}
+    if out["symbols"]:
+        out["available"] = True
+    else:
+        out["reason"] = "follower_instruments_unsynced"
+    return out
+
+
+def _validate_sizing_against_constraints(cfg, constraints):
+    """Reject a configured lot the follower's broker cannot execute: below ``volume_min``, above ``volume_max``, or
+    off the ``volume_step`` grid — for ANY observed symbol. ``max_volume`` is a ceiling, so it is only checked
+    against ``volume_max``. A no-op when constraints are unavailable: that case is a fail-closed *readiness* state
+    (the follower is shown not execution-ready), never a silent pass and never a hard save error."""
+    if not constraints.get("available"):
+        return
+    fl = cfg.get("fixed_lot")
+    mv = cfg.get("max_volume")
+    for sym, spec in constraints["symbols"].items():
+        vmin, vstep, vmax = _spec_dec(spec.get("volume_min")), _spec_dec(spec.get("volume_step")), _spec_dec(spec.get("volume_max"))
+        if fl is not None:
+            if vmin is not None and fl < vmin:
+                raise ValueError(f"fixed_lot {fl} is below {sym} minimum volume {vmin}")
+            if vmax is not None and fl > vmax:
+                raise ValueError(f"fixed_lot {fl} exceeds {sym} maximum volume {vmax}")
+            if vstep is not None and vstep > 0 and vmin is not None:
+                steps = (fl - vmin) / vstep
+                if steps != steps.to_integral_value():
+                    raise ValueError(f"fixed_lot {fl} is off the {sym} volume step {vstep} (min {vmin})")
+        if mv is not None and vmax is not None and mv > vmax:
+            raise ValueError(f"max_volume {mv} exceeds {sym} maximum volume {vmax}")
+
+
 def _pair_view(master, follower):
-    """Per-pair display: instrument-map readiness, observer/replication health, last event, honest unavailable."""
-    maps = _verified_maps(master.trading_account, follower.follower_account)
+    """Per-pair display: per-follower sizing, instrument-map evidence, broker-observed constraints, a fail-closed
+    configuration-readiness verdict (distinct from execution authorisation, which stays OFF), honest unavailable."""
+    facct = follower.follower_account
+    maps = _verified_maps(master.trading_account, facct)       # back-compat shape
+    map_status = _map_status(master.trading_account, facct)
+    constraints = _observed_constraints(facct, map_status)
     last_event = (MasterEvent.objects.filter(master=master).order_by("-sequence")
                   .values("event_type", "symbol", "observed_at").first())
+    follower_current = facct.disconnected_at is None
+    # Configuration readiness is NOT execution authorisation: a "ready" config is still observation-only until a
+    # separate, explicit production authorisation and the live safety gate are satisfied. We only ever assert the
+    # NEGATIVE ("not execution-ready — <reason>"); we never render a positive "execution-ready" claim.
+    blocked_reason = None
+    if not follower_current:
+        blocked_reason = "follower_disconnected"
+    elif not map_status["ready"]:
+        blocked_reason = map_status["failure_reason"] or "instrument_map_not_ready"
+    elif not constraints["available"]:
+        blocked_reason = constraints.get("reason") or "symbol_constraints_unavailable"
+    else:
+        try:
+            _validate_sizing_against_constraints(
+                {"fixed_lot": follower.fixed_lot, "max_volume": follower.max_volume}, constraints)
+        except ValueError as e:
+            blocked_reason = f"sizing_invalid: {e}"
     return {
         "follower_account_id": follower.follower_account_id,
         "enabled": follower.enabled,
         # A retained but now-disconnected follower is NOT current: surface it so the UI can disclose that operator
         # attention is required, rather than silently dropping or substituting it.
-        "follower_current": follower.follower_account.disconnected_at is None,
+        "follower_current": follower_current,
         "sizing_mode": follower.sizing_mode,
         "fixed_lot": str(follower.fixed_lot) if follower.fixed_lot is not None else None,
         "max_volume": str(follower.max_volume) if follower.max_volume is not None else None,
         "max_concurrent_positions": follower.max_concurrent_positions,
         "instrument_map_ready": bool(maps),
         "instrument_maps": maps,
+        # Structured map evidence (Workstream B): source symbol, follower symbol, verification state + time, reason.
+        "instrument_map": map_status,
+        # Broker-OBSERVED limits, kept distinct from the CONFIGURED sizing above (Workstream A).
+        "observed_constraints": constraints,
+        # Fail-closed configuration verdict (Workstream A): "ready" | "blocked" + an explicit reason. Not execution.
+        "config_status": "ready" if blocked_reason is None else "blocked",
+        "config_blocked_reason": blocked_reason,
         "observer_last_observed_at": master.last_observed_at.isoformat() if master.last_observed_at else None,
         "last_observed_event": last_event or None,
         "supported_risk_controls": ["FIXED_LOT", "max_volume", "max_concurrent_positions"],
         # Honest unavailability (not invented): per-account margin/leverage are not exposed by the deployed snapshot.
         "unavailable_risk_metadata": ["margin_mode", "free_margin", "used_margin", "margin_level", "leverage"],
-        "live_execution_blocked": _account_environment(follower.follower_account) == "live",
+        "live_execution_blocked": _account_environment(facct) == "live",
     }
 
 
@@ -151,9 +279,10 @@ class CopyTradingConfigView(APIView):
 
     def get(self, request):
         if not copier_ui_enabled_for(request.user):
-            return Response({"enabled": False, "banner": _SHADOW_BANNER})
+            return Response({"enabled": False, "banner": _SHADOW_BANNER, "execution_status": _EXECUTION_STATUS})
         return Response({
             "enabled": True, "banner": _SHADOW_BANNER, "execution": "off",
+            "execution_status": _EXECUTION_STATUS,
             "explain": ("GuvFX is observing and comparing potential replication. No follower broker order is placed. "
                         "Saving configuration does NOT enable execution."),
             "eligible_accounts": _eligible_accounts(request.user),
@@ -242,6 +371,12 @@ class CopyTradingConfigView(APIView):
                 return Response({"detail": "follower account not found"}, status=404)
             try:
                 cfg = self._parse_sizing(item)
+                # Reject a lot this follower's broker cannot execute (below-min / above-max / off-step), using the
+                # follower's OWN observed symbol constraints. When constraints are unavailable (no verified map or
+                # un-synced instruments, e.g. Pepperstone #49) this is a no-op here and the follower is instead
+                # surfaced as config "blocked" by _pair_view — fail-closed, never a silent accept.
+                constraints = _observed_constraints(facct, _map_status(master_acct, facct))
+                _validate_sizing_against_constraints(cfg, constraints)
             except ValueError as e:
                 return Response({"detail": str(e)}, status=400)
             desired[fid] = (facct, cfg)
