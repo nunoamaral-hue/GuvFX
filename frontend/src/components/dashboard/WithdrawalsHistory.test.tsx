@@ -82,4 +82,43 @@ describe("WithdrawalsHistory", () => {
     expect(panel.textContent).toMatch(/7654321/);                // broker reference is the identifier
     expect(panel.textContent).toMatch(/250\.00 USD/);
   });
+
+  it("embedded: hides the filter selects, caps to the recent rows, and notes truncation", async () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({
+      id: i + 1, broker: "TradersWay", trading_account_id: 46, account_masked: "••••0123",
+      state: "completed" as const, status: "COMPLETED", amount: `${i + 1}.00`, currency: "USD",
+      requested_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T01:00:00Z", duration_seconds: 3600,
+      broker_reference_id: `W-${i + 1}`, reference_correlated: true,
+    }));
+    api.apiFetch.mockResolvedValue(history({ withdrawals: many }));
+    render(<WithdrawalsHistory embedded />);
+    await screen.findByTestId("withdrawals-history");
+    expect(screen.queryByTestId("history-broker-select")).toBeNull();   // filtering lives on the detail page
+    expect(screen.queryByTestId("history-account-select")).toBeNull();
+    expect(screen.getAllByTestId("history-row").length).toBe(5);         // only the recent 5
+    expect(screen.getByTestId("history-truncated").textContent).toMatch(/Showing 5 most recent/);
+  });
+
+  it("embedded: shows all rows (no truncation note) when within the recent limit, still no filters", async () => {
+    api.apiFetch.mockResolvedValue(history());   // 3 rows < limit 5
+    render(<WithdrawalsHistory embedded />);
+    await screen.findByTestId("withdrawals-history");
+    expect(screen.getAllByTestId("history-row").length).toBe(3);
+    expect(screen.queryByTestId("history-truncated")).toBeNull();
+    expect(screen.queryByTestId("history-broker-select")).toBeNull();
+  });
+
+  it("uses parent-injected history WITHOUT fetching (the section feeds both columns from one load)", async () => {
+    render(<WithdrawalsHistory embedded data={history()} />);
+    const panel = await screen.findByTestId("withdrawals-history");
+    expect(api.apiFetch).not.toHaveBeenCalled();   // injected -> never self-fetches
+    expect(panel.textContent).toMatch(/200\.00 USD/);
+    expect(screen.getAllByTestId("history-row").length).toBe(3);
+  });
+
+  it("hides when the injected history is null (no fetch, no broken card)", () => {
+    const { container } = render(<WithdrawalsHistory embedded data={null} />);
+    expect(api.apiFetch).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="withdrawals-history"]')).toBeNull();
+  });
 });
