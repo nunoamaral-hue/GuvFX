@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
-from analytics.fx_source import StoredFredFxRateSource, fx_conversion_enabled
+from analytics.fx_source import StoredFredFxRateSource, fx_conversion_enabled_for
 from analytics.views_trade_history import (
     _account_windows_username, _fetch_mt5_account_balance, _fetch_mt5_open_positions,
 )
@@ -35,13 +35,14 @@ from analytics.views_trade_history import (
 _MAX_OPEN_ROWS = 300
 
 
-def _rate_source() -> FX.FxRateSource:
-    """Rate source for CURRENT monetary figures (portfolio summary total + open floating P/L). When the DARK
-    ``PORTFOLIO_FX_CONVERSION_ENABLED`` flag is ON, GBP->USD converts from the DB-only Fed H.10 ``DEXUSUK`` store
-    (today's selected rate — appropriate for a *current* value, with honest refusal when stale/missing). OFF
-    (default) is the USD->USD-only ``NullFxRateSource`` — byte-identical to today. Point-in-time HISTORICAL curves
-    must NOT use a single spot rate, so ``PortfolioEquityCurveView`` deliberately does not (data.md point-in-time)."""
-    return StoredFredFxRateSource() if fx_conversion_enabled() else FX.NullFxRateSource()
+def _rate_source(user) -> FX.FxRateSource:
+    """Rate source for CURRENT monetary figures (portfolio summary total + open floating P/L). When conversion is
+    enabled FOR THIS USER (global GA gate OR the founder cohort — ``fx_conversion_enabled_for``), GBP->USD converts
+    from the DB-only Fed H.10 ``DEXUSUK`` store (today's selected rate — appropriate for a *current* value, with
+    honest refusal when stale/missing). Otherwise the USD->USD-only ``NullFxRateSource`` — byte-identical to today.
+    Point-in-time HISTORICAL curves must NOT use a single spot rate, so ``PortfolioEquityCurveView`` deliberately
+    does not (data.md point-in-time)."""
+    return StoredFredFxRateSource() if fx_conversion_enabled_for(user) else FX.NullFxRateSource()
 
 
 # The aggregation (``portfolio.open_positions`` / ``build_summary``) passes a deadline-aware ``timeout`` so one
@@ -74,17 +75,17 @@ class PortfolioSummaryView(APIView):
 
     def get(self, request):
         scope = request.query_params.get("scope", "ALL")
-        rate_source = _rate_source()
+        rate_source = _rate_source(request.user)
         payload, err = PF.build_summary(
             request.user, scope,
             fetch_balance=_balance_fetcher, fetch_positions=_positions_fetcher,
             rate_source=rate_source, stage="ALL")
         if err is not None:
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
-        # DARK FX disclosure: when conversion is enabled, surface the rate provenance (source, exact rate,
-        # effective date, staleness/availability) so the UI can disclose it. Additive + flag-gated — when the flag
-        # is OFF the payload carries no ``fx`` key, so default behaviour is byte-identical to today.
-        if fx_conversion_enabled() and hasattr(rate_source, "provenance"):
+        # DARK FX disclosure: when conversion is enabled FOR THIS USER, surface the rate provenance (source, exact
+        # rate, effective date, staleness/availability) so the UI can disclose it. Additive + gated — when not
+        # enabled for the caller the payload carries no ``fx`` key, so default behaviour is byte-identical to today.
+        if fx_conversion_enabled_for(request.user) and hasattr(rate_source, "provenance"):
             payload["fx"] = rate_source.provenance()
         return Response(payload)
 
@@ -100,11 +101,12 @@ class PortfolioOpenTradesView(APIView):
             return Response({"detail": "account not found" if err == 404 else "bad scope"}, status=err)
         # Bridge-observed currency per account (verified equity ledger) so each open position's P/L is labelled in
         # its true currency; a non-USD account is then excluded from the USD total (PARTIAL), never summed as USD.
-        rows, per_open = PF.open_positions(accounts, fetch_positions=_positions_fetcher, rate_source=_rate_source(),
+        rate_source = _rate_source(request.user)
+        rows, per_open = PF.open_positions(accounts, fetch_positions=_positions_fetcher, rate_source=rate_source,
                                            observed_currency=PF.observed_currency_map(accounts))
         # Preserve per-account PARTIAL/STALE in the top-level total (M1): a floating-P/L total that dropped a
         # non-convertible or unreadable account is reported PARTIAL with those accounts surfaced, never "USD".
-        open_pl, stale_ids = PF.portfolio_open_pl(per_open, _rate_source())
+        open_pl, stale_ids = PF.portfolio_open_pl(per_open, rate_source)
         total_count = len(rows)
         truncated = total_count > _MAX_OPEN_ROWS
         # Single-account scope: report that account's OBSERVED native currency (from its latest equity snapshot —

@@ -439,6 +439,26 @@ class FxViewTests(TestCase):
         self.assertNotIn("fx", r.json())
         self.assertFalse(any("dailyfxobservation" in q["sql"].lower() for q in ctx.captured_queries))
 
+    @override_settings(PORTFOLIO_FX_COHORT_ALLOWLIST="fxv@x.invalid")
+    def test_cohort_member_gets_fx_without_global_flag(self):
+        # Founder cohort only (global PORTFOLIO_FX_CONVERSION_ENABLED NOT set): the caller IS in the allowlist, so
+        # conversion is enabled for them and provenance is surfaced — without flipping the global GA flag.
+        _obs(governed_today() - timedelta(days=1), "1.2710")
+        r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
+        self.assertEqual(r.status_code, 200)
+        fx = r.json().get("fx")
+        self.assertIsNotNone(fx); self.assertTrue(fx["available"]); self.assertEqual(fx["source_series"], "DEXUSUK")
+
+    @override_settings(PORTFOLIO_FX_COHORT_ALLOWLIST="someone-else@x.invalid")
+    def test_non_cohort_user_has_no_fx_key(self):
+        # Caller NOT in the allowlist and global flag off -> byte-identical to today (no fx key, no conversion).
+        _obs(governed_today() - timedelta(days=1), "1.2710")
+        with CaptureQueriesContext(connection) as ctx:
+            r = self.client.get("/api/analytics/portfolio/summary/?scope=ALL")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("fx", r.json())
+        self.assertFalse(any("dailyfxobservation" in q["sql"].lower() for q in ctx.captured_queries))
+
     @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1")
     def test_flag_on_surfaces_provenance(self):
         _obs(governed_today() - timedelta(days=1), "1.2710")    # yesterday (governed tz) -> selected
@@ -630,3 +650,40 @@ class FxModelGuardTests(TestCase):
         o.rate = Decimal("9.99")
         with self.assertRaises(ValueError):
             o.save()
+
+
+class FxCohortGateUnitTests(TestCase):
+    """Per-user FX conversion gate: global GA OR founder cohort, default-DENY, fail-closed."""
+
+    class _FakeUser:
+        def __init__(self, email, authed=True):
+            self.email = email
+            self.is_authenticated = authed
+
+    def test_empty_allowlist_and_flag_off_denies(self):
+        from analytics.fx_source import fx_conversion_cohort_allowlist, fx_conversion_enabled_for
+        self.assertEqual(fx_conversion_cohort_allowlist(), frozenset())
+        self.assertFalse(fx_conversion_enabled_for(self._FakeUser("support@guvfx.com")))
+
+    @override_settings(PORTFOLIO_FX_COHORT_ALLOWLIST="support@guvfx.com")
+    def test_cohort_member_allowed_others_denied(self):
+        from analytics.fx_source import fx_conversion_enabled_for
+        self.assertTrue(fx_conversion_enabled_for(self._FakeUser("support@guvfx.com")))
+        self.assertFalse(fx_conversion_enabled_for(self._FakeUser("intruder@x.invalid")))
+
+    @override_settings(PORTFOLIO_FX_COHORT_ALLOWLIST="  SUPPORT@GuvFX.com , x@y ")
+    def test_cohort_match_case_insensitive_and_trimmed(self):
+        from analytics.fx_source import fx_conversion_enabled_for
+        self.assertTrue(fx_conversion_enabled_for(self._FakeUser("support@guvfx.com")))
+
+    @override_settings(PORTFOLIO_FX_CONVERSION_ENABLED="1", PORTFOLIO_FX_COHORT_ALLOWLIST="")
+    def test_global_ga_flag_enables_everyone(self):
+        from analytics.fx_source import fx_conversion_enabled_for
+        self.assertTrue(fx_conversion_enabled_for(self._FakeUser("anyone@x.invalid")))
+
+    @override_settings(PORTFOLIO_FX_COHORT_ALLOWLIST="support@guvfx.com")
+    def test_anonymous_or_missing_denied(self):
+        from analytics.fx_source import fx_conversion_enabled_for
+        self.assertFalse(fx_conversion_enabled_for(None))
+        self.assertFalse(fx_conversion_enabled_for(self._FakeUser("support@guvfx.com", authed=False)))
+        self.assertFalse(fx_conversion_enabled_for(self._FakeUser("", authed=True)))
