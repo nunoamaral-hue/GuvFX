@@ -78,4 +78,29 @@ describe("CopyTradingConfigContent", () => {
     expect(body.followers[0].sizing_mode).toBe("FIXED_LOT");
     expect(await screen.findByTestId("copier-config-result")).toBeTruthy();
   });
+
+  it("renders only the eligible accounts the API returns (historical/disconnected never appear)", async () => {
+    // The API already excludes tombstones; the UI must render exactly what it returns — no placeholder for 43/47.
+    getCopyTradingConfig.mockResolvedValue(enabledConfig());   // eligible = 46, 48, 49 only
+    render(<CopyTradingConfigContent />);
+    await screen.findByLabelText("master 46");
+    expect(screen.getByLabelText("follower 48")).toBeTruthy();
+    expect(screen.queryByLabelText("master 43")).toBeNull();        // tombstone not offered
+    expect(screen.queryByLabelText("follower 47")).toBeNull();
+  });
+
+  it("discloses operator attention (fail-safe) when the saved config references a now-ineligible account", async () => {
+    getCopyTradingConfig.mockResolvedValue(enabledConfig({
+      config: { master_account_id: 46, observe_enabled: true, master_current: true, needs_operator_attention: true,
+                followers: [{ follower_account_id: 48, enabled: true, follower_current: false, sizing_mode: "FIXED_LOT",
+                              fixed_lot: "0.01", max_volume: "0.10", max_concurrent_positions: 1,
+                              instrument_map_ready: true, instrument_maps: [], observer_last_observed_at: null,
+                              last_observed_event: null, supported_risk_controls: [], unavailable_risk_metadata: [],
+                              live_execution_blocked: true }] },
+    }));
+    render(<CopyTradingConfigContent />);
+    const notice = await screen.findByTestId("copier-config-attention");
+    expect(notice.textContent).toMatch(/Operator attention required/i);
+    expect(notice.textContent).toMatch(/execution remains OFF/i);
+  });
 });
