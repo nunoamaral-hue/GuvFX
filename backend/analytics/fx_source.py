@@ -52,6 +52,30 @@ def fx_conversion_enabled() -> bool:
     return str(val).strip().lower() in _TRUTHY
 
 
+def fx_conversion_cohort_allowlist() -> frozenset:
+    """Founder/operator COHORT allowlist for portfolio GBP->USD conversion (controlled rollout before GA).
+    Lowercased emails parsed from ``PORTFOLIO_FX_COHORT_ALLOWLIST`` (comma-separated), settings-override-then-env.
+    Plain config, never a secret. Empty/unset ⇒ no one is in the cohort (conversion stays OFF unless the global
+    GA gate is on)."""
+    raw = getattr(settings, "PORTFOLIO_FX_COHORT_ALLOWLIST", None)
+    if raw is None:
+        raw = os.getenv("PORTFOLIO_FX_COHORT_ALLOWLIST", "")
+    return frozenset(e.strip().lower() for e in str(raw).split(",") if e.strip())
+
+
+def fx_conversion_enabled_for(user) -> bool:
+    """Per-user gate for portfolio GBP->USD conversion. A user gets conversion when EITHER the global GA gate
+    ``fx_conversion_enabled()`` is on for everyone, OR their email is in ``fx_conversion_cohort_allowlist()`` (the
+    controlled founder cohort). Both unset ⇒ denied (dashboard byte-identical to today, honest PARTIAL). Fail-closed
+    on a missing/anonymous user. Lets conversion be enabled for support@ only WITHOUT flipping the global flag, so a
+    cohort rollout never converts the whole member base (the directive's 'enable first for support@' requirement)."""
+    if fx_conversion_enabled():
+        return True
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    return (getattr(user, "email", "") or "").strip().lower() in fx_conversion_cohort_allowlist()
+
+
 def governed_today(now: Optional[datetime] = None) -> date:
     """The current calendar date in the governed timezone (``Europe/London``), DST-correct. ``now`` (an aware
     datetime) is injectable for tests; it defaults to the real clock."""

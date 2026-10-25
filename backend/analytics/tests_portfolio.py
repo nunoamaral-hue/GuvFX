@@ -841,7 +841,7 @@ class CurrencyIntegrityTests(TestCase):
         # The fix must NOT silently enable FX conversion: with the default source a GBP figure is EXCLUDED
         # (unconvertible), never converted into the USD total.
         from analytics.views_portfolio import _rate_source
-        rec = FX.to_usd(-12.24, "GBP", _rate_source())
+        rec = FX.to_usd(-12.24, "GBP", _rate_source(None))   # no user / no enablement -> Null source
         self.assertFalse(rec["ok"]); self.assertIsNone(rec["usd"])
 
     def test_tenant_isolation_foreign_gbp_not_in_aggregate(self):
