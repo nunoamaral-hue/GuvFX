@@ -93,4 +93,10 @@ describe("CopyTradingContent", () => {
     const banner = await screen.findByTestId("copier-shadow-banner");
     expect(banner.textContent).toMatch(/SHADOW — EXECUTION OFF/);
   });
+
+  it("shows the SHADOW — EXECUTION OFF banner during the loading frame (before data resolves)", () => {
+    getCopyTradingOverview.mockReturnValue(new Promise(() => {}));   // never resolves → stays loading
+    render(<CopyTradingContent accountId={100} />);
+    expect(screen.getByTestId("copier-shadow-banner").textContent).toMatch(/SHADOW — EXECUTION OFF/);
+  });
 });
