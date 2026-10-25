@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("@/lib/api", () => api);
 
 import { WithdrawalIntelligenceSection } from "@/components/dashboard/WithdrawalIntelligenceSection";
-import type { WithdrawalMetrics, WithdrawalHistory } from "@/types/withdrawals";
+import type { WithdrawalMetrics, WithdrawalHistory, WithdrawalRow } from "@/types/withdrawals";
 
 const METRICS = "/api/broker-intelligence/withdrawals/metrics/";
 const HISTORY = "/api/broker-intelligence/withdrawals/history/";
@@ -114,5 +114,111 @@ describe("WithdrawalIntelligenceSection", () => {
     const section = await screen.findByTestId("withdrawal-intelligence-section");
     expect(within(section).getByRole("heading", { name: /出金インテリジェンス/ })).toBeTruthy();
     expect(within(section).getByRole("link", { name: /すべて表示/ }).getAttribute("href")).toBe("/withdrawal-intelligence");
+  });
+
+  // ── Account-scope correction: follow the dashboard selector ──
+  function emptyMetrics() {
+    return metrics({ total: 0, pending_count: 0, completed_count: 0, failed_count: 0,
+      completed_amount_by_currency: {}, processing_duration: null, genuine_count: 0, sample_caveat: false });
+  }
+  function row(over: Partial<WithdrawalRow> = {}): WithdrawalRow {
+    return { id: 1, broker: "TradersWay", trading_account_id: 46, account_masked: "••••0123", state: "completed",
+      status: "COMPLETED", amount: "24.12", currency: "USD", requested_at: "2026-10-19T07:55:04Z",
+      completed_at: "2026-10-19T08:28:04Z", duration_seconds: 1980, broker_reference_id: "ref", reference_correlated: true,
+      ...over };
+  }
+
+  it("scopes BOTH metrics and history to the selected account id", async () => {
+    const calls: string[] = [];
+    api.apiFetch.mockImplementation((url: unknown) => {
+      const u = String(url); calls.push(u);
+      if (u.startsWith(METRICS)) return Promise.resolve(metrics());
+      if (u.startsWith(HISTORY)) return Promise.resolve(history());
+      return Promise.reject(new Error("x"));
+    });
+    render(<WithdrawalIntelligenceSection scope="49" />);
+    await screen.findByTestId("withdrawal-intelligence-section");
+    expect(calls.some((u) => u.startsWith(METRICS) && u.includes("account_id=49"))).toBe(true);
+    expect(calls.some((u) => u.startsWith(HISTORY) && u.includes("account_id=49"))).toBe(true);
+  });
+
+  it("owner-wide (ALL) sends NO account_id", async () => {
+    const calls: string[] = [];
+    api.apiFetch.mockImplementation((url: unknown) => {
+      const u = String(url); calls.push(u);
+      if (u.startsWith(METRICS)) return Promise.resolve(metrics());
+      if (u.startsWith(HISTORY)) return Promise.resolve(history());
+      return Promise.reject(new Error("x"));
+    });
+    render(<WithdrawalIntelligenceSection scope="ALL" />);
+    await screen.findByTestId("withdrawal-intelligence-section");
+    expect(calls.every((u) => !u.includes("account_id="))).toBe(true);
+  });
+
+  it("selected account with no withdrawals shows the SCOPED empty message, not owner-wide data (EN)", async () => {
+    route(emptyMetrics(), history({ withdrawals: [], brokers: [], accounts: [] }));
+    render(<WithdrawalIntelligenceSection scope="49" />);
+    const section = await screen.findByTestId("withdrawal-intelligence-section");
+    expect(within(section).getByTestId("wi-section-empty").textContent).toMatch(/No withdrawals observed for this account\./);
+    expect(within(section).queryByTestId("history-row")).toBeNull();
+  });
+
+  it("scoped empty message is localized (JA)", async () => {
+    route(emptyMetrics(), history({ withdrawals: [], brokers: [], accounts: [] }));
+    render(<WithdrawalIntelligenceSection scope="49" lang="ja" />);
+    const section = await screen.findByTestId("withdrawal-intelligence-section");
+    expect(within(section).getByTestId("wi-section-empty").textContent).toMatch(/この口座で観測された出金はありません。/);
+  });
+
+  it("owner-wide empty keeps the GENERIC message (distinct from the scoped one)", async () => {
+    route(emptyMetrics(), history({ withdrawals: [], brokers: [], accounts: [] }));
+    render(<WithdrawalIntelligenceSection scope="ALL" />);
+    const section = await screen.findByTestId("withdrawal-intelligence-section");
+    const t = within(section).getByTestId("wi-section-empty").textContent || "";
+    expect(t).toMatch(/No withdrawals observed yet/);
+    expect(t).not.toMatch(/for this account/);
+  });
+
+  it("recovers after a TRANSIENT error on one scope: a later successful scope still renders (hidden latch not global)", async () => {
+    api.apiFetch.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.startsWith(METRICS)) {
+        if (u.includes("account_id=46")) return Promise.reject(new Error("transient 500"));   // scope 46 errors
+        return Promise.resolve(metrics());                                                     // ALL succeeds
+      }
+      if (u.startsWith(HISTORY)) return Promise.resolve(history());
+      return Promise.reject(new Error("x"));
+    });
+    const { rerender } = render(<WithdrawalIntelligenceSection scope="46" />);   // transient error -> section hidden
+    await waitFor(() => expect(api.apiFetch).toHaveBeenCalled());
+    expect(screen.queryByTestId("withdrawal-intelligence-section")).toBeNull();
+    rerender(<WithdrawalIntelligenceSection scope="ALL" />);                      // switch to a healthy scope
+    // Must RECOVER — the DARK/error latch is per scope-load, so the earlier transient failure does not hide ALL.
+    await screen.findByTestId("withdrawal-intelligence-section");
+  });
+
+  it("never renders a stale earlier-scope response after a rapid scope change (ALL -> 49)", async () => {
+    let resolveAll: () => void = () => {};
+    api.apiFetch.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.startsWith(METRICS)) {
+        if (u.includes("account_id=49")) return Promise.resolve(metrics({ completed_amount_by_currency: { USD: "200.00" } }));
+        return new Promise((res) => { resolveAll = () => res(metrics({ completed_amount_by_currency: { USD: "24.12" } })); });
+      }
+      if (u.startsWith(HISTORY)) {
+        return Promise.resolve(u.includes("account_id=49")
+          ? history({ withdrawals: [row({ amount: "200.00", broker_reference_id: "w49" })] })
+          : history({ withdrawals: [row({ amount: "24.12", broker_reference_id: "all1" })] }));
+      }
+      return Promise.reject(new Error("x"));
+    });
+    const { rerender } = render(<WithdrawalIntelligenceSection scope="ALL" />);   // ALL metrics stays pending
+    rerender(<WithdrawalIntelligenceSection scope="49" />);                        // switch before ALL resolves
+    const section = await screen.findByTestId("withdrawal-intelligence-section");
+    await waitFor(() => expect(section.textContent).toMatch(/200\.00 USD/));       // the latest scope (49) renders
+    resolveAll();                                                                  // the stale ALL response arrives late
+    await new Promise((r) => setTimeout(r, 25));
+    expect(section.textContent).not.toMatch(/24\.12 USD/);                         // ...and is NEVER rendered
+    expect(section.textContent).toMatch(/200\.00 USD/);
   });
 });

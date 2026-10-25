@@ -128,8 +128,39 @@ def _acquire_owner_mailbox_lock(user_id: int) -> None:
         cur.execute("SELECT pg_advisory_xact_lock(%s)", [_mailbox_lock_key(user_id)])
 
 
+# Sentinel ``trading_account_id`` that cannot match any real account (FK ids are positive). Used to FAIL CLOSED: a
+# specific-account scope naming a malformed / foreign / not-owned id must return an EMPTY scoped result — never
+# owner-wide, and never leaking whether the id exists — so it is scoped to this non-existent account.
+_UNMATCHABLE_ACCOUNT_ID = 0
+
+
+def _scoped_account_id(request, owned_ids):
+    """Resolve the optional ``?account_id`` for an account-scoped withdrawal query (the dashboard account selector).
+
+    Returns one of:
+      * ``None`` — no account requested ⇒ OWNER-WIDE scope (includes the member's owner-attributed, account-UNRESOLVED
+        withdrawals).
+      * the integer id — an EXACT, OWNED trading-account id ⇒ that account's scope (UNRESOLVED and other-account rows
+        are excluded by the ``trading_account_id`` filter downstream).
+      * ``_UNMATCHABLE_ACCOUNT_ID`` — an account WAS requested but the id is malformed / foreign / not owned ⇒ a
+        SPECIFIC scope that FAILS CLOSED (matches nothing, excludes UNRESOLVED) and never leaks whether the id exists.
+
+    Ownership is validated EXPLICITLY here against the member's own account ids (the raw id is never trusted), on top of
+    the owner-scoped query's own intersection firewall downstream (defence in depth). A specific-account scope therefore
+    NEVER falls back to owner-wide results."""
+    raw = request.query_params.get("account_id")
+    if raw in (None, ""):
+        return None
+    try:
+        aid = int(raw)
+    except (TypeError, ValueError):
+        return _UNMATCHABLE_ACCOUNT_ID
+    return aid if aid in owned_ids else _UNMATCHABLE_ACCOUNT_ID
+
+
 class WithdrawalMetricsView(APIView):
-    """GET /api/broker-intelligence/withdrawals/metrics/ — the member's own withdrawal statistics."""
+    """GET /api/broker-intelligence/withdrawals/metrics/?account_id= — the member's own withdrawal statistics, OWNER-WIDE
+    by default or scoped to ONE of the member's own accounts (the dashboard account selector)."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -141,11 +172,14 @@ class WithdrawalMetricsView(APIView):
         # and must not silently vanish from their totals (truthfulness/completeness). Unlike the live-portfolio
         # dashboard (which excludes disconnected accounts because their LIVE balance is gone), this is a historical
         # record. Still strictly owner-scoped (user=request.user) with no staff bypass — never another member's data.
-        accounts = TradingAccount.objects.filter(user=request.user)
-        # owner=request.user ALSO includes the member's owner-attributed, account-UNRESOLVED withdrawals (ADR-0050) —
-        # a withdrawal whose broker account is not registered in GuvFX is still the member's own history.
+        accounts = list(TradingAccount.objects.filter(user=request.user))
+        owned_ids = {a.id for a in accounts}
+        # account_id None -> owner-wide (owner=request.user ALSO includes the member's owner-attributed,
+        # account-UNRESOLVED withdrawals, ADR-0050); a specific owned id -> that account only (UNRESOLVED excluded);
+        # a malformed/foreign id -> fails closed (empty), never owner-wide.
+        account_id = _scoped_account_id(request, owned_ids)
         # include_demonstration is OFF in prod (GENUINE-only); ON only in an isolated demo env (labelled synthetic).
-        return Response(withdrawal_metrics(accounts, owner=request.user,
+        return Response(withdrawal_metrics(accounts, owner=request.user, account_id=account_id,
                                            include_demonstration=broker_withdrawal_demo_include_synthetic()))
 
 
@@ -160,14 +194,16 @@ class WithdrawalHistoryView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         from trading.models import TradingAccount
         # Owner-scoped (user=request.user), INCLUDING disconnected accounts — a past withdrawal is durable history.
-        accounts = TradingAccount.objects.filter(user=request.user)
+        accounts = list(TradingAccount.objects.filter(user=request.user))
+        owned_ids = {a.id for a in accounts}
         broker = str(request.query_params.get("broker", "") or "").strip()
-        acct_id = request.query_params.get("account_id") or None
-        # A member can only ever filter to ONE OF THEIR OWN accounts: the id is intersected with their own account
-        # set below in withdrawal_history (ids come from `accounts`), so a foreign account_id yields nothing.
-        # owner=request.user ALSO includes the member's owner-attributed, account-UNRESOLVED withdrawals (ADR-0050).
+        # A member can only ever filter to ONE OF THEIR OWN accounts: _scoped_account_id validates ownership explicitly
+        # (malformed/foreign -> a non-existent account id, fail-closed/empty), and withdrawal_history additionally
+        # intersects the id with the member's own account set. A specific account excludes owner-attributed
+        # account-UNRESOLVED rows (trading_account NULL); owner-wide (no id) INCLUDES them (ADR-0050).
+        account_id = _scoped_account_id(request, owned_ids)
         # include_demonstration is OFF in prod (GENUINE-only); ON only in an isolated demo env (labelled synthetic).
-        return Response(withdrawal_history(accounts, broker=broker, account_id=acct_id, owner=request.user,
+        return Response(withdrawal_history(accounts, broker=broker, account_id=account_id, owner=request.user,
                                            include_demonstration=broker_withdrawal_demo_include_synthetic()))
 
 
