@@ -160,15 +160,30 @@ export const CopyTradingContent: React.FC<{
     return () => { active = false; };
   }, [accountId, initialData]);
 
-  if (!loaded) return <p style={{ color: "#9db6d6" }}>{STR.loading[L]}</p>;
-
   const panel: React.CSSProperties = {
     marginTop: 18, border: "1px solid rgba(74,179,255,0.15)", borderRadius: 12,
     padding: "1.25rem 1.5rem", background: "rgba(255,255,255,0.02)",
   };
 
+  // Permanent safety banner — the copier is observe/shadow only; no execution authority is reachable
+  // from this UI. Kept as a fixed English label (matches the backend `banner` field) so it is always
+  // unambiguous. Rendered on EVERY state including the pre-data loading frame (enabled, disabled,
+  // not-configured, error, loading) so the SHADOW — EXECUTION OFF guarantee is never absent.
+  const shadowBanner = data?.banner || "SHADOW — EXECUTION OFF";
+  const bannerEl = (
+    <div data-testid="copier-shadow-banner"
+         style={{ border: "1px solid rgba(239,68,68,0.45)", background: "rgba(239,68,68,0.10)", borderRadius: 10,
+                  padding: "0.55rem 0.9rem", marginBottom: "0.9rem", color: "#fca5a5", fontWeight: 700,
+                  letterSpacing: 0.4, fontSize: "0.85rem" }}>
+      {shadowBanner}
+    </div>
+  );
+
+  if (!loaded) return <div style={panel}>{bannerEl}<p style={{ color: "#9db6d6", margin: 0 }}>{STR.loading[L]}</p></div>;
+
   return (
     <div style={panel}>
+      {bannerEl}
       <h3 style={{ margin: "0 0 0.35rem", fontSize: "1.15rem" }}>{STR.title[L]}</h3>
       <p style={{ color: "#9db6d6", margin: "0 0 0.25rem", fontSize: "0.9rem", lineHeight: 1.5 }}>{STR.intro[L]}</p>
       <p style={{ color: "#6f86a6", margin: "0 0 1rem", fontSize: "0.8rem", fontStyle: "italic" }}>{STR.configNote[L]}</p>

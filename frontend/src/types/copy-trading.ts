@@ -79,9 +79,19 @@ export interface CopyTradingLimitations {
 
 export interface CopyTradingOverview {
   enabled: boolean;
+  banner?: string;
   master: CopyTradingMaster | null;
   followers: CopyTradingFollower[];
   recent_events: CopyTradingEvent[];
   recent_replications: CopyTradingReplication[];
+  limitations: CopyTradingLimitations;
+}
+
+// GET /api/copy-trading/status/ — per-user visibility probe. `enabled` reflects the founder/operator
+// cohort gate for the calling user (default-DENY). `banner` is the permanent SHADOW — EXECUTION OFF text.
+export interface CopyTradingStatus {
+  enabled: boolean;
+  banner: string;
+  execution: string;
   limitations: CopyTradingLimitations;
 }
