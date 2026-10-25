@@ -95,3 +95,60 @@ export interface CopyTradingStatus {
   execution: string;
   limitations: CopyTradingLimitations;
 }
+
+// GET/POST /api/copy-trading/config/ — founder-only SHADOW configuration (owner-scoped, audited, idempotent).
+export interface EligibleAccount {
+  account_id: number;
+  name: string;
+  broker: string;
+  environment: "demo" | "live" | "unknown";
+  masked_login: string;
+  currency: string | null;
+  monitoring_state: "monitored" | "stale" | "no_data";
+  data_age_seconds: number | null;
+  ready: boolean;
+}
+
+export interface ConfigPair {
+  follower_account_id: number;
+  enabled: boolean;
+  sizing_mode: string;
+  fixed_lot: string | null;
+  max_volume: string | null;
+  max_concurrent_positions: number | null;
+  instrument_map_ready: boolean;
+  instrument_maps: Array<{ master_symbol?: string; follower_symbol?: string; verified?: boolean; identity?: boolean; note?: string }>;
+  observer_last_observed_at: string | null;
+  last_observed_event: { event_type: string; symbol: string; observed_at: string } | null;
+  supported_risk_controls: string[];
+  unavailable_risk_metadata: string[];
+  live_execution_blocked: boolean;
+}
+
+export interface CurrentConfig {
+  master_account_id: number;
+  observe_enabled: boolean;
+  followers: ConfigPair[];
+}
+
+export interface CopyTradingConfig {
+  enabled: boolean;
+  banner: string;
+  execution?: string;
+  explain?: string;
+  eligible_accounts?: EligibleAccount[];
+  config?: CurrentConfig | null;
+}
+
+export interface CopyTradingConfigWrite {
+  master_account_id: number;
+  followers: Array<{ account_id: number; sizing_mode?: string; fixed_lot?: string; max_volume?: string; max_concurrent_positions?: number }>;
+}
+
+export interface CopyTradingConfigSaveResult {
+  ok: boolean;
+  banner: string;
+  execution: string;
+  audit: { created: number[]; updated: number[]; enabled: number[]; disabled: number[] };
+  config: CurrentConfig | null;
+}
