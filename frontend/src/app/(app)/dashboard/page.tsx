@@ -844,16 +844,22 @@ export default function DashboardPage() {
               <i className={`ti ti-${trend.icon}`} aria-hidden="true" style={{ marginRight: 5 }} />{trend.label}
             </div>
             <div style={{ fontSize: "0.68rem", color: "#64748b", marginTop: 2, whiteSpace: "nowrap" }}>
-              {netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, snap.currency), snap.totalTrades ?? undefined)
-                : summaryFailed ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load")
-                : snap.loaded ? "No observed trades yet" : "Loading…"}
+              {/* Single realized-performance explanation: when there are zero closed-trade round-trips the realized
+                  stats have no dataset — say so once here, never a measured $0 under each metric. */}
+              {summaryFailed ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load")
+                : !snap.loaded ? "Loading…"
+                : !hasHistory ? (lang === "ja" ? "確定済み取引の履歴はまだありません" : "No closed-trade history yet")
+                : netPnl != null ? observedPnlSummary(lang, money(lang, netPnl, snap.currency), snap.totalTrades ?? undefined)
+                : (lang === "ja" ? "データなし" : "No data")}
             </div>
           </div>
 
           {/* Secondary metrics — dense strip */}
           <div style={{ flex: 1, minWidth: 300, display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
-            <MetricTile label="Net PnL" value={<span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, snap.currency)}</span>} sub={pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined} />
-            <MetricTile label="Win Rate" value={!hasHistory ? "N/A" : snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={hasHistory && (snap.wins != null || snap.losses != null) ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : hasHistory ? undefined : "Insufficient history"} subColor={wrLabel?.c} />
+            {/* Net PnL is REALIZED closed-trade P/L. With zero round-trips it has no dataset -> "N/A", never a
+                measured $0 (a genuine 0 is preserved once trades close, i.e. hasHistory). */}
+            <MetricTile label="Net PnL" value={!hasHistory ? "N/A" : <span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, snap.currency)}</span>} sub={!hasHistory ? undefined : (pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined)} />
+            <MetricTile label="Win Rate" value={!hasHistory ? "N/A" : snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={hasHistory && (snap.wins != null || snap.losses != null) ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
             <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={!hasHistory ? "N/A" : snap.profitFactor == null ? "—" : snap.profitFactor === Infinity ? "∞" : snap.profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
             <MetricTile label="Max Drawdown" value={!hasHistory ? "N/A" : snap.ddPct != null ? `${snap.ddPct}%` : snap.ddMoney != null ? money(lang, snap.ddMoney, snap.currency) : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
             <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={!hasHistory ? "N/A" : snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, snap.expMoney, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
@@ -861,7 +867,15 @@ export default function DashboardPage() {
 
           {/* Equity curve — compact context (per-account observed series; the portfolio view has no single curve) */}
           <div style={{ width: 250, minWidth: 200, paddingLeft: "1.4rem", borderLeft: "1px solid rgba(255,255,255,0.045)" }}>
-            <div style={{ ...microLabel, fontSize: "0.64rem", marginBottom: 4 }}>Equity Curve (Observed)</div>
+            <div style={{ ...microLabel, fontSize: "0.64rem", marginBottom: 2 }}
+                 title={lang === "ja"
+                   ? "観測された口座エクイティ（残高＋変動損益）。確定済みのトレード成績ではありません。"
+                   : "Observed account equity (balance + floating P/L). Not a realized-performance trend."}>
+              {lang === "ja" ? "エクイティ推移（観測）" : "Equity Curve (Observed)"}
+            </div>
+            <div style={{ fontSize: "0.58rem", color: "#64748b", marginBottom: 4, whiteSpace: "nowrap" }}>
+              {lang === "ja" ? "残高＋変動（観測）" : "balance + floating (observed)"}
+            </div>
             {curveValues.length > 1
               ? <Sparkline values={curveValues} color={trend.color} w={230} h={42} />
               : (!isAll && snap.series.length > 1)
