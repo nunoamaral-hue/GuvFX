@@ -140,9 +140,15 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None, owner=Non
     }
 
 
-def withdrawal_metrics(accounts, *, owner=None, include_demonstration: bool = False) -> dict:
+def withdrawal_metrics(accounts, *, owner=None, account_id=None, include_demonstration: bool = False) -> dict:
     """Withdrawal statistics for ``accounts`` (an iterable of TradingAccount or ids) PLUS, when ``owner`` is given,
     the member's OWNER-attributed account-UNRESOLVED withdrawals (ADR-0050). Read-only; never fabricates.
+
+    SCOPE (dashboard account selector): with ``account_id`` None the scope is OWNER-WIDE and INCLUDES the member's
+    owner-attributed UNRESOLVED withdrawals. With a specific ``account_id`` the scope is that ONE account only — an
+    EXACT ``trading_account_id`` match, which excludes owner-attributed UNRESOLVED rows (``trading_account`` NULL) and
+    rows resolved to ANOTHER account, and never infers association from broker name. The caller passes only an
+    owner-validated id (a foreign/not-owned id additionally intersects to empty here — defence in depth).
 
     GENUINE-ONLY (§507): EVERY member-facing figure — total, counts, per-currency amounts, processing duration — is
     computed over REAL broker observations ONLY. Synthetic/sanitised fixture or test records are EXCLUDED so they can
@@ -150,7 +156,11 @@ def withdrawal_metrics(accounts, *, owner=None, include_demonstration: bool = Fa
     number excluded is reported as ``excluded_non_genuine_count`` (for operator transparency), but they contribute to
     NO statistic."""
     ids = [getattr(a, "id", a) for a in accounts]
-    all_rows = list(Withdrawal.objects.filter(_owner_scoped_q(ids, owner)))
+    scoped = Withdrawal.objects.filter(_owner_scoped_q(ids, owner))
+    if account_id not in (None, ""):
+        # Specific-account scope: EXACT verified trading_account_id only (excludes UNRESOLVED + other-account rows).
+        scoped = scoped.filter(trading_account_id=account_id)
+    all_rows = list(scoped)
     # GENUINE-only by default. DEMO-only include_demonstration ALSO counts synthetic/sanitised rows (flagged via the
     # ``demonstration`` field below) — set ONLY in an isolated demo env, never prod.
     rows = all_rows if include_demonstration else [w for w in all_rows if w.provenance == Provenance.REAL]

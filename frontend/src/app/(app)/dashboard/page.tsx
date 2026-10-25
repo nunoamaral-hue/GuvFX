@@ -966,10 +966,11 @@ export default function DashboardPage() {
 
       {/* Withdrawal Intelligence (WP6/PR2) — ONE cohesive, corporate section: compact summary + observed processing
           speed (left) and recent withdrawal history (right), with "View all" to the full /withdrawal-intelligence
-          page. Self-hides (renders null) while the feature is DARK (metrics endpoint 404 until
-          BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
+          page. FOLLOWS the top-level portfolio scope selector (ALL -> owner-wide incl. unresolved; a specific account
+          -> only that account's verified withdrawals, unresolved excluded). Self-hides (renders null) while the feature
+          is DARK (metrics endpoint 404 until BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
       <div style={{ marginBottom: "0.9rem" }}>
-        <WithdrawalIntelligenceSection lang={lang} />
+        <WithdrawalIntelligenceSection lang={lang} scope={scope} />
       </div>
 
       {/* Intelligence Row — Radar (all markets, hero) · Key Events (selected) · Research Evidence (selected) */}
