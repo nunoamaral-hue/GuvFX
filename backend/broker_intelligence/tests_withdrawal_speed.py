@@ -232,19 +232,18 @@ class WithdrawalSpeedProjection(TestCase):
         self.assertEqual(v["headline"]["reference_count"], 1)
         self.assertEqual(v["headline"]["heuristic_count"], 1)
 
-    def test_observed_timing_completion_excluded_from_headline_but_disclosed(self):
-        """P1 fix: a completion whose time is only OBSERVED (the completion event carried no broker-stated occurred_at,
-        so completed_at fell back to the ingestion time) could be inflated by a backfill/outage lag — so it is NEVER
-        charted or averaged; it is disclosed by count. A broker-stated completion in the same set still counts."""
+    def test_email_date_timed_completion_is_a_valid_sample(self):
+        """A completion whose completion event carries no in-body ``occurred_at`` is STILL a valid speed sample: its
+        duration is the observed interval between the broker's two notification emails (their Date headers). Both a
+        'broker_stated' and an email-Date-timed completion count — neither is wrongly excluded (corrects the earlier
+        over-aggressive observed-timing exclusion, which assumed received_at was an ingestion clock)."""
         a = _acct()
-        _completed(a, 30, ref="c1", broker_stated=True)    # charted + averaged
-        _completed(a, 99999, ref="c2", broker_stated=False)  # observed-only → excluded from headline/series
+        _completed(a, 30, ref="c1", broker_stated=True)
+        _completed(a, 60, ref="c2", broker_stated=False)   # email-Date-timed (no event occurred_at) — still a sample
         v = withdrawal_speed([a])
-        self.assertEqual(v["summary"]["completed_with_duration_count"], 1)   # only the broker-stated one
-        self.assertEqual(v["summary"]["observed_timing_count"], 1)           # the other is disclosed, not charted
-        self.assertEqual(len(v["series"]), 1)
-        self.assertEqual(v["series"][0]["duration_seconds"], 30)             # the 99999 never enters the chart
-        self.assertEqual(v["headline"]["median_seconds"], 30)               # not inflated by the observed-timing row
+        self.assertEqual(v["summary"]["completed_with_duration_count"], 2)
+        self.assertEqual(len(v["series"]), 2)
+        self.assertEqual(sorted(r["duration_seconds"] for r in v["series"]), [30, 60])
 
     def test_future_requested_at_elapsed_is_unavailable_not_zero(self):
         """P3 fix: a pending withdrawal whose requested_at is in the FUTURE (clock skew / mis-parsed time) yields a

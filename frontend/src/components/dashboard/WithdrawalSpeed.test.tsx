@@ -29,7 +29,7 @@ function speed(over: Partial<Speed> = {}): Speed {
     summary: { total: 4, in_progress_count: 1, completed_count: 3, completed_with_duration_count: 3, failed_count: 0,
                unresolved_count: 0, median_seconds: 3600, average_seconds: 4200, fastest_seconds: 1800,
                slowest_seconds: 7200, coverage: { measured: 3, completed: 3 }, quarantined_impossible_count: 0,
-               observed_timing_count: 0, untimed_count: 0 },
+               untimed_count: 0 },
     series: [point({ withdrawal_id: 1, duration_seconds: 1800 }),
              point({ withdrawal_id: 2, duration_seconds: 3600 }),
              point({ withdrawal_id: 3, duration_seconds: 7200, broker: "IS6", match_basis: "heuristic" })],
@@ -136,13 +136,12 @@ describe("WithdrawalSpeed", () => {
     expect(await screen.findByTestId("speed-heuristic")).toHaveTextContent("1");
   });
 
-  it("discloses observed-timing and untimed completed withdrawals (not charted, not zeroed)", async () => {
+  it("discloses untimed completed withdrawals (not charted, not zeroed)", async () => {
     api.apiFetch.mockResolvedValue(speed({
-      summary: { ...speed().summary, observed_timing_count: 2, untimed_count: 3 },
+      summary: { ...speed().summary, untimed_count: 3 },
     }));
     render(<WithdrawalSpeed />);
-    expect(await screen.findByTestId("speed-observed-timing")).toHaveTextContent("2");
-    expect(screen.getByTestId("speed-untimed")).toHaveTextContent("3");
+    expect(await screen.findByTestId("speed-untimed")).toHaveTextContent("3");
   });
 
   it("renders completion timestamps in UTC (not viewer-local)", async () => {

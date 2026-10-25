@@ -100,7 +100,6 @@ export type SpeedSummary = {
   slowest_seconds: number | null;
   coverage: { measured: number; completed: number };
   quarantined_impossible_count: number;
-  observed_timing_count: number;   // completed, but completion time only observed (ingestion) — not charted/averaged
   untimed_count: number;           // completed, but missing a request/completion anchor — never zeroed
 };
 
