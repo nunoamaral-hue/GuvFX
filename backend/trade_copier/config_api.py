@@ -151,8 +151,12 @@ class CopyTradingConfigView(APIView):
                 d = Decimal(str(v))
             except (InvalidOperation, ValueError, TypeError):
                 raise ValueError(f"{name} must be a number")
+            if not d.is_finite():                       # reject NaN / Infinity (Decimal() accepts them)
+                raise ValueError(f"{name} must be a finite number")
             if d <= lo:
                 raise ValueError(f"{name} must be > {lo}")
+            if d > Decimal("1000"):                     # sane upper bound (also prevents numeric(12,3) overflow)
+                raise ValueError(f"{name} is unreasonably large (max 1000)")
             return d
         fl = _dec("fixed_lot", Decimal("0"))
         mv = _dec("max_volume", Decimal("0"))
@@ -172,6 +176,8 @@ class CopyTradingConfigView(APIView):
                 raise ValueError("max_concurrent_positions must be an integer")
             if mcp < 1:
                 raise ValueError("max_concurrent_positions must be >= 1")
+            if mcp > 1000:                              # sane upper bound (prevents int overflow)
+                raise ValueError("max_concurrent_positions is unreasonably large (max 1000)")
             cfg["max_concurrent_positions"] = mcp
         return cfg
 
@@ -211,8 +217,22 @@ class CopyTradingConfigView(APIView):
                 return Response({"detail": str(e)}, status=400)
             desired[fid] = (facct, cfg)
 
-        audit = {"created": [], "updated": [], "enabled": [], "disabled": []}
+        audit = {"created": [], "updated": [], "enabled": [], "disabled": [], "demoted_masters": []}
         with transaction.atomic():
+            # Enforce exactly ONE active master per owner. Demote every OTHER CopierMaster this owner has (stop
+            # observing + disable its enabled followers) so a master switch can never leave a stale/invisible
+            # master or a circular SHADOW config (A↔B) behind. This also breaks the case where the new master was
+            # itself an enabled follower elsewhere: that other master is demoted and its follower rows disabled.
+            for om in (CopierMaster.objects.select_for_update()
+                       .filter(trading_account__user=request.user)
+                       .exclude(trading_account_id=master_acct.id)):
+                for of in om.followers.select_for_update().filter(enabled=True):
+                    services.set_follower_enabled(of, False, actor=request.user)
+                    audit["disabled"].append(of.follower_account_id)
+                if om.observe_enabled:
+                    om.observe_enabled = False
+                    om.save(update_fields=["observe_enabled", "updated_at"])
+                    audit["demoted_masters"].append(om.trading_account_id)
             master, _created = CopierMaster.objects.select_for_update().get_or_create(
                 trading_account=master_acct, defaults={"observe_enabled": True})
             if not master.observe_enabled:

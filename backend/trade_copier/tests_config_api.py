@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
+from execution.models import ExecutionJob
 from trade_copier import flags as cf
 from trade_copier.models import CopierFollower, CopierFollowerAudit, CopierMaster
 from trading.models import BrokerServer, TradingAccount
@@ -110,7 +111,8 @@ class ConfigApiTests(APITestCase):
         n_audit = CopierFollowerAudit.objects.count()
         r2 = self._post(body)   # replay
         self.assertEqual(r2.status_code, 200)
-        self.assertEqual(r2.data["audit"], {"created": [], "updated": [], "enabled": [], "disabled": []})
+        self.assertEqual(r2.data["audit"],
+                         {"created": [], "updated": [], "enabled": [], "disabled": [], "demoted_masters": []})
         self.assertEqual(CopierFollowerAudit.objects.count(), n_audit)   # no new audit rows on replay
 
     @override_settings(**COHORT)
@@ -125,9 +127,46 @@ class ConfigApiTests(APITestCase):
 
     @override_settings(**COHORT)
     def test_save_never_enables_execution(self):
-        self._post({"master_account_id": self.master.id,
-                    "followers": [{"account_id": self.foll.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
-        # The config write touches no execution seam: all execute flags remain OFF.
+        jobs_before = ExecutionJob.objects.count()
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.foll.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        self.assertEqual(r.status_code, 200)
+        # No execution seam is touched: flags stay OFF AND — the discriminating part — NO ExecutionJob is created
+        # by a config save (a follower is SHADOW-enabled only).
         self.assertFalse(cf.copier_execute_enabled())
         self.assertFalse(cf.copier_execute_demo_armed())
         self.assertFalse(cf.copier_enabled())
+        self.assertEqual(ExecutionJob.objects.count(), jobs_before)   # zero jobs produced
+
+    @override_settings(**COHORT)
+    def test_foreign_master_not_found_no_leak(self):
+        r = self._post({"master_account_id": self.foreign.id, "followers": [{"account_id": self.foll.id}]})
+        self.assertEqual(r.status_code, 404)
+
+    @override_settings(**COHORT)
+    def test_nan_infinity_and_huge_sizing_rejected_400(self):
+        for bad in ("NaN", "Infinity", "1e30"):
+            r = self._post({"master_account_id": self.master.id,
+                            "followers": [{"account_id": self.foll.id, "sizing_mode": "FIXED_LOT", "fixed_lot": bad}]})
+            self.assertEqual(r.status_code, 400, f"{bad} should be a clean 400, not a 500")
+        r2 = self._post({"master_account_id": self.master.id,
+                         "followers": [{"account_id": self.foll.id, "sizing_mode": "FIXED_LOT",
+                                        "fixed_lot": "0.01", "max_concurrent_positions": 2147483648}]})
+        self.assertEqual(r2.status_code, 400)
+
+    @override_settings(**COHORT)
+    def test_single_master_enforced_on_switch_breaks_stale_and_circular(self):
+        # First designate master A(=self.master) -> follower B(=foll2). Then switch to master B -> follower A.
+        self._post({"master_account_id": self.master.id,
+                    "followers": [{"account_id": self.foll2.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        r = self._post({"master_account_id": self.foll2.id,
+                        "followers": [{"account_id": self.master.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(self.master.id, r.data["audit"]["demoted_masters"])
+        # Old master A is demoted (no longer observing) and its follower B is disabled — no stale/circular config.
+        self.assertFalse(CopierMaster.objects.get(trading_account=self.master).observe_enabled)
+        old_follow = CopierFollower.objects.get(master__trading_account=self.master, follower_account=self.foll2)
+        self.assertFalse(old_follow.enabled)
+        # Exactly one active master remains, and it is B.
+        self.assertEqual(CopierMaster.objects.filter(observe_enabled=True).count(), 1)
+        self.assertEqual(r.data["config"]["master_account_id"], self.foll2.id)
