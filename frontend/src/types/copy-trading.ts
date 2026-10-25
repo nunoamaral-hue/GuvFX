@@ -112,6 +112,7 @@ export interface EligibleAccount {
 export interface ConfigPair {
   follower_account_id: number;
   enabled: boolean;
+  follower_current?: boolean;
   sizing_mode: string;
   fixed_lot: string | null;
   max_volume: string | null;
@@ -128,6 +129,8 @@ export interface ConfigPair {
 export interface CurrentConfig {
   master_account_id: number;
   observe_enabled: boolean;
+  master_current?: boolean;
+  needs_operator_attention?: boolean;
   followers: ConfigPair[];
 }
 

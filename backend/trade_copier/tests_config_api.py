@@ -13,11 +13,14 @@ User = get_user_model()
 COHORT = dict(COPIER_UI_COHORT_ALLOWLIST="founder@guvfx.invalid")
 
 
-def _acct(user, name, num, *, demo=False, broker="TradersWay", server="Tradersway-Live"):
+def _acct(user, name, num, *, demo=False, broker="TradersWay", server="Tradersway-Live",
+          active=True, disconnected=False):
+    from django.utils import timezone
     bs, _ = BrokerServer.objects.get_or_create(server_name=server, defaults={"broker_display_name": broker,
                                                                              "environment": "live"})
     return TradingAccount.objects.create(user=user, name=name, broker_name=broker, account_number=num,
-                                         is_demo=demo, is_active=True, broker_server=bs)
+                                         is_demo=demo, is_active=active, broker_server=bs,
+                                         disconnected_at=(timezone.now() if disconnected else None))
 
 
 class ConfigApiTests(APITestCase):
@@ -170,3 +173,104 @@ class ConfigApiTests(APITestCase):
         # Exactly one active master remains, and it is B.
         self.assertEqual(CopierMaster.objects.filter(observe_enabled=True).count(), 1)
         self.assertEqual(r.data["config"]["master_account_id"], self.foll2.id)
+
+
+class EligibilityTests(APITestCase):
+    """Current-account eligibility: tombstones (disconnected) excluded; current accounts (incl. stopped/is_active=
+    False) offered; the predicate is disconnected_at-based, never is_active-based (prod current accounts are all
+    stopped). Applied consistently to GET eligibility + POST master/follower validation."""
+    def setUp(self):
+        self.user = User.objects.create_user(username="f2", email="f2@guvfx.invalid", password="x")
+        self.other = User.objects.create_user(username="o2", email="o2@x.invalid", password="x")
+        self.cur_active = _acct(self.user, "CurActive", "60001", active=True, server="S-a")
+        self.cur_stopped = _acct(self.user, "CurStopped", "60002", active=False, server="S-b")
+        self.disc = _acct(self.user, "Tomb", "60003", active=True, disconnected=True, server="S-c")
+        self.demo = _acct(self.user, "Demo", "60004", demo=True, server="S-d")
+        self.foreign = _acct(self.other, "Foreign", "60009", active=True, server="S-f")
+        self.client.force_authenticate(self.user)
+        self.url = "/api/copy-trading/config/"
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_get_offers_only_owner_current_live_accounts(self):
+        r = self.client.get(self.url)
+        ids = sorted(a["account_id"] for a in r.data["eligible_accounts"])
+        self.assertEqual(ids, sorted([self.cur_active.id, self.cur_stopped.id]))
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_current_stopped_account_is_eligible(self):
+        ids = {a["account_id"] for a in self.client.get(self.url).data["eligible_accounts"]}
+        self.assertIn(self.cur_stopped.id, ids)
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_disconnected_tombstone_excluded_even_if_active_true(self):
+        ids = {a["account_id"] for a in self.client.get(self.url).data["eligible_accounts"]}
+        self.assertNotIn(self.disc.id, ids)
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_post_rejects_disconnected_master(self):
+        r = self.client.post(self.url, {"master_account_id": self.disc.id,
+                                        "followers": [{"account_id": self.cur_active.id}]}, format="json")
+        self.assertEqual(r.status_code, 404)
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_post_rejects_disconnected_follower(self):
+        r = self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                        "followers": [{"account_id": self.disc.id, "sizing_mode": "FIXED_LOT",
+                                                       "fixed_lot": "0.01"}]}, format="json")
+        self.assertEqual(r.status_code, 404)
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_post_rejects_foreign_and_demo(self):
+        r1 = self.client.post(self.url, {"master_account_id": self.foreign.id,
+                                         "followers": [{"account_id": self.cur_active.id}]}, format="json")
+        self.assertEqual(r1.status_code, 404)
+        r2 = self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                         "followers": [{"account_id": self.demo.id}]}, format="json")
+        self.assertEqual(r2.status_code, 404)
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_config_flags_operator_attention_when_configured_account_later_disconnected(self):
+        from django.utils import timezone
+        self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                    "followers": [{"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT",
+                                                   "fixed_lot": "0.01"}]}, format="json")
+        self.cur_stopped.disconnected_at = timezone.now(); self.cur_stopped.save(update_fields=["disconnected_at"])
+        cfg = self.client.get(self.url).data["config"]
+        self.assertTrue(cfg["needs_operator_attention"])
+        fv = next(f for f in cfg["followers"] if f["follower_account_id"] == self.cur_stopped.id)
+        self.assertFalse(fv["follower_current"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_all_current_no_operator_attention(self):
+        # Negative control: when master + enabled follower are both current, the fail-safe flag is False.
+        self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                    "followers": [{"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT",
+                                                   "fixed_lot": "0.01"}]}, format="json")
+        cfg = self.client.get(self.url).data["config"]
+        self.assertFalse(cfg["needs_operator_attention"])
+        self.assertTrue(cfg["master_current"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_master_disconnected_flags_attention(self):
+        from django.utils import timezone
+        self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                    "followers": [{"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT",
+                                                   "fixed_lot": "0.01"}]}, format="json")
+        self.cur_active.disconnected_at = timezone.now(); self.cur_active.save(update_fields=["disconnected_at"])
+        cfg = self.client.get(self.url).data["config"]
+        self.assertTrue(cfg["needs_operator_attention"])
+        self.assertFalse(cfg["master_current"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_disabled_disconnected_follower_does_not_flag(self):
+        from django.utils import timezone
+        # Configure two followers, then de-select foll2 (disabled), then disconnect the DISABLED one.
+        self.foll2 = _acct(self.user, "F2", "60005", active=True, server="S-g")
+        self.client.post(self.url, {"master_account_id": self.cur_active.id, "followers": [
+            {"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"},
+            {"account_id": self.foll2.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]}, format="json")
+        self.client.post(self.url, {"master_account_id": self.cur_active.id, "followers": [
+            {"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]}, format="json")
+        self.foll2.disconnected_at = timezone.now(); self.foll2.save(update_fields=["disconnected_at"])
+        cfg = self.client.get(self.url).data["config"]
+        self.assertFalse(cfg["needs_operator_attention"])   # a DISABLED disconnected follower is not participating

@@ -55,10 +55,25 @@ def _freshness(account_id: int):
     return ("monitored" if age <= _FRESH_SECONDS else "stale"), int(age)
 
 
+def current_live_accounts(user):
+    """Authoritative 'current account' queryset for Copy Trading eligibility: the user's OWN, LIVE (non-demo),
+    NON-decommissioned accounts — the SAME tombstone-excluding predicate the Broker Accounts list
+    (``trading`` TradingAccount list action) and the dashboard portfolio (``analytics.portfolio.owned_accounts``)
+    use: ``disconnected_at IS NULL``. A disconnected row is RETAINED for audit/history but must NEVER be offered
+    as a current master or follower.
+
+    is_active is DELIBERATELY NOT filtered: the platform's current-account surfaces (/accounts, dashboard) do not
+    filter it — a *current* account that is merely stopped (``is_active=False``) still appears there and is a valid
+    SHADOW master/follower (observation is read-only; the tombstone is ``disconnected_at``, not ``is_active``). In
+    production every current support@ account (46/48/49) is ``is_active=False`` yet current; requiring
+    ``is_active=True`` would wrongly empty the eligible set and drop the live master→follower pair."""
+    return (TradingAccount.objects.filter(user=user, is_demo=False, disconnected_at__isnull=True)
+            .select_related("broker_server").order_by("id"))
+
+
 def _eligible_accounts(user):
-    """The caller's OWN live (non-demo), non-decommissioned accounts — the only accounts the page may offer."""
-    qs = (TradingAccount.objects.filter(user=user, is_demo=False)
-          .select_related("broker_server").order_by("id"))
+    """The caller's OWN current (LIVE, non-decommissioned) accounts — the only accounts the page may offer."""
+    qs = current_live_accounts(user)
     out = []
     for a in qs:
         state, age = _freshness(a.id)
@@ -89,6 +104,9 @@ def _pair_view(master, follower):
     return {
         "follower_account_id": follower.follower_account_id,
         "enabled": follower.enabled,
+        # A retained but now-disconnected follower is NOT current: surface it so the UI can disclose that operator
+        # attention is required, rather than silently dropping or substituting it.
+        "follower_current": follower.follower_account.disconnected_at is None,
         "sizing_mode": follower.sizing_mode,
         "fixed_lot": str(follower.fixed_lot) if follower.fixed_lot is not None else None,
         "max_volume": str(follower.max_volume) if follower.max_volume is not None else None,
@@ -111,10 +129,19 @@ def _current_config(user):
     if master is None:
         return None
     followers = list(master.followers.select_related("follower_account").order_by("id"))
+    master_current = master.trading_account.disconnected_at is None
+    follower_views = [_pair_view(master, f) for f in followers]
+    # Fail-safe disclosure (never silent substitution): if the configured master, or any ENABLED follower, has
+    # since been disconnected, the config references a now-ineligible account and needs operator attention. We
+    # still show the saved rows (no auto-delete/auto-substitute, no execution) — the UI raises the flag.
+    needs_attention = (not master_current) or any(
+        (not fv["follower_current"]) for fv, f in zip(follower_views, followers) if f.enabled)
     return {
         "master_account_id": master.trading_account_id,
         "observe_enabled": master.observe_enabled,
-        "followers": [_pair_view(master, f) for f in followers],
+        "master_current": master_current,
+        "needs_operator_attention": needs_attention,
+        "followers": follower_views,
     }
 
 
@@ -134,8 +161,10 @@ class CopyTradingConfigView(APIView):
         })
 
     def _owned_live(self, request, account_id):
-        """The caller's OWN live account by id, or None (never leak existence of a foreign/demo account)."""
-        return (TradingAccount.objects.filter(id=account_id, user=request.user, is_demo=False).first())
+        """The caller's OWN CURRENT (live, non-decommissioned) account by id, or None. A foreign / demo /
+        inactive-tombstone (disconnected) id returns None → the caller 404s, never leaking existence and never
+        accepting a historical/disconnected account as a master or follower (the eligibility safety fix)."""
+        return current_live_accounts(request.user).filter(id=account_id).first()
 
     def _parse_sizing(self, raw: dict):
         """Validate/coerce the SHADOW sizing subset (FIXED_LOT only here). Fail-closed on bad values."""

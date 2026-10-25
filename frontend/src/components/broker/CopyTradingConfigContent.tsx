@@ -46,6 +46,10 @@ const T = {
   unavailableMeta: { en: "Unavailable (not provided by the broker feed)", ja: "利用不可（ブローカーフィード未提供）" },
   needMaster: { en: "Select a master account.", ja: "マスター口座を選択してください。" },
   needFollower: { en: "Select at least one follower.", ja: "フォロワーを1つ以上選択してください。" },
+  operatorAttention: {
+    en: "Operator attention required: a saved account in this configuration is no longer current (disconnected). It is shown for review and has not been silently changed or removed; execution remains OFF.",
+    ja: "オペレーター対応が必要です：この設定に保存された口座が現在のものではなくなりました（切断済み）。確認のため表示しており、自動変更・削除は行っていません。実行はオフのままです。",
+  },
 } as const;
 
 const panel: React.CSSProperties = {
@@ -179,6 +183,14 @@ export const CopyTradingConfigContent: React.FC<{ lang?: Lang }> = ({ lang = "en
     <div style={{ padding: "1.5rem", maxWidth: 940 }}>
       <h2 style={{ margin: "0 0 0.8rem", fontSize: "1.3rem" }}>{T.title[L]}</h2>
       {Banner}
+
+      {data.config?.needs_operator_attention && (
+        <div data-testid="copier-config-attention" role="alert"
+             style={{ marginTop: 12, border: "1px solid rgba(251,191,36,0.5)", background: "rgba(251,191,36,0.10)",
+                      borderRadius: 10, padding: "0.7rem 0.95rem", color: "#fde68a", fontSize: "0.84rem", lineHeight: 1.5 }}>
+          ⚠ {T.operatorAttention[L]}
+        </div>
+      )}
 
       <div style={{ ...panel }}>
         <strong style={{ color: "#c2d5ff", fontSize: "0.9rem" }}>{T.explainTitle[L]}</strong>
