@@ -86,4 +86,21 @@ describe("WithdrawalsPanel", () => {
     expect(screen.queryByTestId("withdrawals-sample-caveat")).toBeNull();
     expect(screen.getByTestId("withdrawals-genuine-count").textContent).toMatch(/Genuine samples: 4/);
   });
+
+  it("embedded: uses injected metrics WITHOUT fetching, and renders the same facts under a Summary heading", async () => {
+    render(<WithdrawalsPanel embedded metrics={metrics()} />);
+    const panel = await screen.findByTestId("withdrawals-panel");
+    expect(api.apiFetch).not.toHaveBeenCalled();     // injected payload -> never self-fetches
+    expect(panel.textContent).toMatch(/Summary/);     // compact column heading (the section supplies the main title)
+    expect(panel.textContent).toMatch(/In progress/);
+    expect(panel.textContent).toMatch(/200\.00 USD/);
+    expect(panel.textContent).toMatch(/1 h|60 min/);
+  });
+
+  it("embedded: hides when the injected metrics is null (no fetch, no broken frame)", () => {
+    const { container } = render(<WithdrawalsPanel embedded metrics={null} />);
+    expect(api.apiFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("withdrawals-panel")).toBeNull();
+    expect(container.textContent).toBe("");
+  });
 });

@@ -40,6 +40,7 @@
   "src/components/broker/ValidationTimelinePanel.tsx",
   "src/components/dashboard/OpenTradesPanel.tsx",
   "src/components/dashboard/PortfolioScopeSelector.tsx",
+  "src/components/dashboard/WithdrawalIntelligenceSection.tsx",
   "src/components/dashboard/WithdrawalSpeed.tsx",
   "src/components/dashboard/WithdrawalsHistory.tsx",
   "src/components/dashboard/WithdrawalsPanel.tsx",
