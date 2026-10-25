@@ -57,6 +57,29 @@ def copier_ui_enabled() -> bool:
     return _flag("COPIER_UI_ENABLED")
 
 
+def copier_ui_cohort_allowlist() -> frozenset:
+    """Founder/operator COHORT allowlist for the read-only Copy Trading UI (default-DENY). Lowercased
+    emails parsed from ``COPIER_UI_COHORT_ALLOWLIST`` (comma-separated), settings-override-then-env.
+    Plain config, never a secret/token. Empty/unset ⇒ no user is in the cohort (UI dark for everyone)."""
+    raw = getattr(settings, "COPIER_UI_COHORT_ALLOWLIST", None)
+    if raw is None:
+        raw = os.getenv("COPIER_UI_COHORT_ALLOWLIST", "")
+    return frozenset(e.strip().lower() for e in str(raw).split(",") if e.strip())
+
+
+def copier_ui_enabled_for(user) -> bool:
+    """OWNER/FOUNDER-SCOPED gate for the read-only Copy Trading UI — the SOLE authorization boundary,
+    default-DENY. A user sees the monitoring UI ONLY when their email is in
+    ``copier_ui_cohort_allowlist()``. There is deliberately NO global-flag path: the legacy global
+    ``copier_ui_enabled()`` is NOT consulted here, so a global boolean can never expose the UI to the
+    whole member base (the broker_intelligence multi-mailbox idiom). An empty/unset allowlist therefore
+    denies everyone, and a missing/anonymous user is denied (fail-closed). This gate governs VISIBILITY of
+    read-only monitoring data only — it grants NO observation/replication/execution authority whatsoever."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    return (getattr(user, "email", "") or "").strip().lower() in copier_ui_cohort_allowlist()
+
+
 def copier_execute_enabled() -> bool:
     """Master gate for the B-exec DEMO ExecutionJob PRODUCER. DEFAULT OFF, ANDed with the master gate.
 

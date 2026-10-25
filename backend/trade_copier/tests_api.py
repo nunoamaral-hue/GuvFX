@@ -47,33 +47,57 @@ class CopyTradingApiTests(APITestCase):
             follower_symbol="XAUUSD", constraints_authoritative=False, sltp_translation_ok=True)
         self._overview = f"/api/copy-trading/accounts/{self.master_acct.id}/overview/"
 
-    def test_status_default_disabled(self):
+    def test_status_default_disabled_no_allowlist(self):
+        # Default-DENY: an empty/unset cohort allowlist denies everyone, even the owner.
         self.client.force_authenticate(self.user)
         r = self.client.get("/api/copy-trading/status/")
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.data["enabled"])
+        self.assertEqual(r.data["banner"], "SHADOW — EXECUTION OFF")   # banner present even when denied
 
-    @override_settings(COPIER_UI_ENABLED=True)
-    def test_status_enabled_with_flag(self):
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="o@x.invalid")
+    def test_status_enabled_for_cohort_member(self):
         self.client.force_authenticate(self.user)
         r = self.client.get("/api/copy-trading/status/")
         self.assertTrue(r.data["enabled"])
+        self.assertEqual(r.data["banner"], "SHADOW — EXECUTION OFF")
+        self.assertEqual(r.data["execution"], "off")
         self.assertEqual(r.data["limitations"]["live_follower_execution"], "blocked")
 
-    def test_overview_flag_off_reports_disabled_no_rows(self):
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="O@X.INVALID")
+    def test_cohort_match_is_case_insensitive(self):
+        self.client.force_authenticate(self.user)   # user email is o@x.invalid (lowercase)
+        r = self.client.get("/api/copy-trading/status/")
+        self.assertTrue(r.data["enabled"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="someone-else@x.invalid")
+    def test_non_cohort_owner_denied_even_though_owner(self):
+        # The owner of the master is STILL denied when not in the cohort (gate is the sole boundary).
         self.client.force_authenticate(self.user)
+        s = self.client.get("/api/copy-trading/status/")
+        self.assertFalse(s.data["enabled"])
+        r = self.client.get(self._overview)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["enabled"])      # fail-closed: no master/rows leaked despite ownership
+        self.assertIsNone(r.data["master"])
+        self.assertEqual(r.data["followers"], [])
+        self.assertEqual(r.data["banner"], "SHADOW — EXECUTION OFF")
+
+    def test_overview_non_cohort_reports_disabled_no_rows(self):
+        self.client.force_authenticate(self.user)   # no allowlist -> denied
         r = self.client.get(self._overview)
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.data["enabled"])
         self.assertIsNone(r.data["master"])
         self.assertEqual(r.data["followers"], [])
 
-    @override_settings(COPIER_UI_ENABLED=True)
-    def test_overview_owner_sees_full_dashboard(self):
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="o@x.invalid")
+    def test_overview_cohort_owner_sees_full_dashboard(self):
         self.client.force_authenticate(self.user)
         r = self.client.get(self._overview)
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.data["enabled"])
+        self.assertEqual(r.data["banner"], "SHADOW — EXECUTION OFF")
         self.assertEqual(r.data["master"]["account_id"], self.master_acct.id)
         self.assertEqual(len(r.data["followers"]), 1)
         self.assertEqual(len(r.data["recent_events"]), 1)
@@ -82,13 +106,14 @@ class CopyTradingApiTests(APITestCase):
         self.assertFalse(r.data["followers"][0]["live_execution_blocked"])  # demo follower
         self.assertEqual(r.data["limitations"]["live_follower_execution"], "blocked")
 
-    @override_settings(COPIER_UI_ENABLED=True)
-    def test_overview_other_user_gets_404_no_leak(self):
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="ot@x.invalid")
+    def test_overview_cohort_non_owner_gets_404_no_leak(self):
+        # A cohort member who does NOT own the account still gets 404 (owner scoping preserved).
         self.client.force_authenticate(self.other)
         r = self.client.get(self._overview)
         self.assertEqual(r.status_code, 404)
 
-    @override_settings(COPIER_UI_ENABLED=True)
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="o@x.invalid")
     def test_overview_owned_non_master_account_master_null(self):
         plain = TradingAccount.objects.create(
             user=self.user, name="p", broker_name="IS6", account_number="3000001",
@@ -101,12 +126,21 @@ class CopyTradingApiTests(APITestCase):
         self.assertTrue(r.data["enabled"])
         self.assertIsNone(r.data["master"])
 
-    @override_settings(COPIER_UI_ENABLED=True)
-    def test_masters_list_owner_scoped(self):
-        self.client.force_authenticate(self.other)
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="ot@x.invalid")
+    def test_masters_list_cohort_member_owner_scoped(self):
+        self.client.force_authenticate(self.other)   # in cohort, but owns no masters
         r = self.client.get("/api/copy-trading/masters/")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.data["masters"], [])   # other user owns no masters
+        self.assertTrue(r.data["enabled"])
+        self.assertEqual(r.data["banner"], "SHADOW — EXECUTION OFF")
+        self.assertEqual(r.data["masters"], [])
+
+    def test_masters_list_non_cohort_denied(self):
+        self.client.force_authenticate(self.user)   # no allowlist -> denied
+        r = self.client.get("/api/copy-trading/masters/")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data["enabled"])
+        self.assertEqual(r.data["masters"], [])
 
     def test_unauthenticated_rejected(self):
         r = self.client.get("/api/copy-trading/status/")

@@ -2,8 +2,9 @@
 
 Every queryset is scoped to the authenticated owner (staff bypass, mirroring trading.TradeViewSet);
 a non-owned account id returns 404 (existence is never leaked). Nothing here mutates or executes.
-Gated by ``copier_ui_enabled()``: when OFF the API reports ``enabled: false`` with no rows, so the
-feature stays dark in production until armed.
+Gated by the founder/operator COHORT gate ``copier_ui_enabled_for(request.user)`` (default-DENY,
+allow-list only): a non-cohort caller gets ``enabled: false`` with no rows (fail-closed, approved
+unavailable response), so the feature stays dark for everyone outside the allow-list.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from trade_copier.flags import copier_ui_enabled
+from trade_copier.flags import copier_ui_enabled_for
 from trade_copier.models import CopierMaster, CopierReplication
 from trade_copier.serializers import (
     CopierFollowerSerializer,
@@ -28,6 +29,11 @@ _LIMITATIONS = {
     "note": "LIVE follower execution is not enabled. Followers run in observation/shadow mode; "
             "real orders occur only on DEMO followers via a separately authorized path.",
 }
+
+# Permanent banner the founder UI must always display: the copier is observe/shadow only and no
+# execution authority is reachable from it. Surfaced on every response so the client cannot render the
+# monitoring UI without it.
+_SHADOW_BANNER = "SHADOW — EXECUTION OFF"
 
 _EVENT_LIMIT = 50
 _REPLICATION_LIMIT = 100
@@ -49,11 +55,16 @@ def _owned_masters(request):
 
 
 class CopyTradingStatusView(APIView):
-    """GET /api/copy-trading/status/ — capability probe for the frontend (is the UI armed?)."""
+    """GET /api/copy-trading/status/ — capability probe for the frontend (is the UI visible to me?).
+
+    ``enabled`` reflects the founder/operator COHORT gate for the CALLING user (default-DENY): a
+    non-cohort caller gets ``enabled: false`` so the frontend hides the Copy Trading entry. The
+    permanent ``SHADOW — EXECUTION OFF`` banner is returned to every caller (cohort or not)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response({"enabled": copier_ui_enabled(), "limitations": _LIMITATIONS})
+        return Response({"enabled": copier_ui_enabled_for(request.user),
+                         "banner": _SHADOW_BANNER, "execution": "off", "limitations": _LIMITATIONS})
 
 
 class CopyTradingMastersView(APIView):
@@ -61,10 +72,11 @@ class CopyTradingMastersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not copier_ui_enabled():
-            return Response({"enabled": False, "masters": []})
+        if not copier_ui_enabled_for(request.user):
+            return Response({"enabled": False, "banner": _SHADOW_BANNER, "masters": []})
         masters = _owned_masters(request).order_by("id")
-        return Response({"enabled": True, "masters": CopierMasterSerializer(masters, many=True).data})
+        return Response({"enabled": True, "banner": _SHADOW_BANNER,
+                         "masters": CopierMasterSerializer(masters, many=True).data})
 
 
 class CopyTradingOverviewView(APIView):
@@ -73,8 +85,8 @@ class CopyTradingOverviewView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, account_id: int):
-        if not copier_ui_enabled():
-            return Response({"enabled": False, "master": None, "followers": [],
+        if not copier_ui_enabled_for(request.user):
+            return Response({"enabled": False, "banner": _SHADOW_BANNER, "master": None, "followers": [],
                              "recent_events": [], "recent_replications": [], "limitations": _LIMITATIONS})
         account = _owned_account(request, account_id)
         if account is None:
@@ -84,7 +96,7 @@ class CopyTradingOverviewView(APIView):
                   .filter(trading_account=account).first())
         if master is None:
             # Owned account that is not a copier master yet — honest "not configured" state.
-            return Response({"enabled": True, "master": None, "followers": [],
+            return Response({"enabled": True, "banner": _SHADOW_BANNER, "master": None, "followers": [],
                              "recent_events": [], "recent_replications": [], "limitations": _LIMITATIONS})
         followers = (master.followers
                      .select_related("follower_account", "follower_account__broker_server")
@@ -96,6 +108,7 @@ class CopyTradingOverviewView(APIView):
                         .order_by("-id")[:_REPLICATION_LIMIT])
         return Response({
             "enabled": True,
+            "banner": _SHADOW_BANNER,
             "master": CopierMasterSerializer(master).data,
             "followers": CopierFollowerSerializer(followers, many=True).data,
             "recent_events": MasterEventSerializer(events, many=True).data,

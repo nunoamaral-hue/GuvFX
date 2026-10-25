@@ -79,4 +79,18 @@ describe("CopyTradingContent", () => {
     render(<CopyTradingContent accountId={100} />);
     expect(await screen.findByText(/not enabled for your account/i)).toBeTruthy();
   });
+
+  it("always shows the permanent SHADOW — EXECUTION OFF banner (enabled state)", async () => {
+    getCopyTradingOverview.mockResolvedValue(overview({ master: MASTER, banner: "SHADOW — EXECUTION OFF" }));
+    render(<CopyTradingContent accountId={100} />);
+    const banner = await screen.findByTestId("copier-shadow-banner");
+    expect(banner.textContent).toMatch(/SHADOW — EXECUTION OFF/);
+  });
+
+  it("shows the SHADOW — EXECUTION OFF banner even when disabled / API fails (fixed fallback)", async () => {
+    getCopyTradingOverview.mockRejectedValue(new Error("404"));
+    render(<CopyTradingContent accountId={100} />);
+    const banner = await screen.findByTestId("copier-shadow-banner");
+    expect(banner.textContent).toMatch(/SHADOW — EXECUTION OFF/);
+  });
 });

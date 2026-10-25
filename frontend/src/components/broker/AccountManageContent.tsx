@@ -13,6 +13,7 @@ import {
   openMt5Desktop, removeAccount, setAccountActive,
 } from "@/lib/broker-api";
 import { listAccountAssignments } from "@/lib/strategy-assignments-api";
+import { getCopyTradingStatus } from "@/lib/copy-trading-api";
 import { accountTitle, brokerLabel, maskAccountNumber, toCustomerError } from "@/lib/broker-status";
 import type { BrokerAccount, BrokerStatus, DeliveryStateResult, EntitlementSummary } from "@/types/broker";
 
@@ -36,6 +37,8 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
   const [busy, setBusy] = useState(false);
   const [confirmStart, setConfirmStart] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // Copy Trading nav is founder/operator-cohort only (default-DENY, server-gated). Fail-closed to hidden.
+  const [copierUiOn, setCopierUiOn] = useState(false);
 
   // PER-USER gate (matches /accounts). Non-granted users have no business on this new surface → /accounts.
   useEffect(() => {
@@ -46,6 +49,15 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
     return () => { alive = false; };
   }, []);
   useEffect(() => { if (gate === "legacy") router.replace("/accounts"); }, [gate, router]);
+
+  // Hide the Copy Trading entry unless the per-user founder/operator cohort gate allows this user.
+  useEffect(() => {
+    let alive = true;
+    getCopyTradingStatus()
+      .then((s) => { if (alive) setCopierUiOn(Boolean(s?.enabled)); })
+      .catch(() => { if (alive) setCopierUiOn(false); });   // fail-closed: hidden on any error
+    return () => { alive = false; };
+  }, []);
 
   const load = useCallback(async () => {
     setError("");
@@ -187,7 +199,9 @@ export function AccountManageContent({ accountId }: { accountId: number }) {
               : <Button disabled>Open MT5</Button>)
           : <Button onClick={() => void handleViewMt5()} disabled={busy}>View MT5</Button>}
         <Link href={`/accounts/${account.id}/strategies`} style={btnLink}>Manage strategies</Link>
-        <Link href={`/accounts/${account.id}/copy-trading`} style={btnLink}>Copy Trading</Link>
+        {copierUiOn && (
+          <Link href={`/accounts/${account.id}/copy-trading`} style={btnLink}>Copy Trading</Link>
+        )}
         <Button variant="secondary" onClick={onToggleTrading} disabled={busy}>
           {isActive ? "Stop trading" : "Start trading"}
         </Button>
