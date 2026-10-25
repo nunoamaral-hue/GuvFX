@@ -239,3 +239,38 @@ class EligibilityTests(APITestCase):
         self.assertTrue(cfg["needs_operator_attention"])
         fv = next(f for f in cfg["followers"] if f["follower_account_id"] == self.cur_stopped.id)
         self.assertFalse(fv["follower_current"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_all_current_no_operator_attention(self):
+        # Negative control: when master + enabled follower are both current, the fail-safe flag is False.
+        self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                    "followers": [{"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT",
+                                                   "fixed_lot": "0.01"}]}, format="json")
+        cfg = self.client.get(self.url).data["config"]
+        self.assertFalse(cfg["needs_operator_attention"])
+        self.assertTrue(cfg["master_current"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_master_disconnected_flags_attention(self):
+        from django.utils import timezone
+        self.client.post(self.url, {"master_account_id": self.cur_active.id,
+                                    "followers": [{"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT",
+                                                   "fixed_lot": "0.01"}]}, format="json")
+        self.cur_active.disconnected_at = timezone.now(); self.cur_active.save(update_fields=["disconnected_at"])
+        cfg = self.client.get(self.url).data["config"]
+        self.assertTrue(cfg["needs_operator_attention"])
+        self.assertFalse(cfg["master_current"])
+
+    @override_settings(COPIER_UI_COHORT_ALLOWLIST="f2@guvfx.invalid")
+    def test_disabled_disconnected_follower_does_not_flag(self):
+        from django.utils import timezone
+        # Configure two followers, then de-select foll2 (disabled), then disconnect the DISABLED one.
+        self.foll2 = _acct(self.user, "F2", "60005", active=True, server="S-g")
+        self.client.post(self.url, {"master_account_id": self.cur_active.id, "followers": [
+            {"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"},
+            {"account_id": self.foll2.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]}, format="json")
+        self.client.post(self.url, {"master_account_id": self.cur_active.id, "followers": [
+            {"account_id": self.cur_stopped.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]}, format="json")
+        self.foll2.disconnected_at = timezone.now(); self.foll2.save(update_fields=["disconnected_at"])
+        cfg = self.client.get(self.url).data["config"]
+        self.assertFalse(cfg["needs_operator_attention"])   # a DISABLED disconnected follower is not participating
