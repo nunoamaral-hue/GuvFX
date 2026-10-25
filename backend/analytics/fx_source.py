@@ -179,6 +179,91 @@ class StoredFredFxRateSource:
                 "retrieved_at": sel.retrieved_at.isoformat() if sel.retrieved_at else "", "age_days": sel.age_days}
 
 
+KNOWN_SOURCES = (DailyFxObservation.SOURCE_FED_H10, DailyFxObservation.SOURCE_BOE)
+
+
+def fx_source_priority() -> tuple:
+    """GOVERNED, deterministic source priority for GBP->USD selection. Parsed from ``PORTFOLIO_FX_SOURCE_PRIORITY``
+    (comma-separated source codes, settings-override-then-env). DEFAULT ``('FED_H10',)`` — i.e. Fed H.10 ONLY, so
+    the request path is byte-identical to today until a Sponsor sets a different priority. Unknown codes are
+    dropped; an empty/invalid value falls back to Fed H.10 (never 'no source'). This is the explicit, disclosed
+    failover order — it is NOT silent auto-substitution: the SELECTED source is always surfaced in provenance."""
+    raw = getattr(settings, "PORTFOLIO_FX_SOURCE_PRIORITY", None)
+    if raw is None:
+        raw = os.getenv("PORTFOLIO_FX_SOURCE_PRIORITY", "")
+    seen, order = set(), []
+    for tok in str(raw).split(","):
+        s = tok.strip().upper()
+        if s in KNOWN_SOURCES and s not in seen:
+            seen.add(s); order.append(s)
+    return tuple(order) or (DailyFxObservation.SOURCE_FED_H10,)
+
+
+def select_prioritised(base: str, quote: str, current_date: date, priority: tuple,
+                       *, max_staleness_days: int = MAX_STALENESS_DAYS) -> Optional[SelectedRate]:
+    """Deterministic failover: try each source in ``priority`` order and return the FIRST that yields a usable
+    (within-staleness) observation. Each source applies the same governed selection (prev-London-day + carry
+    forward + 7-day staleness). Returns ``None`` when no source has a usable rate (caller keeps honest
+    PARTIAL/UNAVAILABLE). Sources are never blended; exactly one source's observation is chosen and disclosed."""
+    for src in priority:
+        sel = select_observation(base, quote, current_date, source=src, max_staleness_days=max_staleness_days)
+        if sel is not None:
+            return sel
+    return None
+
+
+class StoredDbFxRateSource:
+    """DB-only ``FxRateSource`` over a GOVERNED source PRIORITY (default Fed H.10 only). USD<->USD is identity;
+    GBP->USD selects the first within-staleness observation across the priority order (e.g. BoE XUDLUSS then Fed
+    H.10 DEXUSUK). Any other pair / no usable rate => ``None`` (honest PARTIAL/UNAVAILABLE). DB-only (never
+    contacts a provider) and NEVER raises — any failure degrades to unavailable so no FX fault stops the
+    dashboard settling (F5). The provenance always names the SELECTED source (no silent substitution)."""
+
+    def __init__(self, current_date: Optional[date] = None, priority: Optional[tuple] = None):
+        self.current_date = current_date or governed_today()
+        self.priority = tuple(priority) if priority else fx_source_priority()
+        self._cache: Dict[Tuple[str, str], Optional[SelectedRate]] = {}
+
+    def _select(self, base: str, quote: str) -> Optional[SelectedRate]:
+        key = (FX.normalise_currency(base), FX.normalise_currency(quote))
+        if key not in self._cache:
+            b, q = key
+            try:
+                self._cache[key] = (select_prioritised(b, q, self.current_date, self.priority)
+                                    if (b, q) == (FRED.BASE, FRED.QUOTE) else None)
+            except Exception:  # noqa: BLE001 — an FX read must never break the dashboard
+                logger.warning("fx_source: prioritised observation select failed; degrading to honest unavailable")
+                self._cache[key] = None
+        return self._cache[key]
+
+    def get_rate(self, base: str, quote: str) -> Optional[FX.FxRate]:
+        b, q = FX.normalise_currency(base), FX.normalise_currency(quote)
+        if b == q:
+            return FX.FxRate(b, q, 1.0, source="identity")
+        sel = self._select(b, q)
+        if sel is None:
+            return None
+        return FX.FxRate(b, q, float(sel.rate), as_of=sel.effective_date.isoformat(),
+                         source=f"{sel.source}:{sel.source_series} rev{sel.revision_number}")
+
+    def provenance(self, base: str = FRED.BASE, quote: str = FRED.QUOTE) -> dict:
+        sel = self._select(base, quote)
+        common = {"enabled": True, "pair": f"{base}{quote}", "source_series": FRED.SERIES,
+                  "direction": FRED.DIRECTION, "governed_tz": GOVERNED_TZ,
+                  "source_priority": list(self.priority),
+                  "current_date": self.current_date.isoformat(),
+                  "target_date": (self.current_date - timedelta(days=1)).isoformat()}
+        if sel is None:
+            return {**common, "source": self.priority[0], "available": False,
+                    "reason": "no_rate_within_staleness"}
+        return {**common, "available": True, "rate": format(sel.rate.normalize(), "f"),
+                "effective_date": sel.effective_date.isoformat(), "source": sel.source,
+                "selected_source": sel.source, "source_series": sel.source_series,
+                "revision_number": sel.revision_number, "observation_id": sel.observation_id,
+                "source_url": sel.source_url,
+                "retrieved_at": sel.retrieved_at.isoformat() if sel.retrieved_at else "", "age_days": sel.age_days}
+
+
 def fx_ingestion_health(current_date: Optional[date] = None, *,
                         source: str = DailyFxObservation.SOURCE_FED_H10) -> dict:
     """Readiness of the scheduled FX ingestion (ops/health). HEALTHY when a usable (within-staleness) rate exists,
