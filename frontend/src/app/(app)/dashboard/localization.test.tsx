@@ -177,6 +177,42 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     expect(text).toContain("$100.00");               // healthy USD account's equity contributes (PARTIAL, measured)
   });
 
+  it("shows a clean 'no closed-trade history' state (never a measured $0 realized) when there are zero round-trips", async () => {
+    // Zero closed Trade round-trips (production state for 46/48/49): realized stats have NO dataset. The panel must
+    // say so ONCE and read realized metrics as unavailable — never a measured $0 / 0% as if calculated.
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "ALL");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) return {
+        reporting_currency: "USD", scope: "ALL", generated_at: new Date().toISOString(),
+        account_count: 2, trading_count: 0, stale_accounts: [],
+        accounts: [
+          { account_id: 48, broker: "IS6FX", account_masked: "••••", currency: "USD", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: 200, equity_native: 200, net_pnl: 0, open_count: 0, open_pl_usd: null, stale: false },
+          { account_id: 46, broker: "TradersWay", account_masked: "••••", currency: "USD", is_active: true, trading_state: { state: "PREPARING", label: "Preparing" }, balance_native: 264, equity_native: 264, net_pnl: 0, open_count: 0, open_pl_usd: null, stale: false },
+        ],
+        aggregate: {
+          balance_usd: { total_usd: 464, state: "OK", basis: "USD", included_count: 2, excluded_count: 0, converted_count: 2, unconverted: [] },
+          equity_usd: { total_usd: 464, state: "OK", basis: "USD", included_count: 2, excluded_count: 0, converted_count: 2, unconverted: [] },
+          open_pl_usd: { total_usd: 0, state: "OK", basis: "USD", converted_count: 0, unconverted: [] },
+          daily_realized_pnl_usd: 0, daily_realized_pnl_basis: "USD",
+          metrics: { state: "OK", basis: "USD", net_pnl_total: 0, win_rate_pct: null, wins: null, losses: null, total_trades: 0, profit_factor: null, profit_factor_infinite: false, expectancy: null, max_drawdown_money: null, included_count: null, excluded_count: null },
+        },
+      };
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("No closed-trade history yet"));
+    const text = container.textContent || "";
+    expect(text).toContain("Equity Curve (Observed)");                        // curve reframed as observed equity
+    expect(text).toContain("balance + floating (observed)");                  // basis stated
+    expect(text).toContain("N/A");                                            // realized metrics read unavailable
+    expect((text.match(/No closed-trade history yet/g) || []).length).toBe(1); // single explanation, not repeated
+    // Discriminating: Net PnL must NOT present a measured $0 (no "Observed PnL:" summary, no "% of equity" sub);
+    // a partial regression that reintroduced only the Net PnL $0 would still render these, so pin them absent.
+    expect(text).not.toContain("Observed PnL:");
+    expect(text).not.toContain("% of equity");
+  });
+
   const _fxSummary = (fx: Record<string, unknown>) => ({
     reporting_currency: "USD", scope: "ALL", generated_at: new Date().toISOString(),
     account_count: 2, trading_count: 0, stale_accounts: [],
