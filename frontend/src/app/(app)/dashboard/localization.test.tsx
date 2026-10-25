@@ -207,6 +207,10 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     expect(text).toContain("balance + floating (observed)");                  // basis stated
     expect(text).toContain("N/A");                                            // realized metrics read unavailable
     expect((text.match(/No closed-trade history yet/g) || []).length).toBe(1); // single explanation, not repeated
+    // Discriminating: Net PnL must NOT present a measured $0 (no "Observed PnL:" summary, no "% of equity" sub);
+    // a partial regression that reintroduced only the Net PnL $0 would still render these, so pin them absent.
+    expect(text).not.toContain("Observed PnL:");
+    expect(text).not.toContain("% of equity");
   });
 
   const _fxSummary = (fx: Record<string, unknown>) => ({

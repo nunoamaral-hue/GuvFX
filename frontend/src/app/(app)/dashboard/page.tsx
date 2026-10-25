@@ -793,10 +793,15 @@ export default function DashboardPage() {
                 : undefined;
               return (<>
                 <div style={microLabel}><i className={`ti ti-trending-${dp != null && dp < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL{isAll ? " (realized)" : ""}</div>
-                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
-                  {dp == null
-                    ? (isAll && summaryError && !portfolioForScope ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—")
-                    : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: !hasHistory || dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
+                  {/* Daily PnL is REALIZED (closed-today) P/L. With zero closed round-trips there is no realized
+                      dataset, so show "—", never a measured +$0.00 presented as calculated (same honesty rule as
+                      Net PnL). A genuine 0 is shown once trades close (hasHistory). */}
+                  {!hasHistory
+                    ? "—"
+                    : dp == null
+                      ? (isAll && summaryError && !portfolioForScope ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—")
+                      : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
               </>);
             })()}
