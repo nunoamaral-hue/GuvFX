@@ -18,8 +18,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLang } from "@/components/AppShell";
 import { OpenTradesPanel } from "@/components/dashboard/OpenTradesPanel";
-import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
-import { WithdrawalsHistory } from "@/components/dashboard/WithdrawalsHistory";
+import { WithdrawalIntelligenceSection } from "@/components/dashboard/WithdrawalIntelligenceSection";
 import { PortfolioScopeSelector } from "@/components/dashboard/PortfolioScopeSelector";
 import type { PortfolioSummary, UsdAggregate, AggregateState } from "@/types/portfolio";
 import { localeFor, type Lang } from "@/lib/i18n";
@@ -963,17 +962,14 @@ export default function DashboardPage() {
       <div style={{ flex: "0 1 350px", minWidth: 300 }}>
         <OpenTradesPanel scope={scope} lang={lang} />
       </div>
-      {/* Withdrawals (WP6) — read-only member summary; self-hides (renders null) while the feature is DARK
-          (metrics endpoint 404 until BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
-      <div style={{ flex: "0 1 350px", minWidth: 300 }}>
-        <WithdrawalsPanel lang={lang} />
-      </div>
       </div>
 
-      {/* Withdrawal history (PR2) — read-only per-withdrawal list + broker/account selectors; self-hides while DARK
-          (history endpoint 404 until BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
+      {/* Withdrawal Intelligence (WP6/PR2) — ONE cohesive, corporate section: compact summary + observed processing
+          speed (left) and recent withdrawal history (right), with "View all" to the full /withdrawal-intelligence
+          page. Self-hides (renders null) while the feature is DARK (metrics endpoint 404 until
+          BROKER_WITHDRAWAL_UX_ENABLED is armed). Observation only; no action. */}
       <div style={{ marginBottom: "0.9rem" }}>
-        <WithdrawalsHistory lang={lang} />
+        <WithdrawalIntelligenceSection lang={lang} />
       </div>
 
       {/* Intelligence Row — Radar (all markets, hero) · Key Events (selected) · Research Evidence (selected) */}

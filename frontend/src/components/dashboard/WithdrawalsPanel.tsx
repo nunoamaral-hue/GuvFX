@@ -30,6 +30,7 @@ const STR = {
     ja: "観測された出金が1件のみ — まだ統計的に代表的ではありません。",
   },
   genuine: { en: "Genuine samples", ja: "実サンプル数" },
+  summary: { en: "Summary", ja: "概要" },
 };
 
 const card: React.CSSProperties = {
@@ -49,19 +50,27 @@ function humanDuration(seconds: number, lang: Lang): string {
   return lang === "ja" ? `${days}日` : `${days} d`;
 }
 
-export const WithdrawalsPanel: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => {
+export const WithdrawalsPanel: React.FC<{ lang?: Lang; embedded?: boolean; metrics?: WithdrawalMetrics | null }> = ({
+  lang = "en", embedded = false, metrics,
+}) => {
   const L: Lang = lang === "ja" ? "ja" : "en";
-  const [data, setData] = useState<WithdrawalMetrics | null>(null);
+  // A parent may supply already-fetched metrics (the cohesive dashboard section gates the whole section's visibility
+  // from the SAME payload, so it passes it down to avoid a second request and guarantee they agree). When provided,
+  // use it directly and skip the self-fetch; standalone (prop absent) keeps the original owner-scoped self-fetch +
+  // DARK-hide behaviour unchanged.
+  const injected = metrics !== undefined;
+  const [fetched, setFetched] = useState<WithdrawalMetrics | null>(null);
   const [hidden, setHidden] = useState(false);   // DARK (404) or error -> hide the whole panel
 
   useEffect(() => {
+    if (injected) return;                  // parent-provided metrics: never self-fetch
     let live = true;
     apiFetch<WithdrawalMetrics>(PATH, {})
       .then((m) => {
         if (!live) return;
         // Render ONLY a well-formed metrics payload; any non-conforming response (e.g. a DARK stub, a shape change,
         // or a test catch-all) hides the panel rather than crashing the dashboard. Defensive by contract.
-        if (m && typeof (m as WithdrawalMetrics).total === "number") setData(m);
+        if (m && typeof (m as WithdrawalMetrics).total === "number") setFetched(m);
         else setHidden(true);
       })
       .catch((e: unknown) => {
@@ -70,22 +79,32 @@ export const WithdrawalsPanel: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => 
         void e;
       });
     return () => { live = false; };
-  }, []);
+  }, [injected]);
 
   if (hidden) return null;                 // DARK or unavailable -> render nothing
-  if (!data) return null;                  // not loaded yet -> render nothing (no flash)
+  const data = injected ? metrics : fetched;
+  if (!data || typeof data.total !== "number") return null;   // not loaded / malformed -> render nothing (no flash)
+
+  // Embedded: the cohesive section provides the outer card chrome + heading, so render transparently as a column.
+  const rootStyle: React.CSSProperties = embedded ? { padding: 0, background: "transparent", border: "none" } : card;
 
   const amounts = Object.entries(data.completed_amount_by_currency || {});
   const dur = data.processing_duration;
 
   return (
-    <div style={card} data-testid="withdrawals-panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-        <div style={{ color: "#e9f4ff", fontSize: "0.95rem", fontWeight: 600 }}>
-          <i className="ti ti-cash-banknote-off" aria-hidden="true" style={{ marginRight: 6 }} />{STR.title[L]}
+    <div style={rootStyle} data-testid="withdrawals-panel">
+      {embedded ? (
+        <div style={{ ...statLabel, color: "#9db0c7", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          {STR.summary[L]}
         </div>
-        <div style={meta}>{data.total}</div>
-      </div>
+      ) : (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+          <div style={{ color: "#e9f4ff", fontSize: "0.95rem", fontWeight: 600 }}>
+            <i className="ti ti-cash-banknote-off" aria-hidden="true" style={{ marginRight: 6 }} />{STR.title[L]}
+          </div>
+          <div style={meta}>{data.total}</div>
+        </div>
+      )}
 
       {data.total === 0 ? (
         <div style={{ ...meta, padding: "10px 0", textAlign: "center" }}>{STR.none[L]}</div>

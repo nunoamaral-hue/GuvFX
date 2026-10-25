@@ -34,6 +34,7 @@ const STR = {
     en: "DEMONSTRATION DATA — synthetic, for illustration only (not a genuine broker record)",
     ja: "デモ用データ — 合成データ、説明目的のみ（実際のブローカー記録ではありません）",
   },
+  showingRecent: { en: "Showing {n} most recent", ja: "最近の{n}件を表示" },
 };
 
 const STATE_LABEL: Record<WithdrawalState, { en: string; ja: string; color: string }> = {
@@ -63,28 +64,36 @@ function humanDuration(seconds: number, lang: Lang): string {
   return lang === "ja" ? `${days}日` : `${days} d`;
 }
 
-export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => {
+export const WithdrawalsHistory: React.FC<{ lang?: Lang; embedded?: boolean; limit?: number; data?: WithdrawalHistory | null }> = ({
+  lang = "en", embedded = false, limit, data: injectedData,
+}) => {
   const L: Lang = lang === "ja" ? "ja" : "en";
-  const [data, setData] = useState<WithdrawalHistory | null>(null);
+  // A parent may supply already-fetched history (the cohesive dashboard section loads it once and feeds both columns,
+  // so they appear together and agree). When provided, use it directly and skip the self-fetch; standalone (prop
+  // absent) keeps the original owner-scoped self-fetch + filter behaviour unchanged.
+  const injected = injectedData !== undefined;
+  const [fetched, setFetched] = useState<WithdrawalHistory | null>(null);
   const [hidden, setHidden] = useState(false);
   const [broker, setBroker] = useState("");
   const [accountId, setAccountId] = useState("");
 
   const load = useCallback(() => {
+    if (injected) return;   // parent-provided history: never self-fetch
     const q = new URLSearchParams();
     if (broker) q.set("broker", broker);
     if (accountId) q.set("account_id", accountId);
     const qs = q.toString();
     apiFetch<WithdrawalHistory>(PATH + (qs ? `?${qs}` : ""), {})
       .then((d) => {
-        if (d && Array.isArray((d as WithdrawalHistory).withdrawals)) setData(d);
+        if (d && Array.isArray((d as WithdrawalHistory).withdrawals)) setFetched(d);
         else setHidden(true);
       })
       .catch(() => setHidden(true));   // 404 => DARK; any error => hide (never a broken card)
-  }, [broker, accountId]);
+  }, [broker, accountId, injected]);
 
   useEffect(() => { load(); }, [load]);
 
+  const data = injected ? injectedData : fetched;
   // The backend always returns the COMPLETE broker/account selector lists (collected from the member's full
   // withdrawal set, never narrowed by the active filters), so the dropdowns stay stable while filtering — no need
   // for separate state kept in sync via an effect.
@@ -95,27 +104,35 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
 
   const rows = data.withdrawals;
   const everEmpty = !broker && !accountId && rows.length === 0;
+  // Embedded (cohesive dashboard section): the section frame provides the chrome; show only RECENT rows and hand
+  // filtering/full history to the detail page (the section's "View all" link). Standalone keeps all rows + filters.
+  const effectiveLimit = limit ?? (embedded ? 5 : undefined);
+  const shown = effectiveLimit ? rows.slice(0, effectiveLimit) : rows;
+  const truncated = shown.length < rows.length;
+  const rootStyle: React.CSSProperties = embedded ? { padding: 0, background: "transparent", border: "none" } : card;
 
   return (
-    <div style={card} data-testid="withdrawals-history">
+    <div style={rootStyle} data-testid="withdrawals-history">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap",
         gap: 8, marginBottom: 12 }}>
-        <div style={{ color: "#e9f4ff", fontSize: "0.95rem", fontWeight: 600 }}>
+        <div style={{ color: "#e9f4ff", fontSize: embedded ? "0.82rem" : "0.95rem", fontWeight: 600 }}>
           <i className="ti ti-history" aria-hidden="true" style={{ marginRight: 6 }} />{STR.title[L]}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <select style={select} value={broker} onChange={(e) => { setBroker(e.target.value); setAccountId(""); }}
-            data-testid="history-broker-select" aria-label={STR.broker[L]}>
-            <option value="">{STR.broker[L]}: {STR.all[L]}</option>
-            {brokers.map((b) => <option key={b} value={b}>{b}</option>)}
-          </select>
-          <select style={select} value={accountId} onChange={(e) => setAccountId(e.target.value)}
-            data-testid="history-account-select" aria-label={STR.account[L]}>
-            <option value="">{STR.account[L]}: {STR.all[L]}</option>
-            {accounts.filter((a) => !broker || a.broker === broker).map((a) =>
-              <option key={a.id} value={String(a.id)}>{a.broker} · {a.account_masked}</option>)}
-          </select>
-        </div>
+        {!embedded && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <select style={select} value={broker} onChange={(e) => { setBroker(e.target.value); setAccountId(""); }}
+              data-testid="history-broker-select" aria-label={STR.broker[L]}>
+              <option value="">{STR.broker[L]}: {STR.all[L]}</option>
+              {brokers.map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+            <select style={select} value={accountId} onChange={(e) => setAccountId(e.target.value)}
+              data-testid="history-account-select" aria-label={STR.account[L]}>
+              <option value="">{STR.account[L]}: {STR.all[L]}</option>
+              {accounts.filter((a) => !broker || a.broker === broker).map((a) =>
+                <option key={a.id} value={String(a.id)}>{a.broker} · {a.account_masked}</option>)}
+            </select>
+          </div>
+        )}
       </div>
 
       {data.demonstration ? (
@@ -132,7 +149,7 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
         </div>
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
-          {rows.map((w: WithdrawalRow) => {
+          {shown.map((w: WithdrawalRow) => {
             const st = STATE_LABEL[w.state];
             return (
               <li key={w.id} data-testid="history-row" style={{ display: "flex", justifyContent: "space-between",
@@ -165,6 +182,12 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang }> = ({ lang = "en" }) =
             );
           })}
         </ul>
+      )}
+
+      {truncated && (
+        <div style={{ ...meta, marginTop: 8, textAlign: "right" }} data-testid="history-truncated">
+          {STR.showingRecent[L].replace("{n}", String(shown.length))}
+        </div>
       )}
     </div>
   );
