@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
-from analytics.fx_source import StoredFredFxRateSource, fx_conversion_enabled_for
+from analytics.fx_source import StoredDbFxRateSource, fx_conversion_enabled_for, fx_source_priority
 from analytics.views_trade_history import (
     _account_windows_username, _fetch_mt5_account_balance, _fetch_mt5_open_positions,
 )
@@ -42,7 +42,8 @@ def _rate_source(user) -> FX.FxRateSource:
     honest refusal when stale/missing). Otherwise the USD->USD-only ``NullFxRateSource`` — byte-identical to today.
     Point-in-time HISTORICAL curves must NOT use a single spot rate, so ``PortfolioEquityCurveView`` deliberately
     does not (data.md point-in-time)."""
-    return StoredFredFxRateSource() if fx_conversion_enabled_for(user) else FX.NullFxRateSource()
+    return (StoredDbFxRateSource(priority=fx_source_priority())
+            if fx_conversion_enabled_for(user) else FX.NullFxRateSource())
 
 
 # The aggregation (``portfolio.open_positions`` / ``build_summary``) passes a deadline-aware ``timeout`` so one
