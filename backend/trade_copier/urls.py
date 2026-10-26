@@ -7,6 +7,7 @@ from trade_copier.consumer_api import (
     PartialCloseCompleteView,
 )
 from trade_copier.config_api import CopyTradingConfigView
+from trade_copier.matrix_api import InstrumentMatrixView
 from trade_copier.views import (
     CopyTradingMastersView,
     CopyTradingOverviewView,
@@ -18,6 +19,8 @@ urlpatterns = [
     path("masters/", CopyTradingMastersView.as_view(), name="copy-trading-masters"),
     # Founder-only SHADOW configuration (owner-scoped, audited, idempotent; cannot enable execution).
     path("config/", CopyTradingConfigView.as_view(), name="copy-trading-config"),
+    # Founder-only, owner-scoped, read-only multi-broker instrument-mapping matrix (no write, execution OFF).
+    path("instrument-matrix/", InstrumentMatrixView.as_view(), name="copy-trading-instrument-matrix"),
     path("accounts/<int:account_id>/overview/", CopyTradingOverviewView.as_view(),
          name="copy-trading-overview"),
     # ADR-0056 — dedicated DEMO partial-close consumer (modern worker auth only; DARK, no worker granted

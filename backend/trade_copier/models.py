@@ -409,3 +409,88 @@ class CopierReplication(models.Model):
     def __str__(self) -> str:
         return (f"Replication(event={self.master_event_id}, follower={self.follower_id}, "
                 f"{self.status}, vol={self.target_volume})")
+
+
+# ───────────────────── MULTI-BROKER INSTRUMENT MATRIX (additive discovery layer) ─────────────────────
+# Canonical economic identity + a durable, directional master→follower mapping record. ADDITIVE: these
+# are NEW tables; nothing above is altered. They are a DISCOVERY/audit layer and are NOT on the execution
+# path — execution symbol translation stays with ``CopierSymbolMap`` via ``symbols.resolve_follower_symbol``.
+# ``CopierSymbolMap`` remains the sole execution authority; ``InstrumentMapping`` only reflects it for audit.
+
+
+class CanonicalInstrument(models.Model):
+    """A canonical economic-instrument identity that relates broker-specific symbols WITHOUT replacing
+    their native names (packet §2). Keyed on the price reference (asset class + underlying + quote
+    currency + optional expiry) via the stable ``key`` slug; settlement currency, contract size and
+    contract type are descriptive attributes recorded as *material differences* on a mapping, never
+    folded into the identity. Persisted only by the refresh command; the read/API path compares keys
+    directly, so a read never creates a row."""
+
+    key = models.CharField(max_length=64, unique=True, help_text="Stable slug, e.g. METAL:XAU:USD.")
+    asset_class = models.CharField(max_length=16)
+    underlying = models.CharField(max_length=24)
+    quote_currency = models.CharField(max_length=8)
+    contract_type = models.CharField(max_length=16, default="UNKNOWN")
+    expiry = models.DateField(null=True, blank=True)
+    display_name = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Canonical instrument"
+        indexes = [models.Index(fields=["asset_class", "underlying", "quote_currency"])]
+
+    def __str__(self) -> str:
+        return f"CanonicalInstrument({self.key})"
+
+
+class MappingClassification(models.TextChoices):
+    VERIFIED = "VERIFIED", "Verified (explicit symbol map)"
+    UNVERIFIED = "UNVERIFIED", "Unverified (needs explicit verification)"
+    AMBIGUOUS = "AMBIGUOUS", "Ambiguous (fail closed)"
+    STALE = "STALE", "Stale catalogue"
+    INELIGIBLE = "INELIGIBLE", "Ineligible (not tradable / expired)"
+    ABSENT = "ABSENT", "Absent (no follower counterpart)"
+
+
+class InstrumentMapping(models.Model):
+    """One ORDERED directional candidate: ``master_account → follower_account`` for one master symbol.
+
+    The uniqueness contract is the WHOLE directional key — ``(master_account, follower_account,
+    master_symbol, follower_symbol)`` — so a reverse direction is a separate row and adding one direction
+    can never overwrite another. ``verified_via_symbol_map`` REFLECTS a verified ``CopierSymbolMap`` at
+    refresh time (audit snapshot only); it is never read by the execution path. ``on_delete=CASCADE`` on
+    the accounts keeps an account purge unblocked (consistent with the other copier config models)."""
+
+    master_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
+    master_broker = models.CharField(max_length=128)
+    master_symbol = models.CharField(max_length=64)
+    follower_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
+    follower_broker = models.CharField(max_length=128)
+    follower_symbol = models.CharField(max_length=64, blank=True)  # blank for ABSENT (no counterpart)
+    canonical_instrument = models.ForeignKey(
+        CanonicalInstrument, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    classification = models.CharField(max_length=16, choices=MappingClassification.choices)
+    reason = models.CharField(max_length=64, blank=True)
+    confidence = models.CharField(max_length=8, blank=True)
+    material_differences = models.JSONField(default=dict, blank=True)
+    verified_via_symbol_map = models.BooleanField(default=False)
+    observed_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["master_account", "follower_account", "master_symbol", "follower_symbol"],
+                name="uq_instrument_mapping_direction",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["master_account", "follower_account"]),
+            models.Index(fields=["canonical_instrument"]),
+        ]
+
+    def __str__(self) -> str:
+        return (f"InstrumentMapping({self.master_account_id}:{self.master_symbol} -> "
+                f"{self.follower_account_id}:{self.follower_symbol or '∅'}, {self.classification})")

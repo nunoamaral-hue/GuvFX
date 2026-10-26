@@ -143,6 +143,73 @@ export interface CopyTradingConfig {
   config?: CurrentConfig | null;
 }
 
+// Compact, quiet observation-mode status (no red banner) shared by the Copy Trading read surfaces.
+export interface ExecutionStatus {
+  mode: string;
+  execution: string;
+  label: string;
+  detail: string;
+  note: string;
+}
+
+// GET /api/copy-trading/instrument-matrix/ — founder-only, owner-scoped, read-only mapping matrix.
+export type MappingClassification =
+  | "VERIFIED" | "UNVERIFIED" | "AMBIGUOUS" | "STALE" | "INELIGIBLE" | "ABSENT";
+
+export interface MatrixMaterialDifference {
+  master: string | null;
+  follower: string | null;
+  differs: boolean;
+}
+
+export interface MatrixCandidate {
+  master_symbol: string;
+  follower_symbol: string;
+  canonical: { slug: string | null; display: string };
+  classification: MappingClassification;
+  reason: string;
+  confidence: string;
+  material_differences: {
+    contract_size?: MatrixMaterialDifference;
+    settlement_currency?: MatrixMaterialDifference;
+    quote_currency?: MatrixMaterialDifference;
+    contract_type?: MatrixMaterialDifference;
+  };
+  verified_at: string | null;
+  verified_source: string | null;
+}
+
+export interface MatrixDirection {
+  master_account_id: number;
+  master_broker: string;
+  follower_account_id: number;
+  follower_broker: string;
+  eligible_source: number;
+  counts: Record<MappingClassification, number>;
+  coverage_pct: number | null;
+  candidates: MatrixCandidate[];
+}
+
+export interface MatrixAccount {
+  account_id: number;
+  broker: string;
+  catalogue: {
+    state: "synced" | "empty" | "stale";
+    symbol_count: number;
+    enabled_count: number;
+    synced_at: string | null;
+    age_seconds: number | null;
+  };
+}
+
+export interface InstrumentMatrix {
+  enabled: boolean;
+  execution_status?: ExecutionStatus;
+  accounts: MatrixAccount[];
+  directions: MatrixDirection[];
+  note: string;
+}
+
 export interface CopyTradingConfigWrite {
   master_account_id: number;
   followers: Array<{ account_id: number; sizing_mode?: string; fixed_lot?: string; max_volume?: string; max_concurrent_positions?: number }>;
