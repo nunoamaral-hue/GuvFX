@@ -4908,3 +4908,21 @@ deployment, workflow execution, normalisation, backfill, or data write occurred.
 The bounded next action is a fresh, broker-identity-pinned M1 comparison after
 the post-transition market opens. Evidence:
 `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
+
+## 2026-10-26 — Production withdrawal visibility and account-50 recovery
+
+- Account 50's per-tenant watchdog task pointed to the node-wide watchdog, so it did not monitor port 8807. Its
+  bridge had a listening socket but did not answer health checks. The task now points to the per-tenant watchdog;
+  its PID-scoped recovery restored `/health` and returned HTTP 200.
+- The certified account-50 terminal relaunch returned `ok`; a fresh signed observation then matched the expected
+  account and advanced the workspace to `CONNECTED`. Delivery state is `CONNECTED`; execution remains disabled.
+- Broker event reference `4114321` was correlated to a genuine owner-attributed `REQUESTED` withdrawal for USD 20.
+  It is visible as in progress; no completion was inferred. An unidentified account remains explicitly unresolved.
+- The broker-ingest systemd service now runs ingestion then withdrawal correlation with cross-inbox delivery
+  deduplication enabled for both commands. Its timer is one minute. Previous systemd unit files are backed up on
+  the NAS at `Backups/GuvFX/guvfx-ingest-before-correlation-20261026T0730Z.tgz`.
+- Withdrawal dashboard data refreshes every 15 seconds while the browser page is visible. A transient refresh error
+  preserves the last good display. Total refresh latency depends on the one-minute mailbox schedule and broker email
+  delivery time.
+- No withdrawal was initiated or confirmed, and no trading capability was enabled. Ten-account onboarding and exact
+  account attribution for emails lacking an account identifier remain to be confirmed.

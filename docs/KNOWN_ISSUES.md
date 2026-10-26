@@ -1217,6 +1217,17 @@ partially or wholly English: billing/subscription, profile/settings, analytics/c
 dashboard, strategy-detail, and Terminal Access management copy outside the hosted ready-state. A native
 Japanese editorial pass and mobile-width visual certification also remain. Full scope and evidence are in
 `docs/product/BETA_EN_JA_AUDIT_2026-08-18.md`.
+
+## Withdrawal detection latency and account attribution (2026-10-26)
+
+- **Mitigated:** broker-email ingestion/correlation now runs on a one-minute systemd timer; the dashboard refreshes
+  visible withdrawal data every 15 seconds. End-to-end freshness still depends on broker email delivery.
+- **Account attribution limitation:** reference `4114321` is visible to its mailbox owner as `REQUESTED`, but no
+  evidence tied it to a registered trading account. The UI labels it account-unresolved. Do not infer a match based
+  only on owner, broker, amount, or recency.
+- **Ten-account showcase:** this production recovery does not certify capacity or isolation for ten accounts. Verify
+  each account's runtime, endpoint port, scheduled observer/bridge/watchdog identity, and broker-email attribution
+  before claiming the full showcase is ready.
 # Evidence factuality verifier limitations (recorded 2026-10-24)
 
 - The authoring-time verifier proves that recorded files, checksums, tracked-file

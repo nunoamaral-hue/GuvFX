@@ -1132,3 +1132,12 @@ Green/Amber items proceed autonomously; Red items are flagged for Nuno's approva
 
 ## Backlog (documented, not scheduled)
 - [ ] **Registration Flow Enhancement** — Multi-step registration with email verification, hosting selection, compliance acknowledgments, and 2FA. See [`docs/REGISTER_FLOW_TODO.md`](./REGISTER_FLOW_TODO.md) for full plan.
+
+## 2026-10-26 production follow-up
+
+- [ ] Deploy and verify dashboard refresh change from `fix/withdrawal-live-refresh` (15-second visible-page refresh;
+  retains last good data on transient failure).
+- [ ] On a naturally occurring withdrawal, verify evidence and status through mailbox ingestion, deduplication,
+  correlation, owner-scoped API, and dashboard. Do not initiate or confirm a withdrawal as a test.
+- [ ] Before showcasing ten accounts, confirm each account has a unique hosted identity/endpoint and that broker
+  emails provide sufficient evidence for account attribution; keep rows account-unresolved when they do not.

@@ -1548,3 +1548,20 @@ submit the isolated branch for GitHub review.
 - **Impact:** no trade/order/login/restart/deploy/config/data mutation; no secret
   disclosed. Full evidence:
   `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
+
+## 2026-10-26 — Withdrawal visibility / hosted account 50
+
+- Production account 50 is recovered and freshly observed as `CONNECTED`, with expected account match true and
+  execution disabled. Its watchdog now uses `tenant_bridge_watchdog.ps1` for port 8807; the built-in wedge recovery
+  restored the health endpoint. Terminal recovery used the signed account-specific relaunch primitive.
+- Reference `4114321` now appears as an owner-attributed USD 20 `REQUESTED` withdrawal. This is pending/in progress,
+  not completed. Its trading-account association is unresolved because the evidence did not establish an account.
+- `guvfx-broker-ingest.service` performs ingestion followed by correlation each minute; both commands receive the
+  cross-inbox dedup flag. `guvfx-broker-ingest.timer` runs every minute. NAS rollback archive:
+  `/Volumes/Backups/Backups/GuvFX/guvfx-ingest-before-correlation-20261026T0730Z.tgz`.
+- Dashboard data refreshes every 15 seconds when visible; timing also depends on broker email delivery. The frontend
+  refresh change is in isolated branch `fix/withdrawal-live-refresh` and still needs production deployment.
+- Remaining: deploy the frontend refresh build, verify production dashboard fingerprint and endpoint response, then
+  validate a naturally occurring live withdrawal through ingestion → correlation → visible dashboard. Never create
+  a test withdrawal or infer account identity without broker evidence. Ten-account capacity still needs a bounded
+  onboarding check before the showcase.
