@@ -1135,8 +1135,9 @@ Green/Amber items proceed autonomously; Red items are flagged for Nuno's approva
 
 ## 2026-10-26 production follow-up
 
-- [ ] Deploy and verify dashboard refresh change from `fix/withdrawal-live-refresh` (15-second visible-page refresh;
-  retains last good data on transient failure).
+- [x] Deploy and verify dashboard refresh change from `fix/withdrawal-live-refresh` (15-second visible-page refresh;
+  retains last good data on transient failure). Live build fingerprint verified at commit
+  `ee0697a10743ac4a9b247d9091478e2c26e0fd77`.
 - [ ] On a naturally occurring withdrawal, verify evidence and status through mailbox ingestion, deduplication,
   correlation, owner-scoped API, and dashboard. Do not initiate or confirm a withdrawal as a test.
 - [ ] Before showcasing ten accounts, confirm each account has a unique hosted identity/endpoint and that broker

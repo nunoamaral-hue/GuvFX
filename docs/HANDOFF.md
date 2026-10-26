@@ -1559,9 +1559,9 @@ submit the isolated branch for GitHub review.
 - `guvfx-broker-ingest.service` performs ingestion followed by correlation each minute; both commands receive the
   cross-inbox dedup flag. `guvfx-broker-ingest.timer` runs every minute. NAS rollback archive:
   `/Volumes/Backups/Backups/GuvFX/guvfx-ingest-before-correlation-20261026T0730Z.tgz`.
-- Dashboard data refreshes every 15 seconds when visible; timing also depends on broker email delivery. The frontend
-  refresh change is in isolated branch `fix/withdrawal-live-refresh` and still needs production deployment.
-- Remaining: deploy the frontend refresh build, verify production dashboard fingerprint and endpoint response, then
-  validate a naturally occurring live withdrawal through ingestion → correlation → visible dashboard. Never create
-  a test withdrawal or infer account identity without broker evidence. Ten-account capacity still needs a bounded
-  onboarding check before the showcase.
+- Frontend commit `ee0697a10743ac4a9b247d9091478e2c26e0fd77` is deployed frontend-only. Both the container and public
+  `/build-info.json` report that commit; dashboard data refreshes every 15 seconds when visible. Previous image
+  `sha256:3110e4ea...` is retained as `guvfx-prod-guvfx-frontend:rollback-pre-live-refresh-20261026` on the VPS.
+- Next: validate a naturally occurring live withdrawal through ingestion → correlation → visible dashboard. Never
+  create a test withdrawal or infer account identity without broker evidence. Ten-account capacity still needs a
+  bounded onboarding check before the showcase.

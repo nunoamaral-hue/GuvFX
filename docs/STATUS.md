@@ -4924,5 +4924,9 @@ the post-transition market opens. Evidence:
 - Withdrawal dashboard data refreshes every 15 seconds while the browser page is visible. A transient refresh error
   preserves the last good display. Total refresh latency depends on the one-minute mailbox schedule and broker email
   delivery time.
+- Frontend commit `ee0697a10743ac4a9b247d9091478e2c26e0fd77` was built and deployed frontend-only. The live
+  `/build-info.json` endpoint reports this commit; previous frontend image `sha256:3110e4ea...` is retained under
+  `guvfx-prod-guvfx-frontend:rollback-pre-live-refresh-20261026` on the VPS.
+- NAS also holds the account-50 task export and recovery note under `Backups/GuvFX/`.
 - No withdrawal was initiated or confirmed, and no trading capability was enabled. Ten-account onboarding and exact
   account attribution for emails lacking an account identifier remain to be confirmed.
