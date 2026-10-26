@@ -40,8 +40,12 @@ def _serialize_candidate(c) -> dict:
         "canonical": {"slug": c.canonical_slug, "display": c.canonical_display},
         "classification": c.classification,
         "reason": c.reason,
-        "confidence": c.confidence,
+        "identity_confidence": c.identity_confidence,
+        # The economic dimensions are reported SEPARATELY (price quote vs settlement vs margin vs contract).
+        "master_economics": c.master_economics,
+        "follower_economics": c.follower_economics,
         "material_differences": c.material_differences,
+        "compatibility_warnings": c.compatibility_warnings,
         "verified_at": c.verified_at,
         "verified_source": c.verified_source,
     }
@@ -54,9 +58,11 @@ def _serialize_direction(d, *, include_absent: bool) -> dict:
         "master_broker": d.master_broker,
         "follower_account_id": d.follower_account_id,
         "follower_broker": d.follower_broker,
+        # Raw catalogue size is reported DISTINCTLY from the coverage denominator (eligible source).
+        "raw_catalogue_count": d.raw_catalogue_count,
         "eligible_source": d.eligible_source,
-        "counts": d.counts,
-        "coverage_pct": d.coverage_pct,
+        "counts": d.counts,                 # the six classifications reconcile to eligible_source
+        "coverage_pct": d.coverage_pct,     # verified / eligible_source
         "candidates": [_serialize_candidate(c) for c in cands],
     }
 

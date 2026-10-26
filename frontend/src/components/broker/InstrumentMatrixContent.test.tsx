@@ -4,8 +4,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { InstrumentMatrix } from "@/types/copy-trading";
 
 /** Read-only matrix UX: quiet observation status (NO red banner), coverage-is-not-readiness note, ordered
- * pair counts + coverage, per-pair drill-down with native symbols, classification and material differences,
- * owner-scoped accounts, EN/JA and accessible controls. */
+ * pair counts + coverage + eligible/raw, per-pair drill-down with native symbols, classification and the
+ * separated material differences (settlement USD→GBP is a warning, identity stays sound), EN/JA, a11y. */
 
 const { getInstrumentMatrix } = vi.hoisted(() => ({ getInstrumentMatrix: vi.fn() }));
 vi.mock("@/lib/copy-trading-api", () => ({ getInstrumentMatrix }));
@@ -14,6 +14,11 @@ import { InstrumentMatrixContent } from "./InstrumentMatrixContent";
 
 const es = { mode: "observation", execution: "off", label: "Observation mode", detail: "Copy execution off",
              note: "Catalogue coverage is not execution readiness." };
+
+const eco = (over = {}) => ({
+  underlying: "XAU", quote_currency: "USD", settlement_currency: "USD", margin_currency: "USD",
+  contract_type: "SPOT", contract_size: "100", expiry: null, identity_confidence: "high", ...over,
+});
 
 const matrix = (): InstrumentMatrix => ({
   enabled: true,
@@ -28,33 +33,36 @@ const matrix = (): InstrumentMatrix => ({
     {
       master_account_id: 46, master_broker: "Tradersway-Live",
       follower_account_id: 48, follower_broker: "IS6Technologies-Live",
-      eligible_source: 2, counts: { VERIFIED: 1, UNVERIFIED: 1, AMBIGUOUS: 0, STALE: 0, INELIGIBLE: 0, ABSENT: 0 },
-      coverage_pct: 50.0,
+      raw_catalogue_count: 84, eligible_source: 80,
+      counts: { VERIFIED: 1, UNVERIFIED: 1, AMBIGUOUS: 0, STALE: 0, INELIGIBLE: 0, ABSENT: 78 },
+      coverage_pct: 1.3,
       candidates: [
         { master_symbol: "XAUUSD", follower_symbol: "XAUUSD.std", canonical: { slug: "METAL:XAU:USD", display: "Gold / USD" },
-          classification: "VERIFIED", reason: "verified_symbol_map", confidence: "high",
-          material_differences: {}, verified_at: "2026-10-24T16:19:37Z", verified_source: "29" },
+          classification: "VERIFIED", reason: "verified_symbol_map", identity_confidence: "high",
+          master_economics: eco(), follower_economics: eco(),
+          material_differences: {}, compatibility_warnings: [], verified_at: "2026-10-24T16:19:37Z", verified_source: "29" },
         { master_symbol: "EURUSD", follower_symbol: "EURUSD.std", canonical: { slug: "FX:EUR:USD", display: "EUR / USD" },
-          classification: "UNVERIFIED", reason: "needs_explicit_verification", confidence: "high",
-          material_differences: {}, verified_at: null, verified_source: null },
+          classification: "UNVERIFIED", reason: "needs_explicit_verification", identity_confidence: "high",
+          master_economics: eco({ underlying: "EUR" }), follower_economics: eco({ underlying: "EUR" }),
+          material_differences: {}, compatibility_warnings: [], verified_at: null, verified_source: null },
       ],
     },
     {
       master_account_id: 46, master_broker: "Tradersway-Live",
       follower_account_id: 49, follower_broker: "PepperstoneUK-Live",
-      eligible_source: 2, counts: { VERIFIED: 0, UNVERIFIED: 1, AMBIGUOUS: 1, STALE: 0, INELIGIBLE: 0, ABSENT: 0 },
+      raw_catalogue_count: 84, eligible_source: 80,
+      counts: { VERIFIED: 0, UNVERIFIED: 1, AMBIGUOUS: 1, STALE: 0, INELIGIBLE: 0, ABSENT: 78 },
       coverage_pct: 0.0,
       candidates: [
         { master_symbol: "XAUUSD", follower_symbol: "XAUUSD_SB", canonical: { slug: "METAL:XAU:USD", display: "Gold / USD" },
-          classification: "AMBIGUOUS", reason: "material_incompatibility", confidence: "low",
+          classification: "AMBIGUOUS", reason: "material_compatibility_warning", identity_confidence: "high",
+          master_economics: eco(), follower_economics: eco({ settlement_currency: "GBP", margin_currency: "GBP", contract_type: "SPREADBET", contract_size: "1" }),
           material_differences: {
             contract_size: { master: "100", follower: "1", differs: true },
             settlement_currency: { master: "USD", follower: "GBP", differs: true },
             contract_type: { master: "SPOT", follower: "SPREADBET", differs: true },
-          }, verified_at: null, verified_source: null },
-        { master_symbol: "EURUSD", follower_symbol: "EURUSD", canonical: { slug: "FX:EUR:USD", display: "EUR / USD" },
-          classification: "UNVERIFIED", reason: "needs_explicit_verification", confidence: "high",
-          material_differences: {}, verified_at: null, verified_source: null },
+          }, compatibility_warnings: ["settlement_currency", "contract_type", "contract_size"],
+          verified_at: null, verified_source: null },
       ],
     },
   ],
@@ -86,11 +94,11 @@ describe("InstrumentMatrixContent", () => {
     expect((await screen.findByTestId("matrix-coverage-note")).textContent).toMatch(/not execution readiness/i);
   });
 
-  it("shows ordered-pair rows with coverage, including the empty #49 catalogue", async () => {
+  it("shows eligible/raw and coverage, including the empty #49 catalogue", async () => {
     getInstrumentMatrix.mockResolvedValue(matrix());
     render(<InstrumentMatrixContent lang="en" />);
-    expect((await screen.findByTestId("matrix-coverage-46-48")).textContent).toBe("50%");
-    expect(screen.getByTestId("matrix-coverage-46-49").textContent).toBe("0%");
+    expect((await screen.findByTestId("matrix-coverage-46-48")).textContent).toBe("1.3%");
+    expect(screen.getByTestId("matrix-eligible-46-48").textContent).toMatch(/80\s*\/\s*84/);
     expect(screen.getByTestId("matrix-catalogue-49").textContent).toMatch(/not synced/i);
   });
 
@@ -105,13 +113,13 @@ describe("InstrumentMatrixContent", () => {
     expect(row.textContent).toMatch(/2026-10-24/);
   });
 
-  it("drills into 46→49: XAUUSD is AMBIGUOUS and shows the material differences (fail closed)", async () => {
+  it("drills into 46→49: XAUUSD is AMBIGUOUS and surfaces the material differences (fail closed)", async () => {
     getInstrumentMatrix.mockResolvedValue(matrix());
     render(<InstrumentMatrixContent lang="en" />);
     fireEvent.click(await screen.findByTestId("matrix-inspect-46-49"));
     const row = screen.getByTestId("matrix-candidate-46-49-XAUUSD");
     expect(row.textContent).toMatch(/Ambiguous/);
-    expect(row.textContent).toMatch(/USD→GBP/);     // P&L currency difference surfaced
+    expect(row.textContent).toMatch(/USD→GBP/);     // settlement/P&L difference surfaced (a warning)
     expect(row.textContent).toMatch(/100→1/);       // contract-size difference surfaced
   });
 

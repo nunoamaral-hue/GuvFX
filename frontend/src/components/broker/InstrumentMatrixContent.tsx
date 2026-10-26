@@ -30,7 +30,7 @@ const T = {
   stale: { en: "stale", ja: "古い" },
   pair: { en: "Master → Follower", ja: "マスター → フォロワー" },
   coverage: { en: "Coverage", ja: "カバレッジ" },
-  eligible: { en: "Source instruments", ja: "ソース銘柄" },
+  eligible: { en: "Eligible / raw", ja: "対象 / 全体" },
   inspect: { en: "Inspect", ja: "検査" },
   source: { en: "Source symbol", ja: "ソース銘柄" },
   dest: { en: "Follower symbol", ja: "フォロワー銘柄" },
@@ -195,7 +195,9 @@ export function InstrumentMatrixContent({ lang }: { lang: Lang }) {
                     {" → "}
                     <code>{accountsById.get(d.follower_account_id) || d.follower_account_id}</code>
                   </td>
-                  <td style={cell}>{d.eligible_source}</td>
+                  <td data-testid={`matrix-eligible-${key}`} style={cell}>
+                    {d.eligible_source} <span style={muted}>/ {d.raw_catalogue_count}</span>
+                  </td>
                   <td style={{ ...cell, color: CLS.VERIFIED.color }}>{d.counts.VERIFIED}</td>
                   <td style={{ ...cell, color: CLS.UNVERIFIED.color }}>{d.counts.UNVERIFIED}</td>
                   <td style={{ ...cell, color: CLS.AMBIGUOUS.color }}>{d.counts.AMBIGUOUS}</td>

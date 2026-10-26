@@ -77,12 +77,28 @@ class MatrixApiTests(APITestCase):
         self.assertIsNotNone(syms["XAUUSD"]["verified_at"])
 
     @override_settings(**COHORT)
-    def test_spread_bet_direction_ambiguous(self):
+    def test_spread_bet_direction_ambiguous_with_separated_dimensions(self):
         r = self.client.get(URL + f"?master={self.m46.id}&follower={self.f49.id}")
         d = r.data["directions"][0]
         c = next(x for x in d["candidates"] if x["master_symbol"] == "XAUUSD")
         self.assertEqual(c["classification"], "AMBIGUOUS")
+        self.assertEqual(c["identity_confidence"], "high")              # identity sound, not impugned
+        self.assertEqual(c["canonical"]["slug"], "METAL:XAU:USD")
+        # Economic dimensions reported SEPARATELY: USD price quote, GBP settlement.
+        self.assertEqual(c["master_economics"]["quote_currency"], "USD")
+        self.assertEqual(c["follower_economics"]["quote_currency"], "USD")
+        self.assertEqual(c["follower_economics"]["settlement_currency"], "GBP")
         self.assertTrue(c["material_differences"]["settlement_currency"]["differs"])
+        self.assertIn("settlement_currency", c["compatibility_warnings"])
+
+    @override_settings(**COHORT)
+    def test_raw_catalogue_count_distinct_from_eligible(self):
+        r = self.client.get(URL + f"?master={self.m46.id}&follower={self.f48.id}")
+        d = r.data["directions"][0]
+        self.assertIn("raw_catalogue_count", d)
+        self.assertEqual(d["raw_catalogue_count"], 1)   # only XAUUSD seeded on #46
+        self.assertEqual(d["eligible_source"], 1)
+        self.assertEqual(sum(d["counts"].values()), d["eligible_source"])
 
     @override_settings(**COHORT)
     def test_owner_scoped_foreign_account_absent(self):

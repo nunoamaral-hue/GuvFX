@@ -162,19 +162,35 @@ export interface MatrixMaterialDifference {
   differs: boolean;
 }
 
+// The economic dimensions, modelled separately (price quote vs settlement vs margin vs contract).
+export interface MatrixEconomics {
+  underlying: string;
+  quote_currency: string | null;
+  settlement_currency: string | null;
+  margin_currency: string | null;
+  contract_type: string;
+  contract_size: string | null;
+  expiry: string | null;
+  identity_confidence: string;
+}
+
 export interface MatrixCandidate {
   master_symbol: string;
   follower_symbol: string;
   canonical: { slug: string | null; display: string };
   classification: MappingClassification;
   reason: string;
-  confidence: string;
+  identity_confidence: string;
+  master_economics: Partial<MatrixEconomics>;
+  follower_economics: Partial<MatrixEconomics>;
   material_differences: {
     contract_size?: MatrixMaterialDifference;
     settlement_currency?: MatrixMaterialDifference;
+    margin_currency?: MatrixMaterialDifference;
     quote_currency?: MatrixMaterialDifference;
     contract_type?: MatrixMaterialDifference;
   };
+  compatibility_warnings: string[];
   verified_at: string | null;
   verified_source: string | null;
 }
@@ -184,6 +200,7 @@ export interface MatrixDirection {
   master_broker: string;
   follower_account_id: number;
   follower_broker: string;
+  raw_catalogue_count: number;
   eligible_source: number;
   counts: Record<MappingClassification, number>;
   coverage_pct: number | null;

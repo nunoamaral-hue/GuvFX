@@ -420,17 +420,17 @@ class CopierReplication(models.Model):
 
 class CanonicalInstrument(models.Model):
     """A canonical economic-instrument identity that relates broker-specific symbols WITHOUT replacing
-    their native names (packet §2). Keyed on the price reference (asset class + underlying + quote
-    currency + optional expiry) via the stable ``key`` slug; settlement currency, contract size and
-    contract type are descriptive attributes recorded as *material differences* on a mapping, never
-    folded into the identity. Persisted only by the refresh command; the read/API path compares keys
-    directly, so a read never creates a row."""
+    their native names (packet §2). Keyed on the PRICE REFERENCE only (asset class + underlying + quote
+    currency + optional expiry) via the stable ``key`` slug. Settlement/P&L currency, margin currency,
+    contract type and contract size are broker-instance dimensions recorded as *material differences* on a
+    mapping — never folded into the identity (so XAUUSD and XAUUSD_SB share ``METAL:XAU:USD`` even though
+    one settles USD and the other GBP). Persisted only by the refresh command; the read/API path compares
+    keys directly, so a read never creates a row."""
 
     key = models.CharField(max_length=64, unique=True, help_text="Stable slug, e.g. METAL:XAU:USD.")
     asset_class = models.CharField(max_length=16)
     underlying = models.CharField(max_length=24)
     quote_currency = models.CharField(max_length=8)
-    contract_type = models.CharField(max_length=16, default="UNKNOWN")
     expiry = models.DateField(null=True, blank=True)
     display_name = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -456,11 +456,20 @@ class MappingClassification(models.TextChoices):
 class InstrumentMapping(models.Model):
     """One ORDERED directional candidate: ``master_account → follower_account`` for one master symbol.
 
-    The uniqueness contract is the WHOLE directional key — ``(master_account, follower_account,
-    master_symbol, follower_symbol)`` — so a reverse direction is a separate row and adding one direction
-    can never overwrite another. ``verified_via_symbol_map`` REFLECTS a verified ``CopierSymbolMap`` at
-    refresh time (audit snapshot only); it is never read by the execution path. ``on_delete=CASCADE`` on
-    the accounts keeps an account purge unblocked (consistent with the other copier config models)."""
+    Mapping IDENTITY includes the canonical instrument. Two uniqueness constraints, together, give the
+    agreed contract:
+
+    * ``uq_instrument_mapping_identity`` — unique on the WHOLE directional key including canonical:
+      ``(master_account, follower_account, canonical_instrument, master_symbol, follower_symbol)``. A
+      reverse direction is a separate row; adding one direction can never overwrite another.
+    * ``uq_instrument_mapping_native_pair`` — unique on the native pair ``(master_account,
+      follower_account, master_symbol, follower_symbol)``. This guarantees a native pair cannot be
+      ambiguously attached to MORE THAN ONE canonical identity (a stronger guard the nullable-canonical
+      identity constraint alone cannot give, since SQL treats NULL canonicals as distinct).
+
+    ``verified_via_symbol_map`` REFLECTS a verified ``CopierSymbolMap`` at refresh time (audit snapshot
+    only); it is never read by the execution path. ``on_delete=CASCADE`` on the accounts keeps an account
+    purge unblocked (consistent with the other copier config models)."""
 
     master_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
     master_broker = models.CharField(max_length=128)
@@ -472,8 +481,9 @@ class InstrumentMapping(models.Model):
         CanonicalInstrument, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     classification = models.CharField(max_length=16, choices=MappingClassification.choices)
     reason = models.CharField(max_length=64, blank=True)
-    confidence = models.CharField(max_length=8, blank=True)
+    identity_confidence = models.CharField(max_length=8, blank=True)
     material_differences = models.JSONField(default=dict, blank=True)
+    compatibility_warnings = models.JSONField(default=list, blank=True)
     verified_via_symbol_map = models.BooleanField(default=False)
     observed_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -482,8 +492,13 @@ class InstrumentMapping(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
+                fields=["master_account", "follower_account", "canonical_instrument",
+                        "master_symbol", "follower_symbol"],
+                name="uq_instrument_mapping_identity",
+            ),
+            models.UniqueConstraint(
                 fields=["master_account", "follower_account", "master_symbol", "follower_symbol"],
-                name="uq_instrument_mapping_direction",
+                name="uq_instrument_mapping_native_pair",
             ),
         ]
         indexes = [
