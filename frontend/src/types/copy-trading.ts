@@ -182,6 +182,82 @@ export interface CopyTradingConfig {
   config?: CurrentConfig | null;
 }
 
+// GET /api/copy-trading/instrument-matrix/ — founder-only, owner-scoped, read-only mapping matrix.
+// (ExecutionStatus is the single definition from #581 above — same shape; no parallel contract.)
+export type MappingClassification =
+  | "VERIFIED" | "UNVERIFIED" | "AMBIGUOUS" | "STALE" | "INELIGIBLE" | "ABSENT";
+
+export interface MatrixMaterialDifference {
+  master: string | null;
+  follower: string | null;
+  differs: boolean;
+}
+
+// The economic dimensions, modelled separately (price quote vs settlement vs margin vs contract).
+export interface MatrixEconomics {
+  underlying: string;
+  quote_currency: string | null;
+  settlement_currency: string | null;
+  margin_currency: string | null;
+  contract_type: string;
+  contract_size: string | null;
+  expiry: string | null;
+  identity_confidence: string;
+}
+
+export interface MatrixCandidate {
+  master_symbol: string;
+  follower_symbol: string;
+  canonical: { slug: string | null; display: string };
+  classification: MappingClassification;
+  reason: string;
+  identity_confidence: string;
+  master_economics: Partial<MatrixEconomics>;
+  follower_economics: Partial<MatrixEconomics>;
+  material_differences: {
+    contract_size?: MatrixMaterialDifference;
+    settlement_currency?: MatrixMaterialDifference;
+    margin_currency?: MatrixMaterialDifference;
+    quote_currency?: MatrixMaterialDifference;
+    contract_type?: MatrixMaterialDifference;
+  };
+  compatibility_warnings: string[];
+  verified_at: string | null;
+  verified_source: string | null;
+}
+
+export interface MatrixDirection {
+  master_account_id: number;
+  master_broker: string;
+  follower_account_id: number;
+  follower_broker: string;
+  raw_catalogue_count: number;
+  eligible_source: number;
+  counts: Record<MappingClassification, number>;
+  coverage_pct: number | null;
+  candidates: MatrixCandidate[];
+}
+
+export interface MatrixAccount {
+  account_id: number;
+  broker: string;
+  catalogue: {
+    state: "synced" | "empty" | "stale";
+    symbol_count: number;
+    enabled_count: number;
+    synced_at: string | null;
+    age_seconds: number | null;
+  };
+}
+
+export interface InstrumentMatrix {
+  enabled: boolean;
+  execution_status?: ExecutionStatus;
+  accounts: MatrixAccount[];
+  directions: MatrixDirection[];
+  note: string;
+}
+
 export interface CopyTradingConfigWrite {
   master_account_id: number;
   followers: Array<{ account_id: number; sizing_mode?: string; fixed_lot?: string; max_volume?: string; max_concurrent_positions?: number }>;

@@ -3,7 +3,7 @@
 import { apiFetch } from "@/lib/api";
 import type {
   CopyTradingConfig, CopyTradingConfigSaveResult, CopyTradingConfigWrite,
-  CopyTradingOverview, CopyTradingStatus,
+  CopyTradingOverview, CopyTradingStatus, InstrumentMatrix,
 } from "@/types/copy-trading";
 
 export async function getCopyTradingOverview(accountId: number): Promise<CopyTradingOverview> {
@@ -26,4 +26,11 @@ export async function saveCopyTradingConfig(body: CopyTradingConfigWrite): Promi
   return apiFetch<CopyTradingConfigSaveResult>(`/api/copy-trading/config/`, {
     method: "POST", body: JSON.stringify(body),
   });
+}
+
+// Founder-only, owner-scoped, READ-ONLY multi-broker instrument-mapping matrix. Pass master+follower to
+// drill into one ordered pair. Catalogue coverage is not execution readiness; this endpoint never writes.
+export async function getInstrumentMatrix(pair?: { master: number; follower: number }): Promise<InstrumentMatrix> {
+  const q = pair ? `?master=${pair.master}&follower=${pair.follower}` : "";
+  return apiFetch<InstrumentMatrix>(`/api/copy-trading/instrument-matrix/${q}`, {});
 }
