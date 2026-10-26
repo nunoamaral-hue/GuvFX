@@ -31,6 +31,7 @@ type NavItem = {
   labelKey: string; // i18n key
   href: string;
   adminOnly?: boolean;
+  copierCohort?: boolean; // shown only to the founder Copy Trading cohort (status enabled); fail-closed to hidden
   soon?: boolean; // Marks features not yet implemented
 };
 
@@ -69,6 +70,7 @@ const navGroups: NavGroup[] = [
       { labelKey: "nav.brokerAccounts", href: "/accounts" },
       { labelKey: "nav.marketplace", href: "/strategies/marketplace" },
       { labelKey: "nav.liveTrading", href: "/trading/live-trading" },
+      { labelKey: "nav.copyTrading", href: "/copy-trading", copierCohort: true },
     ],
   },
   {
@@ -356,15 +358,17 @@ type NavGroupComponentProps = {
   group: NavGroup;
   activeHref: string | null;
   isStaff: boolean;
+  copierCohort?: boolean;
   lang: Lang;
   onNavigate?: () => void;
 };
 
-function NavGroupComponent({ group, activeHref, isStaff, lang, onNavigate }: NavGroupComponentProps) {
+function NavGroupComponent({ group, activeHref, isStaff, copierCohort, lang, onNavigate }: NavGroupComponentProps) {
   const [isOpen, setIsOpen] = useState(group.defaultOpen ?? false);
 
-  // Filter out admin-only items if user is not staff
-  const visibleItems = group.items.filter((item) => !item.adminOnly || isStaff);
+  // Filter out admin-only items (non-staff) and founder-cohort items (non-cohort) — the latter fail-closed to hidden.
+  const visibleItems = group.items.filter(
+    (item) => (!item.adminOnly || isStaff) && (!item.copierCohort || !!copierCohort));
 
   if (visibleItems.length === 0) return null;
 
@@ -710,10 +714,11 @@ type MobileDrawerProps = {
   onClose: () => void;
   activeHref: string | null;
   isStaff: boolean;
+  copierCohort?: boolean;
   lang: Lang;
 };
 
-function MobileDrawer({ isOpen, onClose, activeHref, isStaff, lang }: MobileDrawerProps) {
+function MobileDrawer({ isOpen, onClose, activeHref, isStaff, copierCohort, lang }: MobileDrawerProps) {
   // Prevent body scroll when drawer is open
   useEffect(() => {
     if (isOpen) {
@@ -815,6 +820,7 @@ function MobileDrawer({ isOpen, onClose, activeHref, isStaff, lang }: MobileDraw
               group={group}
               activeHref={activeHref}
               isStaff={isStaff}
+              copierCohort={copierCohort}
               lang={lang}
               onNavigate={onClose}
             />
@@ -887,6 +893,17 @@ export function AppShell({ children }: AppShellProps) {
 
   // Auth state (best-effort only)
   const [currentUser, setCurrentUser] = useState<Me | null>(null);
+
+  // Founder Copy Trading cohort visibility (default-DENY, fail-closed to hidden). Drives the Copy Trading nav item.
+  const [copierEnabled, setCopierEnabled] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    import("@/lib/copy-trading-api")
+      .then((m) => m.getCopyTradingStatus())
+      .then((s) => { if (alive) setCopierEnabled(Boolean(s?.enabled)); })
+      .catch(() => { if (alive) setCopierEnabled(false); });   // any error -> hidden
+    return () => { alive = false; };
+  }, []);
 
   // UI state
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -1106,6 +1123,7 @@ export function AppShell({ children }: AppShellProps) {
                 group={group}
                 activeHref={activeHref}
                 isStaff={isStaff}
+                copierCohort={copierEnabled}
                 lang={lang}
               />
             ))}
@@ -1333,6 +1351,7 @@ export function AppShell({ children }: AppShellProps) {
           onClose={closeMobileDrawer}
           activeHref={activeHref}
           isStaff={isStaff}
+          copierCohort={copierEnabled}
           lang={lang}
         />
       </div>

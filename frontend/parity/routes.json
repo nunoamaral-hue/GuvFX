@@ -8,6 +8,7 @@
   "src/app/(app)/accounts/[id]/copy-trading/page.tsx",
   "src/app/(app)/accounts/[id]/strategies/page.tsx",
   "src/app/(app)/accounts/page.tsx",
+  "src/app/(app)/copy-trading/page.tsx",
   "src/app/(app)/admin/hosting/page.tsx",
   "src/app/(app)/admin/operations/entitlements/page.tsx",
   "src/app/(app)/admin/operations/execution-jobs/page.tsx",

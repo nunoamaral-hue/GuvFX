@@ -35,6 +35,7 @@ const STR = {
     ja: "許可された出金通知メールから観測 — 観測のみであり、処理スピードを保証するものではありません。",
   },
   none: { en: "No withdrawals observed yet", ja: "出金はまだ検出されていません" },
+  noneAccount: { en: "No withdrawals observed for this account.", ja: "この口座で観測された出金はありません。" },
 };
 
 // Section frame (matches the dashboard's institutional "glass" section cards: subtle blue border, dark gradient).
@@ -76,38 +77,53 @@ export const IntelligenceSectionShell: React.FC<{
   </section>
 );
 
-export const WithdrawalIntelligenceSection: React.FC<{ lang?: Lang }> = ({ lang = "en" }) => {
+// One per-scope OUTCOME, TAGGED with the scope it was produced for. Folding the DARK/error "hidden" signal INTO the
+// per-scope result (not a separate global latch) means a transient fetch error on one scope can never hide the section
+// for a LATER scope: a stale outcome whose forScope != the current scope is simply discarded.
+type ScopeOutcome =
+  | { forScope: string; kind: "hidden" }
+  | { forScope: string; kind: "ok"; metrics: WithdrawalMetrics; history: WithdrawalHistory | null };
+
+export const WithdrawalIntelligenceSection: React.FC<{ lang?: Lang; scope?: string }> = ({ lang = "en", scope = "ALL" }) => {
   const L: Lang = lang === "ja" ? "ja" : "en";
-  // The section owns ONE load and feeds both columns, so summary and history appear together and always agree. The
-  // METRICS probe is the visibility gate (DARK 404 / malformed / error -> the whole section renders nothing — no empty
-  // frame). History loads in parallel and is injected into the right column; a history-only failure degrades to the
-  // summary alone rather than hiding the section.
-  const [metrics, setMetrics] = useState<WithdrawalMetrics | null>(null);
-  const [hidden, setHidden] = useState(false);
-  const [history, setHistory] = useState<WithdrawalHistory | null>(null);
-  const [historyDone, setHistoryDone] = useState(false);
+  // Follow the dashboard's top-level account selector (the SAME `scope` every account-dependent section uses): "ALL" ->
+  // owner-wide (includes the member's owner-attributed, account-UNRESOLVED withdrawals); a specific account id -> that
+  // account only (the backend excludes unresolved + other-account rows — never broker-name inference). The id is passed
+  // to BOTH metrics and history so the summary and history ALWAYS describe the same scope.
+  const accountId = scope && scope !== "ALL" ? scope : null;
+  // One per-scope outcome: metrics + history fetched together and TAGGED with the scope they were produced for. A rapid
+  // selector change (ALL -> 49 -> 46) can never render a stale earlier-scope response — the effect re-runs on scope
+  // change (its cleanup invalidates the superseded in-flight request via `live`), and render trusts the outcome ONLY
+  // when its scope matches the CURRENT scope. Summary + history therefore change ATOMICALLY to one scope; a DARK 404 /
+  // error is a per-scope "hidden" outcome (never a sticky global latch — see ScopeOutcome).
+  const [result, setResult] = useState<ScopeOutcome | null>(null);
 
   useEffect(() => {
     let live = true;
-    apiFetch<WithdrawalMetrics>(METRICS_PATH, {})
-      .then((m) => {
+    const forScope = scope;
+    const acct = forScope && forScope !== "ALL" ? forScope : null;
+    const q = acct ? `?account_id=${encodeURIComponent(acct)}` : "";
+    // History may fail independently (degrades to summary-only); metrics is the visibility gate.
+    const historyP = apiFetch<WithdrawalHistory>(HISTORY_PATH + q, {}).catch(() => null);
+    apiFetch<WithdrawalMetrics>(METRICS_PATH + q, {})
+      .then(async (m) => {
         if (!live) return;
-        if (m && typeof (m as WithdrawalMetrics).total === "number") setMetrics(m);
-        else setHidden(true);   // non-conforming payload: hide, never a broken frame
-      })
-      .catch(() => { if (live) setHidden(true); });   // 404 => feature DARK; any error => hide
-    apiFetch<WithdrawalHistory>(HISTORY_PATH, {})
-      .then((h) => {
+        if (!(m && typeof (m as WithdrawalMetrics).total === "number")) { setResult({ forScope, kind: "hidden" }); return; }
+        const h = await historyP;
         if (!live) return;
-        if (h && Array.isArray((h as WithdrawalHistory).withdrawals)) setHistory(h);
-        setHistoryDone(true);
+        const hist = h && Array.isArray((h as WithdrawalHistory).withdrawals) ? (h as WithdrawalHistory) : null;
+        setResult({ forScope, kind: "ok", metrics: m, history: hist });   // one atomic per-scope result
       })
-      .catch(() => { if (live) setHistoryDone(true); });   // history-only failure: right column simply absent
+      .catch(() => { if (live) setResult({ forScope, kind: "hidden" }); });   // 404 DARK / any error -> hidden for THIS scope
     return () => { live = false; };
-  }, []);
+  }, [scope]);
 
-  if (hidden) return null;                 // DARK or unavailable -> render nothing (no empty frame)
-  if (!metrics || !historyDone) return null;   // wait for the gate AND history to settle -> columns appear together
+  // Render ONLY the latest-scope outcome; discard a stale earlier-scope one, and render nothing while the current
+  // scope's load is still in flight (so the summary and history always appear together for ONE scope).
+  const current = result && result.forScope === scope ? result : null;
+  if (!current || current.kind !== "ok") return null;   // loading / stale / DARK / error (per-scope) -> render nothing
+  const { metrics, history } = current;
+  const isAccountScoped = accountId != null;
 
   return (
     <IntelligenceSectionShell
@@ -115,10 +131,11 @@ export const WithdrawalIntelligenceSection: React.FC<{ lang?: Lang }> = ({ lang 
       viewAllLabel={STR.viewAll[L]} href={DETAIL_HREF} count={metrics.total} caption={STR.caption[L]}
     >
       {metrics.total === 0 ? (
-        // Honest, single empty state — never two duplicate "nothing yet" messages, never an oversized empty region.
+        // Honest, single empty state — scope-aware: a selected account with no verified withdrawals shows a compact
+        // scoped message (never portfolio-wide totals/history); owner-wide shows the generic "nothing yet" message.
         <div style={{ fontSize: "0.78rem", color: "#8fa0b7", textAlign: "center", padding: "14px 0" }}
           data-testid="wi-section-empty">
-          {STR.none[L]}
+          {isAccountScoped ? STR.noneAccount[L] : STR.none[L]}
         </div>
       ) : (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "1.1rem", alignItems: "stretch" }}>
