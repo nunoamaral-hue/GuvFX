@@ -109,6 +109,31 @@ export interface EligibleAccount {
   ready: boolean;
 }
 
+export interface InstrumentMapStatus {
+  master_broker: string;
+  follower_broker: string;
+  same_broker: boolean;
+  state: "verified" | "unverified" | "missing" | "identity";
+  ready: boolean;
+  failure_reason: string | null;
+  last_verified_at: string | null;
+  pairs: Array<{ master_symbol: string; follower_symbol: string; verified: boolean; verified_at: string | null }>;
+}
+
+export interface ObservedConstraints {
+  available: boolean;
+  reason: string | null;
+  symbols: Record<string, {
+    volume_min: number | null;
+    volume_step: number | null;
+    volume_max: number | null;
+    contract_size: number | null;
+    currency_base: string | null;
+    currency_profit: string | null;
+    trade_mode: number | null;
+  }>;
+}
+
 export interface ConfigPair {
   follower_account_id: number;
   enabled: boolean;
@@ -119,11 +144,24 @@ export interface ConfigPair {
   max_concurrent_positions: number | null;
   instrument_map_ready: boolean;
   instrument_maps: Array<{ master_symbol?: string; follower_symbol?: string; verified?: boolean; identity?: boolean; note?: string }>;
+  // Structured map evidence + broker-observed constraints + fail-closed config verdict (per-follower sizing UX).
+  instrument_map?: InstrumentMapStatus;
+  observed_constraints?: ObservedConstraints;
+  config_status?: "ready" | "blocked";
+  config_blocked_reason?: string | null;
   observer_last_observed_at: string | null;
   last_observed_event: { event_type: string; symbol: string; observed_at: string } | null;
   supported_risk_controls: string[];
   unavailable_risk_metadata: string[];
   live_execution_blocked: boolean;
+}
+
+export interface ExecutionStatus {
+  mode: string;
+  execution: string;
+  label: string;
+  detail: string;
+  note: string;
 }
 
 export interface CurrentConfig {
@@ -138,21 +176,14 @@ export interface CopyTradingConfig {
   enabled: boolean;
   banner: string;
   execution?: string;
+  execution_status?: ExecutionStatus;
   explain?: string;
   eligible_accounts?: EligibleAccount[];
   config?: CurrentConfig | null;
 }
 
-// Compact, quiet observation-mode status (no red banner) shared by the Copy Trading read surfaces.
-export interface ExecutionStatus {
-  mode: string;
-  execution: string;
-  label: string;
-  detail: string;
-  note: string;
-}
-
 // GET /api/copy-trading/instrument-matrix/ — founder-only, owner-scoped, read-only mapping matrix.
+// (ExecutionStatus is the single definition from #581 above — same shape; no parallel contract.)
 export type MappingClassification =
   | "VERIFIED" | "UNVERIFIED" | "AMBIGUOUS" | "STALE" | "INELIGIBLE" | "ABSENT";
 
