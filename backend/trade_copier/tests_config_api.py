@@ -274,3 +274,172 @@ class EligibilityTests(APITestCase):
         self.foll2.disconnected_at = timezone.now(); self.foll2.save(update_fields=["disconnected_at"])
         cfg = self.client.get(self.url).data["config"]
         self.assertFalse(cfg["needs_operator_attention"])   # a DISABLED disconnected follower is not participating
+
+
+class PerFollowerSizingConstraintTests(APITestCase):
+    """Workstream A/B: each follower's sizing is validated against THAT follower's OWN broker-observed symbol
+    constraints; invalid volume (below-min/above-max/off-step) is rejected; a missing map or missing symbol spec
+    fails CLOSED (config 'blocked', never a silent accept and never a hard save error); sizing is per-follower and
+    never cross-applied; and execution stays OFF throughout."""
+
+    def setUp(self):
+        from django.utils import timezone
+        from trade_copier.models import CopierSymbolMap
+        from execution.models import BrokerInstrument
+        self.user = User.objects.create_user(username="founder", email="founder@guvfx.invalid", password="x")
+        self.master = _acct(self.user, "Master", "70001", broker="TradersWay", server="Tradersway-Live")
+        # Follower A — cross-broker, verified map + synced constraints (min 0.01 / step 0.01 / max 30), like #48.
+        self.fa = _acct(self.user, "FollowerA", "70002", broker="IS6FX", server="IS6Technologies-Live")
+        CopierSymbolMap.objects.create(master_broker="Tradersway-Live", master_symbol="XAUUSD",
+                                       follower_broker="IS6Technologies-Live", follower_symbol="XAUUSD.std",
+                                       verified=True, verified_at=timezone.now())
+        BrokerInstrument.objects.create(account=self.fa, broker_symbol="XAUUSD.std", base_symbol="XAUUSD",
+                                        metadata={"volume_min": 0.01, "volume_step": 0.01, "volume_max": 30.0,
+                                                  "contract_size": 100.0, "currency_profit": "USD"})
+        # Follower C — cross-broker, verified map + constraints with min 1.00 / step 0.1 (mirrors Pepperstone
+        # XAUUSD_SB once it WOULD be synced): proves below-min / off-step rejection with real broker numbers.
+        self.fc = _acct(self.user, "FollowerC", "70004", broker="Pepperstone", server="PepperstoneUK-LiveC")
+        CopierSymbolMap.objects.create(master_broker="Tradersway-Live", master_symbol="XAUUSD",
+                                       follower_broker="PepperstoneUK-LiveC", follower_symbol="XAUUSD_SB",
+                                       verified=True, verified_at=timezone.now())
+        BrokerInstrument.objects.create(account=self.fc, broker_symbol="XAUUSD_SB", base_symbol="XAUUSD",
+                                        metadata={"volume_min": 1.0, "volume_step": 0.1, "volume_max": 10000.0,
+                                                  "contract_size": 1.0, "currency_profit": "GBP"})
+        # Follower B — cross-broker, NO map and NO constraints at all (the actual production #49 today).
+        self.fb = _acct(self.user, "FollowerB", "70003", broker="Pepperstone", server="PepperstoneUK-Live")
+        # Follower D — verified map but NO synced BrokerInstrument (map present, spec missing).
+        self.fd = _acct(self.user, "FollowerD", "70005", broker="IS6FX", server="IS6Technologies-LiveD")
+        CopierSymbolMap.objects.create(master_broker="Tradersway-Live", master_symbol="XAUUSD",
+                                       follower_broker="IS6Technologies-LiveD", follower_symbol="XAUUSD.std",
+                                       verified=True, verified_at=timezone.now())
+        self.client.force_authenticate(self.user)
+        self.url = "/api/copy-trading/config/"
+
+    def _post(self, body):
+        return self.client.post(self.url, body, format="json")
+
+    def _pair(self, follower_id):
+        cfg = self.client.get(self.url).data["config"]
+        return next(p for p in cfg["followers"] if p["follower_account_id"] == follower_id)
+
+    # --- valid sizing against observed constraints ---
+    @override_settings(**COHORT)
+    def test_valid_lot_against_constraints_is_config_ready(self):
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.fa.id, "sizing_mode": "FIXED_LOT",
+                                       "fixed_lot": "0.01", "max_volume": "0.10"}]})
+        self.assertEqual(r.status_code, 200, r.data)
+        p = self._pair(self.fa.id)
+        self.assertEqual(p["config_status"], "ready")
+        self.assertIsNone(p["config_blocked_reason"])
+        self.assertEqual(p["instrument_map"]["state"], "verified")
+        self.assertEqual(p["instrument_map"]["pairs"][0]["follower_symbol"], "XAUUSD.std")
+        self.assertTrue(p["instrument_map"]["last_verified_at"])
+        self.assertTrue(p["observed_constraints"]["available"])
+        self.assertEqual(p["observed_constraints"]["symbols"]["XAUUSD.std"]["volume_min"], 0.01)
+
+    # --- invalid volume rejected (below-min / off-step / above-max) ---
+    @override_settings(**COHORT)
+    def test_below_min_volume_rejected(self):
+        for bad in ("0.01", "0.5"):   # both below the 1.00 minimum on fc
+            r = self._post({"master_account_id": self.master.id,
+                            "followers": [{"account_id": self.fc.id, "sizing_mode": "FIXED_LOT", "fixed_lot": bad}]})
+            self.assertEqual(r.status_code, 400, (bad, r.data))
+            self.assertIn("below", r.data["detail"])
+
+    @override_settings(**COHORT)
+    def test_off_step_volume_rejected(self):
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.fc.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "1.05"}]})
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn("step", r.data["detail"])
+
+    @override_settings(**COHORT)
+    def test_above_max_volume_rejected(self):
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.fa.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "50"}]})
+        self.assertEqual(r.status_code, 400, r.data)   # 50 <= parse ceiling 1000, but exceeds XAUUSD.std max 30
+        self.assertIn("maximum", r.data["detail"])
+
+    @override_settings(**COHORT)
+    def test_max_volume_above_broker_max_rejected(self):
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.fa.id, "sizing_mode": "FIXED_LOT",
+                                       "fixed_lot": "0.01", "max_volume": "500"}]})
+        self.assertEqual(r.status_code, 400, r.data)   # 500 exceeds XAUUSD.std max 30
+        self.assertIn("max_volume", r.data["detail"])
+
+    @override_settings(**COHORT)
+    def test_on_step_minimum_accepted_on_pepperstone_like(self):
+        for good in ("1.0", "1.2", "2.0"):
+            r = self._post({"master_account_id": self.master.id,
+                            "followers": [{"account_id": self.fc.id, "sizing_mode": "FIXED_LOT", "fixed_lot": good}]})
+            self.assertEqual(r.status_code, 200, (good, r.data))
+        self.assertEqual(self._pair(self.fc.id)["config_status"], "ready")
+
+    # --- fail-closed: missing map / missing spec / unverified map ---
+    @override_settings(**COHORT)
+    def test_missing_map_fails_closed_not_rejected(self):
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.fb.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        self.assertEqual(r.status_code, 200, r.data)   # saved as SHADOW; not a hard error
+        p = self._pair(self.fb.id)
+        self.assertEqual(p["config_status"], "blocked")
+        self.assertEqual(p["config_blocked_reason"], "no_symbol_map")
+        self.assertEqual(p["instrument_map"]["state"], "missing")
+        self.assertFalse(p["observed_constraints"]["available"])
+
+    @override_settings(**COHORT)
+    def test_missing_symbol_spec_fails_closed(self):
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": self.fd.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        self.assertEqual(r.status_code, 200, r.data)
+        p = self._pair(self.fd.id)
+        self.assertEqual(p["config_status"], "blocked")
+        self.assertEqual(p["config_blocked_reason"], "follower_instruments_unsynced")
+        self.assertEqual(p["instrument_map"]["state"], "verified")   # map IS verified; the SPEC is what is missing
+        self.assertFalse(p["observed_constraints"]["available"])
+
+    @override_settings(**COHORT)
+    def test_unverified_map_fails_closed(self):
+        from django.utils import timezone
+        from trade_copier.models import CopierSymbolMap
+        fe = _acct(self.user, "FollowerE", "70006", broker="IS6FX", server="IS6Technologies-LiveE")
+        CopierSymbolMap.objects.create(master_broker="Tradersway-Live", master_symbol="XAUUSD",
+                                       follower_broker="IS6Technologies-LiveE", follower_symbol="XAUUSD.std",
+                                       verified=False)
+        r = self._post({"master_account_id": self.master.id,
+                        "followers": [{"account_id": fe.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        self.assertEqual(r.status_code, 200, r.data)
+        p = self._pair(fe.id)
+        self.assertEqual(p["config_status"], "blocked")
+        self.assertEqual(p["config_blocked_reason"], "map_present_but_unverified")
+        self.assertEqual(p["instrument_map"]["state"], "unverified")
+
+    # --- per-follower isolation: one follower's sizing is never applied to another ---
+    @override_settings(**COHORT)
+    def test_per_follower_sizing_is_isolated(self):
+        self._post({"master_account_id": self.master.id, "followers": [
+            {"account_id": self.fa.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01", "max_volume": "0.10"},
+            {"account_id": self.fc.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "1.0", "max_volume": "5.0"}]})
+        self.assertEqual(self._pair(self.fa.id)["fixed_lot"], "0.010")
+        self.assertEqual(self._pair(self.fc.id)["fixed_lot"], "1.000")
+        # Edit ONLY fc; fa must be untouched (no silent cross-application).
+        self._post({"master_account_id": self.master.id, "followers": [
+            {"account_id": self.fa.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01", "max_volume": "0.10"},
+            {"account_id": self.fc.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "1.2", "max_volume": "5.0"}]})
+        self.assertEqual(self._pair(self.fa.id)["fixed_lot"], "0.010")   # unchanged
+        self.assertEqual(self._pair(self.fc.id)["fixed_lot"], "1.200")   # only fc changed
+
+    # --- execution stays OFF throughout (compact status, no flag flipped, no copier job) ---
+    @override_settings(**COHORT)
+    def test_execution_status_is_compact_and_off(self):
+        d = self.client.get(self.url).data
+        self.assertEqual(d["execution_status"]["execution"], "off")
+        self.assertEqual(d["execution_status"]["label"], "Observation mode")
+        self.assertEqual(d["execution_status"]["detail"], "Copy execution off")
+        self._post({"master_account_id": self.master.id,
+                    "followers": [{"account_id": self.fa.id, "sizing_mode": "FIXED_LOT", "fixed_lot": "0.01"}]})
+        self.assertFalse(any([cf.copier_enabled(), cf.copier_observer_enabled(), cf.copier_replication_enabled(),
+                              cf.copier_execute_enabled(), cf.copier_execute_demo_armed()]))
+        self.assertEqual(ExecutionJob.objects.filter(job_type__icontains="copier").count(), 0)
