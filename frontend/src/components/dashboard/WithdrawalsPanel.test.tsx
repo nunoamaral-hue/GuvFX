@@ -2,7 +2,7 @@
  * failed, per-currency totals, N/A duration when unknown), self-hides on the DARK 404, and exposes no action. */
 import React from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, act } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("@/lib/api", () => api);
@@ -102,5 +102,30 @@ describe("WithdrawalsPanel", () => {
     expect(api.apiFetch).not.toHaveBeenCalled();
     expect(screen.queryByTestId("withdrawals-panel")).toBeNull();
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("WithdrawalsPanel — auto-refresh", () => {
+  beforeEach(() => { api.apiFetch.mockReset(); vi.useFakeTimers(); });
+  afterEach(() => { cleanup(); vi.runOnlyPendingTimers(); vi.useRealTimers(); });
+  const calls = () => api.apiFetch.mock.calls.length;
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it("polls metrics on the 15s interval and stops after unmount (timer cleaned up)", async () => {
+    api.apiFetch.mockResolvedValue(metrics());
+    const { unmount } = render(<WithdrawalsPanel />);
+    await tick(0);
+    expect(calls()).toBe(1);
+    await tick(15_000);
+    expect(calls()).toBe(2);
+    unmount();
+    await tick(60_000);
+    expect(calls()).toBe(2);   // no fetch after unmount
+  });
+
+  it("injected metrics never self-fetch and never poll", async () => {
+    render(<WithdrawalsPanel metrics={metrics()} embedded />);
+    await tick(30_000);
+    expect(calls()).toBe(0);
   });
 });

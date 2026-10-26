@@ -100,22 +100,38 @@ export const WithdrawalIntelligenceSection: React.FC<{ lang?: Lang; scope?: stri
 
   useEffect(() => {
     let live = true;
+    let hasLoaded = false;
     const forScope = scope;
     const acct = forScope && forScope !== "ALL" ? forScope : null;
     const q = acct ? `?account_id=${encodeURIComponent(acct)}` : "";
-    // History may fail independently (degrades to summary-only); metrics is the visibility gate.
-    const historyP = apiFetch<WithdrawalHistory>(HISTORY_PATH + q, {}).catch(() => null);
-    apiFetch<WithdrawalMetrics>(METRICS_PATH + q, {})
-      .then(async (m) => {
-        if (!live) return;
-        if (!(m && typeof (m as WithdrawalMetrics).total === "number")) { setResult({ forScope, kind: "hidden" }); return; }
-        const h = await historyP;
-        if (!live) return;
-        const hist = h && Array.isArray((h as WithdrawalHistory).withdrawals) ? (h as WithdrawalHistory) : null;
-        setResult({ forScope, kind: "ok", metrics: m, history: hist });   // one atomic per-scope result
-      })
-      .catch(() => { if (live) setResult({ forScope, kind: "hidden" }); });   // 404 DARK / any error -> hidden for THIS scope
-    return () => { live = false; };
+    const refresh = () => {
+      // History may fail independently (degrades to summary-only); metrics is the visibility gate.
+      const historyP = apiFetch<WithdrawalHistory>(HISTORY_PATH + q, {}).catch(() => null);
+      apiFetch<WithdrawalMetrics>(METRICS_PATH + q, {})
+        .then(async (m) => {
+          if (!live) return;
+          if (!(m && typeof (m as WithdrawalMetrics).total === "number")) {
+            if (!hasLoaded) setResult({ forScope, kind: "hidden" });
+            return;
+          }
+          const h = await historyP;
+          if (!live) return;
+          const hist = h && Array.isArray((h as WithdrawalHistory).withdrawals) ? (h as WithdrawalHistory) : null;
+          setResult((previous) => ({
+            forScope,
+            kind: "ok",
+            metrics: m,
+            history: hist ?? (previous?.forScope === forScope && previous.kind === "ok" ? previous.history : null),
+          }));
+          hasLoaded = true;
+        })
+        .catch(() => { if (live && !hasLoaded) setResult({ forScope, kind: "hidden" }); });
+    };
+    refresh();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 15_000);
+    return () => { live = false; window.clearInterval(timer); };
   }, [scope]);
 
   // Render ONLY the latest-scope outcome; discard a stale earlier-scope one, and render nothing while the current

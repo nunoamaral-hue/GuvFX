@@ -1,5 +1,19 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-26 — Withdrawal Intelligence auto-refresh reconciliation (repo-only, DARK, PR)
+
+- **Context.** Production `/home/ubuntu/guvfx-app` was detached at an untracked hotfix `ee0697a`
+  *"fix: refresh withdrawal intelligence automatically"* — not an ancestor of main, no PR. A Copy Trading
+  deploy of main as-is would have regressed the live WI auto-refresh, so it correctly stopped.
+- **Change.** Reconciled the hotfix intent onto current main: 15s visibility-gated auto-refresh for the WI
+  Section, Panel and History; load-once stale protection; interval cleanup on unmount; plus a semantic
+  improvement — restored a mounted-guard on Panel/History (the hotfix had removed Panel's `live` guard) so an
+  in-flight poll never updates an unmounted component.
+- **Scope.** `frontend/src/components/dashboard/{WithdrawalIntelligenceSection,WithdrawalsHistory,WithdrawalsPanel}.tsx`
+  + their three test files + the four status docs. **No backend/API/schema change.**
+- **Verified.** 39 focused frontend tests; `next build` + parity + eslint green. #575/#580 + Copy Trading nav preserved.
+- **Production.** Untouched. **Merge.** Not done; auto-merge OFF.
+
 ## 2026-10-20 — Broker Intelligence Customer Pilot Completion (P0, DARK, merged)
 
 ```

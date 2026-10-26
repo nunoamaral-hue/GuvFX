@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type { WithdrawalMetrics } from "@/types/withdrawals";
 
@@ -61,25 +61,40 @@ export const WithdrawalsPanel: React.FC<{ lang?: Lang; embedded?: boolean; metri
   const injected = metrics !== undefined;
   const [fetched, setFetched] = useState<WithdrawalMetrics | null>(null);
   const [hidden, setHidden] = useState(false);   // DARK (404) or error -> hide the whole panel
+  const hasLoaded = useRef(false);
+  const mounted = useRef(true);   // never setState after unmount: an in-flight poll must not update a gone component
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (injected) return;                  // parent-provided metrics: never self-fetch
-    let live = true;
     apiFetch<WithdrawalMetrics>(PATH, {})
       .then((m) => {
-        if (!live) return;
+        if (!mounted.current) return;
         // Render ONLY a well-formed metrics payload; any non-conforming response (e.g. a DARK stub, a shape change,
         // or a test catch-all) hides the panel rather than crashing the dashboard. Defensive by contract.
-        if (m && typeof (m as WithdrawalMetrics).total === "number") setFetched(m);
-        else setHidden(true);
+        if (m && typeof (m as WithdrawalMetrics).total === "number") {
+          setFetched(m);
+          setHidden(false);
+          hasLoaded.current = true;
+        } else if (!hasLoaded.current) setHidden(true);
       })
       .catch((e: unknown) => {
+        if (!mounted.current) return;
         // 404 => feature DARK (BROKER_WITHDRAWAL_UX_ENABLED off); any other error => also hide (never a broken card).
-        if (live) setHidden(true);
+        if (!hasLoaded.current) setHidden(true);
         void e;
       });
-    return () => { live = false; };
   }, [injected]);
+
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  useEffect(() => {
+    if (injected) return;
+    load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [load, injected]);
 
   if (hidden) return null;                 // DARK or unavailable -> render nothing
   const data = injected ? metrics : fetched;

@@ -1,5 +1,12 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ WITHDRAWAL INTELLIGENCE AUTO-REFRESH RECONCILIATION — PR READY (2026-10-26, DARK, repo-only)
+Upstreams the live production hotfix `ee0697a` (WI auto-refresh, never on main) onto current main so the Copy
+Trading #581/#582 DARK deploy can proceed without regressing live Withdrawal Intelligence. 15s visibility-gated
+polling (Section/Panel/History) + load-once stale protection + unmount cleanup (+ a restored mounted-guard on
+Panel/History). No backend change; 39 focused tests green. **One bounded next action:** merge-GO review, then the
+Copy Trading deploy rebases on a main that no longer diverges from prod. Auto-merge OFF; production untouched.
+
 ## ★★★ MT5 MASTER/FOLLOWER COPIER — backend foundation ENGINEERING COMPLETE + DARK (2026-10-20, PR #528)
 Packet `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0; PD scope GO = DARK observer-first; ADR-0051).
 `trade_copier` app: **PR A** read-only master observer + append-only event ledger (+additive bridge sl/tp

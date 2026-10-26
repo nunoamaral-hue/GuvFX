@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type { WithdrawalHistory, WithdrawalRow, WithdrawalState } from "@/types/withdrawals";
 
@@ -76,6 +76,8 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang; embedded?: boolean; lim
   const [hidden, setHidden] = useState(false);
   const [broker, setBroker] = useState("");
   const [accountId, setAccountId] = useState("");
+  const hasLoaded = useRef(false);
+  const mounted = useRef(true);   // never setState after unmount: an in-flight poll must not update a gone component
 
   const load = useCallback(() => {
     if (injected) return;   // parent-provided history: never self-fetch
@@ -85,13 +87,26 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang; embedded?: boolean; lim
     const qs = q.toString();
     apiFetch<WithdrawalHistory>(PATH + (qs ? `?${qs}` : ""), {})
       .then((d) => {
-        if (d && Array.isArray((d as WithdrawalHistory).withdrawals)) setFetched(d);
-        else setHidden(true);
+        if (!mounted.current) return;
+        if (d && Array.isArray((d as WithdrawalHistory).withdrawals)) {
+          setFetched(d);
+          setHidden(false);
+          hasLoaded.current = true;
+        } else if (!hasLoaded.current) setHidden(true);
       })
-      .catch(() => setHidden(true));   // 404 => DARK; any error => hide (never a broken card)
+      .catch(() => { if (mounted.current && !hasLoaded.current) setHidden(true); });
   }, [broker, accountId, injected]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  useEffect(() => {
+    if (injected) return;
+    load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [load, injected]);
 
   const data = injected ? injectedData : fetched;
   // The backend always returns the COMPLETE broker/account selector lists (collected from the member's full
