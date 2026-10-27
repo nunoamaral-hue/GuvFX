@@ -2,6 +2,18 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 Production source carried an untracked hotfix diverging from main (2026-10-26)
+
+- **Symptom.** Prod `/home/ubuntu/guvfx-app` was a **detached** checkout at `ee0697a`
+  *"fix: refresh withdrawal intelligence automatically"* (7 files: 3 Withdrawal Intelligence frontend
+  components + 4 docs), **not an ancestor of main**, with **no associated PR**. Deploying plain `main` over it
+  would regress the live WI auto-refresh behaviour (and `main` touches that do-not-touch surface).
+- **Resolution (repo side).** This reconciliation PR upstreams the hotfix *intent* onto current main
+  (+ a mounted-guard improvement on Panel/History). Until that PR is **merged AND prod is redeployed** from a
+  main that includes it, the prod checkout remains a detached untracked hotfix.
+- **Workaround / rule.** Do **not** deploy plain `main` over the prod checkout until this PR is merged; the
+  Copy Trading #581/#582 deploy must rebase on the reconciled main. **No production mutation** was performed.
+
 ## 🔴 Broker-email ingestion wedged — Gmail fetch failing (observed 2026-10-15; `docs/GUVFX_WITHDRAWAL_V1_P0_2026_10_15_REPORT.md`)
 
 - **Symptom.** `guvfx-broker-ingest.timer` is active+enabled and the systemd **unit exits 0**, but every

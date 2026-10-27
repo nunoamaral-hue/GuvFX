@@ -3,7 +3,7 @@
  * no action. */
 import React from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, act } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("@/lib/api", () => api);
@@ -120,5 +120,30 @@ describe("WithdrawalsHistory", () => {
     const { container } = render(<WithdrawalsHistory embedded data={null} />);
     expect(api.apiFetch).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="withdrawals-history"]')).toBeNull();
+  });
+});
+
+describe("WithdrawalsHistory — auto-refresh", () => {
+  beforeEach(() => { api.apiFetch.mockReset(); vi.useFakeTimers(); });
+  afterEach(() => { cleanup(); vi.runOnlyPendingTimers(); vi.useRealTimers(); });
+  const calls = () => api.apiFetch.mock.calls.length;
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it("polls history on the 15s interval and stops after unmount (timer cleaned up)", async () => {
+    api.apiFetch.mockResolvedValue(history());
+    const { unmount } = render(<WithdrawalsHistory />);
+    await tick(0);
+    expect(calls()).toBe(1);
+    await tick(15_000);
+    expect(calls()).toBe(2);
+    unmount();
+    await tick(60_000);
+    expect(calls()).toBe(2);   // no fetch after unmount
+  });
+
+  it("injected history never self-fetches or polls", async () => {
+    render(<WithdrawalsHistory data={history()} />);
+    await tick(30_000);
+    expect(calls()).toBe(0);
   });
 });

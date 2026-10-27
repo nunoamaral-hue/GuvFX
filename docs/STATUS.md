@@ -14,6 +14,18 @@
 
 ## Execution workstream log
 
+- **2026-10-26 — WITHDRAWAL INTELLIGENCE AUTO-REFRESH reconciled onto main (DARK, repository-only, PR).**
+  Production ran an untracked hotfix (`ee0697a` *"fix: refresh withdrawal intelligence automatically"*) that was
+  not on main; a Copy Trading deploy correctly stopped on the divergence. This PR brings the hotfix's INTENT onto
+  current main: a 15s visibility-gated auto-refresh poll for the Withdrawal Intelligence section, panel and history,
+  with load-once stale protection (a transient poll failure after the first successful load no longer hides the card;
+  a null history fetch keeps the prior history; the section stays `scope`-keyed so a stale earlier-scope response is
+  discarded) and interval cleanup on unmount. The semantic reconciliation additionally restored a mounted-guard on
+  `WithdrawalsPanel`/`WithdrawalsHistory` (the production hotfix had dropped Panel's unmount guard) so no state update
+  occurs after unmount. #575 WI UX, #580 dashboard account scoping and the Copy Trading navigation are preserved. No
+  backend/API/schema change. 39 focused frontend tests green; build + parity + eslint green. Not merged; auto-merge
+  OFF; production untouched.
+
 - **2026-10-24 — EVIDENCE FACTUALITY LINTER (D; DARK/repository-only).** Added an
   authoring-time verifier that checks a manifest against immutable bytes at its
   recorded Git commit: artefact existence, SHA-256 values, tracked-file count,

@@ -4,7 +4,7 @@
  * to the detail page. It must NOT re-fetch metrics for the embedded summary (it injects the already-fetched payload). */
 import React from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within, act } from "@testing-library/react";
 
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
@@ -220,5 +220,79 @@ describe("WithdrawalIntelligenceSection", () => {
     await new Promise((r) => setTimeout(r, 25));
     expect(section.textContent).not.toMatch(/24\.12 USD/);                         // ...and is NEVER rendered
     expect(section.textContent).toMatch(/200\.00 USD/);
+  });
+});
+
+// ── Automatic refresh: 15s visibility-gated polling, single loop, scope-retained, unmount-clean ──
+describe("WithdrawalIntelligenceSection — auto-refresh", () => {
+  beforeEach(() => { api.apiFetch.mockReset(); vi.useFakeTimers(); });
+  afterEach(() => { cleanup(); vi.runOnlyPendingTimers(); vi.useRealTimers(); });
+
+  const metricsCalls = () => api.apiFetch.mock.calls.filter((c) => String(c[0]).startsWith(METRICS)).length;
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it("1: automatically refreshes metrics on the 15s interval", async () => {
+    route(metrics(), history());
+    render(<WithdrawalIntelligenceSection scope="ALL" />);
+    await tick(0);
+    expect(metricsCalls()).toBe(1);
+    await tick(15_000);
+    expect(metricsCalls()).toBe(2);
+    await tick(15_000);
+    expect(metricsCalls()).toBe(3);
+  });
+
+  it("2+3+9: exactly ONE polling loop; a rerender (same scope) adds no request and no second loop", async () => {
+    route(metrics(), history());
+    const { rerender } = render(<WithdrawalIntelligenceSection scope="ALL" />);
+    await tick(0);
+    rerender(<WithdrawalIntelligenceSection scope="ALL" />);   // #9: rerender alone must not fetch
+    await tick(0);
+    expect(metricsCalls()).toBe(1);
+    await tick(15_000);                 // #3: one tick -> exactly one more (no overlap)
+    expect(metricsCalls()).toBe(2);
+  });
+
+  it("2: stops polling after unmount (interval cleaned up — no fetch after unmount)", async () => {
+    route(metrics(), history());
+    const { unmount } = render(<WithdrawalIntelligenceSection scope="ALL" />);
+    await tick(0);
+    expect(metricsCalls()).toBe(1);
+    unmount();
+    await tick(60_000);
+    expect(metricsCalls()).toBe(1);
+  });
+
+  it("4: retains the selected account scope on every refresh", async () => {
+    const urls: string[] = [];
+    api.apiFetch.mockImplementation((url: unknown) => {
+      const u = String(url); urls.push(u);
+      if (u.startsWith(METRICS)) return Promise.resolve(metrics());
+      if (u.startsWith(HISTORY)) return Promise.resolve(history());
+      return Promise.reject(new Error("x"));
+    });
+    render(<WithdrawalIntelligenceSection scope="49" />);
+    await tick(0);
+    await tick(15_000);
+    const m = urls.filter((u) => u.startsWith(METRICS));
+    expect(m.length).toBe(2);
+    expect(m.every((u) => u.includes("account_id=49"))).toBe(true);
+  });
+
+  it("8: after a successful load, a later transient poll failure does NOT hide the card", async () => {
+    let call = 0;
+    api.apiFetch.mockImplementation((url: unknown) => {
+      const u = String(url);
+      if (u.startsWith(METRICS)) { call += 1; return call === 2 ? Promise.reject(new Error("transient")) : Promise.resolve(metrics()); }
+      if (u.startsWith(HISTORY)) return Promise.resolve(history());
+      return Promise.reject(new Error("x"));
+    });
+    render(<WithdrawalIntelligenceSection scope="ALL" />);
+    await tick(0);
+    expect(screen.queryByTestId("withdrawal-intelligence-section")).not.toBeNull();
+    await tick(15_000);   // 2nd poll fails
+    expect(screen.queryByTestId("withdrawal-intelligence-section")).not.toBeNull();   // still shown (latch per load)
+    await tick(15_000);   // 3rd poll ok
+    expect(screen.queryByTestId("withdrawal-intelligence-section")).not.toBeNull();
   });
 });
