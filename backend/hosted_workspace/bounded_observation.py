@@ -26,6 +26,7 @@ from django.conf import settings
 from hosted_workspace.consumer import ingest_observation
 from hosted_workspace.flags import hosted_delivery_lifecycle_enabled, hosted_persistent_mt5_enabled
 from hosted_workspace.models import HostedMt5Workspace
+from hosted_workspace.poll_diagnostics import record_poll_unavailable
 
 logger = logging.getLogger("guvfx.hosted_workspace")
 
@@ -156,6 +157,11 @@ def run_bounded_observation_cycle(*, combined_fn=None, correlation_id: str = "",
             # ---- canonical single-writer ingest (monotonic version; writer rejects a stale/duplicate) ----
             if canonical is None:
                 out["unavailable"] += 1
+                # Per-account breadcrumb: record WHY this poll produced no observation (e.g. host_unavailable =
+                # bridge unreachable on the backend->host path) on the row, so a stuck account is self-diagnosing
+                # instead of looking identical to one merely waiting for login. Add-only; touches no canonical/
+                # delivery/proj state and never advances observation_version. Cleared by the next success.
+                record_poll_unavailable(ws, reason)
                 # Frozen-observation visibility: a present-but-unattachable terminal on an onboarding account is a
                 # stuck state, not routine unavailability - surface it distinctly so it can be alerted on.
                 if reason in FROZEN_REASONS and str(getattr(ws, "canonical_state", "") or "") in ONBOARDING_STATES:

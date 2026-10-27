@@ -187,6 +187,13 @@ def persist_workspace_decision(
             "last_correlation_id", "last_decision_at", "updated_at",
         ]
 
+        # Self-healing diagnostic: this poll REACHED the bridge and produced a usable observation, so clear any
+        # stale observation-unavailable breadcrumb (poll_diagnostics.record_poll_unavailable). Read-model only —
+        # ``last_reason`` is never a decision/order/identity input; clearing it changes no canonical state.
+        if locked.last_reason:
+            locked.last_reason = ""
+            update_fields.append("last_reason")
+
         # First-launch latch (display-only, set-once): the first time we observe connected AND matched, record it
         # permanently so the member-facing broker-discovery guidance is shown ONLY before the first correct
         # connection and never re-appears on a later reconnect/mismatch. Never cleared here; never an order/identity

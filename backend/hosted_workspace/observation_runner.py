@@ -17,6 +17,7 @@ import logging
 from hosted_workspace.consumer import ingest_observation
 from hosted_workspace.flags import hosted_persistent_mt5_enabled
 from hosted_workspace.models import HostedMt5Workspace
+from hosted_workspace.poll_diagnostics import record_poll_unavailable
 
 logger = logging.getLogger("guvfx.hosted_workspace")
 
@@ -38,6 +39,9 @@ def run_hosted_observations(*, observe_fn, correlation_id: str = "", source: str
             obs = observe_fn(ws)
             if obs is None:
                 unavailable += 1
+                # Per-account breadcrumb (the legacy serial path cannot see the precise host reason, so record a
+                # generic unavailability marker). Add-only; cleared by the next successful observation.
+                record_poll_unavailable(ws, "observation_unavailable")
                 continue
             # Monotonic per-workspace observation version; the writer rejects an out-of-order/duplicate one.
             next_version = int(ws.observation_version or 0) + 1

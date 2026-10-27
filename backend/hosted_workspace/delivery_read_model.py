@@ -81,5 +81,9 @@ def delivery_state_projection(workspace: HostedMt5Workspace, *, staff: bool = Fa
             "node_identity": (node.hostname if node else ""),
             "supervision_state": workspace.supervision_state,
             "correlation_id": workspace.last_delivery_correlation_id or "",
+            # Observation-unavailable breadcrumb (secret-free, stable code). Non-empty (e.g. "host_unavailable")
+            # when the last poll could not reach this account's bridge — so an operator can tell a backend->bridge
+            # network block apart from an account genuinely waiting for the member to log in. Cleared on success.
+            "poll_reason": workspace.last_reason or "",
         }
     return projection
