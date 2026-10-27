@@ -55,6 +55,27 @@ _CLASSIFICATIONS = (VERIFIED, UNVERIFIED, AMBIGUOUS, STALE, INELIGIBLE, ABSENT)
 _HARD_INCOMPATIBILITY_DIMENSIONS = ("quote_currency", "settlement_currency", "contract_type")
 
 
+def is_safe_exact(candidate) -> bool:
+    """The governed SAFE-EXACT predicate for reviewer-approvable discovery persistence. DETERMINISTIC and
+    FAIL-CLOSED: true ONLY for a single, clean, exact cross-broker match.
+
+    Requires ALL of:
+      * ``classification == UNVERIFIED`` — which already guarantees a SINGLE tradable follower match whose
+        canonical identity matches and whose HARD dimensions (quote/settlement currency, contract type) are
+        compatible, and that the pair is not VERIFIED/AMBIGUOUS/STALE/INELIGIBLE/ABSENT;
+      * ``compatibility_warnings`` is EMPTY — no SOFT material warning either (e.g. a contract_size or
+        margin_currency difference), so the economic exposure matches exactly;
+      * ``identity_confidence == CONF_HIGH`` — the canonical identity was read with high confidence;
+      * a non-empty ``follower_symbol`` — a concrete counterpart exists.
+
+    Any ambiguity, hard-dimension conflict, material warning, ineligibility, absence or stale data makes this
+    FALSE. It is purely a function of the computed candidate — it reads no DB and grants no authority."""
+    return (candidate.classification == UNVERIFIED
+            and not candidate.compatibility_warnings
+            and candidate.identity_confidence == CONF_HIGH
+            and bool(candidate.follower_symbol))
+
+
 def _economics(res) -> dict:
     cs = res.contract_size
     return {

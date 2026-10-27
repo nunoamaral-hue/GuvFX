@@ -1,6 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ WITHDRAWAL INTELLIGENCE AUTO-REFRESH RECONCILIATION — PR READY (2026-10-26, DARK, repo-only)
+## ★ COPY TRADING — REVIEWED MAPPING CONTROLS (2026-10-27, DARK PR, repo-only)
+Adds a human discovery-approval layer to `InstrumentMapping` (`review_status`/`reviewed_by`/`reviewed_at`/
+`review_evidence_ref`/`review_note`, migration `trade_copier/0007`) + a governed `--safe-exact-only` mode on
+`refresh_instrument_mappings` that persists ONLY reviewer-approved SAFE-EXACT candidates, kept strictly
+separate from execution authority (never marks VERIFIED, never writes `CopierSymbolMap`; `InstrumentMapping`
+stays off the execution path — ADR-0062). 345 trade_copier tests green; migration reverses cleanly on PG15.
+**One bounded next action:** separate Sponsor GO to persist the 12 reviewed non-Pepperstone directions in
+production (Pepperstone #49 excluded/MATERIAL-RISK; acct 50 not gold-ready). Execution OFF; production unchanged.
+
+## WITHDRAWAL INTELLIGENCE AUTO-REFRESH RECONCILIATION — PR READY (2026-10-26, DARK, repo-only)
 Upstreams the live production hotfix `ee0697a` (WI auto-refresh, never on main) onto current main so the Copy
 Trading #581/#582 DARK deploy can proceed without regressing live Withdrawal Intelligence. 15s visibility-gated
 polling (Section/Panel/History) + load-once stale protection + unmount cleanup (+ a restored mounted-guard on

@@ -4,6 +4,16 @@
 > snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
 > docs.
 
+> **2026-10-27 — Copy Trading reviewed-mapping controls (DARK PR, repo-only).** `InstrumentMapping` gains a
+> human discovery-approval layer (`review_status`/`reviewed_by`/`reviewed_at`/`review_evidence_ref`/
+> `review_note`; migration `trade_copier/0007`) and `refresh_instrument_mappings` gains a governed
+> `--safe-exact-only` mode that persists only reviewer-approved SAFE-EXACT candidates. Discovery approval is
+> separate from execution authority: approval never sets `classification=VERIFIED`, never writes
+> `CopierSymbolMap`, and `InstrumentMapping` is not read by the execution path (ADR-0062). 345 trade_copier
+> tests green; migration reverses cleanly on PG15; secret scan clean. Production persistence remains blocked
+> pending a separate Sponsor GO; execution OFF. Prior context: Phase A persisted the five BrokerInstrument
+> catalogues (execution OFF); the Phase-B STOP that prompted this change was accepted as correct.
+
 > **⚠ TRUTH CORRECTION (2026-08-05) — broker-login validation.** Some entries below (notably the
 > 2026-08-02 *"Broker Login Validation Primitive: HOST CERTIFICATION COMPLETE — production-ready"* line)
 > read as if a **live** broker login was certified. It was **not**: only the **credential-free** validation
