@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  connectionView, healthStatusView, lastValidatedLine, latestAttemptLine, maskAccountNumber, reasonMessage,
-  reasonShort, toCustomerError, validationActions, validationStatusView,
+  accountStatusBadge, connectionView, healthStatusView, lastValidatedLine, latestAttemptLine, maskAccountNumber,
+  reasonMessage, reasonShort, toCustomerError, validationActions, validationStatusView,
 } from "@/lib/broker-status";
 
 describe("validationStatusView", () => {
@@ -272,5 +272,34 @@ describe("maskAccountNumber", () => {
     expect(maskAccountNumber("")).toBe("");
     expect(maskAccountNumber(null)).toBe("");
     expect(maskAccountNumber("1302575")).not.toContain("130");
+  });
+});
+
+describe("accountStatusBadge (Objective E — Live Trading list reads the authoritative state, not is_active)", () => {
+  it("renders the authoritative trading_state label/colour, NOT 'Inactive', for a connected hosted account", () => {
+    // The exact #52 case: hosted live account, is_active=false, connected+monitored.
+    const acc = { is_active: false, trading_state: { state: "CONNECTED_MONITORING_EXEC_UNAUTHORIZED", label: "Connected — monitoring only" } };
+    expect(accountStatusBadge(acc)).toEqual({ label: "Connected — monitoring only", color: "green" });
+    expect(accountStatusBadge(acc).label).not.toBe("Inactive");
+  });
+
+  it("maps each trading_state code to a colour and renders its label verbatim", () => {
+    expect(accountStatusBadge({ trading_state: { state: "TRADING", label: "Trading" } })).toEqual({ label: "Trading", color: "green" });
+    expect(accountStatusBadge({ trading_state: { state: "BROKER_CONNECTED", label: "Broker connected" } }).color).toBe("green");
+    expect(accountStatusBadge({ trading_state: { state: "PREPARING", label: "Preparing automated trading" } }).color).toBe("blue");
+    expect(accountStatusBadge({ trading_state: { state: "TRADING_STOPPED", label: "Trading stopped" } }).color).toBe("gray");
+    expect(accountStatusBadge({ trading_state: { state: "BROKER_LOGIN_REQUIRED", label: "Broker login required" } }).color).toBe("yellow");
+    expect(accountStatusBadge({ trading_state: { state: "ATTENTION", label: "Action required" } }).color).toBe("red");
+    // An unmapped (future) code renders its label with a safe gray fallback — never throws, never "Inactive".
+    expect(accountStatusBadge({ trading_state: { state: "SOME_NEW_STATE", label: "New state" } })).toEqual({ label: "New state", color: "gray" });
+  });
+
+  it("falls back to the connection view ONLY when trading_state is absent — and never fabricates a green 'Trading'", () => {
+    // is_active=true but no trading_state → "Connected" (connection view), never "Trading".
+    expect(accountStatusBadge({ is_active: true })).toEqual({ label: "Connected", color: "green" });
+    expect(accountStatusBadge({ is_active: false })).toEqual({ label: "Inactive", color: "gray" });
+    expect(accountStatusBadge({ is_active: true, disconnected_at: "2026-10-27T00:00:00Z" }).label).toBe("Disconnected");
+    // An empty trading_state label does not count as present → fallback.
+    expect(accountStatusBadge({ is_active: false, trading_state: { state: "TRADING", label: "" } }).label).toBe("Inactive");
   });
 });

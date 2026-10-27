@@ -5,6 +5,10 @@ export type TradingAccount = {
   account_number: string;
   is_demo: boolean;
   is_active: boolean;
+  disconnected_at?: string | null;
+  /** Objective E — the authoritative server-computed trading state (mirrors types/broker.ts). The UI renders it
+   * verbatim and never derives account status from is_active. Present on /api/trading/accounts/ responses. */
+  trading_state?: { state?: string; label?: string; detail?: string } | null;
   created_at: string;
   updated_at: string;
 };
