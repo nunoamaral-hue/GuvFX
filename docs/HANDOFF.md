@@ -1,5 +1,20 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-27 — Copy Trading reviewed-mapping controls (repo-only, DARK, PR)
+
+- **Context.** The Phase-B packet required persisting only reviewer-approved SAFE-EXACT non-Pepperstone
+  mappings with a named reviewer; the deployed `InstrumentMapping`/`refresh_instrument_mappings` could not
+  (no reviewer field; command persisted the full matrix; never self-verifies). That STOP was accepted; Sponsor
+  chose the governed code change (option 2).
+- **Change.** `InstrumentMapping` + `ReviewStatus` review layer (migration `trade_copier/0007`, additive);
+  `is_safe_exact` predicate in `matrix.py`; `refresh_instrument_mappings --safe-exact-only/--reviewer/
+  --evidence/--review-note` governed mode. Discovery approval is separate from execution authority (ADR-0062):
+  never marks VERIFIED, never touches `CopierSymbolMap`, `InstrumentMapping` stays off the execution path.
+- **Verified.** 345 trade_copier tests pass (19 new, covering the 18 in-suite mandatory points); migration
+  forwards/reverses cleanly on disposable PostgreSQL 15; secret scan clean.
+- **Deviations.** None. **Next action (one).** Separate Sponsor GO to persist the 12 reviewed non-Pepperstone
+  directions in production. Execution OFF; production unchanged; Pepperstone #49 excluded.
+
 ## 2026-10-26 — Withdrawal Intelligence auto-refresh reconciliation (repo-only, DARK, PR)
 
 - **Context.** Production `/home/ubuntu/guvfx-app` was detached at an untracked hotfix `ee0697a`

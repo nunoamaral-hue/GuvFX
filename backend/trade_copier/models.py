@@ -453,6 +453,19 @@ class MappingClassification(models.TextChoices):
     ABSENT = "ABSENT", "Absent (no follower counterpart)"
 
 
+class ReviewStatus(models.TextChoices):
+    """Human DISCOVERY-APPROVAL layer, kept DELIBERATELY SEPARATE from the machine ``classification`` and
+    from execution authority (``CopierSymbolMap`` / ``verified_via_symbol_map``).
+
+    ``APPROVED`` records that a named operator reviewed a SAFE-EXACT discovery candidate and accepted it for
+    the audit/discovery matrix. It does NOT change ``classification`` (which stays ``UNVERIFIED`` until an
+    execution-authoritative ``CopierSymbolMap`` exists), does NOT create or mutate a ``CopierSymbolMap``, and
+    never makes the row executable — the execution path does not read ``InstrumentMapping`` at all."""
+    UNREVIEWED = "UNREVIEWED", "Unreviewed (no human disposition)"
+    APPROVED = "APPROVED", "Approved for discovery/audit by a named reviewer"
+    REJECTED = "REJECTED", "Rejected by a named reviewer"
+
+
 class InstrumentMapping(models.Model):
     """One ORDERED directional candidate: ``master_account → follower_account`` for one master symbol.
 
@@ -485,6 +498,18 @@ class InstrumentMapping(models.Model):
     material_differences = models.JSONField(default=dict, blank=True)
     compatibility_warnings = models.JSONField(default=list, blank=True)
     verified_via_symbol_map = models.BooleanField(default=False)
+    # --- Human discovery-approval layer (separate from machine ``classification`` and execution authority) ---
+    # A named operator may APPROVE a SAFE-EXACT candidate for the discovery/audit matrix. This NEVER relabels
+    # ``classification`` as VERIFIED, NEVER creates/mutates a CopierSymbolMap, and NEVER makes the row
+    # executable (the execution path does not read InstrumentMapping). See ADR-0062.
+    review_status = models.CharField(max_length=16, choices=ReviewStatus.choices,
+                                      default=ReviewStatus.UNREVIEWED)
+    reviewed_by = models.CharField(max_length=128, blank=True, default="",
+                                   help_text="Durable operator identity who approved this discovery candidate.")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_evidence_ref = models.CharField(max_length=256, blank=True, default="",
+                                           help_text="Bounded provenance reference for the review evidence (e.g. a ticket/Notion id). Never a secret.")
+    review_note = models.CharField(max_length=512, blank=True, default="")
     observed_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
