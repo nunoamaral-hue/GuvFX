@@ -42,6 +42,7 @@ ADD_URL = "/api/hosted-workspace/accounts/add/"
 IS6_LIVE = "IS6Technologies-Live"
 IS6_DEMO = "IS6Technologies-Demo"
 TW_LIVE = "TradersWay-Live"
+VANTAGE_LIVE = "VantageMarkets-Live 10"  # added additively by migration 0021 (operator-verified live)
 
 
 def _u(n):
@@ -365,6 +366,20 @@ class MigrationSeedTests(TestCase):
             e = BrokerServerCatalogue.objects.get(name_key=server_name_key(name))
             self.assertEqual(e.environment, env)
             self.assertTrue(e.is_verified)
+
+    def test_vantage_seed_additive_and_preserves_existing(self):
+        """Migration 0021 adds Vantage (verified live) WITHOUT removing any 0020-seeded broker (additivity)."""
+        v = BrokerServerCatalogue.objects.get(name_key=server_name_key(VANTAGE_LIVE))
+        self.assertEqual(v.environment, BrokerServer.LIVE)
+        self.assertTrue(v.is_verified)
+        # The four original pilot entries must all survive, byte-for-byte verified — adding Vantage removes none.
+        for name, env in [(IS6_DEMO, BrokerServer.DEMO), (IS6_LIVE, BrokerServer.LIVE),
+                          ("TradersWay-Demo", BrokerServer.DEMO), (TW_LIVE, BrokerServer.LIVE)]:
+            e = BrokerServerCatalogue.objects.get(name_key=server_name_key(name))
+            self.assertEqual(e.environment, env)
+            self.assertTrue(e.is_verified)
+        # Resolver now classifies Vantage authoritatively as live from the catalogue.
+        self.assertEqual(resolve_verified_environment(VANTAGE_LIVE), (BrokerServer.LIVE, CATALOGUE))
 
 
 # ---------------------------------------------------------------------------
