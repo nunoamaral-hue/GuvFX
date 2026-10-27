@@ -62,6 +62,34 @@ export function tradingStateBadge(ts: TradingState): { label: string; color: Bad
   return { label, color: TRADING_BADGE_COLOR[code] ?? "gray" };
 }
 
+/** Objective E — the authoritative per-account STATUS badge for list/overview surfaces (e.g. the Live Trading
+ * page). Unlike ``tradingStateBadge`` (which suppresses the connection-only states because the Broker Accounts
+ * card already conveys them), this ALWAYS yields a label+colour from the backend ``trading_state`` projection —
+ * so a connected, monitored account is shown as such and NEVER re-derived to "Inactive" from ``is_active`` (that
+ * is the exact Pepperstone/Objective-E defect, here on the un-migrated Live Trading list). Covers every state,
+ * including the D3 ``CONNECTED_MONITORING_EXEC_UNAUTHORIZED`` live-monitoring state. Falls back to the plain
+ * connection view ONLY when the API omitted ``trading_state`` entirely — and even then never shows a green
+ * "Trading", only "Connected"/"Inactive" from the connection signal. Presentation only; no re-derivation. */
+const ACCOUNT_STATE_COLOR: Record<string, BadgeColor> = {
+  TRADING: "green",
+  CONNECTED_MONITORING_EXEC_UNAUTHORIZED: "green",
+  BROKER_CONNECTED: "green",
+  TRADING_STOPPED: "gray",
+  PREPARING: "blue",
+  BROKER_LOGIN_REQUIRED: "yellow",
+  ATTENTION: "red",
+};
+
+export function accountStatusBadge(
+  account: { trading_state?: TradingState; is_active?: boolean; disconnected_at?: string | null },
+): StatusView {
+  const code = String(account.trading_state?.state ?? "").trim();
+  const label = String(account.trading_state?.label ?? "").trim();
+  if (code && label) return { label, color: ACCOUNT_STATE_COLOR[code] ?? "gray" };
+  // Fallback ONLY when the API omitted trading_state entirely: never re-derive a green "Trading" from is_active.
+  return connectionView(Boolean(account.is_active), account.disconnected_at ?? null);
+}
+
 /** reason_code → customer-safe message. Unknown codes fall back to a generic line — never the raw code. */
 const REASON: Record<string, string> = {
   demo_ok: "Demo account verified.",

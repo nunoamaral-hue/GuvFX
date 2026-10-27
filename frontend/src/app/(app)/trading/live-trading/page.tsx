@@ -10,6 +10,7 @@ import { apiFetch } from "@/lib/api";
 import { t } from "@/lib/i18n";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 import { localizeBackendCustomerText } from "@/lib/active-beta-i18n";
+import { accountStatusBadge } from "@/lib/broker-status";
 import type { TradingAccount, StrategyAssignment } from "@/types/strategies";
 
 // =============================================================================
@@ -326,10 +327,11 @@ export default function LiveTradingPage() {
                         </span>
                       )}
                     </div>
-                    <Badge color={acc.is_active ? "green" : "gray"}>
-                      {acc.is_active
-                        ? t(lang, "dashboard.active")
-                        : t(lang, "dashboard.inactive")}
+                    {/* Objective E: render the AUTHORITATIVE server-computed trading_state (same source as the
+                        Broker Accounts card) — never re-derive Active/Inactive from is_active, so a connected,
+                        monitored account is shown as connected rather than a misleading "Inactive". */}
+                    <Badge color={accountStatusBadge(acc).color}>
+                      {accountStatusBadge(acc).label}
                     </Badge>
                   </div>
                   <div
