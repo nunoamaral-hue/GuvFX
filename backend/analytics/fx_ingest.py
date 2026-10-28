@@ -44,11 +44,15 @@ def resolve_fx_ingest_alias() -> str:
 
 def append_fx_observation(*, effective_date: date, rate: Decimal, observation_checksum: str, raw_line: str,
                           source_url: str, retrieved_at: datetime, source: str = FRED.SOURCE,
-                          base: str = FRED.BASE, quote: str = FRED.QUOTE,
+                          base: str = FRED.BASE, quote: str = FRED.QUOTE, source_series: str = FRED.SERIES,
                           using: str = "default") -> Tuple[bool, Optional[int]]:
     """Append one ACCEPTED revision on the ``using`` connection, serialised per key. Returns ``(written,
     revision_number)`` — ``(False, None)`` when the identical observation is already stored (idempotent no-op).
-    The advisory lock, the idempotency read, and the insert all run on ``using`` inside one transaction."""
+    The advisory lock, the idempotency read, and the insert all run on ``using`` inside one transaction.
+
+    ``source_series`` is the provider's own series code for ``source`` (Fed H.10 ``DEXUSUK``, BoE ``XUDLUSS``);
+    it defaults to the Fed series for the Fed caller and MUST be passed by any non-Fed source so the stored row
+    records its true series rather than mislabelling (e.g.) a BoE observation as ``DEXUSUK``."""
     key = f"{source}|{base}|{quote}|{effective_date.isoformat()}"
     with transaction.atomic(using=using):
         # (1) Serialise concurrent writers for THIS key on THIS connection (released at tx end).
@@ -64,7 +68,7 @@ def append_fx_observation(*, effective_date: date, rate: Decimal, observation_ch
         # (3) Insert on the SAME connection.
         obj = DailyFxObservation(
             base_currency=base, quote_currency=quote, effective_date=effective_date, rate=rate,
-            source=source, source_series=FRED.SERIES, retrieved_at=retrieved_at,
+            source=source, source_series=source_series, retrieved_at=retrieved_at,
             observation_checksum=observation_checksum, revision_number=next_rev,
             acceptance_state=DailyFxObservation.STATE_ACCEPTED, source_url=source_url, raw_line=raw_line)
         obj.save(using=using)

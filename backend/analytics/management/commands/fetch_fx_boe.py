@@ -83,7 +83,7 @@ class Command(BaseCommand):
                     effective_date=obs.effective_date, rate=obs.rate,
                     observation_checksum=obs.observation_checksum, raw_line=obs.raw_line,
                     source_url=source_url, retrieved_at=now,
-                    source=BOE.SOURCE, base=BOE.BASE, quote=BOE.QUOTE, using=alias)
+                    source=BOE.SOURCE, base=BOE.BASE, quote=BOE.QUOTE, source_series=BOE.SERIES, using=alias)
                 new_rows += 1 if written else 0
                 dup_rows += 0 if written else 1
         latest = max((o.effective_date for o in result.accepted), default=None)
