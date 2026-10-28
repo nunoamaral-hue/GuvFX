@@ -107,3 +107,34 @@ body {
     padding: 0.55rem 0.9rem !important;
   }
 }
+
+/* Desktop (≥769px): the account summary (Trading / Equity / Daily PnL / Updated) must keep ONE stable position and
+   footprint. Before this it was an auto-width flex row inside a wrapping header, so when live values arrived — the
+   equity number and its FX-disclosure line, the account-mix line, "Monitoring only" vs "Status unavailable" — the
+   card's width AND height changed, and it could wrap below the greeting. The row visibly "moved" on data arrival
+   and on the background refresh. Fixed grid column tracks + a reserved min-height make the card's footprint
+   invariant across the loading / partial / populated / error branches (they all use this one grid), and `nowrap`
+   keeps it on the greeting's row so it never reflows below it. (Dashboard P0 UX stability.)
+   `display`/`flex-wrap` use !important only to win over the component's inline styles. */
+@media (min-width: 769px) {
+  .dashboard-header {
+    flex-wrap: nowrap !important;
+  }
+
+  .dashboard-greeting-block {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .dashboard-account-summary {
+    flex: 0 0 auto;
+    display: grid !important;
+    grid-template-columns: 190px 150px 120px 132px;
+    min-height: 96px;
+  }
+
+  .dashboard-account-summary > div {
+    box-sizing: border-box;
+    min-width: 0 !important;
+  }
+}

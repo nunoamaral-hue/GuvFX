@@ -90,6 +90,26 @@ function aggregateStateLabel(lang: Lang, state: AggregateState | undefined, reas
   }
   return "";
 }
+// ─── Metrics-specific state label ───
+// The realized-performance aggregate (Net PnL / Win Rate / Profit Factor / Max Drawdown / Expectancy) excludes a
+// non-USD account because closed-trade P&L is NOT point-in-time convertible — unlike CURRENT equity, which IS
+// converted (via the disclosed GBP→USD rate) and shown in full. So the performance strip must NOT borrow the
+// equity tile's "currency conversion unavailable" wording: the rate is available and used for equity; the realized
+// figures are simply not converted. Honest, specific wording (distinguishes a currency exclusion from a stale/
+// missing-data partial and from a true "no eligible account" unavailable).
+function metricsStateLabel(lang: Lang, state: AggregateState | undefined, reason?: string | null): string {
+  if (state === "UNAVAILABLE") {
+    return reason === "currency_unconvertible"
+      ? (lang === "ja" ? "利用不可 — USD建ての対象口座がありません" : "Unavailable — no USD-denominated accounts")
+      : (lang === "ja" ? "利用不可" : "Unavailable");
+  }
+  if (state === "PARTIAL") {
+    return reason === "currency_unconvertible"
+      ? (lang === "ja" ? "一部 — 非USD口座を確定実績から除外" : "Partial — non-USD accounts excluded from realized performance")
+      : (lang === "ja" ? "一部 — 口座データが古いか取得できません" : "Partial — stale or missing account data");
+  }
+  return "";
+}
 // Tooltip detail = the state label plus the honest account split (requirement 3: included vs excluded).
 function aggregateStateTitle(lang: Lang, agg: UsdAggregate): string {
   const inc = agg.included_count ?? agg.converted_count ?? 0;
@@ -673,7 +693,7 @@ export default function DashboardPage() {
     <div style={{ maxWidth: 1180, margin: "0 auto" }}>
       {/* Header — greeting (dominant) + Account Status Summary card */}
       <div className="dashboard-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "1.25rem", marginBottom: "1.5rem" }}>
-        <div>
+        <div className="dashboard-greeting-block">
           <h1 className="dashboard-greeting" style={{ fontSize: "1.9rem", margin: 0, color: "#f0f6ff", fontWeight: 650, letterSpacing: "-0.01em" }}>{lang === "ja" ? <>{localizeActiveBetaCopy(lang, greeting())}、<span className="dashboard-greeting-name">{firstName || "トレーダー"}さん 👋</span></> : `${greeting()}, ${firstName || "Trader"} 👋`}</h1>
           <p style={{ margin: "0.45rem 0 0", fontSize: "0.95rem", color: "#94a3b8", fontWeight: 400 }}>Here&apos;s your edge today.</p>
           <div style={{ marginTop: "0.7rem" }}>
@@ -682,7 +702,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Account Status Summary */}
-        <div className="dashboard-account-summary" style={{ borderRadius: 14, border: "1px solid rgba(255,255,255,0.09)", background: "rgba(10,15,35,0.6)", padding: "1.15rem 0.3rem", display: "flex", alignItems: "stretch" }}>
+        <div className="dashboard-account-summary" data-testid="account-summary" style={{ borderRadius: 14, border: "1px solid rgba(255,255,255,0.09)", background: "rgba(10,15,35,0.6)", padding: "1.15rem 0.3rem", display: "flex", alignItems: "stretch" }}>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 180 }}>
             <div style={microLabel}><i className="ti ti-heartbeat" aria-hidden="true" style={{ marginRight: 5 }} />Trading</div>
             {(() => {
@@ -759,20 +779,28 @@ export default function DashboardPage() {
                 </div>
               );
             })()}
-            {/* DARK FX disclosure (ADR-0058): present only when the backend sends an `fx` block (flag ON). Shows
-                the exact rate, its effective date and the source, or an honest "unavailable" — never a fabricated
-                conversion. Absent entirely when the flag is OFF, so default rendering is unchanged. */}
-            {isAll && portfolioForScope?.fx ? (() => {
-              const fx = portfolioForScope.fx!;
-              const srcLabel = fx.source === "FED_H10" ? "Fed H.10" : fx.source;
+            {/* DARK FX disclosure (ADR-0058): shows the exact rate, its effective date and the source, or an honest
+                "unavailable" — never a fabricated conversion. The `fx` block arrives only after the summary loads
+                (and only when conversion is enabled for the caller). At ALL scope the slot is RESERVED (always
+                rendered, fixed min-height) so the Equity cell keeps a STABLE height whether or not the block is
+                present — this is what stops the account-summary row from growing/shifting when live values arrive
+                or on the background refresh (dashboard P0 UX stability). In single-account scope no FX line ever
+                shows, so the slot is omitted and the cell is unchanged. */}
+            {isAll ? (() => {
+              const fx = portfolioForScope?.fx;
+              const srcLabel = fx && fx.source === "FED_H10" ? "Fed H.10" : fx?.source;
               return (
-                <div style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-                     title={fx.available
-                       ? `GBP→USD ${fx.rate} (USD per GBP) · rate ${fx.effective_date} · ${srcLabel} ${fx.source_series}`
-                       : "GBP→USD conversion rate unavailable (stale or missing) — non-USD equity is not converted"}>
-                  {fx.available
-                    ? `GBP→USD ${fx.rate} · ${fx.effective_date} · ${srcLabel}`
-                    : (lang === "ja" ? "GBP→USD レート利用不可" : "GBP→USD rate unavailable")}
+                <div data-testid="equity-fx-slot" style={{ fontSize: "0.6rem", color: "#64748b", marginTop: 3, minHeight: "0.85rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                     title={fx
+                       ? (fx.available
+                           ? `GBP→USD ${fx.rate} (USD per GBP) · rate ${fx.effective_date} · ${srcLabel} ${fx.source_series}`
+                           : "GBP→USD conversion rate unavailable (stale or missing) — non-USD equity is not converted")
+                       : undefined}>
+                  {fx
+                    ? (fx.available
+                        ? `GBP→USD ${fx.rate} · ${fx.effective_date} · ${srcLabel}`
+                        : (lang === "ja" ? "GBP→USD レート利用不可" : "GBP→USD rate unavailable"))
+                    : " "}
                 </div>
               );
             })() : null}
@@ -829,7 +857,7 @@ export default function DashboardPage() {
             ? (() => {
                 // Explicit statistics state, localised: measured ("USD, realized"), or an "Unavailable" / "Partial — …"
                 // label with the included/excluded account split — never a silent measured zero.
-                const stateLabel = aggregateStateLabel(lang, snap.metricsState, snap.metricsReason);
+                const stateLabel = metricsStateLabel(lang, snap.metricsState, snap.metricsReason);
                 const counts = (snap.includedCount != null && snap.excludedCount != null && snap.excludedCount > 0)
                   ? (lang === "ja" ? `（対象${snap.includedCount} / 除外${snap.excludedCount}）` : ` (${snap.includedCount} included · ${snap.excludedCount} excluded)`)
                   : "";
