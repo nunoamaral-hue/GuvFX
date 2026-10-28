@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.utils import timezone
 
+from analytics import fx_boe as BOE
 from analytics import fx_fred as FRED
 from analytics import portfolio_fx as FX
 from analytics.models import DailyFxObservation
@@ -37,6 +38,19 @@ from analytics.models import DailyFxObservation
 logger = logging.getLogger("guvfx.fx")
 
 MAX_STALENESS_DAYS = 7
+
+# Canonical provider series code per source. Disclosure/health derive the series from the SELECTED source via
+# this map rather than trusting a stored row's ``source_series`` (historical BoE rows were mislabelled with the
+# Fed series before the ingest fix) or hardcoding the Fed series for every source.
+SERIES_BY_SOURCE = {
+    DailyFxObservation.SOURCE_FED_H10: FRED.SERIES,   # DEXUSUK
+    DailyFxObservation.SOURCE_BOE: BOE.SERIES,         # XUDLUSS
+}
+
+
+def series_for_source(source: str, fallback: str = FRED.SERIES) -> str:
+    """Canonical provider series code for ``source`` (``fallback`` for an unknown source)."""
+    return SERIES_BY_SOURCE.get(source, fallback)
 # Governed business-date timezone for "today"/previous-day. Europe/London unless a platform-wide business-date
 # policy mandates otherwise (overridable via settings for a future governed policy). ZoneInfo handles UK DST.
 GOVERNED_TZ = getattr(settings, "PORTFOLIO_FX_BUSINESS_TZ", "Europe/London") or "Europe/London"
@@ -159,7 +173,7 @@ class StoredFredFxRateSource:
         if sel is None:
             return None
         return FX.FxRate(b, q, float(sel.rate), as_of=sel.effective_date.isoformat(),
-                         source=f"{sel.source}:{sel.source_series} rev{sel.revision_number}")
+                         source=f"{sel.source}:{series_for_source(sel.source, sel.source_series)} rev{sel.revision_number}")
 
     def provenance(self, base: str = FRED.BASE, quote: str = FRED.QUOTE) -> dict:
         """Read-only provenance for the portfolio API disclosure (DB-only). Honest ``available: False`` when no
@@ -244,43 +258,70 @@ class StoredDbFxRateSource:
         if sel is None:
             return None
         return FX.FxRate(b, q, float(sel.rate), as_of=sel.effective_date.isoformat(),
-                         source=f"{sel.source}:{sel.source_series} rev{sel.revision_number}")
+                         source=f"{sel.source}:{series_for_source(sel.source, sel.source_series)} rev{sel.revision_number}")
 
     def provenance(self, base: str = FRED.BASE, quote: str = FRED.QUOTE) -> dict:
         sel = self._select(base, quote)
-        common = {"enabled": True, "pair": f"{base}{quote}", "source_series": FRED.SERIES,
+        common = {"enabled": True, "pair": f"{base}{quote}",
                   "direction": FRED.DIRECTION, "governed_tz": GOVERNED_TZ,
                   "source_priority": list(self.priority),
                   "current_date": self.current_date.isoformat(),
                   "target_date": (self.current_date - timedelta(days=1)).isoformat()}
         if sel is None:
-            return {**common, "source": self.priority[0], "available": False,
-                    "reason": "no_rate_within_staleness"}
+            # No usable rate: disclose the series of the HIGHEST-priority source (the one we would have used).
+            return {**common, "source": self.priority[0], "source_series": series_for_source(self.priority[0]),
+                    "available": False, "reason": "no_rate_within_staleness"}
         return {**common, "available": True, "rate": format(sel.rate.normalize(), "f"),
                 "effective_date": sel.effective_date.isoformat(), "source": sel.source,
-                "selected_source": sel.source, "source_series": sel.source_series,
+                "selected_source": sel.source, "source_series": series_for_source(sel.source, sel.source_series),
                 "revision_number": sel.revision_number, "observation_id": sel.observation_id,
                 "source_url": sel.source_url,
                 "retrieved_at": sel.retrieved_at.isoformat() if sel.retrieved_at else "", "age_days": sel.age_days}
 
 
 def fx_ingestion_health(current_date: Optional[date] = None, *,
-                        source: str = DailyFxObservation.SOURCE_FED_H10) -> dict:
-    """Readiness of the scheduled FX ingestion (ops/health). HEALTHY when a usable (within-staleness) rate exists,
-    STALE when the latest accepted observation is too old to convert, EMPTY when nothing is ingested yet."""
+                        source: Optional[str] = None, priority: Optional[tuple] = None) -> dict:
+    """Readiness of the scheduled FX ingestion (ops/health), evaluated over the GOVERNED source priority so the
+    health signal matches the request path (``StoredDbFxRateSource``). HEALTHY when the first in-priority source
+    has a usable (within-staleness) rate, STALE when a source is ingested but too old to convert, EMPTY when
+    nothing is ingested for any priority source. Read-only; DB only.
+
+    Pass ``source`` to check exactly one provider (legacy/targeted use); otherwise the configured priority
+    (``PORTFOLIO_FX_SOURCE_PRIORITY``, default Fed H.10 only) is used. ``source`` names the reported provider —
+    the first convertible one, else the freshest ingested one."""
     current_date = current_date or governed_today()
     base, quote = FRED.BASE, FRED.QUOTE
-    accepted = DailyFxObservation.objects.filter(
-        base_currency=base, quote_currency=quote, source=source,
-        acceptance_state=DailyFxObservation.STATE_ACCEPTED)
-    latest = accepted.order_by("-effective_date", "-revision_number").first()
-    if latest is None:
-        return {"status": "EMPTY", "source": source, "series": FRED.SERIES, "accepted_count": 0,
+    order = (source,) if source else (priority or fx_source_priority())
+
+    convertible_pick = None          # first in-priority source with a usable rate
+    freshest_pick = None             # freshest ingested source (for an honest STALE report)
+    for src in order:
+        latest = (DailyFxObservation.objects.filter(
+            base_currency=base, quote_currency=quote, source=src,
+            acceptance_state=DailyFxObservation.STATE_ACCEPTED)
+            .order_by("-effective_date", "-revision_number").first())
+        if latest is None:
+            continue
+        if freshest_pick is None or latest.effective_date > freshest_pick[1].effective_date:
+            freshest_pick = (src, latest)
+        if convertible_pick is None and select_observation(base, quote, current_date, source=src) is not None:
+            convertible_pick = (src, latest)
+
+    if convertible_pick is None and freshest_pick is None:
+        picked = order[0]
+        return {"status": "EMPTY", "source": picked, "series": series_for_source(picked),
+                "source_priority": list(order), "accepted_count": 0,
                 "latest_effective_date": None, "latest_retrieved_at": None, "age_days": None, "convertible": False,
                 "governed_tz": GOVERNED_TZ, "current_date": current_date.isoformat()}
-    convertible = select_observation(base, quote, current_date, source=source) is not None
-    return {"status": "HEALTHY" if convertible else "STALE", "source": source, "series": FRED.SERIES,
-            "accepted_count": accepted.count(),
+
+    convertible = convertible_pick is not None
+    picked_src, latest = convertible_pick or freshest_pick
+    accepted_count = DailyFxObservation.objects.filter(
+        base_currency=base, quote_currency=quote, source=picked_src,
+        acceptance_state=DailyFxObservation.STATE_ACCEPTED).count()
+    return {"status": "HEALTHY" if convertible else "STALE", "source": picked_src,
+            "series": series_for_source(picked_src), "source_priority": list(order),
+            "accepted_count": accepted_count,
             "latest_effective_date": latest.effective_date.isoformat(),
             "latest_retrieved_at": latest.retrieved_at.isoformat() if latest.retrieved_at else None,
             "age_days": (current_date - timedelta(days=1) - latest.effective_date).days,
