@@ -1,0 +1,23 @@
+# GuvFX FX ingestion schedule (Bank of England XUDLUSS, GBP->USD).
+#
+# TIMEZONE: the production host and the backend container both run UTC (Etc/UTC). London is UTC in winter (GMT)
+# and UTC+1 in summer (BST). The BoE publishes the daily XUDLUSS spot ~midday London (T+1). 15:00 UTC is safely
+# AFTER that window in BOTH GMT (15:00 London) and BST (16:00 London), year-round, so one daily run reliably
+# captures the previous London business day's published rate. Weekends/holidays have no new publication, so a
+# run then simply finds nothing new (idempotent duplicate-skip) - harmless.
+#
+# Only Bank of England is scheduled. FRED (Fed H.10 DEXUSUK) is deliberately NOT scheduled: it currently times
+# out from the production container and BoE is the governed primary (PORTFOLIO_FX_SOURCE_PRIORITY=BOE,FED_H10).
+#
+# run_fx_boe_ingest.sh: single-instance (flock), bounded timeout, bounded retries+backoff, append-only, idempotent.
+# run_fx_freshness_check.sh: read-only health monitor; quiet when HEALTHY and fresh, FX_FRESHNESS_ALERT + non-zero
+# when STALE/EMPTY or aging past the warn threshold (before the 7-day refusal boundary).
+#
+# Managed by deploy/fx-ingestion/install_fx_ingestion_cron.sh (end-anchored markers below).
+
+# Daily BoE ingestion at 15:00 UTC (after the London publication window).
+0 15 * * * /home/ubuntu/guvfx-app/deploy/fx-ingestion/run_fx_boe_ingest.sh >> /var/log/guvfx/fetch_fx_boe.log 2>&1 # guvfx-fetch-fx-boe
+
+# Freshness monitor: after the ingest (16:00 UTC) and a morning check (08:00 UTC).
+0 16 * * * /home/ubuntu/guvfx-app/deploy/fx-ingestion/run_fx_freshness_check.sh >> /var/log/guvfx/fx_freshness.log 2>&1 # guvfx-fx-freshness-pm
+0 8  * * * /home/ubuntu/guvfx-app/deploy/fx-ingestion/run_fx_freshness_check.sh >> /var/log/guvfx/fx_freshness.log 2>&1 # guvfx-fx-freshness-am
