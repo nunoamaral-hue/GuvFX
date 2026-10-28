@@ -174,4 +174,58 @@ describe("Dashboard summary row — stable geometry across states", () => {
     expect(cells()).toBe(4);
     expect(screen.queryByTestId("equity-fx-slot")).toBeNull();     // no FX line ever in account scope
   });
+
+  it("partial-FX state (rate unavailable) keeps the reserved slot + 4 cells and shows the honest line", async () => {
+    // The fx block is present but NOT available (stale/missing rate). The reserved slot must still render (so the
+    // cell height is unchanged) and show the honest "rate unavailable" line — never a fabricated conversion.
+    apiFetch.mockImplementation((p: string) => {
+      if (p.startsWith("/api/analytics/portfolio/summary/")) {
+        const s = summaryAll();
+        s.fx = { enabled: true, pair: "GBPUSD", available: false, source: "BOE", source_series: "XUDLUSS", direction: "USD_PER_GBP", as_of: "", reason: "no_rate_within_staleness" };
+        return Promise.resolve(s);
+      }
+      return Promise.resolve(defaultApiFetch(p));
+    });
+    render(<DashboardPage />);
+    await waitFor(() => expect(screen.getByText("$2,831.07")).toBeTruthy());
+    expect(cells()).toBe(4);
+    const fx = screen.getByTestId("equity-fx-slot");
+    expect(fx.textContent || "").toContain("GBP→USD rate unavailable");
+  });
+
+  it("single GBP account scope renders native GBP, omits the FX slot, keeps 4 stable cells", async () => {
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    apiFetch.mockImplementation((p: string) => {
+      if (p.startsWith("/api/trading/accounts/")) return Promise.resolve([{ id: 49, name: "Pepperstone", broker_name: "Pepperstone", account_number: "71490049", is_active: false }]);
+      if (p.startsWith("/api/analytics/trade-history/")) return Promise.resolve({ mt5_balance_current: 514.21, mt5_equity_current: 514.21, currency: "GBP", observed_stats: { total_trades: 0, win_rate_pct: 0, max_drawdown_pct: 0, net_pnl_total: 0 }, balance_series: [] });
+      return Promise.resolve(defaultApiFetch(p));
+    });
+    render(<DashboardPage />);
+    await waitFor(() => expect(screen.getByText(/GBP\s*514\.21/)).toBeTruthy());   // native currency, not forced to USD
+    expect(cells()).toBe(4);
+    expect(screen.queryByTestId("equity-fx-slot")).toBeNull();
+  });
+
+  it("row structure is invariant to value magnitude (no content-driven add/remove across refreshes)", async () => {
+    // A background refresh can bring a very different equity magnitude. The card must keep the SAME four cells and
+    // the reserved FX slot regardless of value width — so the fixed grid never gains/loses structure and cannot
+    // reflow. (Pixel-level before/after-refresh stability is proven separately by the CSS-geometry browser harness.)
+    const { unmount } = render(<DashboardPage />);
+    await waitFor(() => expect(screen.getByText("$2,831.07")).toBeTruthy());
+    expect(cells()).toBe(4);
+    expect(screen.getByTestId("equity-fx-slot")).toBeTruthy();
+    unmount();
+    apiFetch.mockImplementation((p: string) => {
+      if (p.startsWith("/api/analytics/portfolio/summary/")) {
+        const s = summaryAll();
+        s.aggregate.equity_usd = { ...s.aggregate.equity_usd, total_usd: 12345678.9 };
+        return Promise.resolve(s);
+      }
+      return Promise.resolve(defaultApiFetch(p));
+    });
+    render(<DashboardPage />);
+    await waitFor(() => expect(screen.getByText("$12,345,678.90")).toBeTruthy());
+    expect(cells()).toBe(4);                                       // same structure under a far larger value
+    expect(screen.getByTestId("equity-fx-slot")).toBeTruthy();
+  });
 });
