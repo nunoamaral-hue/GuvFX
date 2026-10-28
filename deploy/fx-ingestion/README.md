@@ -16,13 +16,26 @@ store went stale (the confirmed P1). This adds the tracked, supervised schedule 
   conversion). A stalled ingestion makes `age_days` grow, so this also catches "effective date not advancing".
 - `crontab.fx-ingestion` — the schedule (documented): BoE ingest `0 15 * * *` UTC; freshness `0 16` and `0 8` UTC.
 - `install_fx_ingestion_cron.sh` — idempotent installer (`--remove` to uninstall), end-anchored markers.
-- `verify_fx_ingestion.sh` — validates cron presence, executables, flock contention, and the monitor, without
-  triggering an ingestion.
+- `verify_fx_ingestion.sh` — validates cron presence, executables, the cron-user log redirection boundary, flock
+  contention, and the monitor, without triggering an ingestion.
+- `lib_fx_log.sh` — shared helpers (`fx_ensure_log`, `fx_check_appendable`) that create the log files as the cron
+  user and test the real `>>` redirection boundary; sourced by the installer and verifier.
+- `tests/test_log_boundary.sh` — standalone regression test for that boundary (positive + negative controls; no
+  sudo/cron/network). Run: `deploy/fx-ingestion/tests/test_log_boundary.sh`.
 
 ## Timezone
 Host and container are **UTC**. London = GMT (UTC) in winter, BST (UTC+1) in summer. BoE publishes XUDLUSS
 ~midday London (T+1); **15:00 UTC** is safely after the window in both GMT (15:00 London) and BST (16:00 London)
 year-round.
+
+## Log files & the cron-user write boundary
+The cron runs as the unprivileged `ubuntu` user and redirects with `>> /var/log/guvfx/<name>.log`. `/var/log/guvfx`
+is root-owned `0755`, so that user can *append* to a log it already owns but cannot *create* a missing one — and a
+missing redirect target makes `/bin/sh` fail to even start the scheduled command (silently, with `MAILTO` unset).
+That was the confirmed 2026-10-28 reliability defect. The installer therefore pre-creates `fetch_fx_boe.log` and
+`fx_freshness.log` owned by the cron user at least-privilege `0640` and refuses to enable the schedule unless both
+are appendable; `verify_fx_ingestion.sh` re-tests that exact boundary. It never broadens the directory and never
+touches unrelated logs.
 
 ## FRED (Fed H.10) is intentionally NOT scheduled
 FRED currently times out from the production container and BoE is the governed primary
