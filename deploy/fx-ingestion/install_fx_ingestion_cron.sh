@@ -13,6 +13,11 @@ REPO_DIR="${REPO_DIR:-/home/ubuntu/guvfx-app}"
 LOG_DIR="${LOG_DIR:-/var/log/guvfx}"
 INGEST="${REPO_DIR}/deploy/fx-ingestion/run_fx_boe_ingest.sh"
 FRESH="${REPO_DIR}/deploy/fx-ingestion/run_fx_freshness_check.sh"
+INGEST_LOG="${LOG_DIR}/fetch_fx_boe.log"
+FRESH_LOG="${LOG_DIR}/fx_freshness.log"
+
+# shellcheck source=deploy/fx-ingestion/lib_fx_log.sh
+. "${REPO_DIR}/deploy/fx-ingestion/lib_fx_log.sh"
 
 M_INGEST="# guvfx-fetch-fx-boe"
 M_FRESH_PM="# guvfx-fx-freshness-pm"
@@ -29,9 +34,19 @@ if [ "${1:-}" = "--remove" ]; then
   exit 0
 fi
 
-L_INGEST="0 15 * * * ${INGEST} >> ${LOG_DIR}/fetch_fx_boe.log 2>&1 ${M_INGEST}"
-L_FRESH_PM="0 16 * * * ${FRESH} >> ${LOG_DIR}/fx_freshness.log 2>&1 ${M_FRESH_PM}"
-L_FRESH_AM="0 8 * * * ${FRESH} >> ${LOG_DIR}/fx_freshness.log 2>&1 ${M_FRESH_AM}"
+# Ensure the cron redirect targets exist and are appendable by THIS (cron) user before installing the schedule.
+# /var/log/guvfx is root-owned, so a missing log cannot be created by the unprivileged cron user at run time;
+# pre-creating it here (owned by this user, least-privilege mode) is what lets the scheduled jobs log and run.
+fx_ensure_log "$INGEST_LOG"
+fx_ensure_log "$FRESH_LOG"
+for _f in "$INGEST_LOG" "$FRESH_LOG"; do
+  fx_check_appendable "$_f" \
+    || { echo "ERROR: $(id -un) cannot append to $_f via '>>' - fix its ownership/mode before enabling cron" >&2; exit 1; }
+done
+
+L_INGEST="0 15 * * * ${INGEST} >> ${INGEST_LOG} 2>&1 ${M_INGEST}"
+L_FRESH_PM="0 16 * * * ${FRESH} >> ${FRESH_LOG} 2>&1 ${M_FRESH_PM}"
+L_FRESH_AM="0 8 * * * ${FRESH} >> ${FRESH_LOG} 2>&1 ${M_FRESH_AM}"
 
 ( strip; echo "$L_INGEST"; echo "$L_FRESH_PM"; echo "$L_FRESH_AM" ) | crontab -
 echo "installed GuvFX FX ingestion cron:"
