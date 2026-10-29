@@ -53,6 +53,7 @@ const STR = {
   policy: { en: "On disable", ja: "無効化時" },
   sync: { en: "Sync", ja: "同期" },
   liveBlocked: { en: "LIVE execution blocked", ja: "ライブ実行はブロック" },
+  notReady: { en: "Not execution-ready", ja: "実行準備未完了" },
   demo: { en: "DEMO", ja: "デモ" },
   live: { en: "LIVE", ja: "ライブ" },
   events: { en: "Observed master events", ja: "観測されたマスターイベント" },
@@ -105,6 +106,28 @@ export function statusLabel(status: string, lang: Lang): string {
   if (status === "EXECUTION_REQUESTED") return lang === "ja" ? "実行要求（未確認）" : "EXECUTION REQUESTED";
   if (status === "EXECUTION_VERIFIED") return lang === "ja" ? "ブローカー確認済み" : "BROKER-VERIFIED";
   return status;
+}
+
+// config_blocked_reason → human text (mirrors CopyTradingConfigContent.blockedReasonText). Keeps the
+// backend's precise "sizing_invalid: …" detail as the tail so an operator sees exactly why a configured lot
+// is unexecutable (e.g. below the broker's volume_min). Only ever the NEGATIVE — never a positive claim.
+function blockedReasonText(reason: string | null | undefined, L: Lang): string {
+  if (!reason) return "";
+  if (reason.startsWith("sizing_invalid:")) {
+    const detail = reason.slice("sizing_invalid:".length).trim();
+    return L === "ja" ? `設定ロットが執行不可: ${detail}` : `Configured lot not executable: ${detail}`;
+  }
+  const map: Record<string, { en: string; ja: string }> = {
+    follower_disconnected: { en: "Follower disconnected", ja: "フォロワー切断" },
+    no_symbol_map: { en: "No verified instrument map", ja: "検証済み銘柄マップなし" },
+    map_present_but_unverified: { en: "Instrument map not verified", ja: "銘柄マップ未検証" },
+    instrument_map_not_ready: { en: "Instrument map not ready", ja: "銘柄マップ未整備" },
+    follower_instruments_unsynced: { en: "Follower constraints not synced", ja: "フォロワー制約が未同期" },
+    symbol_constraints_unavailable: { en: "Symbol constraints unavailable", ja: "銘柄制約が利用不可" },
+    identity_mapping_symbol_set_not_enumerated: { en: "Same-broker identity (symbol set not enumerated)", ja: "同一ブローカー恒等（銘柄集合未列挙）" },
+  };
+  const hit = map[reason];
+  return hit ? hit[L] : reason;
 }
 
 function sizingSummary(f: CopyTradingFollower): string {
@@ -240,6 +263,14 @@ export const CopyTradingContent: React.FC<{
               <span style={{ color: "#9db6d6", fontSize: "0.8rem" }}>{STR.policy[L]}: {f.disable_policy}</span>
               <span style={{ color: "#9db6d6", fontSize: "0.8rem" }}>{STR.sync[L]}: {f.sync_status}</span>
               {f.live_execution_blocked && <Pill color="red">{STR.liveBlocked[L]}</Pill>}
+              {f.config_status === "blocked" && (
+                <span data-testid="follower-not-ready">
+                  <Pill color="yellow">
+                    ⚠ {STR.notReady[L]}
+                    {f.config_blocked_reason ? ` — ${blockedReasonText(f.config_blocked_reason, L)}` : ""}
+                  </Pill>
+                </span>
+              )}
             </div>
           ))}
 

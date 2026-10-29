@@ -21,21 +21,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from trade_copier import services
-from trade_copier.flags import copier_ui_enabled_for
+from trade_copier.flags import copier_ui_enabled_for, execution_banner, execution_status
 from trade_copier.models import CopierFollower, CopierMaster, CopierSymbolMap, MasterEvent, SizingMode
 from trade_copier.serializers import _account_environment, _broker_label
 from trade_copier.symbols import broker_key
 from trading.models import TradingAccount
 
-_SHADOW_BANNER = "SHADOW — EXECUTION OFF"   # retained for API back-compat; the UI uses the compact status below
-# Quiet, professional execution-status treatment (Workstream C): a factual state, not a full-width alarm banner.
-_EXECUTION_STATUS = {
-    "mode": "observation",
-    "execution": "off",
-    "label": "Observation mode",
-    "detail": "Copy execution off",
-    "note": "Saving configuration does not activate trading.",
-}
+# The execution status + banner on this surface are DERIVED LIVE from the execute flags
+# (``trade_copier.flags.execution_status`` / ``execution_banner``) — NOT constants — so the config page can
+# never keep asserting "EXECUTION OFF" once a Sponsor arms the DEMO producer. While the producer is off (the
+# default) the helper reads exactly as before: mode 'observation', execution 'off', 'Observation mode' /
+# 'Copy execution off', and its default note is "Saving configuration does not activate trading."
 _FRESH_SECONDS = 15 * 60   # an account/observation older than this is "stale", never shown as ready
 
 
@@ -196,19 +192,17 @@ def _validate_sizing_against_constraints(cfg, constraints):
             raise ValueError(f"max_volume {mv} exceeds {sym} maximum volume {vmax}")
 
 
-def _pair_view(master, follower):
-    """Per-pair display: per-follower sizing, instrument-map evidence, broker-observed constraints, a fail-closed
-    configuration-readiness verdict (distinct from execution authorisation, which stays OFF), honest unavailable."""
+def follower_config_readiness(master, follower):
+    """Fail-closed per-follower CONFIGURATION readiness (NOT execution authorisation): verified instrument map +
+    the follower's OWN broker-observed volume constraints + the configured lot validated against that contract.
+    Returns the status, an explicit blocked reason — only ever the NEGATIVE ("not execution-ready — <reason>"),
+    never a positive "execution-ready" claim — and whether the follower is still current. SHARED by the founder
+    config page (``_pair_view``) and the read-only monitoring overview so both surfaces tell the SAME truth about
+    a follower (a "ready" config is still observation-only until a separate explicit production authorisation)."""
     facct = follower.follower_account
-    maps = _verified_maps(master.trading_account, facct)       # back-compat shape
     map_status = _map_status(master.trading_account, facct)
     constraints = _observed_constraints(facct, map_status)
-    last_event = (MasterEvent.objects.filter(master=master).order_by("-sequence")
-                  .values("event_type", "symbol", "observed_at").first())
     follower_current = facct.disconnected_at is None
-    # Configuration readiness is NOT execution authorisation: a "ready" config is still observation-only until a
-    # separate, explicit production authorisation and the live safety gate are satisfied. We only ever assert the
-    # NEGATIVE ("not execution-ready — <reason>"); we never render a positive "execution-ready" claim.
     blocked_reason = None
     if not follower_current:
         blocked_reason = "follower_disconnected"
@@ -222,6 +216,22 @@ def _pair_view(master, follower):
                 {"fixed_lot": follower.fixed_lot, "max_volume": follower.max_volume}, constraints)
         except ValueError as e:
             blocked_reason = f"sizing_invalid: {e}"
+    return {"config_status": "ready" if blocked_reason is None else "blocked",
+            "config_blocked_reason": blocked_reason, "follower_current": follower_current,
+            "map_status": map_status, "constraints": constraints}
+
+
+def _pair_view(master, follower):
+    """Per-pair display: per-follower sizing, instrument-map evidence, broker-observed constraints, a fail-closed
+    configuration-readiness verdict (distinct from execution authorisation, which stays OFF), honest unavailable."""
+    facct = follower.follower_account
+    maps = _verified_maps(master.trading_account, facct)       # back-compat shape
+    readiness = follower_config_readiness(master, follower)
+    map_status = readiness["map_status"]
+    constraints = readiness["constraints"]
+    follower_current = readiness["follower_current"]
+    last_event = (MasterEvent.objects.filter(master=master).order_by("-sequence")
+                  .values("event_type", "symbol", "observed_at").first())
     return {
         "follower_account_id": follower.follower_account_id,
         "enabled": follower.enabled,
@@ -239,8 +249,8 @@ def _pair_view(master, follower):
         # Broker-OBSERVED limits, kept distinct from the CONFIGURED sizing above (Workstream A).
         "observed_constraints": constraints,
         # Fail-closed configuration verdict (Workstream A): "ready" | "blocked" + an explicit reason. Not execution.
-        "config_status": "ready" if blocked_reason is None else "blocked",
-        "config_blocked_reason": blocked_reason,
+        "config_status": readiness["config_status"],
+        "config_blocked_reason": readiness["config_blocked_reason"],
         "observer_last_observed_at": master.last_observed_at.isoformat() if master.last_observed_at else None,
         "last_observed_event": last_event or None,
         "supported_risk_controls": ["FIXED_LOT", "max_volume", "max_concurrent_positions"],
@@ -279,10 +289,10 @@ class CopyTradingConfigView(APIView):
 
     def get(self, request):
         if not copier_ui_enabled_for(request.user):
-            return Response({"enabled": False, "banner": _SHADOW_BANNER, "execution_status": _EXECUTION_STATUS})
+            return Response({"enabled": False, "banner": execution_banner(), "execution_status": execution_status()})
         return Response({
-            "enabled": True, "banner": _SHADOW_BANNER, "execution": "off",
-            "execution_status": _EXECUTION_STATUS,
+            "enabled": True, "banner": execution_banner(), "execution": execution_status()["execution"],
+            "execution_status": execution_status(),
             "explain": ("GuvFX is observing and comparing potential replication. No follower broker order is placed. "
                         "Saving configuration does NOT enable execution."),
             "eligible_accounts": _eligible_accounts(request.user),
@@ -425,6 +435,6 @@ class CopyTradingConfigView(APIView):
                     audit["disabled"].append(fid)
 
         return Response({
-            "ok": True, "banner": _SHADOW_BANNER, "execution": "off",
+            "ok": True, "banner": execution_banner(), "execution": execution_status()["execution"],
             "audit": audit, "config": _current_config(request.user),
         })

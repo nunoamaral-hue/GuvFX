@@ -14,6 +14,20 @@ List active problems with reproduction steps and workarounds.
   the deployment plan and deliberately not applied. They require their own governed rollout.
 - LIVE copier execution is still unauthorized and all seven flags remain OFF.
 
+## 🟢 Copy Trading UI truthfulness gaps — fixed (2026-10-29; ADR-0064; PR #592 merged, not yet deployed)
+
+- **Was.** The read-only Copy Trading UI asserted execution-OFF via a hardcoded constant (would stay
+  "EXECUTION OFF" if DEMO were armed), and the monitoring overview showed follower sizing with no validity
+  marker (0.01 could read as set-up on a follower whose broker `volume_min` is 1.0).
+- **Now.** Fixed (ADR-0064): flag-derived `execution_status` / `execution_banner`, and the overview carries
+  the same fail-closed per-follower readiness as the config page ("not execution-ready — &lt;reason&gt;").
+  Repo-only; **merged to `main` via PR #592** but **not yet deployed** — the deployed backend `193348f5`
+  predates it, and its banner is accurate today because all flags are OFF. Production deploy is a separate
+  single-owner step (the production closure deploy was performed concurrently by another session).
+- **Local test note.** `npm run lint` (vitest) shows ~12 `localStorage.setItem is not a function` failures in
+  `dashboard/localization`, `login`, `support` tests — a known local-only environment flake, **absent in CI**;
+  CI is the authoritative gate.
+
 ## 🟠 Account #50 gold (`XAUUSD.std`) not visible on its headless terminal (2026-10-29)
 
 - **Symptom.** #50's OWN bridge reports `XAUUSD.std` `visible=false` / `tradeable=false` despite

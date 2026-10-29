@@ -33,6 +33,12 @@ export interface CopyTradingFollower {
   last_outcome: string;
   live_execution_blocked: boolean;
   updated_at: string;
+  // Fail-closed per-follower configuration readiness, carried onto the monitoring overview so a follower
+  // whose configured lot its broker cannot execute (e.g. 0.01 below a 1.0 volume_min) is shown not
+  // execution-ready here too (only ever the NEGATIVE; never a positive "ready to execute" claim).
+  config_status?: "ready" | "blocked";
+  config_blocked_reason?: string | null;
+  follower_current?: boolean;
 }
 
 export interface CopyTradingEvent {
@@ -80,6 +86,7 @@ export interface CopyTradingLimitations {
 export interface CopyTradingOverview {
   enabled: boolean;
   banner?: string;
+  execution_status?: ExecutionStatus;
   master: CopyTradingMaster | null;
   followers: CopyTradingFollower[];
   recent_events: CopyTradingEvent[];
@@ -93,6 +100,7 @@ export interface CopyTradingStatus {
   enabled: boolean;
   banner: string;
   execution: string;
+  execution_status?: ExecutionStatus;
   limitations: CopyTradingLimitations;
 }
 
@@ -162,6 +170,11 @@ export interface ExecutionStatus {
   label: string;
   detail: string;
   note: string;
+  // Live flag inputs the status is derived from (present on backend responses; optional for back-compat).
+  copier_enabled?: boolean;
+  execute_enabled?: boolean;
+  demo_armed?: boolean;
+  live_follower_execution?: string;
 }
 
 export interface CurrentConfig {
