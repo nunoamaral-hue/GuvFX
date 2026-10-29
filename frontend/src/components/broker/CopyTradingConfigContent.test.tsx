@@ -154,11 +154,13 @@ describe("CopyTradingConfigContent", () => {
     expect(byId[49]).toBe("1.000");
   });
 
-  // --- instrument-map evidence + fail-closed verdict (Workstream A/B) ---
-  it("shows the source→follower symbol map evidence and a 'valid · observation only' verdict when ready", async () => {
+  // --- instrument-map evidence + separated readiness verdict (Workstream A/B + readiness-semantics) ---
+  it("shows map evidence, separated readiness dimensions, and a 'Copy-ready (SHADOW)' verdict when every dimension holds", async () => {
     getCopyTradingConfig.mockResolvedValue(enabledConfig({
       config: { master_account_id: 46, observe_enabled: true, master_current: true, needs_operator_attention: false,
         followers: [pair({ follower_account_id: 48, config_status: "ready", config_blocked_reason: null,
+          readiness: { terminal_connected: true, snapshot_fresh: true, direction_mapped: true, mapping_verified: true,
+            constraints_available: true, sizing_valid: true, shadow_ready: true, live_blocked: true },
           instrument_map: { master_broker: "Tradersway-Live", follower_broker: "IS6Technologies-Live",
             same_broker: false, state: "verified", ready: true, failure_reason: null,
             last_verified_at: "2026-10-24T16:19:37Z",
@@ -168,10 +170,35 @@ describe("CopyTradingConfigContent", () => {
     }));
     render(<CopyTradingConfigContent />);
     const verdict = await screen.findByTestId("copier-config-verdict-48");
-    expect(verdict.textContent).toMatch(/Configuration valid/i);
+    expect(verdict.textContent).toMatch(/Copy-ready/i);              // precise copy-readiness (SHADOW), not a conflated "valid"
     expect(verdict.textContent).not.toMatch(/execution-ready/i);     // never a positive execution-ready claim
     expect(screen.getByText(/XAUUSD → XAUUSD\.std/)).toBeTruthy();    // source → follower symbol
     expect(screen.getByText(/min 0\.01/)).toBeTruthy();               // broker-observed constraint shown
+    const rd = screen.getByTestId("copier-readiness-48");             // separated dimensions, not a single "Ready"
+    expect(rd.textContent).toMatch(/Mapping verified/i);
+    expect(rd.textContent).toMatch(/LIVE blocked/i);
+  });
+
+  it("labels the eligible-account picker by data FRESHNESS ('Live data'), never 'Ready', with an explicit note", async () => {
+    getCopyTradingConfig.mockResolvedValue(enabledConfig());
+    render(<CopyTradingConfigContent />);
+    await screen.findByLabelText("master 46");
+    expect(screen.getAllByText(/Live data/i).length).toBeGreaterThan(0);   // monitored accounts labelled freshness
+    expect(screen.queryByText(/^Ready$/)).toBeNull();                      // never the conflated "Ready"
+    expect(screen.getByTestId("copier-freshness-note").textContent).toMatch(/not Copy-Trading readiness/i);
+  });
+
+  it("shows 'awaiting live data' (not a positive copy-ready) when config is ok but the snapshot is not fresh", async () => {
+    getCopyTradingConfig.mockResolvedValue(enabledConfig({
+      config: { master_account_id: 46, observe_enabled: true, master_current: true, needs_operator_attention: false,
+        followers: [pair({ follower_account_id: 48, config_status: "ready", config_blocked_reason: null,
+          readiness: { terminal_connected: true, snapshot_fresh: false, direction_mapped: true, mapping_verified: true,
+            constraints_available: true, sizing_valid: true, shadow_ready: false, live_blocked: true } })] },
+    }));
+    render(<CopyTradingConfigContent />);
+    const verdict = await screen.findByTestId("copier-config-verdict-48");
+    expect(verdict.textContent).toMatch(/awaiting live data/i);
+    expect(verdict.textContent).not.toMatch(/Copy-ready/i);
   });
 
   it("fails closed with 'Not execution-ready' + reason when the instrument map is missing", async () => {
