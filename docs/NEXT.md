@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ DASHBOARD TRADE-HISTORY INGEST — DEPLOY + ARM (2026-10-29; ADR-0065; PR pending)
+Root cause of the "0 trading / N/A metrics" dashboard was found and the durable repair is implemented+tested:
+monitoring-only accounts never had their broker closed-trade history ingested (`SYNC_POSITIONS` enqueued only
+for open-plan accounts). Account #46's 48 real closed trades (+$163.92) are already ingested via one read-only
+sync; the new `ingest_monitored_deals` command + `deploy/monitored-deals` cron make it durable (DARK until
+`MONITORED_DEALS_INGEST_ENABLED`). Additive, idempotent, no order path; 8 tests green; entrypoint inventory
+updated. **One bounded next action:** single-owner backend deploy of the PR, then install the cron and set
+`MONITORED_DEALS_INGEST_ENABLED=1` (backend recreate). THEN the single remaining gate: a Sponsor-gated update of
+the four STALE bridges (#48/#49/#51/#52 — `account_not_demo` on the live deals read; see KNOWN_ISSUES) so their
+history becomes readable; the cron ingests it automatically afterward. Frontend unchanged. Marker:
+`DASHBOARD_TRADE_HISTORY_ROOT_CAUSE_FIXED`.
+
+
 ## COPY TRADING — EXECUTION-OFF PRODUCTION READY (2026-10-29)
 
 Canonical `193348f5` is deployed; rollback evidence is verified; required Copy Trading migration `0007` is

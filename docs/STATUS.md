@@ -1,5 +1,21 @@
 # GuvFX — Project Status
 
+> **2026-10-29 — Dashboard trade-history integrity: ROOT CAUSE FOUND + repair implemented.** A source-of-truth
+> reconciliation (read-only probe of each founder account's OWN per-tenant bridge) **overturned** the earlier
+> "submission-ready" conclusion. Account **#46 (TradersWay-Live)** held **48 real closed trades** at the broker
+> (net **+$163.92**; 90-day window) while GuvFX had persisted **0** — so the dashboard's "no closed-trade
+> history / N/A metrics" was FALSE for it. Root cause: `SYNC_POSITIONS` was enqueued only for accounts holding
+> an OPEN execution plan, so monitoring-only accounts never had their broker deal-history ingested. Triggering
+> one read-only sync for #46 ingested all 48 (`inserted=48`); the dashboard API now returns `state=OK` — 48
+> trades, 75.0% win, PF 2.295, max DD $98.50, expectancy $3.42, net +$163.92. DURABLE FIX (ADR-0065, PR pending):
+> `execution/monitored_ingest.py` + `ingest_monitored_deals` command + `deploy/monitored-deals` ~15-min cron
+> (DARK until `MONITORED_DEALS_INGEST_ENABLED`) enqueue one read-only sync per monitored account — additive,
+> idempotent, fail-closed, **no order path** (8 new tests; entrypoint inventory updated). BOUNDARY: #48/#49/#51/
+> #52 run a STALE bridge whose `/mt5/snapshots/deals` still refuses live accounts (`account_not_demo`); their
+> history is unreadable at source until their bridges are updated to the version already on #46/#50 (Sponsor-gated
+> MT5-host action — reported, not changed). #50 genuinely holds 0 trades (truthful N/A). Equity/balance aggregate
+> ($2,831.07) + FX (BoE 1.3313, eff 2026-10-27) verified truthful. Marker: `DASHBOARD_TRADE_HISTORY_ROOT_CAUSE_FIXED`.
+
 > **2026-10-29 — Copy Trading execution-OFF production closure COMPLETE.** Canonical main
 > `193348f529e5865e9034b70d7d458b961d2800cf` is deployed to the backend; account #50's reviewed
 > `ensure_symbol_visible` bridge capability is deployed only to its account-scoped bridge and made
