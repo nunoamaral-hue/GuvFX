@@ -1,0 +1,8 @@
+# Monitored deal-history ingestion — keep the dashboard's realized metrics truthful for MONITORING-only
+# accounts (connected + shown on the dashboard but holding no open GuvFX execution plan). Every ~15 minutes it
+# enqueues one READ-ONLY SYNC_POSITIONS per such account, reusing the existing identity-firewalled, idempotent
+# deals ingest (GET /mt5/snapshots/deals -> trading.Trade). It NEVER places, modifies or closes an order.
+# DARK: the command no-ops unless MONITORED_DEALS_INGEST_ENABLED=1 in the backend container env, so installing the
+# cron is safe on its own. Idempotent (skips an in-flight sync) + quiet backoff (a failed probe is re-tried at most
+# once per cooldown), so an overlapping run or an account whose bridge cannot serve the read never churns.
+*/15 * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py ingest_monitored_deals >> /var/log/guvfx/monitored_deals.log 2>&1 # guvfx-monitored-deals

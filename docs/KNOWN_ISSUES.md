@@ -2,6 +2,24 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 Stale per-host bridge refuses live deal reads on #48/#49/#51/#52 (2026-10-29)
+
+- **Symptom.** `GET {per-tenant-bridge}/mt5/snapshots/deals?username=…` returns `{"ok": false, "error":
+  "account_not_demo"}` for accounts #48 (IS6-Live), #49 (Pepperstone-Live), #51 (IS6-Live), #52 (Vantage-Live),
+  so their closed-trade history cannot be ingested and the dashboard shows "no closed-trade history" / N/A.
+- **Cause.** Those hosts run a pre-`LIVE_READONLY_MONITORING` bridge that still carries the old `trade_mode != 0`
+  (demo-only) refusal in `fetch_deals_snapshot`. `scripts/mt5_signal_bridge.py` (and the bridges on #46 & #50)
+  have that gate removed and serve live deals — proven: #46 (TradersWay-Live, trade_mode=2) returned 99 deals via
+  the SAME endpoint/token. `account_not_demo` does not exist in the current `fetch_deals_snapshot`.
+- **Impact.** Read-only; no trade/order effect. The account snapshot (balance/equity) endpoint is unaffected
+  (it never had the gate), so equity/balance stay truthful; only the *deals* read is refused.
+- **Fix (out of dashboard/data code scope).** Update those four bridges to the current version (an MT5-host
+  action — restart via the supported service mechanism, never an interactive SSH `Start-Process`; see security
+  RULE 1). Sponsor-gated. Once updated, the ADR-0065 monitored-deals cron ingests their history automatically
+  within one cooldown — no further code change.
+- **Reproduce.** Read-only: resolve each account's bridge via `execution.snapshot_transport.resolve_account_snapshot_base`
+  and GET `/mt5/snapshots/deals?username=<wu>`; compare #46/#50 (serve deals) vs #48/#49/#51/#52 (`account_not_demo`).
+
 ## 🟠 Copy Trading residual review gates after execution-OFF closure (2026-10-29)
 
 - Pepperstone #49 directions remain intentionally non-SAFE-EXACT (GBP spread-bet, contract 1, minimum 1.0 lot);

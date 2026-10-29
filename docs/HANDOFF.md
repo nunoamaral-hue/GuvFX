@@ -1,5 +1,29 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-29 — Dashboard trade-history integrity: root cause + repair (ADR-0065)
+
+- **Verified fact (source reconciliation, read-only).** Probed each founder account's OWN per-tenant bridge
+  (`resolve_account_snapshot_base` → `/mt5/snapshots/{account,deals,positions}`). Account **#46** (TradersWay-Live,
+  USD) holds **48 closed trades** / 99 deals over 90 days (realized +$180.16, commission −$7.44, swap −$8.80,
+  net **+$163.92**) with **0** persisted `Trade` rows. #50 holds 1 balance deposit, 0 trades (truthful N/A).
+  #48/#49/#51/#52 return `account_not_demo` on the deals read (stale bridge). All 6 bridges healthy, 0 open
+  positions. Equity aggregate $2,831.07 (GBP→USD @1.3313) reconciles exactly.
+- **Root cause (verified).** `SYNC_POSITIONS` was enqueued only for accounts with an OPEN plan or right after a
+  placement; monitoring-only accounts never had deal-history ingested. The ingest machinery itself is correct —
+  triggering one read-only sync for #46 ingested all 48 (`inserted=48, deals_count=99`) and the dashboard API
+  returned `state=OK` (48 trades, 75.0% win, PF 2.295, max DD $98.50, expectancy $3.42, net +$163.92).
+- **Change (this packet).** `execution/monitored_ingest.py` + `ingest_monitored_deals` command +
+  `deploy/monitored-deals/` ~15-min cron (DARK until `MONITORED_DEALS_INGEST_ENABLED`). Additive; reuses the
+  existing identity-firewalled, idempotent SYNC path; creates no order. `execution_entrypoints.json` updated
+  (NON_OPENING_EXEMPT). ADR-0065.
+- **Tests.** `execution.tests_monitored_ingest` (8) + `execution.tests_execution_entrypoints` green; full local
+  `execution` + `trading.tests_position_ingest` + `analytics.tests_portfolio` regression = 1454 tests, 0 failures
+  after the inventory fix. Frontend unchanged.
+- **Assumption / boundary (NOT changed here).** #48/#49/#51/#52 need their bridges updated (Sponsor-gated MT5-host
+  action) before their history is readable; reported in KNOWN_ISSUES, not mutated from this workstream.
+- **Branch/commit.** `fix/monitored-deal-history-ingest` off `origin/main e1789d76`. Marker:
+  `DASHBOARD_TRADE_HISTORY_ROOT_CAUSE_FIXED`.
+
 ## 2026-10-29 — Copy Trading execution-OFF production closure
 
 - **Deployed:** backend image `f4800d5e543f` from canonical main
