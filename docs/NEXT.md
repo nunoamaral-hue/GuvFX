@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## COPY TRADING — EXECUTION-OFF PRODUCTION READY (2026-10-29)
+
+Canonical `193348f5` is deployed; rollback evidence is verified; required Copy Trading migration `0007` is
+applied; all six founder catalogues are fresh; all 30 ordered directions are available with SAFE-EXACT-only
+discovery persistence; follower-specific gold sizing is validated; and the SHADOW canary/regression suite passed.
+All execution flags remain OFF and `46→48` remains the sole verified execution map. **One bounded next action:**
+human review/pinning of blocked AMBIGUOUS/materially different directions (especially Pepperstone #49 and Vantage
+gold alternatives) without creating execution authority. LIVE execution requires a separate explicit Sponsor
+authorization and is not part of this state. Marker: `COPY_TRADING_EXECUTION_OFF_PRODUCTION_READY`.
+
 ## ★ COPY TRADING — ACCOUNT-SCOPED SYMBOL VISIBILITY (2026-10-29, DARK PR, repo-only; ADR-0063)
 Execution-free capability to make ONE Market Watch symbol visible on ONE account's OWN identity-verified
 terminal (bridge op `ensure_symbol_visible` + `POST /mt5/ensure-symbol-visible`; governed

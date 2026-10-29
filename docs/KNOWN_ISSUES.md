@@ -2,6 +2,18 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 Copy Trading residual review gates after execution-OFF closure (2026-10-29)
+
+- Pepperstone #49 directions remain intentionally non-SAFE-EXACT (GBP spread-bet, contract 1, minimum 1.0 lot);
+  none were auto-persisted as safe or granted execution authority.
+- Vantage #52 has `XAUUSD+` enabled (contract 100, 0.01 step) while `XAUUSD247` is disabled and materially
+  different (contract 1, minimum/step 1.0). Ambiguous follower directions remain blocked for human pinning.
+- SAFE-EXACT discovery approval is not execution verification. `CopierSymbolMap` still has exactly one verified
+  row (`46→48`); `InstrumentMapping` remains off the execution path.
+- Unrelated pending migrations (`broker_public.0001/0002`, `signal_intake.0010–0012`) were discovered during
+  the deployment plan and deliberately not applied. They require their own governed rollout.
+- LIVE copier execution is still unauthorized and all seven flags remain OFF.
+
 ## 🟠 Account #50 gold (`XAUUSD.std`) not visible on its headless terminal (2026-10-29)
 
 - **Symptom.** #50's OWN bridge reports `XAUUSD.std` `visible=false` / `tradeable=false` despite

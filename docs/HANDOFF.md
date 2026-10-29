@@ -1,5 +1,27 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-29 — Copy Trading execution-OFF production closure
+
+- **Deployed:** backend image `f4800d5e543f` from canonical main
+  `193348f529e5865e9034b70d7d458b961d2800cf`; account #50 bridge script SHA-256
+  `0d36736c0c625a22dc31bb0bb5e71be9d20ffedb927330bb5eea663e9d74c99c` with timestamped rollback copy.
+- **Rollback:** backend image `dbdcf220dccb` tagged `rollback-pre-copy-closure-20261029T113556Z`; fresh database
+  dump `guvfx-pre-copy-closure-20261029T113556Z.sql.gz` (323,227,726 bytes, gzip valid, SHA-256
+  `7136799cb0d7a6e1b895bfb2a06f75618c2ce97397975a87fda8923c950c18d4`, mode 0600).
+- **Schema:** `trade_copier.0007` already applied. Unrelated pending `broker_public.0001/0002` and
+  `signal_intake.0010–0012` were not applied.
+- **Production evidence:** account #50 dry-run and commit both matched `***3832` / `IS6Technologies-Live`;
+  `XAUUSD.std` changed false→true with `trade_mode=4`, then independently re-read true. All six founder
+  catalogues refreshed from their own bridge. SAFE-EXACT-only reconciliation covered all 30 directions;
+  636 discovery rows are approved, while the only verified execution map remains `46→48`.
+- **Sizing/canary:** #48/#50/#51/#52 gold validates at 0.01 lot on 0.01 steps and contract 100; #49 validates
+  at 1.0 lot on 0.1 steps and contract 1. Global 0.01 negative controls fail for #49 and `XAUUSD247`.
+  One forced read-only observer pass produced zero events; founder config/matrix APIs returned 200 with
+  execution OFF, six accounts and 30 directions. Portfolio, open trades, WI metrics/history and web/API probes
+  all returned 200.
+- **Safety end-state:** all seven flags OFF; jobs/trades/open positions unchanged; no execution-linked replication,
+  no order, no verified-map overwrite. Marker: `COPY_TRADING_EXECUTION_OFF_PRODUCTION_READY`.
+
 ## 2026-10-29 — Account-scoped, execution-free symbol visibility (repo-only, DARK, PR; ADR-0063)
 
 - **Context (verified).** Account #50 (`IS6Technologies-Live`, login …3832) offers `XAUUSD.std`

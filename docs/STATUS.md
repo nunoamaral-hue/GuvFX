@@ -1,5 +1,18 @@
 # GuvFX — Project Status
 
+> **2026-10-29 — Copy Trading execution-OFF production closure COMPLETE.** Canonical main
+> `193348f529e5865e9034b70d7d458b961d2800cf` is deployed to the backend; account #50's reviewed
+> `ensure_symbol_visible` bridge capability is deployed only to its account-scoped bridge and made
+> `XAUUSD.std` visible after the dry-run identity gate. `trade_copier.0007` was already applied; unrelated
+> pending `broker_public`/`signal_intake` migrations were detected and deliberately not applied. Fresh rollback
+> image plus gzip-verified/SHA-256 database dump captured. Catalogues for #46/#48/#49/#50/#51/#52 were refreshed
+> one account at a time; all 30 ordered mapping directions were reconciled with SAFE-EXACT-only persistence
+> (636 approved discovery rows total). The sole execution-authority map remains verified `46→48`; Pepperstone
+> and ambiguous/materially different mappings remain blocked. SHADOW canary and Dashboard/FX/Withdrawal
+> Intelligence regression probes passed. All seven copier flags OFF; `ExecutionJob=190447`, `Trade=2277`,
+> open trades=0, `PLACE_ORDER_SHADOW=0`, 7 SHADOW replications and 0 execution-linked replications.
+> Marker: `COPY_TRADING_EXECUTION_OFF_PRODUCTION_READY`.
+
 > Update this file **whenever** project state changes. This is a current-state
 > snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
 > docs.
