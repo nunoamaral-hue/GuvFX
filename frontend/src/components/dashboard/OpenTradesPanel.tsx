@@ -40,6 +40,7 @@ const STR = {
   updated: { en: (s: number) => `Updated ${s}s ago`, ja: (s: number) => `${s}秒前に更新` },
   reconnecting: { en: "reconnecting", ja: "再接続中" },
   waiting: { en: "…", ja: "…" },
+  listLabel: { en: "Open trades list", ja: "オープン取引リスト" },
 };
 
 function money(n: number | null | undefined, currency = "USD"): string {
@@ -57,9 +58,12 @@ const card: React.CSSProperties = {
 };
 const rowStyle: React.CSSProperties = {
   display: "grid", gridTemplateColumns: "minmax(120px,1.4fr) 1fr auto", gap: 10, alignItems: "center",
-  padding: "8px 0", borderTop: "1px solid rgba(255,255,255,0.06)",
+  padding: "8px 0", borderTop: "1px solid rgba(255,255,255,0.06)", flexShrink: 0,
 };
 const meta: React.CSSProperties = { fontSize: "0.72rem", color: "#8fa0b7" };
+// Truncate long broker/account/symbol values so a row can never widen or wrap the tile taller.
+const trunc: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const emptyState: React.CSSProperties = { ...meta, padding: "18px 0", textAlign: "center", margin: "auto" };
 
 export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scope, lang = "en" }) => {
   const L = lang === "ja" ? "ja" : "en";
@@ -140,12 +144,12 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
   const truncated = !!data?.truncated;                     // row list capped (M3)
 
   return (
-    <div style={card} data-testid="open-trades-panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+    <div style={{ ...card, flex: "1 1 auto", minWidth: 0 }} className="open-trades-tile" data-testid="open-trades-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, flexShrink: 0 }}>
         <div style={{ color: "#e9f4ff", fontSize: "0.95rem", fontWeight: 600 }}>{STR.title[L]}</div>
         <div style={meta}>{STR.open[L](fullCount)}</div>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexShrink: 0 }}>
         <div style={meta}>
           {STR.floating[L]}{" "}
           <span style={{ color: floatTotalForColor == null ? "#9fb4d6" : floatTotalForColor >= 0 ? "#5ad19a" : "#e88", fontWeight: 600 }}>
@@ -166,22 +170,24 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
         </div>
       </div>
 
-      {/* Fixed height ~5 rows; the list scrolls internally so the page never jumps on refresh. */}
-      <div style={{ maxHeight: 230, overflowY: "auto" }} data-testid="open-trades-list">
+      {/* Fixed-height flex body: ONLY this list scrolls (.open-trades-body), so the tile matches the Market Focus
+          row height on desktop/tablet and never grows on refresh or trade-count change; on mobile it is capped and
+          scrolls internally. Keyboard-accessible, named scroll region. */}
+      <div className="open-trades-body" data-testid="open-trades-list" tabIndex={0} role="region" aria-label={STR.listLabel[L]}>
         {loading ? (
-          <div style={{ ...meta, padding: "18px 0", textAlign: "center" }}>{STR.loading[L]}</div>
+          <div style={emptyState}>{STR.loading[L]}</div>
         ) : failedFirst ? (
-          <div style={{ ...meta, padding: "18px 0", textAlign: "center" }}>{STR.unavailable[L]}</div>
+          <div style={emptyState}>{STR.unavailable[L]}</div>
         ) : trades.length === 0 ? (
-          <div style={{ ...meta, padding: "18px 0", textAlign: "center" }}>{STR.none[L]}</div>
+          <div style={emptyState}>{STR.none[L]}</div>
         ) : (
           trades.map((t) => (
             <div key={t.position_id} style={rowStyle}>
-              <div>
-                <div style={{ color: "#cfe0f5", fontSize: "0.82rem" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: "#cfe0f5", fontSize: "0.82rem", ...trunc }}>
                   {t.broker} {t.account_masked}
                 </div>
-                <div style={meta}>{t.symbol} · {t.side} {String(t.volume ?? "")}
+                <div style={{ ...meta, ...trunc }}>{t.symbol} · {t.side} {String(t.volume ?? "")}
                   {t.strategy ? ` · ${t.strategy}` : ""}</div>
               </div>
               <div style={meta}>
@@ -196,7 +202,7 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
         )}
       </div>
       {(staleAccts > 0 || truncated) && (
-        <div style={{ ...meta, marginTop: 6 }}>
+        <div style={{ ...meta, marginTop: 6, flexShrink: 0 }}>
           {staleAccts > 0 ? STR.staleAccts[L](staleAccts) : ""}
           {staleAccts > 0 && truncated ? " · " : ""}
           {truncated ? STR.showing[L](trades.length, fullCount) : ""}

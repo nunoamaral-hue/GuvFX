@@ -51,15 +51,17 @@ describe("OpenTradesPanel", () => {
     expect(screen.getByText(/0 open/)).toBeTruthy();
   });
 
-  it("keeps a fixed-height scrollable list for many positions (no page jump)", async () => {
+  it("keeps a single internally-scrolling body for many positions (no page jump)", async () => {
     const many = Array.from({ length: 12 }, (_, i) =>
       trade({ position_id: `1:${i}`, ticket: i, symbol: `SYM${i}` }));
     api.apiFetch.mockResolvedValue(result(many));
     render(<OpenTradesPanel scope="ALL" />);
     await waitFor(() => expect(screen.getByText(/12 open/)).toBeTruthy());
     const list = screen.getByTestId("open-trades-list");
-    expect(list.style.overflowY).toBe("auto");
-    expect(list.style.maxHeight).toBeTruthy();                     // bounded height -> internal scroll, not page growth
+    // Height + scroll are now governed by the .open-trades-body CSS (fixed-height flex body that matches the Market
+    // Focus row and scrolls internally), not an inline maxHeight that could drift; jsdom can't compute CSS so we
+    // assert the layout hook + that every row is present (the actual height-invariance is proven in the browser).
+    expect(list.className).toContain("open-trades-body");
     expect(within(list).getAllByText(/SYM/).length).toBe(12);      // all rows present, just scrollable
   });
 
@@ -191,5 +193,70 @@ describe("OpenTradesPanel", () => {
     expect(screen.getByText(/12\.24 GBP/)).toBeTruthy();                          // GBP position in GBP, no $
     expect(screen.queryByText(/1\.50/)).toBeNull();                              // contamination value NEVER shown
     expect(screen.queryByText(/\$12\.24/)).toBeNull();                           // GBP figure never carries a $
+  });
+});
+
+describe("OpenTradesPanel — layout stability & accessibility (Dashboard P0 UX)", () => {
+  it("renders a single open trade inside the tile", async () => {
+    api.apiFetch.mockResolvedValue(result([trade({ symbol: "XAUUSD" })]));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText(/1 open/)).toBeTruthy());
+    expect(screen.getByText(/XAUUSD/)).toBeTruthy();
+  });
+
+  it("carries the fixed-height layout hooks (tile + body classes)", async () => {
+    api.apiFetch.mockResolvedValue(result([]));
+    render(<OpenTradesPanel scope="ALL" />);
+    const panel = await screen.findByTestId("open-trades-panel");
+    const list = screen.getByTestId("open-trades-list");
+    expect(panel.className).toContain("open-trades-tile");
+    expect(list.className).toContain("open-trades-body");
+  });
+
+  it("exposes the list as a keyboard-accessible, named scroll region", async () => {
+    api.apiFetch.mockResolvedValue(result([trade()]));
+    render(<OpenTradesPanel scope="ALL" />);
+    const list = await screen.findByTestId("open-trades-list");
+    expect(list.getAttribute("role")).toBe("region");
+    expect(list.getAttribute("tabindex")).toBe("0");                // reachable + scrollable by keyboard
+    expect(list.getAttribute("aria-label")).toBe("Open trades list");
+  });
+
+  it("names the scroll region in Japanese", async () => {
+    api.apiFetch.mockResolvedValue(result([trade()]));
+    render(<OpenTradesPanel scope="ALL" lang="ja" />);
+    const list = await screen.findByTestId("open-trades-list");
+    expect(list.getAttribute("aria-label")).toBe("オープン取引リスト");
+    expect(screen.getByText("オープン取引")).toBeTruthy();           // JA title
+  });
+
+  it("truncates long broker/account/symbol values so a row cannot widen the tile", async () => {
+    api.apiFetch.mockResolvedValue(result([trade({
+      broker: "A-Very-Long-Broker-Name-That-Would-Otherwise-Overflow", account_masked: "••••999999",
+      symbol: "SUPERLONGSYMBOLNAME", strategy: "A very long strategy label that keeps going and going",
+    })]));
+    render(<OpenTradesPanel scope="ALL" />);
+    const brokerLine = await screen.findByText(/A-Very-Long-Broker-Name/);
+    expect(brokerLine.style.overflow).toBe("hidden");
+    expect(brokerLine.style.textOverflow).toBe("ellipsis");
+    expect(brokerLine.style.whiteSpace).toBe("nowrap");
+  });
+
+  it("centers the empty state within the body", async () => {
+    api.apiFetch.mockResolvedValue(result([]));
+    render(<OpenTradesPanel scope="ALL" />);
+    const empty = await screen.findByText("No open trades");
+    expect(empty.style.margin).toBe("auto");                        // centered in the flex body
+  });
+
+  it("keeps header, open-count and floating P/L visible with an overflowing list", async () => {
+    vi.useFakeTimers();
+    const many = Array.from({ length: 20 }, (_, i) => trade({ position_id: `1:${i}`, ticket: i }));
+    api.apiFetch.mockResolvedValue(result(many));
+    render(<OpenTradesPanel scope="ALL" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByText("Open Trades")).toBeTruthy();           // fixed header
+    expect(screen.getByText(/20 open/)).toBeTruthy();               // fixed open-count
+    expect(screen.getByText(/Floating P\/L/)).toBeTruthy();         // fixed floating P/L label
   });
 });

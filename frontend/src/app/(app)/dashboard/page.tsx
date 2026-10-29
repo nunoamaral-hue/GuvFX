@@ -987,7 +987,7 @@ export default function DashboardPage() {
       {/* OPEN TRADES — replaces "Your Strategies" (monitoring only). Strategy management remains in
           Broker Accounts → Manage Strategies and in My Strategies. Live floating P/L, 30s read-only refresh,
           account-attributed, scoped by the portfolio selector. */}
-      <div style={{ flex: "0 1 350px", minWidth: 300 }}>
+      <div className="open-trades-wrap" style={{ flex: "0 1 350px", minWidth: 300, display: "flex" }}>
         <OpenTradesPanel scope={scope} lang={lang} />
       </div>
       </div>
