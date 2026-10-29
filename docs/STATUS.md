@@ -4,6 +4,18 @@
 > snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
 > docs.
 
+> **2026-10-29 — Copy Trading UI truthfulness (DARK PR, repo-only; ADR-0064).** Closes two "could-mislead"
+> gaps an independent audit found in the read-only Copy Trading UI. (1) Execution-OFF status/banner were a
+> hardcoded constant; now DERIVED LIVE from the execute flags via `trade_copier.flags.execution_status()` /
+> `execution_banner()` — OFF-state output byte-identical ("SHADOW — EXECUTION OFF" / "Observation mode"), but
+> it switches to "DEMO EXECUTION ARMED" the instant the producer is armed, so the UI can never assert
+> "EXECUTION OFF" over live DEMO orders. (2) The monitoring overview showed follower sizing with no validity
+> signal; it now carries the SAME fail-closed per-follower readiness as the config page
+> (`follower_config_readiness`, shared), and the component renders "⚠ Not execution-ready — &lt;reason&gt;"
+> (e.g. 0.01 below a 1.0 `volume_min`). Additive; no model/field/migration/flag/execution change. Backend 74
+> trade_copier UI tests green (incl. an adversarial armed-DEMO guard); frontend `CopyTradingContent` 10/10 +
+> eslint + build green. Not merged; auto-merge OFF; production untouched; execution OFF.
+
 > **2026-10-29 — Account-scoped, execution-free symbol visibility (DARK PR, repo-only; ADR-0063).** Adds a
 > narrow administrative capability to reveal ONE Market Watch symbol on ONE account's OWN identity-verified
 > terminal, so a later catalogue sync can capture it — unblocking account #50's `XAUUSD.std` (present,

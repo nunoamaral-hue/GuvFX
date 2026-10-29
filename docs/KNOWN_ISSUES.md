@@ -2,6 +2,19 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 Copy Trading UI truthfulness gaps — fixed in a DARK PR (2026-10-29; ADR-0064)
+
+- **Was.** The read-only Copy Trading UI asserted execution-OFF via a hardcoded constant (would stay
+  "EXECUTION OFF" if DEMO were armed), and the monitoring overview showed follower sizing with no validity
+  marker (0.01 could read as set-up on a follower whose broker `volume_min` is 1.0).
+- **Now.** Fixed (ADR-0064): flag-derived `execution_status` / `execution_banner`, and the overview carries
+  the same fail-closed per-follower readiness as the config page ("not execution-ready — &lt;reason&gt;").
+  Repo-only, **DARK — not deployed**; the copier UI is cohort-gated OFF in production regardless. Deploy is a
+  separate Sponsor GO (fold into the ADR-0063 execution-OFF deploy).
+- **Local test note.** `npm run lint` (vitest) shows ~12 `localStorage.setItem is not a function` failures in
+  `dashboard/localization`, `login`, `support` tests — a known local-only environment flake, **absent in CI**;
+  CI is the authoritative gate.
+
 ## 🟠 Account #50 gold (`XAUUSD.std`) not visible on its headless terminal (2026-10-29)
 
 - **Symptom.** #50's OWN bridge reports `XAUUSD.std` `visible=false` / `tradeable=false` despite

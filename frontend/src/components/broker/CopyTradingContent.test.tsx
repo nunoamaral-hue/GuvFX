@@ -46,6 +46,10 @@ function liveFollower(): CopyTradingFollower {
   };
 }
 
+function demoFollower(overrides: Partial<CopyTradingFollower> = {}): CopyTradingFollower {
+  return { ...liveFollower(), follower_account_id: 201, environment: "demo", live_execution_blocked: false, ...overrides };
+}
+
 describe("CopyTradingContent", () => {
   it("labels SHADOW_RECORDED as NO ORDER SENT (intent only, not a broker-verified success)", async () => {
     getCopyTradingOverview.mockResolvedValue(overview({ master: MASTER, recent_replications: [replication("SHADOW_RECORDED")] }));
@@ -72,6 +76,26 @@ describe("CopyTradingContent", () => {
     getCopyTradingOverview.mockResolvedValue(overview({ master: MASTER, followers: [liveFollower()] }));
     render(<CopyTradingContent accountId={100} />);
     expect(await screen.findByText(/LIVE execution blocked/i)).toBeTruthy();
+  });
+
+  it("marks a follower whose configured lot its broker cannot execute as not execution-ready, with the reason", async () => {
+    getCopyTradingOverview.mockResolvedValue(overview({ master: MASTER, followers: [demoFollower({
+      sizing_mode: "FIXED_LOT", fixed_lot: "0.01", config_status: "blocked",
+      config_blocked_reason: "sizing_invalid: fixed_lot 0.01 is below XAUUSD_SB minimum volume 1",
+    })] }));
+    render(<CopyTradingContent accountId={100} />);
+    const marker = await screen.findByTestId("follower-not-ready");
+    expect(marker.textContent).toMatch(/Not execution-ready/i);
+    expect(marker.textContent).toMatch(/not executable/i);   // the precise "Configured lot not executable: …" tail
+  });
+
+  it("shows no not-ready marker for a ready follower", async () => {
+    getCopyTradingOverview.mockResolvedValue(overview({ master: MASTER, followers: [demoFollower({
+      sizing_mode: "FIXED_LOT", fixed_lot: "0.01", config_status: "ready", config_blocked_reason: null,
+    })] }));
+    render(<CopyTradingContent accountId={100} />);
+    await screen.findByText("Master account");   // exact label (not the intro sentence) — wait for data to load
+    expect(screen.queryByTestId("follower-not-ready")).toBeNull();
   });
 
   it("stays DARK-safe (not-enabled) when the API call fails", async () => {

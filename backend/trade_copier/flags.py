@@ -104,3 +104,46 @@ def copier_reconcile_enabled() -> bool:
     places, closes or modifies an order. It is the prerequisite for any follower-position-targeting
     lifecycle op (CLOSE/MODIFY), which must never act by symbol resemblance."""
     return copier_enabled() and _flag("COPIER_RECONCILE_ENABLED")
+
+
+def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:
+    """The copier's execution posture for the UI, DERIVED LIVE from the real execute flags — never a
+    hardcoded label. While the execute producer is off (the default) this is observation/shadow and reads
+    EXACTLY as the historical constant did (``mode='observation'``, ``execution='off'``, label
+    'Observation mode'), so nothing in the UI changes today. It changes the instant a Sponsor arms the
+    producer, so the UI can never keep asserting "EXECUTION OFF" while real DEMO orders are being produced.
+    LIVE follower execution is never reachable from the copier (the execution LIVE wall governs that) and
+    is therefore always reported blocked. The ``note`` is surface-specific (config vs catalogue matrix)."""
+    execute = copier_execute_enabled()
+    demo_armed = copier_execute_demo_armed()
+    if demo_armed:
+        mode, execution, label, detail = (
+            "demo_execution", "demo_armed", "DEMO execution armed",
+            "DEMO follower orders are being produced (DEMO followers only — never LIVE).")
+    elif execute:
+        mode, execution, label, detail = (
+            "shadow_jobs", "shadow_jobs", "Execution producer on — SHADOW jobs",
+            "Suppressed SHADOW jobs only; no broker order is sent until DEMO is armed.")
+    else:
+        mode, execution, label, detail = (
+            "observation", "off", "Observation mode", "Copy execution off")
+    return {
+        "mode": mode, "execution": execution, "label": label, "detail": detail, "note": note,
+        # The live flag inputs this status is derived from (transparency/audit; plain booleans, never a secret).
+        "copier_enabled": copier_enabled(),
+        "execute_enabled": execute,
+        "demo_armed": demo_armed,
+        "live_follower_execution": "blocked",
+    }
+
+
+def execution_banner() -> str:
+    """The compact safety banner, DERIVED LIVE from the execute flags. Byte-identical to the historical
+    constant while the producer is off; switches to an unambiguous armed label the moment a Sponsor arms
+    the DEMO producer, so the banner can never be a stale "EXECUTION OFF" over live DEMO execution."""
+    execution = execution_status()["execution"]
+    if execution == "off":
+        return "SHADOW — EXECUTION OFF"
+    if execution == "shadow_jobs":
+        return "SHADOW JOBS — NO ORDER SENT"
+    return "DEMO EXECUTION ARMED — DEMO ONLY"

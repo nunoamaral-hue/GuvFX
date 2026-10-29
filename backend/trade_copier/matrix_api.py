@@ -19,18 +19,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from trade_copier.config_api import current_live_accounts
-from trade_copier.flags import copier_ui_enabled_for
+from trade_copier.flags import copier_ui_enabled_for, execution_status
 from trade_copier.matrix import ABSENT, compute_matrix
 
-# The quiet observation-mode status reused across the Copy Trading surfaces (no red banner). Catalogue
-# coverage is NOT execution readiness — stated explicitly so a full matrix is never mistaken for "ready".
-_EXECUTION_STATUS = {
-    "mode": "observation",
-    "execution": "off",
-    "label": "Observation mode",
-    "detail": "Copy execution off",
-    "note": "Catalogue coverage is not execution readiness. Mapping or saving configuration does not activate trading.",
-}
+# The execution status is DERIVED LIVE from the execute flags (``trade_copier.flags.execution_status``) — not a
+# constant — so a full matrix can never be mistaken for "execution ready", and the status cannot keep reading
+# "EXECUTION OFF" once a Sponsor arms the producer. Catalogue coverage is NOT execution readiness: that is stated
+# explicitly in this surface-specific note.
+_MATRIX_NOTE = ("Catalogue coverage is not execution readiness. Mapping or saving configuration does not "
+                "activate trading.")
 
 
 def _serialize_candidate(c) -> dict:
@@ -75,7 +72,7 @@ class InstrumentMatrixView(APIView):
     def get(self, request):
         if not copier_ui_enabled_for(request.user):
             return Response({
-                "enabled": False, "execution_status": _EXECUTION_STATUS,
+                "enabled": False, "execution_status": execution_status(note=_MATRIX_NOTE),
                 "accounts": [], "directions": [],
                 "note": "Catalogue coverage is not execution readiness.",
             })
@@ -98,7 +95,7 @@ class InstrumentMatrixView(APIView):
 
         return Response({
             "enabled": True,
-            "execution_status": _EXECUTION_STATUS,
+            "execution_status": execution_status(note=_MATRIX_NOTE),
             "accounts": view.accounts,
             "directions": [_serialize_direction(d, include_absent=include_absent) for d in directions],
             "note": "Catalogue coverage is not execution readiness.",

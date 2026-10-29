@@ -1,5 +1,26 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-29 — Copy Trading UI truthfulness (repo-only, DARK, PR; ADR-0064)
+
+- **Context (audited).** An independent read-only audit of the Copy Trading read APIs + components found the
+  config/matrix surfaces truthful, but two "could-mislead" gaps: the execution-OFF status/banner was a
+  hardcoded constant (would keep reading "EXECUTION OFF" once DEMO was armed), and the monitoring overview
+  showed follower sizing with no validity marker (0.01 could read as set-up on a follower whose broker
+  `volume_min` is 1.0).
+- **Change.** `trade_copier/flags.py` gains `execution_status(*, note)` + `execution_banner()` derived LIVE
+  from `copier_execute_enabled()` / `copier_execute_demo_armed()`; `views.py` / `config_api.py` /
+  `matrix_api.py` call them instead of the constants (OFF-state output unchanged).
+  `config_api.follower_config_readiness` factored and reused by `_pair_view` (output unchanged) and
+  `CopyTradingOverviewView`, which now adds `config_status` / `config_blocked_reason` / `follower_current`
+  per follower; `CopyTradingContent.tsx` renders a "⚠ Not execution-ready — &lt;reason&gt;" marker. ADR-0064.
+  **No model/migration/flag/execution change.**
+- **Verified (exact).** `backend/.venv/bin/python manage.py test trade_copier.tests_ui_truthfulness
+  trade_copier.tests_api trade_copier.tests_config_api trade_copier.tests_matrix_api trade_copier.tests_flags`
+  → **74 OK**; `manage.py check` clean. Frontend: `CopyTradingContent` / `CopyTradingConfigContent` /
+  `InstrumentMatrixContent` **30/30**, `eslint` clean, `npm run build` green. (12 unrelated local-only
+  `localStorage` test flakes in dashboard/login/support — absent in CI; CI is the authoritative gate.)
+- **Status.** Not merged; auto-merge OFF; production untouched; execution OFF.
+
 ## 2026-10-29 — Account-scoped, execution-free symbol visibility (repo-only, DARK, PR; ADR-0063)
 
 - **Context (verified).** Account #50 (`IS6Technologies-Live`, login …3832) offers `XAUUSD.std`

@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPY TRADING — UI TRUTHFULNESS (2026-10-29, DARK PR, repo-only; ADR-0064)
+Closes two audit-found gaps so the read-only Copy Trading UI never reads as more ready than it is: execution
+status/banner DERIVED LIVE from the execute flags (not a constant; OFF output unchanged, "DEMO EXECUTION
+ARMED" when armed), and the monitoring overview now shows per-follower "not execution-ready — &lt;reason&gt;"
+using the SAME fail-closed readiness as the config page. Additive; no model/migration/flag/execution change.
+74 backend UI tests green (incl. an adversarial armed-DEMO guard); frontend green. **One bounded next
+action:** fold this into the same execution-OFF deploy GO as ADR-0063 (backend-image-only; no migration) —
+separate Sponsor GO; production unchanged.
+
 ## ★ COPY TRADING — ACCOUNT-SCOPED SYMBOL VISIBILITY (2026-10-29, DARK PR, repo-only; ADR-0063)
 Execution-free capability to make ONE Market Watch symbol visible on ONE account's OWN identity-verified
 terminal (bridge op `ensure_symbol_visible` + `POST /mt5/ensure-symbol-visible`; governed

@@ -12,7 +12,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from trade_copier.flags import copier_ui_enabled_for
+from trade_copier.config_api import follower_config_readiness
+from trade_copier.flags import copier_ui_enabled_for, execution_banner, execution_status
 from trade_copier.models import CopierMaster, CopierReplication
 from trade_copier.serializers import (
     CopierFollowerSerializer,
@@ -30,11 +31,10 @@ _LIMITATIONS = {
             "real orders occur only on DEMO followers via a separately authorized path.",
 }
 
-# Permanent banner the founder UI must always display: the copier is observe/shadow only and no
-# execution authority is reachable from it. Surfaced on every response so the client cannot render the
-# monitoring UI without it.
-_SHADOW_BANNER = "SHADOW — EXECUTION OFF"
-
+# The safety banner the founder UI must always display is DERIVED LIVE from the execute flags via
+# trade_copier.flags.execution_banner() — NOT a constant — so it reflects the real posture and would stop
+# reading "EXECUTION OFF" the instant DEMO execution were armed. Surfaced on every response so the client
+# cannot render the monitoring UI without it. (Today, with the producer off, it is "SHADOW — EXECUTION OFF".)
 _EVENT_LIMIT = 50
 _REPLICATION_LIMIT = 100
 
@@ -63,8 +63,10 @@ class CopyTradingStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        status = execution_status()
         return Response({"enabled": copier_ui_enabled_for(request.user),
-                         "banner": _SHADOW_BANNER, "execution": "off", "limitations": _LIMITATIONS})
+                         "banner": execution_banner(), "execution": status["execution"],
+                         "execution_status": status, "limitations": _LIMITATIONS})
 
 
 class CopyTradingMastersView(APIView):
@@ -73,9 +75,9 @@ class CopyTradingMastersView(APIView):
 
     def get(self, request):
         if not copier_ui_enabled_for(request.user):
-            return Response({"enabled": False, "banner": _SHADOW_BANNER, "masters": []})
+            return Response({"enabled": False, "banner": execution_banner(), "masters": []})
         masters = _owned_masters(request).order_by("id")
-        return Response({"enabled": True, "banner": _SHADOW_BANNER,
+        return Response({"enabled": True, "banner": execution_banner(),
                          "masters": CopierMasterSerializer(masters, many=True).data})
 
 
@@ -86,7 +88,7 @@ class CopyTradingOverviewView(APIView):
 
     def get(self, request, account_id: int):
         if not copier_ui_enabled_for(request.user):
-            return Response({"enabled": False, "banner": _SHADOW_BANNER, "master": None, "followers": [],
+            return Response({"enabled": False, "banner": execution_banner(), "master": None, "followers": [],
                              "recent_events": [], "recent_replications": [], "limitations": _LIMITATIONS})
         account = _owned_account(request, account_id)
         if account is None:
@@ -96,11 +98,22 @@ class CopyTradingOverviewView(APIView):
                   .filter(trading_account=account).first())
         if master is None:
             # Owned account that is not a copier master yet — honest "not configured" state.
-            return Response({"enabled": True, "banner": _SHADOW_BANNER, "master": None, "followers": [],
+            return Response({"enabled": True, "banner": execution_banner(), "master": None, "followers": [],
                              "recent_events": [], "recent_replications": [], "limitations": _LIMITATIONS})
-        followers = (master.followers
-                     .select_related("follower_account", "follower_account__broker_server")
-                     .order_by("id"))
+        followers = list(master.followers
+                         .select_related("follower_account", "follower_account__broker_server")
+                         .order_by("id"))
+        followers_data = CopierFollowerSerializer(followers, many=True).data
+        # Carry the SAME fail-closed per-follower readiness the founder config page computes onto the
+        # monitoring overview, so a follower whose configured lot its broker cannot execute (e.g. a
+        # Pepperstone follower where 0.01 is below the broker volume_min) is shown "not execution-ready
+        # — <reason>" here too, instead of a bare sizing line that could read as set-up-and-ready. This
+        # asserts only the NEGATIVE (blocked + reason); it never renders a positive "execution-ready" claim.
+        for follower, data in zip(followers, followers_data):
+            readiness = follower_config_readiness(master, follower)
+            data["config_status"] = readiness["config_status"]
+            data["config_blocked_reason"] = readiness["config_blocked_reason"]
+            data["follower_current"] = readiness["follower_current"]
         events = master.events.order_by("-sequence")[:_EVENT_LIMIT]
         replications = (CopierReplication.objects
                         .filter(follower__master=master)
@@ -108,9 +121,10 @@ class CopyTradingOverviewView(APIView):
                         .order_by("-id")[:_REPLICATION_LIMIT])
         return Response({
             "enabled": True,
-            "banner": _SHADOW_BANNER,
+            "banner": execution_banner(),
+            "execution_status": execution_status(),
             "master": CopierMasterSerializer(master).data,
-            "followers": CopierFollowerSerializer(followers, many=True).data,
+            "followers": followers_data,
             "recent_events": MasterEventSerializer(events, many=True).data,
             "recent_replications": CopierReplicationSerializer(replications, many=True).data,
             "limitations": _LIMITATIONS,
