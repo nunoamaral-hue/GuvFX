@@ -1,5 +1,21 @@
 # GuvFX — Project Status
 
+> **2026-10-29 — Dashboard ingestion closure + GBP realized conversion + Open Trades layout (ADR-0066).** With all
+> six bridges now serving read-only deal history, the monitored-ingest path ingested every account and the source→DB
+> reconciliation is exact: #46 USD 48 closed (+$163.92, idempotent); #49 GBP **4** closed (+£17.28, swap −£3.07);
+> #52 GBP **1** closed (−£15.01, comm −£6.00); #48/#50/#51 = 0 (truthful N/A). The packet baseline's "+517.28"/
+> "+784.99" for #49/#52 were the trading P/L PLUS a broker **deposit** (+£500 / +£800); the pipeline correctly
+> EXCLUDES deposits — DB matches trading-only exactly. **Backend (ADR-0066):** a SINGLE non-USD currency scope now
+> converts realized metrics to USD via the same governed prior-day BoE rate as equity, disclosed (`fx_*` + top-level
+> `fx`), state OK — so #49/#52 per-account dashboards show their metrics; a MIXED/ALL scope is unchanged (PARTIAL,
+> USD-only, non-USD excluded — never a silent cross-currency sum); no vetted rate ⇒ honest UNAVAILABLE. **Frontend:**
+> the Open Trades tile is a fixed-height flex column that fills its cell (desktop/tablet: absolute-in-stretched-wrapper
+> so it matches Market Focus EXACTLY and never grows — verified 392.91px == 392.91px at 0/1/12 trades; mobile: capped
+> 320px internal scroll), header/open-count/floating/freshness fixed, body-only scroll, truncation, keyboard-named
+> scroll region (EN/JA), no horizontal overflow. Tests: `analytics.tests_portfolio` 82 (6 new), full `analytics`
+> 249; `OpenTradesPanel.test.tsx` 20 (8 new); frontend build green. Execution UNCHANGED (copier flags OFF, LEA=0,
+> verified map 46→48, 0 PLACE_ORDER, 0 broker orders). Marker: `DASHBOARD_METRICS_TRUTHFUL + OPEN_TRADES_LAYOUT_STABLE`.
+
 > **2026-10-29 — Monitoring-bridge parity + Pepperstone catalogue + truthful readiness.** (1) The deals-route
 > `account_not_demo` gate was upgraded on the four stale tenant bridges (#48/#49/#51/#52) to the reviewed
 > env-agnostic read already proven on #50 (`0d36736c`): per-tenant backup → swap → task-restart (no terminal

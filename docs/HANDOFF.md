@@ -1,5 +1,29 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-29 — Dashboard ingestion closure + GBP realized conversion + Open Trades UX (ADR-0066)
+
+- **Verified (source→DB, read-only).** All six monitored accounts ingested via the deployed PR #594 path: #46 USD 48
+  closed (+$163.92; idempotent, no dup); #49 GBP 4 closed (+£17.28, swap −£3.07); #52 GBP 1 closed (−£15.01, comm
+  −£6.00); #48/#50/#51 = 0 trades. Each #49/#52 "discrepancy" vs the packet baseline is exactly a broker deposit
+  (+£500 / +£800) correctly excluded from trading P/L.
+- **Change — backend (ADR-0066).** `analytics/portfolio.py`: `_single_currency_rate` + `_closed_trade_stats` +
+  `_assemble_metrics`; `portfolio_metrics`/`daily_realized_pnl`/`account_net_pnl` + `build_summary` thread the vetted
+  `rate_source` + observed currency. A SINGLE non-USD currency scope converts realized to USD via the governed
+  prior-day rate and discloses it (state OK); MIXED/ALL scope and USD-only are byte-identical to before (no silent
+  cross-currency sum); no vetted rate ⇒ UNAVAILABLE. Verified live: #49 state OK, +£17.28 → ~$22.99 @1.3301; ALL
+  stays PARTIAL (USD #46 only).
+- **Change — frontend.** `OpenTradesPanel.tsx` + `globals.css` + dashboard `page.tsx`: fixed-height flex tile;
+  desktop/tablet absolute-fill of the stretched wrapper (matches Market Focus EXACTLY — 392.91px across 0/1/12
+  trades, body scrolls); mobile capped 320px internal scroll; fixed header/count/floating/freshness; truncation;
+  keyboard-named scroll region (EN/JA); no horizontal overflow. Proven in a layout harness (desktop + mobile shots).
+- **Tests.** `analytics.tests_portfolio` 82 (new `RealizedSingleCurrencyConversionTests`); full `analytics` 249 +
+  entrypoints green; `OpenTradesPanel.test.tsx` 20; frontend `next build` green. (Local `npm run lint` has the known
+  jsdom `localStorage` flake on login/support/localization — absent in CI.)
+- **Safety.** copier flags OFF, LiveExecutionAuthorization=0, verified CopierSymbolMap=[1] (46→48), 0 PLACE_ORDER,
+  0 CLOSE_TRADE from this work, 0 broker orders. Execution path untouched.
+- **Branch/base.** `fix/dashboard-gbp-realized-and-opentrades-ux` off `origin/main 56051ec2`. ADR-0066. Marker:
+  `DASHBOARD_METRICS_TRUTHFUL + OPEN_TRADES_LAYOUT_STABLE`.
+
 ## 2026-10-29 — Dashboard trade-history integrity: root cause + repair (ADR-0065)
 
 - **Verified fact (source reconciliation, read-only).** Probed each founder account's OWN per-tenant bridge

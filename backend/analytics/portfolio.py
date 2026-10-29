@@ -143,7 +143,90 @@ def _empty_metrics(total, basis: str, excluded, *, state: str, reason, included_
     }
 
 
-def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None) -> dict:
+def _closed_trade_stats(ids, *, stage: str) -> dict:
+    """Realized stats over the closed trades of ``ids`` in their NATIVE denomination (monetary sums are valid only
+    WITHIN one currency; the caller labels or converts). Pure; no FX. Used by the single-currency conversion path."""
+    qs = Trade.objects.filter(account_id__in=ids, close_time__isnull=False)
+    if stage in ("LIVE", "TEST"):
+        qs = qs.filter(source_stage=stage)
+    rows = list(qs.order_by("close_time", "id").only("profit", "commission", "swap", "close_time", "account_id"))
+    wins = losses = breakeven = 0
+    gross_profit = gross_loss = net_total = 0.0
+    peak = cum = max_dd = 0.0
+    for t in rows:
+        n = _net(t)
+        net_total += n
+        if n > 0:
+            wins += 1
+            gross_profit += n
+        elif n < 0:
+            losses += 1
+            gross_loss += -n
+        else:
+            breakeven += 1
+        cum += n
+        peak = max(peak, cum)
+        max_dd = max(max_dd, peak - cum)
+    return {"total": len(rows), "wins": wins, "losses": losses, "breakeven": breakeven,
+            "gross_profit": gross_profit, "gross_loss": gross_loss, "net_total": net_total, "max_dd": max_dd}
+
+
+def _assemble_metrics(stats: dict, *, basis: str, excluded, state: str, reason, included_count: int,
+                      rate: float = 1.0, fx: Optional[dict] = None) -> dict:
+    """Build the metrics dict from native ``stats``, scaling MONETARY fields by ``rate`` (count/ratio fields are
+    denomination-invariant, so a single positive FX factor leaves win rate / profit factor unchanged). ``fx`` adds
+    the conversion-disclosure keys. Mirrors the inline USD computation; used only by the single-currency path."""
+    total = stats["total"]
+    gp = stats["gross_profit"] * rate
+    gl = stats["gross_loss"] * rate
+    net = stats["net_total"] * rate
+    mdd = stats["max_dd"] * rate
+    if gl > 0:
+        pf, pf_inf = round(gp / gl, 3), False
+    elif gp > 0:
+        pf, pf_inf = None, True
+    else:
+        pf, pf_inf = None, False
+    out = {
+        "total_trades": total, "wins": stats["wins"], "losses": stats["losses"], "breakeven": stats["breakeven"],
+        "win_rate_pct": round((stats["wins"] / total * 100.0), 2) if total else 0.0,
+        "profit_factor": pf, "profit_factor_infinite": pf_inf,
+        "expectancy": round(net / total, 2) if total else 0.0,
+        "net_pnl_total": round(net, 2),
+        "gross_profit": round(gp, 2), "gross_loss": round(gl, 2),
+        "max_drawdown_money": round(mdd, 2),
+        "breakeven_rule": "net>0 win; net<0 loss; net==0 breakeven (in total, not win/loss)",
+        "basis": basis, "excluded_accounts": list(excluded),
+        "state": state, "reason": reason,
+        "included_count": included_count, "excluded_count": len(excluded),
+    }
+    if fx:
+        out.update(fx)
+    return out
+
+
+def _single_currency_rate(accounts, observed_ccy, rate_source):
+    """If every account in ``accounts`` shares ONE known non-USD currency that the vetted ``rate_source`` can convert
+    to USD, return ``(currency, FxRate)``; else ``None`` (fail-closed). Converts a SINGLE-currency realized figure
+    (e.g. a per-account GBP scope) to USD with disclosure WITHOUT mixing denominations: a mixed scope never reaches
+    the caller's convert branch (it still has a USD-eligible account), and an unknown/missing observed currency gives
+    no single currency so it stays unconverted. Without a vetted feed (``NullFxRateSource``) get_rate is None. ADR-0066."""
+    if rate_source is None or not observed_ccy:
+        return None
+    ccys = {FX.normalise_currency(observed_ccy.get(a.id)) for a in accounts}
+    if len(ccys) != 1:
+        return None
+    ccy = next(iter(ccys))
+    if not ccy or ccy == FX.USD:
+        return None
+    fx = rate_source.get_rate(ccy, FX.USD)
+    if fx is None or not fx.rate or fx.rate <= 0:
+        return None
+    return ccy, fx
+
+
+def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None,
+                      rate_source=None, observed_ccy=None) -> dict:
     """Portfolio performance computed from the UNDERLYING closed-trade set across ``accounts`` — NOT averaged.
 
     Definitions (single documented breakeven rule): a closed position's net = profit+commission+swap;
@@ -166,6 +249,16 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
         # cannot be expressed in USD at all. Return an explicit UNAVAILABLE state with EVERY field (including the
         # trade count) withheld — NEVER measured zeros (the all-excluded dashboard bug reported 0 trades / $0 net /
         # 0% win rate as if real). An empty scope (no accounts, nothing excluded) falls through to the 0-trade path.
+        # ADR-0066: a SINGLE non-USD currency scope with a vetted rate is CONVERTED to USD and disclosed (e.g. a
+        # per-account GBP scope) — a single-denomination conversion, never a mix. Else keep the honest UNAVAILABLE.
+        conv = _single_currency_rate(non_usd, observed_ccy, rate_source)
+        if conv is not None:
+            ccy, fx = conv
+            stats = _closed_trade_stats(excluded, stage=stage)
+            disclosure = {"fx_converted": True, "fx_currency": ccy, "fx_rate": fx.rate,
+                          "fx_rate_as_of": fx.as_of, "fx_rate_source": fx.source}
+            return _assemble_metrics(stats, basis="USD", excluded=[], state=FX.STATE_OK, reason=None,
+                                     included_count=len(excluded), rate=fx.rate, fx=disclosure)
         return _empty_metrics(None, "PARTIAL", excluded, state=FX.STATE_UNAVAILABLE,
                               reason=FX.CURRENCY_UNCONVERTIBLE, included_count=0)
 
@@ -227,7 +320,8 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
     }
 
 
-def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None):
+def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None,
+                       rate_source=None, observed_ccy=None):
     """Today's REALIZED net P&L across accounts (closed positions closed on today's calendar date). Distinct from
     floating P/L.
 
@@ -244,8 +338,17 @@ def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=
     excluded = [a.id for a in non_usd]
     ids = [a.id for a in usd_accounts]
     if not ids and excluded:
-        # All eligible accounts excluded (observed non-USD): no USD-eligible trade set -> withhold the number
-        # entirely (None), never a measured 0.0. (No accounts at all falls through to the honest empty 0.0 below.)
+        # ADR-0066: a SINGLE non-USD currency scope with a vetted rate -> convert today's realized net to USD.
+        conv = _single_currency_rate(non_usd, observed_ccy, rate_source)
+        if conv is not None:
+            _ccy, fx = conv
+            d = timezone.now().date()
+            dqs = Trade.objects.filter(account_id__in=excluded, close_time__date=d)
+            if stage in ("LIVE", "TEST"):
+                dqs = dqs.filter(source_stage=stage)
+            return round(sum(_net(t) for t in dqs.only("profit", "commission", "swap")) * fx.rate, 2), "USD"
+        # No vetted rate: no USD-eligible trade set -> withhold the number entirely (None), never a measured 0.0.
+        # (No accounts at all falls through to the honest empty 0.0 below.)
         return None, "PARTIAL"
     if not _trade_currencies_all_usd(ids, stage=stage):
         return None, "PARTIAL"
@@ -257,19 +360,29 @@ def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=
     return val, ("USD" if not excluded else "PARTIAL")
 
 
-def account_net_pnl(account, *, stage: str = STAGE_ALL, observed_usd=None):
+def account_net_pnl(account, *, stage: str = STAGE_ALL, observed_usd=None, rate_source=None, account_ccy=None):
     """A single account's realized net P&L, or ``None`` when it cannot be reported as a trustworthy USD figure
     (non-USD account, or a trade with a non-USD currency component) — never a mixed-denomination sum.
 
     ``observed_usd`` (from the live balance snapshot currency) overrides the never-populated ``account_currency``
     when the caller knows it: False -> None (excluded, consistent with the balance path); True -> USD."""
     is_usd = observed_usd if observed_usd is not None else _account_is_usd(account)
-    if not is_usd or not _trade_currencies_all_usd([account.id], stage=stage):
+    if is_usd:
+        if not _trade_currencies_all_usd([account.id], stage=stage):
+            return None
+        qs = Trade.objects.filter(account_id=account.id, close_time__isnull=False)
+        if stage in ("LIVE", "TEST"):
+            qs = qs.filter(source_stage=stage)
+        return round(sum(_net(t) for t in qs.only("profit", "commission", "swap")), 2)
+    # ADR-0066: a single non-USD account converts via the vetted rate (disclosed at the summary level); else None.
+    conv = _single_currency_rate([account], {account.id: account_ccy}, rate_source)
+    if conv is None:
         return None
+    _ccy, fx = conv
     qs = Trade.objects.filter(account_id=account.id, close_time__isnull=False)
     if stage in ("LIVE", "TEST"):
         qs = qs.filter(source_stage=stage)
-    return round(sum(_net(t) for t in qs.only("profit", "commission", "swap")), 2)
+    return round(sum(_net(t) for t in qs.only("profit", "commission", "swap")) * fx.rate, 2)
 
 
 def _strategy_for_magic(account, magic) -> str:
@@ -426,6 +539,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     bal_items, eq_items = [], []
     acct_payloads = []
     trading_count = 0
+    observed_ccy = {}   # {account_id: observed currency} — feeds the single-currency realized conversion (ADR-0066)
     observed_nonusd_ids = set()   # accounts whose OBSERVED (snapshot) currency is not USD — drives the realized
     #                               path's currency exclusion so metrics.basis agrees with balance_usd.basis (H1).
     for a in accounts:
@@ -440,6 +554,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
                 logger.warning("portfolio: balance fetch raised for account %s", a.id)
                 snap = None
         cur = FX.normalise_currency((snap or {}).get("currency") or getattr(a, "account_currency", None))
+        observed_ccy[a.id] = cur
         if cur != FX.USD:
             observed_nonusd_ids.add(a.id)
         balance = (snap or {}).get("balance")
@@ -459,7 +574,8 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             "currency": cur, "is_active": a.is_active,
             "trading_state": {"state": state, "label": state_label},
             "balance_native": balance, "equity_native": equity,
-            "net_pnl": account_net_pnl(a, stage=stage, observed_usd=(cur == FX.USD)),
+            "net_pnl": account_net_pnl(a, stage=stage, observed_usd=(cur == FX.USD),
+                                       rate_source=rate_source, account_ccy=cur),
             "open_count": op.get("open_count", 0), "open_pl_usd": op.get("open_pl_usd"),
             "stale": stale or op.get("stale", False),
         })
@@ -470,8 +586,10 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     eq_agg = FX.aggregate_usd(eq_items, rate_source)
     # Floating P/L: aggregate NATIVE items and carry through PARTIAL/STALE (M1), not a re-sum of per-account USD.
     open_pl_agg, open_stale = portfolio_open_pl(per_open, rate_source)
-    metrics = portfolio_metrics(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids)
-    daily_val, daily_basis = daily_realized_pnl(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids)
+    metrics = portfolio_metrics(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids,
+                                rate_source=rate_source, observed_ccy=observed_ccy)
+    daily_val, daily_basis = daily_realized_pnl(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids,
+                                                rate_source=rate_source, observed_ccy=observed_ccy)
 
     payload = {
         "reporting_currency": FX.USD,

@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 Packet-baseline P/L figures for #49/#52 included deposits — RECONCILED (2026-10-29)
+
+- A packet reported #49 "source trade P/L +517.28" and #52 "+784.99". The DB after ingestion shows #49 **+£17.28**
+  and #52 **−£15.01**. The difference is exactly the broker **BALANCE deposit** on each account (#49 +£500 on
+  2026-10-22; #52 +£800 on 2026-10-27). The ingest pipeline correctly excludes deposits/withdrawals/credits from
+  trading P/L (`build_positions_from_deals` keeps only deals with a `position_id`), so the DB matches trading-only
+  truth. This is correct behaviour, not a defect — do not "reconcile" by adding the deposit back.
+
+## 🟠 Realized GBP conversion uses the current governed rate, not point-in-time (2026-10-29; ADR-0066)
+
+- Per ADR-0066, a single non-USD account's realized metrics are converted to USD with the SAME current governed
+  prior-day BoE rate used for equity (a display convention, disclosed via `fx_rate`/`fx_rate_as_of`/`fx` block), not
+  each trade's close-date rate. For historical multi-day P/L this is a disclosed approximation consistent with the
+  equity display; a true point-in-time realized conversion is a documented future option, not required for V1.
+- Only activates for a user with the vetted FX feed enabled (founder cohort) and a single-currency scope; otherwise
+  realized stays honest UNAVAILABLE (non-founder) or PARTIAL (mixed), unchanged.
+
 ## 🟠 Stale per-host bridge refuses live deal reads on #48/#49/#51/#52 (2026-10-29)
 
 - **Symptom.** `GET {per-tenant-bridge}/mt5/snapshots/deals?username=…` returns `{"ok": false, "error":

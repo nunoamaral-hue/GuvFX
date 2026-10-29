@@ -1,5 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ DASHBOARD INGESTION CLOSURE + GBP REALIZED + OPEN TRADES UX (2026-10-29; ADR-0066; PR pending)
+All six accounts ingested and reconciled source→DB (deposits correctly excluded from trading P/L). Single-currency
+GBP realized metrics now convert+disclose for #49/#52 (ALL unchanged, no silent mixing); Open Trades tile is
+height-stable (matches Market Focus desktop/tablet; capped internal scroll mobile; a11y + truncation). Backend 82/249
++ frontend 20 tests green; build green. **One bounded next action:** governed squash-merge + rollback-first deploy of
+BOTH changed images (backend + frontend; no migration needed for this PR — `trading/0022` already deployed), then
+authenticated production acceptance per account. Execution untouched. Marker: `DASHBOARD_METRICS_TRUTHFUL`.
+
 ## ★ DASHBOARD TRADE-HISTORY INGEST — DEPLOY + ARM (2026-10-29; ADR-0065; PR pending)
 Root cause of the "0 trading / N/A metrics" dashboard was found and the durable repair is implemented+tested:
 monitoring-only accounts never had their broker closed-trade history ingested (`SYNC_POSITIONS` enqueued only

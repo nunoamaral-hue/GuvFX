@@ -193,6 +193,65 @@ class RealizedCurrencyHonestyTests(TestCase):
         self.assertIsNone(PF.account_net_pnl(gbp))               # never a mixed/unconverted figure
 
 
+# ── ADR-0066: single-currency realized conversion (per-account), mixed scope still never folded ───────────────
+class RealizedSingleCurrencyConversionTests(TestCase):
+    """A SINGLE non-USD currency scope is CONVERTED to USD via the vetted governed rate and disclosed (fx_* keys);
+    a MIXED scope is never folded in (no silent cross-currency sum); two different non-USD currencies and a missing
+    vetted rate both stay honest UNAVAILABLE. Count/ratio fields are denomination-invariant."""
+
+    def _gbp_src(self, rate=1.25):
+        return FX.MappingFxRateSource({("GBP", "USD"): rate}, as_of="2026-10-28", source="BOE:XUDLUSS rev1")
+
+    def test_single_gbp_scope_converts_and_discloses(self):
+        u = _user("c1"); g = _acct(u, currency="GBP")
+        for p in (30, -10, 40, 20):                                # 3 wins / 1 loss; net 80 GBP; drawdown 10 GBP
+            _closed_trade(g, p)
+        m = PF.portfolio_metrics([g], rate_source=self._gbp_src(1.25), observed_ccy={g.id: "GBP"})
+        self.assertEqual(m["state"], FX.STATE_OK)
+        self.assertEqual(m["basis"], "USD")
+        self.assertEqual(m["total_trades"], 4)
+        self.assertEqual(m["net_pnl_total"], 100.0)               # 80 GBP * 1.25
+        self.assertEqual(m["win_rate_pct"], 75.0)                 # rate-invariant
+        self.assertEqual(m["profit_factor"], 9.0)                 # (90/10) rate-invariant
+        self.assertEqual(m["max_drawdown_money"], 12.5)           # 10 GBP drawdown * 1.25
+        self.assertTrue(m["fx_converted"]); self.assertEqual(m["fx_currency"], "GBP")
+        self.assertEqual(m["fx_rate"], 1.25); self.assertEqual(m["fx_rate_as_of"], "2026-10-28")
+        self.assertEqual(m["excluded_accounts"], [])
+
+    def test_single_gbp_without_vetted_rate_stays_unavailable(self):
+        u = _user("c2"); g = _acct(u, currency="GBP"); _closed_trade(g, 50)
+        m = PF.portfolio_metrics([g], rate_source=FX.NullFxRateSource(), observed_ccy={g.id: "GBP"})
+        self.assertEqual(m["state"], FX.STATE_UNAVAILABLE)
+        self.assertIsNone(m["net_pnl_total"]); self.assertIsNone(m["total_trades"])
+
+    def test_mixed_usd_gbp_never_folds_gbp_in_even_with_a_rate(self):
+        u = _user("c3"); usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(usd, 10); _closed_trade(usd, 10); _closed_trade(gbp, 999)
+        m = PF.portfolio_metrics([usd, gbp], rate_source=self._gbp_src(1.25),
+                                 observed_ccy={usd.id: "USD", gbp.id: "GBP"}, observed_nonusd_ids={gbp.id})
+        self.assertEqual(m["basis"], "PARTIAL")
+        self.assertEqual(m["net_pnl_total"], 20.0)                # USD only; GBP 999 never converted/added
+        self.assertEqual(m["excluded_accounts"], [gbp.id])
+        self.assertNotIn("fx_converted", m)                       # no conversion disclosure on a mixed aggregate
+
+    def test_two_different_non_usd_currencies_stay_unavailable(self):
+        u = _user("c4"); gbp = _acct(u, currency="GBP"); eur = _acct(u, currency="EUR")
+        _closed_trade(gbp, 10); _closed_trade(eur, 10)
+        m = PF.portfolio_metrics([gbp, eur], rate_source=self._gbp_src(1.25),
+                                 observed_ccy={gbp.id: "GBP", eur.id: "EUR"}, observed_nonusd_ids={gbp.id, eur.id})
+        self.assertEqual(m["state"], FX.STATE_UNAVAILABLE)        # two currencies -> not a single denomination
+
+    def test_account_net_pnl_single_gbp_converts(self):
+        u = _user("c5"); g = _acct(u, currency="GBP"); _closed_trade(g, 40); _closed_trade(g, -8)
+        self.assertEqual(PF.account_net_pnl(g, rate_source=self._gbp_src(1.25), account_ccy="GBP"), 40.0)  # 32*1.25
+        self.assertIsNone(PF.account_net_pnl(g))                  # no rate_source -> unchanged honest None
+
+    def test_daily_realized_single_gbp_converts(self):
+        u = _user("c6"); g = _acct(u, currency="GBP"); _closed_trade(g, 16)   # closed now (today)
+        val, basis = PF.daily_realized_pnl([g], rate_source=self._gbp_src(1.25), observed_ccy={g.id: "GBP"})
+        self.assertEqual(val, 20.0); self.assertEqual(basis, "USD")           # 16 GBP * 1.25
+
+
 # ── source_stage must NOT hide real trades (P0 2026-09-28 regression) ─────────────────────────────────────────
 class StageFilterRegressionTests(TestCase):
     """The dashboard filtered source_stage='LIVE' and reported $0 while real UNKNOWN-stage broker trades existed.

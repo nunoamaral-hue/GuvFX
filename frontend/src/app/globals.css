@@ -138,3 +138,51 @@ body {
     min-width: 0 !important;
   }
 }
+
+/* Open Trades tile (dashboard P0 UX): the tile must occupy the SAME row height as Market Focus and must NOT grow
+   when trades are added — only the trade-list body scrolls. The outer flex row already stretches the tile's wrapper
+   to the Market Focus height (align-items: stretch); these rules make the CARD fill that cell as a fixed-height flex
+   column with a single, internally-scrolling body, so the header / open-count / floating P/L / freshness stay fixed
+   and visible and nothing shifts on the 15/30s poll, reconnect, or empty/loading/error transitions. */
+.open-trades-tile {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.open-trades-body {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.open-trades-body:focus-visible {
+  outline: 2px solid #5ad19a;
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+/* Desktop/tablet (side-by-side with Market Focus): take the tile OUT OF FLOW inside its stretched wrapper so its
+   trade count can never drive the row height — the row is sized by Market Focus (align-items: stretch on the parent
+   row), the wrapper stretches to that height, and the absolutely-filled tile matches it EXACTLY while its body
+   absorbs the remaining height and scrolls internally. (A plain flex child would impose its content height and grow
+   the row; verified in the layout harness.) */
+@media (min-width: 641px) {
+  .open-trades-wrap {
+    position: relative;
+  }
+  .open-trades-tile {
+    position: absolute;
+    inset: 0;
+  }
+  .open-trades-body {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+/* Mobile (the row has stacked — no Market Focus height to match): cap the list and scroll internally so many open
+   trades can never produce an unusably tall page. */
+@media (max-width: 640px) {
+  .open-trades-body {
+    flex: 0 1 auto;
+    max-height: 320px;
+  }
+}
