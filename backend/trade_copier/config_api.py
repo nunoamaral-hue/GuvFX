@@ -86,7 +86,13 @@ def _eligible_accounts(user):
             "environment": _account_environment(a), "masked_login": _masked_login(a),
             "currency": _observed_currency(a.id) or None,
             "monitoring_state": state, "data_age_seconds": age,
-            "ready": state == "monitored",   # disconnected/stale is NEVER represented as ready
+            # Freshness ONLY — never Copy-Trading readiness. The picker says whether live data is flowing;
+            # a pair's copy-readiness (verified map + observed constraints + valid sizing) is a SEPARATE
+            # per-follower verdict (see `_pair_view.readiness` / `config_status`). Terminal freshness alone
+            # must never imply copy-readiness (readiness-semantics repair).
+            "data_fresh": state == "monitored",
+            "readiness_scope": "monitoring_freshness_only",
+            "ready": state == "monitored",   # DEPRECATED freshness alias (not copy-readiness) — back-compat only
         })
     return out
 
@@ -232,6 +238,22 @@ def _pair_view(master, follower):
     follower_current = readiness["follower_current"]
     last_event = (MasterEvent.objects.filter(master=master).order_by("-sequence")
                   .values("event_type", "symbol", "observed_at").first())
+    # Separated readiness dimensions (readiness-semantics repair): each is an independent truth, so the UI can
+    # show precisely WHICH condition is unmet instead of a single conflated "Ready". A pair is copy-ready only
+    # when every copy dimension holds; `config_status` is the fail-closed roll-up and `config_blocked_reason`
+    # the precise cause. LIVE follower execution is always blocked here (execution OFF).
+    follower_fresh_state, _ = _freshness(facct.id)
+    _cfg_ready = readiness["config_status"] == "ready"
+    readiness_breakdown = {
+        "terminal_connected": bool(follower_current),
+        "snapshot_fresh": follower_fresh_state == "monitored",
+        "direction_mapped": bool(map_status.get("pairs")) or bool(map_status.get("same_broker")),
+        "mapping_verified": bool(map_status.get("ready")),
+        "constraints_available": bool(constraints.get("available")),
+        "sizing_valid": _cfg_ready,
+        "shadow_ready": _cfg_ready and bool(follower_current) and follower_fresh_state == "monitored",
+        "live_blocked": True,
+    }
     return {
         "follower_account_id": follower.follower_account_id,
         "enabled": follower.enabled,
@@ -251,6 +273,8 @@ def _pair_view(master, follower):
         # Fail-closed configuration verdict (Workstream A): "ready" | "blocked" + an explicit reason. Not execution.
         "config_status": readiness["config_status"],
         "config_blocked_reason": readiness["config_blocked_reason"],
+        # Separated per-dimension readiness (NOT a single conflated "Ready"); copy-readiness ⇔ config_status=="ready".
+        "readiness": readiness_breakdown,
         "observer_last_observed_at": master.last_observed_at.isoformat() if master.last_observed_at else None,
         "last_observed_event": last_event or None,
         "supported_risk_controls": ["FIXED_LOT", "max_volume", "max_concurrent_positions"],

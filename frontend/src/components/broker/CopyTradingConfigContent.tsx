@@ -65,6 +65,21 @@ const T = {
   mapVerified: { en: "Instrument map verified", ja: "銘柄マップ検証済み" },
   configValid: { en: "Configuration valid · observation only", ja: "設定は有効 · 観測のみ" },
   notExecReady: { en: "Not execution-ready", ja: "実行準備未完了" },
+  liveData: { en: "Live data", ja: "ライブデータ" },
+  noLiveData: { en: "no live data", ja: "ライブデータなし" },
+  freshnessNote: {
+    en: "Monitoring freshness only — this is not Copy-Trading readiness. A pair is ready only when its mapping is verified, broker constraints are available and sizing is valid (shown per follower below).",
+    ja: "監視データの鮮度のみ — コピートレードの準備状況ではありません。ペアが準備完了となるのは、マッピングが検証済みで、ブローカー制約が取得でき、サイズ設定が有効な場合のみです（下のフォロワーごとに表示）。",
+  },
+  copyReady: { en: "Copy-ready (SHADOW)", ja: "コピー可（シャドー）" },
+  awaitingData: { en: "Config valid — awaiting live data", ja: "設定有効 — ライブデータ待ち" },
+  dimSnapshot: { en: "Snapshot fresh", ja: "スナップショット鮮度" },
+  dimMapped: { en: "Direction mapped", ja: "方向マップ" },
+  dimVerified: { en: "Mapping verified", ja: "マップ検証" },
+  dimConstraints: { en: "Constraints", ja: "制約" },
+  dimSizing: { en: "Sizing valid", ja: "サイズ有効" },
+  dimShadow: { en: "SHADOW ready", ja: "シャドー準備" },
+  dimLive: { en: "LIVE blocked", ja: "ライブ遮断" },
   lastVerified: { en: "verified", ja: "検証" },
   unavailableMeta: { en: "Unavailable (not provided by the broker feed)", ja: "利用不可（ブローカーフィード未提供）" },
   needMaster: { en: "Select a master account.", ja: "マスター口座を選択してください。" },
@@ -101,8 +116,10 @@ const panel: React.CSSProperties = {
 };
 const muted: React.CSSProperties = { color: "#9db6d6", fontSize: "0.85rem" };
 
+// Freshness label ONLY — never "Ready" (which conflated data freshness with copy-readiness). Copy-readiness is
+// a separate per-follower verdict rendered below.
 function acctState(a: EligibleAccount, L: Lang): { label: string; color: string } {
-  if (a.monitoring_state === "monitored") return { label: T.ready[L], color: "#86efac" };
+  if (a.monitoring_state === "monitored") return { label: T.liveData[L], color: "#86efac" };
   if (a.monitoring_state === "stale") return { label: T.stale[L], color: "#fca5a5" };
   return { label: T.noData[L], color: "#9db6d6" };
 }
@@ -116,7 +133,7 @@ function AccountLine({ a, L }: { a: EligibleAccount; L: Lang }) {
       <span style={muted}>{a.masked_login}</span>
       <span style={muted}>{a.currency || "—"}</span>
       <span style={{ fontSize: "0.72rem", fontWeight: 700, color: st.color }}>{st.label}</span>
-      {!a.ready && <span style={{ fontSize: "0.68rem", color: "#fca5a5" }}>· not ready</span>}
+      {!(a.data_fresh ?? a.ready) && <span style={{ fontSize: "0.68rem", color: "#fca5a5" }}>· {T.noLiveData[L]}</span>}
     </span>
   );
 }
@@ -293,11 +310,32 @@ export const CopyTradingConfigContent: React.FC<{ lang?: Lang }> = ({ lang = "en
             : <span style={{ color: "#fbbf24" }}>{T.brokerObserved[L]}: {blockedReasonText(observed?.reason, L) || T.unavailableMeta[L]}</span>}
         </div>
 
-        {/* Fail-closed configuration verdict — we only ever assert the NEGATIVE; never a positive "execution-ready" */}
+        {/* Separated readiness dimensions — each an independent truth, so the UI shows WHICH condition is unmet
+            instead of a single conflated "Ready". Copy-readiness ⇔ every copy dimension holds. */}
+        {pair?.readiness && (
+          <div data-testid={`copier-readiness-${id}`} style={{ fontSize: "0.68rem", display: "flex", gap: 12, flexWrap: "wrap" }}>
+            {([
+              [T.dimSnapshot[L], pair.readiness.snapshot_fresh],
+              [T.dimMapped[L], pair.readiness.direction_mapped],
+              [T.dimVerified[L], pair.readiness.mapping_verified],
+              [T.dimConstraints[L], pair.readiness.constraints_available],
+              [T.dimSizing[L], pair.readiness.sizing_valid],
+              [T.dimShadow[L], pair.readiness.shadow_ready],
+            ] as Array<[string, boolean]>).map(([label, ok], i) => (
+              <span key={i} style={{ color: ok ? "#86efac" : "#fbbf24" }}>{ok ? "✓" : "⚠"} {label}</span>
+            ))}
+            <span style={{ color: "#64748b" }}>⛔ {T.dimLive[L]}</span>
+          </div>
+        )}
+
+        {/* Precise copy-readiness verdict — NEVER a conflated "Ready"/"valid": blocked→reason; config ok but no
+            live data→awaiting; all dimensions→Copy-ready (SHADOW only). LIVE execution is always blocked. */}
         <div data-testid={`copier-config-verdict-${id}`} style={{ fontSize: "0.72rem", fontWeight: 700 }}>
           {blocked
             ? <span style={{ color: "#fbbf24" }}>⚠ {T.notExecReady[L]} — {blockedReasonText(pair?.config_blocked_reason, L)}</span>
-            : <span style={{ color: "#86efac" }}>✓ {T.configValid[L]}</span>}
+            : (pair?.readiness?.shadow_ready
+                ? <span style={{ color: "#86efac" }}>✓ {T.copyReady[L]}</span>
+                : <span style={{ color: "#fbbf24" }}>○ {T.awaitingData[L]}</span>)}
           {pair?.live_execution_blocked && <span style={{ color: "#64748b", marginLeft: 10 }}>· LIVE execution blocked</span>}
         </div>
       </div>
@@ -326,6 +364,9 @@ export const CopyTradingConfigContent: React.FC<{ lang?: Lang }> = ({ lang = "en
       <div style={panel}>
         <div style={{ fontWeight: 700, marginBottom: 2 }}>{T.master[L]}</div>
         <div style={{ ...muted, marginBottom: 8, fontSize: "0.78rem" }}>{T.masterHint[L]}</div>
+        <div data-testid="copier-freshness-note" style={{ ...muted, marginBottom: 8, fontSize: "0.72rem", color: "#9db6d6", fontStyle: "italic" }}>
+          {T.freshnessNote[L]}
+        </div>
         {eligible.map((a) => (
           <label key={a.account_id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "0.3rem 0", cursor: "pointer" }}>
             <input type="radio" name="copier-master" checked={master === a.account_id}

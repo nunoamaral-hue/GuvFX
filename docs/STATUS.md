@@ -1,5 +1,15 @@
 # GuvFX — Project Status
 
+> **2026-10-29 — Monitoring-bridge parity + Pepperstone catalogue + truthful readiness.** (1) The deals-route
+> `account_not_demo` gate was upgraded on the four stale tenant bridges (#48/#49/#51/#52) to the reviewed
+> env-agnostic read already proven on #50 (`0d36736c`): per-tenant backup → swap → task-restart (no terminal
+> restart); all four now return read-only 90-day `history_deals_get` (HTTP 200, `account_match=true`), adjacent
+> #46/#50 unaffected, execution flags OFF, zero orders. (2) DARK PR: additive migration `trading/0022` registers
+> `PepperstoneUK-Live` as operator-verified LIVE (account #49 attested + bridge-verified). (3) Readiness
+> semantics: the eligible-account picker no longer labels data freshness as copy-readiness ("Live data" + note),
+> and each configured pair exposes separated readiness dimensions + a precise verdict (blocked→reason /
+> awaiting-live-data / Copy-ready SHADOW). No model/flag/execution change; LIVE always blocked.
+
 > **2026-10-29 — Dashboard trade-history integrity: ROOT CAUSE FOUND + repair implemented.** A source-of-truth
 > reconciliation (read-only probe of each founder account's OWN per-tenant bridge) **overturned** the earlier
 > "submission-ready" conclusion. Account **#46 (TradersWay-Live)** held **48 real closed trades** at the broker

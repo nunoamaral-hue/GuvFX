@@ -114,7 +114,9 @@ export interface EligibleAccount {
   currency: string | null;
   monitoring_state: "monitored" | "stale" | "no_data";
   data_age_seconds: number | null;
-  ready: boolean;
+  ready: boolean;          // DEPRECATED freshness alias — NOT copy-readiness
+  data_fresh?: boolean;    // monitoring freshness only (copy-readiness is a separate per-follower verdict)
+  readiness_scope?: string;
 }
 
 export interface InstrumentMapStatus {
@@ -157,6 +159,18 @@ export interface ConfigPair {
   observed_constraints?: ObservedConstraints;
   config_status?: "ready" | "blocked";
   config_blocked_reason?: string | null;
+  // Separated readiness dimensions (readiness-semantics repair) — each an independent truth; copy-readiness
+  // ⇔ every copy dimension holds. Terminal freshness alone never implies copy-readiness.
+  readiness?: {
+    terminal_connected: boolean;
+    snapshot_fresh: boolean;
+    direction_mapped: boolean;
+    mapping_verified: boolean;
+    constraints_available: boolean;
+    sizing_valid: boolean;
+    shadow_ready: boolean;
+    live_blocked: boolean;
+  };
   observer_last_observed_at: string | null;
   last_observed_event: { event_type: string; symbol: string; observed_at: string } | null;
   supported_risk_controls: string[];
