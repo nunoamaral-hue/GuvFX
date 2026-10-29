@@ -4,6 +4,19 @@
 > snapshot; deeper operational detail lives in `docs/RUNBOOK.md` and the handoff
 > docs.
 
+> **2026-10-29 — Account-scoped, execution-free symbol visibility (DARK PR, repo-only; ADR-0063).** Adds a
+> narrow administrative capability to reveal ONE Market Watch symbol on ONE account's OWN identity-verified
+> terminal, so a later catalogue sync can capture it — unblocking account #50's `XAUUSD.std` (present,
+> `trade_mode=FULL`, but `visible=false` on a headless terminal with no GUI and, until now, no supported
+> execution-free Show path). Bridge op `ensure_symbol_visible` + authenticated `POST /mt5/ensure-symbol-visible`
+> (single symbol; attach-only; proves the postcondition; always detaches) and a governed
+> `manage.py ensure_symbol_visible --account --symbol [--commit]` (dry-run default; resolves only the account's
+> OWN bridge; identity firewall before+after; fail-closed; secret-free audit). Shares NO code with any order
+> path; creates no `ExecutionJob`/order/trade; works while all copier flags are OFF (negative-control test).
+> 23 new focused tests + 130 existing bridge/order-safety tests green; `manage.py check` clean; no
+> `execution`/`trade_copier` migration; secret scan clean. Not merged; auto-merge OFF; production untouched;
+> execution OFF. Live use requires a separate Sponsor GO (`docs/ENSURE_SYMBOL_VISIBLE_RUNBOOK.md`).
+
 > **2026-10-27 — Copy Trading reviewed-mapping controls (DARK PR, repo-only).** `InstrumentMapping` gains a
 > human discovery-approval layer (`review_status`/`reviewed_by`/`reviewed_at`/`review_evidence_ref`/
 > `review_note`; migration `trade_copier/0007`) and `refresh_instrument_mappings` gains a governed

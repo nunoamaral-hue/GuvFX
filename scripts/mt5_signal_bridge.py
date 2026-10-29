@@ -148,6 +148,69 @@ def validate_broker_symbol(mt5, symbol: str):
 
 
 # =============================================================================
+# Execution-free administrative symbol visibility (ADR-0063)
+# =============================================================================
+# DELIBERATELY SEPARATE from validate_broker_symbol above: that helper lives on the ORDER path and reveals a
+# symbol only as a side effect of placing/validating a trade. Catalogue readiness needs a symbol made visible
+# WITHOUT any order, so this is its own narrow operation. It performs NO order_send / order_check / position
+# change and must never be reachable from an order route.
+SYMBOL_VISIBILITY_NOT_CONFIRMED = "SYMBOL_VISIBILITY_NOT_CONFIRMED"
+SYMBOL_INVALID_REQUEST = "SYMBOL_INVALID_REQUEST"
+_SYMBOL_DISALLOWED_CHARS = set("*?,;%\t\r\n ")
+
+
+def ensure_symbol_visible(mt5, symbol, *, init_kwargs=None):
+    """Administrative, EXECUTION-FREE reveal of EXACTLY ONE Market Watch symbol on this tenant's terminal.
+
+    Attaches read-only via ``guarded_initialize`` (never launches, never authenticates), inspects the one
+    named symbol, and calls ``mt5.symbol_select(symbol, True)`` ONLY when the symbol exists and is not already
+    visible; it then PROVES the postcondition (``symbol_info(...).visible``) before reporting success. Always
+    detaches (``mt5.shutdown()``), on success and on every failure.
+
+    Fail-closed on a blank / whitespace / wildcard / list / bulk request, an unknown symbol, a failed
+    selection, an unproven postcondition, or any error. Idempotent: an already-visible symbol returns
+    ``changed=False`` with NO ``symbol_select`` call. Places / checks / modifies / closes NO order and must
+    never fall through into an order path. Returns structured before/after evidence; secret-free.
+    """
+    name = str(symbol or "").strip()
+    if (not name) or name == "*" or any(ch in _SYMBOL_DISALLOWED_CHARS for ch in name):
+        return {"ok": False, "error": SYMBOL_INVALID_REQUEST, "changed": False}
+    if not guarded_initialize(mt5, dict(init_kwargs or {})):
+        return {"ok": False, "error": "MT5_INIT_FAILED", "changed": False, "detail": str(mt5.last_error())}
+    try:
+        before = mt5.symbol_info(name)
+        if before is None:
+            return {"ok": False, "error": SYMBOL_NOT_AVAILABLE_ON_MT5, "symbol": name, "changed": False}
+        trade_mode = getattr(before, "trade_mode", None)
+        if bool(getattr(before, "visible", False)):
+            # Idempotent: already visible -> no mutation, no symbol_select.
+            return {"ok": True, "symbol": name, "changed": False,
+                    "before_visible": True, "after_visible": True, "trade_mode": trade_mode}
+        # Present but not visible -> the ONE permitted mutation: reveal it.
+        if not mt5.symbol_select(name, True):
+            return {"ok": False, "error": SYMBOL_NOT_SELECTABLE_ON_MT5, "symbol": name,
+                    "changed": False, "before_visible": False}
+        after = mt5.symbol_info(name)
+        after_visible = bool(getattr(after, "visible", False)) if after is not None else False
+        if after is not None:
+            trade_mode = getattr(after, "trade_mode", trade_mode)
+        if not after_visible:
+            # Selection returned truthy but the terminal does not report the symbol visible -> fail-closed.
+            return {"ok": False, "error": SYMBOL_VISIBILITY_NOT_CONFIRMED, "symbol": name,
+                    "changed": False, "before_visible": False, "after_visible": False}
+        return {"ok": True, "symbol": name, "changed": True,
+                "before_visible": False, "after_visible": True, "trade_mode": trade_mode}
+    except Exception as exc:  # noqa: BLE001 — fail-closed; never fall through to an order path
+        return {"ok": False, "error": "ENSURE_VISIBLE_ERROR", "symbol": name, "changed": False,
+                "detail": str(exc)}
+    finally:
+        try:
+            mt5.shutdown()
+        except Exception:  # noqa: BLE001 — detach must not raise
+            pass
+
+
+# =============================================================================
 # Polling/Retry Configuration
 # =============================================================================
 MAX_FETCH_RETRIES = 3
@@ -2675,6 +2738,8 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                     self._handle_modify_position_request()
                 elif path == "/mt5/login-and-validate":
                     self._handle_login_validate_request()
+                elif path == "/mt5/ensure-symbol-visible":
+                    self._handle_ensure_symbol_visible_request()
                 else:
                     self._send_json_response({"ok": False, "error": "not_found"}, 404)
 
@@ -2852,6 +2917,36 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             return {"ok": False, "error": str(e)}
         finally:
             mt5.shutdown()
+
+    def _handle_ensure_symbol_visible_request(self):
+        """POST /mt5/ensure-symbol-visible — administrative, EXECUTION-FREE single-symbol reveal (ADR-0063).
+
+        Authenticated by ``_validate_token`` (do_POST) and serialized under the MT5 lock like the other
+        MT5-touching POST routes. This is NOT an order route: it never checks, places, modifies or closes an
+        order. Accepts exactly one explicit ``symbol`` (no wildcard / list / bulk)."""
+        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        if content_length <= 0:
+            self._send_json_response({"ok": False, "error": "empty_body"}, 400)
+            return
+        raw = self.rfile.read(content_length)
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json_response({"ok": False, "error": "invalid_json"}, 400)
+            return
+        if not isinstance(body, dict) or not isinstance(body.get("symbol"), str):
+            self._send_json_response({"ok": False, "error": SYMBOL_INVALID_REQUEST}, 400)
+            return
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            self._send_json_response({"ok": False, "error": "mt5_not_installed"}, 400)
+            return
+        init_kwargs = {}
+        if MT5_TERMINAL_PATH:
+            init_kwargs["path"] = MT5_TERMINAL_PATH
+        result = ensure_symbol_visible(mt5, body["symbol"], init_kwargs=init_kwargs)
+        self._send_json_response(result, 200 if result.get("ok") else 400)
 
     def _handle_rates_request(self, params: Dict):
         """Handle /mt5/snapshots/rates endpoint."""

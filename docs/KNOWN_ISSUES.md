@@ -2,6 +2,20 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 Account #50 gold (`XAUUSD.std`) not visible on its headless terminal (2026-10-29)
+
+- **Symptom.** #50's OWN bridge reports `XAUUSD.std` `visible=false` / `tradeable=false` despite
+  `trade_mode=FULL` and a valid spec (contract 100, USD), so it is captured `enabled=False` and cannot become
+  a copier candidate. An operator "Show" attempt did not register.
+- **Cause.** The terminal runs **headless** (background Windows session, no interactive Market Watch GUI), and
+  the bridge attaches to THAT session. The read route is pure-read; the only `symbol_select(True)` in the
+  codebase was on the order path. So there was no supported, execution-free way to reveal it, and an
+  Administrator-console "Show" acts on a different session the bridge never reads.
+- **Workaround / fix.** ADR-0063 adds `ensure_symbol_visible` (bridge op + governed command,
+  `docs/ENSURE_SYMBOL_VISIBLE_RUNBOOK.md`). The capability is DARK (repo-only). **Not yet run against
+  production** — it requires a separate Sponsor GO. Until then #50 gold stays `enabled=False`. Do NOT restart
+  the terminal/bridge to work around this.
+
 ## 🟠 Production source carried an untracked hotfix diverging from main (2026-10-26)
 
 - **Symptom.** Prod `/home/ubuntu/guvfx-app` was a **detached** checkout at `ee0697a`

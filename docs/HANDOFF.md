@@ -1,5 +1,33 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-29 — Account-scoped, execution-free symbol visibility (repo-only, DARK, PR; ADR-0063)
+
+- **Context (verified).** Account #50 (`IS6Technologies-Live`, login …3832) offers `XAUUSD.std`
+  (`trade_mode=FULL`) but its OWN bridge reports `visible=false` → captured `enabled=False`. The terminal runs
+  **headless** (one `terminal64.exe` as `guvfx_u_50`, Session 6, no window); the read bridge is pure-read and
+  the only `symbol_select(True)` was on the order path — so there was no supported execution-free Show path.
+  (All verified live, read-only, on 2026-10-29; counters unchanged; no mutation.)
+- **Change.** Bridge op `ensure_symbol_visible(mt5, symbol, *, init_kwargs)` + route
+  `POST /mt5/ensure-symbol-visible` (single symbol; `guarded_initialize` attach-only; proves postcondition;
+  always detaches; shares no code with `validate_broker_symbol`/order paths) in `scripts/mt5_signal_bridge.py`;
+  governed `execution/management/commands/ensure_symbol_visible.py` (dry-run default, `--commit`; resolves only
+  the account's OWN bridge; identity firewall before+after with `require_server=True`; fail-closed; secret-free
+  log audit). ADR-0063 + `docs/ENSURE_SYMBOL_VISIBLE_RUNBOOK.md`. **No model/migration.**
+- **Verified (exact).** `backend/.venv/bin/python manage.py test execution.tests_bridge_ensure_symbol_visible
+  execution.tests_ensure_symbol_visible_command` → **23 OK**; the existing bridge/order-safety suites
+  (`tests_bridge_auth tests_bridge_symbols tests_broker_sync_identity tests_bridge_threading
+  tests_bridge_ordercheck tests_bridge_guarded_attach tests_bridge_idempotency tests_e2b_shadow`) → **130 OK**;
+  `manage.py check` clean; `makemigrations --check` shows no `execution`/`trade_copier` drift; secret scan clean.
+  CI (`manage.py test --parallel 4`) is the authoritative 5/5 gate.
+- **Deviations (flagged).** `is_active` is deliberately NOT a refusal gate — it is execution-authorisation
+  state, and #50 (the target) is `is_active=False`; the identity firewall (login==`account_number` + server)
+  is the load-bearing protection (ADR-0063). `require_server=True` is stricter than `sync_broker_instruments`
+  (never over-rejects: the server branch is skipped when a side is unknown).
+- **Branch/commit.** Branch `feat/ensure-symbol-visible` off canonical main `db47eca4`. Independent of the
+  unmerged `feat/reviewed-mapping-controls`; no expected file conflicts (new files + one additive bridge edit).
+- **Production.** Untouched; execution OFF; not merged; auto-merge OFF. **Next action (one).** Separate Sponsor
+  GO to run the documented production sequence for #50 `XAUUSD.std` (runbook steps 1–9).
+
 ## 2026-10-27 — Copy Trading reviewed-mapping controls (repo-only, DARK, PR)
 
 - **Context.** The Phase-B packet required persisting only reviewer-approved SAFE-EXACT non-Pepperstone

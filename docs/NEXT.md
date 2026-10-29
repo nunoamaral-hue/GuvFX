@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPY TRADING — ACCOUNT-SCOPED SYMBOL VISIBILITY (2026-10-29, DARK PR, repo-only; ADR-0063)
+Execution-free capability to make ONE Market Watch symbol visible on ONE account's OWN identity-verified
+terminal (bridge op `ensure_symbol_visible` + `POST /mt5/ensure-symbol-visible`; governed
+`manage.py ensure_symbol_visible` with dry-run default, identity firewall before+after, fail-closed,
+secret-free audit). Unblocks #50 `XAUUSD.std` (headless terminal had no supported Show path). No order-path
+code; no `ExecutionJob`/order/trade; flags OFF. 23 new + 130 existing bridge/order-safety tests green; no new
+migration. **One bounded next action:** separate Sponsor GO to run the documented production sequence
+(`docs/ENSURE_SYMBOL_VISIBLE_RUNBOOK.md`): dry-run → `--commit` for #50 `XAUUSD.std` → `sync_broker_instruments
+--account 50`. Execution OFF; production unchanged.
+
 ## ★ COPY TRADING — REVIEWED MAPPING CONTROLS (2026-10-27, DARK PR, repo-only)
 Adds a human discovery-approval layer to `InstrumentMapping` (`review_status`/`reviewed_by`/`reviewed_at`/
 `review_evidence_ref`/`review_note`, migration `trade_copier/0007`) + a governed `--safe-exact-only` mode on
