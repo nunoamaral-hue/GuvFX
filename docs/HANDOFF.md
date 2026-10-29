@@ -1,6 +1,28 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
-## 2026-10-29 — Copy Trading UI truthfulness (repo-only, DARK, PR; ADR-0064)
+## 2026-10-29 — Copy Trading execution-OFF production closure
+
+- **Deployed:** backend image `f4800d5e543f` from canonical main
+  `193348f529e5865e9034b70d7d458b961d2800cf`; account #50 bridge script SHA-256
+  `0d36736c0c625a22dc31bb0bb5e71be9d20ffedb927330bb5eea663e9d74c99c` with timestamped rollback copy.
+- **Rollback:** backend image `dbdcf220dccb` tagged `rollback-pre-copy-closure-20261029T113556Z`; fresh database
+  dump `guvfx-pre-copy-closure-20261029T113556Z.sql.gz` (323,227,726 bytes, gzip valid, SHA-256
+  `7136799cb0d7a6e1b895bfb2a06f75618c2ce97397975a87fda8923c950c18d4`, mode 0600).
+- **Schema:** `trade_copier.0007` already applied. Unrelated pending `broker_public.0001/0002` and
+  `signal_intake.0010–0012` were not applied.
+- **Production evidence:** account #50 dry-run and commit both matched `***3832` / `IS6Technologies-Live`;
+  `XAUUSD.std` changed false→true with `trade_mode=4`, then independently re-read true. All six founder
+  catalogues refreshed from their own bridge. SAFE-EXACT-only reconciliation covered all 30 directions;
+  636 discovery rows are approved, while the only verified execution map remains `46→48`.
+- **Sizing/canary:** #48/#50/#51/#52 gold validates at 0.01 lot on 0.01 steps and contract 100; #49 validates
+  at 1.0 lot on 0.1 steps and contract 1. Global 0.01 negative controls fail for #49 and `XAUUSD247`.
+  One forced read-only observer pass produced zero events; founder config/matrix APIs returned 200 with
+  execution OFF, six accounts and 30 directions. Portfolio, open trades, WI metrics/history and web/API probes
+  all returned 200.
+- **Safety end-state:** all seven flags OFF; jobs/trades/open positions unchanged; no execution-linked replication,
+  no order, no verified-map overwrite. Marker: `COPY_TRADING_EXECUTION_OFF_PRODUCTION_READY`.
+
+## 2026-10-29 — Copy Trading UI truthfulness (repo-only; ADR-0064; PR #592 merged)
 
 - **Context (audited).** An independent read-only audit of the Copy Trading read APIs + components found the
   config/matrix surfaces truthful, but two "could-mislead" gaps: the execution-OFF status/banner was a
@@ -17,9 +39,12 @@
 - **Verified (exact).** `backend/.venv/bin/python manage.py test trade_copier.tests_ui_truthfulness
   trade_copier.tests_api trade_copier.tests_config_api trade_copier.tests_matrix_api trade_copier.tests_flags`
   → **74 OK**; `manage.py check` clean. Frontend: `CopyTradingContent` / `CopyTradingConfigContent` /
-  `InstrumentMatrixContent` **30/30**, `eslint` clean, `npm run build` green. (12 unrelated local-only
-  `localStorage` test flakes in dashboard/login/support — absent in CI; CI is the authoritative gate.)
-- **Status.** Not merged; auto-merge OFF; production untouched; execution OFF.
+  `InstrumentMatrixContent` **30/30**, `eslint` clean, `npm run build` green; independent adversarial safety
+  review = NO CRITICAL/HIGH. (12 unrelated local-only `localStorage` test flakes in dashboard/login/support —
+  absent in CI; CI is the authoritative gate.)
+- **Status.** Reconciled onto canonical main (atop #593) and governed-squash-merged via PR #592. The UI change
+  is on `main` but its **production deploy is a separate single-owner step** — the deployed backend remains
+  `193348f5` (the concurrent closure), whose UI banner is accurate while flags are OFF. Execution OFF.
 
 ## 2026-10-29 — Account-scoped, execution-free symbol visibility (repo-only, DARK, PR; ADR-0063)
 

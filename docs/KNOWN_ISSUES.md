@@ -2,15 +2,28 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟢 Copy Trading UI truthfulness gaps — fixed in a DARK PR (2026-10-29; ADR-0064)
+## 🟠 Copy Trading residual review gates after execution-OFF closure (2026-10-29)
+
+- Pepperstone #49 directions remain intentionally non-SAFE-EXACT (GBP spread-bet, contract 1, minimum 1.0 lot);
+  none were auto-persisted as safe or granted execution authority.
+- Vantage #52 has `XAUUSD+` enabled (contract 100, 0.01 step) while `XAUUSD247` is disabled and materially
+  different (contract 1, minimum/step 1.0). Ambiguous follower directions remain blocked for human pinning.
+- SAFE-EXACT discovery approval is not execution verification. `CopierSymbolMap` still has exactly one verified
+  row (`46→48`); `InstrumentMapping` remains off the execution path.
+- Unrelated pending migrations (`broker_public.0001/0002`, `signal_intake.0010–0012`) were discovered during
+  the deployment plan and deliberately not applied. They require their own governed rollout.
+- LIVE copier execution is still unauthorized and all seven flags remain OFF.
+
+## 🟢 Copy Trading UI truthfulness gaps — fixed (2026-10-29; ADR-0064; PR #592 merged, not yet deployed)
 
 - **Was.** The read-only Copy Trading UI asserted execution-OFF via a hardcoded constant (would stay
   "EXECUTION OFF" if DEMO were armed), and the monitoring overview showed follower sizing with no validity
   marker (0.01 could read as set-up on a follower whose broker `volume_min` is 1.0).
 - **Now.** Fixed (ADR-0064): flag-derived `execution_status` / `execution_banner`, and the overview carries
   the same fail-closed per-follower readiness as the config page ("not execution-ready — &lt;reason&gt;").
-  Repo-only, **DARK — not deployed**; the copier UI is cohort-gated OFF in production regardless. Deploy is a
-  separate Sponsor GO (fold into the ADR-0063 execution-OFF deploy).
+  Repo-only; **merged to `main` via PR #592** but **not yet deployed** — the deployed backend `193348f5`
+  predates it, and its banner is accurate today because all flags are OFF. Production deploy is a separate
+  single-owner step (the production closure deploy was performed concurrently by another session).
 - **Local test note.** `npm run lint` (vitest) shows ~12 `localStorage.setItem is not a function` failures in
   `dashboard/localization`, `login`, `support` tests — a known local-only environment flake, **absent in CI**;
   CI is the authoritative gate.

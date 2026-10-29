@@ -1,13 +1,24 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ COPY TRADING — UI TRUTHFULNESS (2026-10-29, DARK PR, repo-only; ADR-0064)
+## COPY TRADING — EXECUTION-OFF PRODUCTION READY (2026-10-29)
+
+Canonical `193348f5` is deployed; rollback evidence is verified; required Copy Trading migration `0007` is
+applied; all six founder catalogues are fresh; all 30 ordered directions are available with SAFE-EXACT-only
+discovery persistence; follower-specific gold sizing is validated; and the SHADOW canary/regression suite passed.
+All execution flags remain OFF and `46→48` remains the sole verified execution map. **One bounded next action:**
+human review/pinning of blocked AMBIGUOUS/materially different directions (especially Pepperstone #49 and Vantage
+gold alternatives) without creating execution authority. LIVE execution requires a separate explicit Sponsor
+authorization and is not part of this state. Marker: `COPY_TRADING_EXECUTION_OFF_PRODUCTION_READY`.
+
+## ★ COPY TRADING — UI TRUTHFULNESS (2026-10-29; ADR-0064; PR #592 merged)
 Closes two audit-found gaps so the read-only Copy Trading UI never reads as more ready than it is: execution
 status/banner DERIVED LIVE from the execute flags (not a constant; OFF output unchanged, "DEMO EXECUTION
 ARMED" when armed), and the monitoring overview now shows per-follower "not execution-ready — &lt;reason&gt;"
 using the SAME fail-closed readiness as the config page. Additive; no model/migration/flag/execution change.
-74 backend UI tests green (incl. an adversarial armed-DEMO guard); frontend green. **One bounded next
-action:** fold this into the same execution-OFF deploy GO as ADR-0063 (backend-image-only; no migration) —
-separate Sponsor GO; production unchanged.
+74 backend UI tests green (incl. an adversarial armed-DEMO guard); frontend green; adversarial review NO
+CRITICAL/HIGH. Merged to `main` via PR #592. **One bounded next action:** a single-owner production deploy of
+this UI change (backend + frontend rebuild/recreate, no migration) once the concurrent execution-OFF closure is
+confirmed idle — the deployed backend remains `193348f5`; execution OFF; banner accurate while flags OFF.
 
 ## ★ COPY TRADING — ACCOUNT-SCOPED SYMBOL VISIBILITY (2026-10-29, DARK PR, repo-only; ADR-0063)
 Execution-free capability to make ONE Market Watch symbol visible on ONE account's OWN identity-verified
