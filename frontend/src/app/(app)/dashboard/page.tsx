@@ -29,6 +29,7 @@ import {
   localizeControlledEnum,
 } from "@/lib/active-beta-i18n";
 import { apiFetch } from "@/lib/api";
+import { realizedMoneyView } from "@/lib/realized-fx";
 import { Badge } from "@/components/ui/Badge";
 import { LocalizedBetaSurface } from "@/components/i18n/LocalizedBetaSurface";
 
@@ -604,13 +605,30 @@ export default function DashboardPage() {
   const acctExpMoney = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : null;
   const acctExpR = avgLoss > 0 && acctExpMoney != null ? acctExpMoney / avgLoss : null;
 
+  // ── ADR-0066 UI: single non-USD account realized conversion ──
+  // When the summary CONVERTED this single account's realized metrics to USD (vetted governed rate), render the
+  // realized money in portfolio USD (primary) with the native amount as secondary + a visible conversion disclosure.
+  // The converted summary (portfolioForScope.aggregate.metrics) is the source of truth; the per-account trade-history
+  // is native-only — which is why the strip previously showed native GBP with no BoE disclosure. Win rate / profit
+  // factor stay dimensionless; max drawdown stays % and expectancy stays R (no conversion needed); daily P/L & equity
+  // stay native (labelled). If no vetted rate, the account stays native with an explicit "conversion unavailable".
+  const scopedMetrics = !isAll ? (portfolioForScope?.aggregate.metrics ?? null) : null;
+  // Decide the single-account realized money view (converted USD + native secondary + disclosure, native +
+  // "unavailable", or plain native) in one pure, unit-tested place (ADR-0066). ALL scope never uses this.
+  const rv = isAll ? null : realizedMoneyView(scopedMetrics, acctNetPnl, perf?.currency || "");
+  const realizedConverted = !!rv?.fx;
+  const fxRealized = rv?.fx ?? null;
+  const realizedUnavailable = !!rv?.unavailable;
+  const nativeCcy = perf?.currency || "";
+
   // ── Performance Snapshot source (H3) ── ALL scope = the WHOLE-PORTFOLIO realized metrics (from the underlying
   // trade set, currency-honest — never the boot primary's stats mislabelled as portfolio); a specific account = that
   // account's observed trade-history. One view-model so the strip renders identically from either source.
   const aggM = isAll ? (portfolioForScope?.aggregate.metrics ?? null) : null;
   const snap = {
     loaded: isAll ? !!portfolioForScope : !!perf,
-    netPnl: isAll ? (aggM?.net_pnl_total ?? null) : acctNetPnl,
+    netPnl: isAll ? (aggM?.net_pnl_total ?? null) : (rv ? rv.netPnl : acctNetPnl),
+    nativeNetPnl: rv?.nativeNetPnl ?? null,                // secondary native disclosure when converted
     winRatePct: isAll ? (aggM?.win_rate_pct ?? null) : (stats?.win_rate_pct ?? null),
     wins: isAll ? (aggM?.wins ?? null) : (stats?.wins ?? null),
     losses: isAll ? (aggM?.losses ?? null) : (stats?.losses ?? null),
@@ -620,7 +638,7 @@ export default function DashboardPage() {
     ddMoney: isAll ? (aggM?.max_drawdown_money ?? null) : null,                       // money for the portfolio
     expMoney: isAll ? (aggM?.expectancy ?? null) : acctExpMoney,
     expR: isAll ? null : acctExpR,
-    currency: isAll ? "" : (perf?.currency || ""),                                    // "" -> "$" (USD portfolio)
+    currency: isAll ? "" : (rv ? rv.currency : (perf?.currency || "")),               // converted -> "" -> "$" (USD)
     equity: isAll ? (portfolioForScope?.aggregate.equity_usd.total_usd ?? null) : equityRef,
     series: isAll ? [] as number[] : equitySeries,
     // Explicit statistics state (requirement 1/2): OK / PARTIAL / UNAVAILABLE. UNAVAILABLE = every account excluded
@@ -633,7 +651,10 @@ export default function DashboardPage() {
 
   const netPnl = snap.netPnl;
   const rising = snap.series.length > 1 ? snap.series[snap.series.length - 1] >= snap.series[0] : (netPnl != null && netPnl >= 0);
-  const pctOfEquity = netPnl != null && snap.equity ? (netPnl / snap.equity) * 100 : null;
+  // %-of-equity is currency-INVARIANT (a positive FX factor cancels); compute it from the native realized P/L when
+  // the display is converted, because equity stays native — never mix USD net over GBP equity.
+  const pnlForPct = realizedConverted ? snap.nativeNetPnl : netPnl;
+  const pctOfEquity = pnlForPct != null && snap.equity ? (pnlForPct / snap.equity) * 100 : null;
 
   // Performance empty-state (Sponsor direction, LIVE read-only monitoring): a newly connected account with NO
   // closed trades has INSUFFICIENT history — its performance metrics must read N/A / "Insufficient data", NOT a
@@ -890,12 +911,36 @@ export default function DashboardPage() {
           <div style={{ flex: 1, minWidth: 300, display: "flex", alignItems: "center", gap: "1.4rem", flexWrap: "wrap" }}>
             {/* Net PnL is REALIZED closed-trade P/L. With zero round-trips it has no dataset -> "N/A", never a
                 measured $0 (a genuine 0 is preserved once trades close, i.e. hasHistory). */}
-            <MetricTile label="Net PnL" value={!hasHistory ? "N/A" : <span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, snap.currency)}</span>} sub={!hasHistory ? undefined : (pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : undefined)} />
+            <MetricTile label="Net PnL" value={!hasHistory ? "N/A" : <span style={{ color: netPnl == null ? "#f0f6ff" : netPnl < 0 ? "#fca5a5" : "#86efac" }}>{netPnl == null ? "—" : money(lang, netPnl, snap.currency)}</span>}
+              sub={!hasHistory ? undefined : (() => {
+                const pct = pctOfEquity != null ? `${pctOfEquity >= 0 ? "+" : ""}${pctOfEquity.toFixed(2)}% of equity` : "";
+                // When converted to USD, disclose the exact NATIVE realized amount as the secondary figure.
+                const native = realizedConverted && snap.nativeNetPnl != null ? money(lang, snap.nativeNetPnl, fxRealized!.ccy) : "";
+                return [native, pct].filter(Boolean).join(" · ") || undefined;
+              })()} />
             <MetricTile label="Win Rate" value={!hasHistory ? "N/A" : snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={hasHistory && (snap.wins != null || snap.losses != null) ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
             <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={!hasHistory ? "N/A" : snap.profitFactor == null ? "—" : snap.profitFactor === Infinity ? "∞" : snap.profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
             <MetricTile label="Max Drawdown" value={!hasHistory ? "N/A" : snap.ddPct != null ? `${snap.ddPct}%` : snap.ddMoney != null ? money(lang, snap.ddMoney, snap.currency) : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
             <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={!hasHistory ? "N/A" : snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, snap.expMoney, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
           </div>
+
+          {/* Realized FX disclosure (ADR-0066): for a SINGLE non-USD account the realized money above is CONVERTED to
+              USD via the governed prior-day rate — disclose the exact rate, effective date and source from the API
+              payload (never hard-coded). If no vetted rate is available, stay native with an explicit "conversion
+              unavailable" line. All Accounts never reaches here (realizedConverted is false for ALL). */}
+          {hasHistory && realizedConverted && fxRealized ? (
+            <div data-testid="realized-fx-disclosure" style={{ width: "100%", fontSize: "0.63rem", color: "#8fa0b7", marginTop: 2 }}>
+              {lang === "ja"
+                ? `確定損益は ${fxRealized.source} ${fxRealized.ccy}/USD ${fxRealized.rate}（実効日 ${fxRealized.asOf}）で ${fxRealized.ccy} から換算`
+                : `Converted from ${fxRealized.ccy} using ${fxRealized.source} ${fxRealized.ccy}/USD ${fxRealized.rate}, effective ${fxRealized.asOf}`}
+            </div>
+          ) : hasHistory && realizedUnavailable ? (
+            <div data-testid="realized-fx-disclosure" style={{ width: "100%", fontSize: "0.63rem", color: "#9fb4d6", marginTop: 2 }}>
+              {lang === "ja"
+                ? `確定損益は ${nativeCcy} 建てで表示 — USD 換算は利用できません`
+                : `Realized P/L shown in ${nativeCcy} — USD conversion unavailable`}
+            </div>
+          ) : null}
 
           {/* Equity curve — compact context (per-account observed series; the portfolio view has no single curve) */}
           <div style={{ width: 250, minWidth: 200, paddingLeft: "1.4rem", borderLeft: "1px solid rgba(255,255,255,0.045)" }}>

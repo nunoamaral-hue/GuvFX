@@ -70,3 +70,26 @@ No data migration; ingested `Trade` rows are untouched.
   two-currency UNAVAILABLE, no-rate UNAVAILABLE, account/daily conversion) + all pre-existing H1 tests still green (82).
 - Frontend: `OpenTradesPanel.test.tsx` — layout hooks, keyboard-named scroll region (EN/JA), truncation, centered empty
   state, fixed header/count/floating with an overflowing list (20).
+
+## 2026-10-30 — Per-account UI rendering (follow-up; implementation completion)
+
+ADR-0066 converted the realized metrics in the backend summary, but the dashboard's per-account performance strip
+read the account's NATIVE trade-history only (`/api/analytics/trade-history/`), so a single GBP account still showed
+native GBP realized P/L with no BoE disclosure (authenticated screenshots, 2026-10-30). The backend was correct
+(summary returns `net_pnl_total` in USD + `fx_converted`/`fx_rate`/`fx_rate_as_of`/`fx_rate_source` + the `fx` block);
+only the UI selection was wrong.
+
+Fix (frontend-only): for a SINGLE account the realized money view is decided by one pure helper
+`lib/realized-fx.realizedMoneyView(scopedMetrics, acctNetPnl, perfCurrency)`:
+- **converted** (vetted rate applied) → primary realized net P/L in **USD** (from the summary's `net_pnl_total`),
+  the **native** amount as a secondary figure, and a visible disclosure sourced from the payload
+  ("Converted from GBP using BoE GBP/USD 1.3301, effective 2026-10-28" — rate/source/date never hard-coded);
+- **non-USD, no vetted rate** → native figure + explicit "Realized P/L shown in GBP — USD conversion unavailable";
+- **USD account** → unchanged.
+Win rate / profit factor stay dimensionless; max drawdown stays % and expectancy stays R (no conversion); %-of-equity
+is computed from the native figure (currency-invariant) since equity stays native. **All Accounts is untouched**
+(it never uses this path and remains PARTIAL — non-USD realized excluded, no silent mixing).
+
+Evidence: `lib/realized-fx.test.ts` (7 — positive/negative GBP, fresh-value pass-through, source mapping, unavailable,
+USD unchanged, loading) and `dashboard/localization.test.tsx` (converted USD primary + native secondary + BoE
+disclosure EN/JA, negative sign, and the unavailable fallback). `tsc` clean; `next build` green. No backend change.

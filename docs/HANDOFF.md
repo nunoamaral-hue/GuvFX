@@ -1,5 +1,34 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-30 — GBP per-account realized conversion rendered in the dashboard UI (ADR-0066 follow-up)
+
+- **Problem (authenticated prod, 2026-10-30).** The backend already converts a single non-USD account's realized
+  metrics to USD and discloses the basis (ADR-0066, deployed), but the dashboard per-account **performance strip**
+  still read the native `/api/analytics/trade-history/` figures: #49 Pepperstone-Live showed realized net P/L in GBP
+  with **no** BoE source/rate/effective-date, and #52 Vantage likewise. Prior "UI acceptance" was therefore invalid.
+  Root cause was frontend-only (`dashboard/page.tsx` used `perf` native trade-history for the realized tile); no
+  backend defect.
+- **Change (frontend-only).** New pure helper `lib/realized-fx.ts` (`realizedMoneyView`) selects, per single-account
+  scope, the converted USD realized net P/L from the already-converting summary payload, keeps the native amount as a
+  secondary line, and surfaces the disclosure **from the payload** (`fx_rate`/`fx_rate_as_of`/`fx_rate_source`,
+  BOE→"BoE", FED_H10→"Fed H.10") — never hard-coded. `page.tsx` renders primary USD + secondary native +
+  "Converted from GBP using BoE GBP/USD 1.3301, effective 2026-10-28" (EN/JA); percent-of-equity uses the native P/L
+  over native equity so the ratio stays currency-consistent. If no vetted rate: native shown + explicit "USD
+  conversion unavailable" (no fabricated/reused rate). **ALL scope stays PARTIAL** — untouched. `portfolio.ts` type
+  gains optional `fx_*` fields (backward-compatible).
+- **Tests.** `lib/realized-fx.test.ts` (7, green locally): #49 positive, #52 negative sign, fresh-payload
+  pass-through, FED_H10 label, unavailable fallback, USD unchanged, null/loading. `dashboard/localization.test.tsx`
+  +4 (converted EN "$"+native "GBP"+disclosure, JA disclosure, negative #52, unavailable). `tsc` clean; `next build`
+  exit 0; eslint 0 errors on changed files. (Local full-vitest hits the Node-25 global-`localStorage` jsdom flake —
+  CI Node is older and unaffected; component tests were proven green under a temporary in-memory polyfill, reverted.)
+- **Scope guard.** No backend change, no migration, no flag, no mapping, no bridge/MT5/Copy-Trading/order change.
+  FRONTEND-only deploy (rebuild + recreate `guvfx-frontend`, DARK — never pass `NEXT_PUBLIC_*_ENABLED`; no
+  `--remove-orphans`). Execution stays OFF; zero new broker orders expected.
+- **Branch/base.** `fix/gbp-realized-ui` off `main fa21b763`. ADR-0066 UI follow-up section appended. Markers:
+  `GBP_REALIZED_CONVERSION_RENDERED + FX_SOURCE_AND_DATE_DISCLOSED + ALL_ACCOUNTS_REMAINS_PARTIAL + EXECUTION_OFF`.
+- **Not claimed.** Authenticated production UI acceptance is NOT asserted here — it requires Nuno's post-deploy
+  screenshots of #49/#52 showing the converted USD value and the BoE disclosure line.
+
 ## 2026-10-30 — Notification provenance + cooldown recovery + #46 reconciliation (ADR-0067)
 
 - **Verified (read-only audit).** #46 source closed position_ids = DB closed Trade tickets = **49**, EXACT match

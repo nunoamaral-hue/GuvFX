@@ -24,6 +24,18 @@ List active problems with reproduction steps and workarounds.
   trading P/L (`build_positions_from_deals` keeps only deals with a `position_id`), so the DB matches trading-only
   truth. This is correct behaviour, not a defect — do not "reconcile" by adding the deposit back.
 
+## 🟢 Per-account realized GBP was rendered native with no FX disclosure — FIXED in UI (2026-10-30; ADR-0066 follow-up)
+
+- **Was.** The backend converted single non-USD realized P/L to USD and disclosed the basis, but the dashboard
+  per-account performance strip still showed the native GBP figure with no BoE source/rate/effective-date (observed
+  authenticated on #49/#52, 2026-10-30), which invalidated the earlier "UI acceptance" claim.
+- **Now.** `lib/realized-fx.ts` + `dashboard/page.tsx` render, for a single non-USD scope with a vetted rate, the
+  converted USD realized net P/L primary + native secondary + a payload-sourced disclosure line ("Converted from GBP
+  using BoE GBP/USD 1.3301, effective 2026-10-28"). No vetted rate ⇒ native + "USD conversion unavailable". ALL scope
+  stays PARTIAL. Frontend-only; no backend/flag/migration change.
+- **Residual.** Point-in-time-vs-current-rate approximation is unchanged (see the amber note below). Authenticated
+  production UI acceptance still pending Nuno's post-deploy screenshots.
+
 ## 🟠 Realized GBP conversion uses the current governed rate, not point-in-time (2026-10-29; ADR-0066)
 
 - Per ADR-0066, a single non-USD account's realized metrics are converted to USD with the SAME current governed

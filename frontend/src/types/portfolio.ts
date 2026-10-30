@@ -82,6 +82,12 @@ export type PortfolioMetrics = {
   // Additive honesty fields (optional for backward-compatibility).
   state?: AggregateState; reason?: ExclusionReason | null;
   included_count?: number; excluded_count?: number;
+  // ADR-0066: a SINGLE non-USD currency scope has its realized MONEY fields (net_pnl_total, max_drawdown_money,
+  // expectancy, gross_*) CONVERTED to USD via the governed prior-day rate. These disclose the conversion and are
+  // present only when fx_converted is true (count/ratio fields stay dimensionless). ``fx_rate`` is USD per the
+  // ``fx_currency``; ``fx_rate_as_of`` is the governed effective date; ``fx_rate_source`` names the feed.
+  fx_converted?: boolean; fx_currency?: string; fx_rate?: number;
+  fx_rate_as_of?: string; fx_rate_source?: string;
 };
 
 /** DARK GBP->USD conversion provenance (ADR-0058). Present ONLY when PORTFOLIO_FX_CONVERSION_ENABLED is ON; the
