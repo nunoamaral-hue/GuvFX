@@ -1,5 +1,18 @@
 # GuvFX — Project Status
 
+> **2026-10-30 — GBP per-account realized conversion UI rendering (ADR-0066 follow-up).** Authenticated screenshots
+> showed #49/#52 still rendering NATIVE GBP realized P/L with no BoE disclosure, though the backend summary already
+> returns the CONVERTED USD value + fx fields. Root cause (frontend-only): the per-account performance strip read the
+> account's NATIVE `/api/analytics/trade-history/` instead of the converted summary. Fix: a pure helper
+> `lib/realized-fx.realizedMoneyView` decides the single-account realized view — CONVERTED → primary USD + secondary
+> native GBP + a payload-sourced disclosure ("Converted from GBP using BoE GBP/USD 1.3301, effective 2026-10-28");
+> non-USD with no vetted rate → native + "conversion unavailable"; USD → unchanged. Win rate/PF stay dimensionless,
+> max DD stays %, expectancy stays R, %-of-equity computed native (currency-invariant); daily P/L & equity stay native
+> (labelled). **All Accounts untouched — remains PARTIAL, no silent mixing.** No backend change. Tests:
+> `lib/realized-fx.test.ts` (7) + `dashboard/localization.test.tsx` (converted EN/JA, negative, unavailable); tsc
+> clean; next build green. Awaiting Nuno's authenticated screenshots for final UI acceptance. Execution OFF, 0 broker
+> orders. Marker: `GBP_REALIZED_CONVERSION_RENDERED + FX_SOURCE_AND_DATE_DISCLOSED`.
+
 > **2026-10-30 — Notification provenance + cooldown recovery + #46 reconciliation (ADR-0067).** A latent defect
 > surfaced by ADR-0065 monitored ingestion: the trade-result pipeline treated ANY closed `Trade` as a GuvFX
 > execution, so externally-executed HISTORICAL broker trades were announced as GuvFX automation. Audit: **39** false

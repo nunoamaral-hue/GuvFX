@@ -1,5 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ GBP REALIZED CONVERSION UI (2026-10-30; ADR-0066 follow-up; PR pending)
+The per-account performance strip showed native GBP realized P/L with no BoE disclosure (the backend already converts).
+Fixed frontend-only: single non-USD account renders converted USD primary + native secondary + payload-sourced BoE
+disclosure (helper `lib/realized-fx`), with an honest "conversion unavailable" fallback; ALL stays PARTIAL. No backend
+change; helper 7 + dashboard component tests green; tsc + build green. **One bounded next action:** governed squash-merge
++ rollback-first FRONTEND deploy (no migration, no backend), then Nuno supplies authenticated screenshots for final UI
+acceptance. Markers: `GBP_REALIZED_CONVERSION_RENDERED`, `FX_SOURCE_AND_DATE_DISCLOSED`, `ALL_ACCOUNTS_REMAINS_PARTIAL`.
+
 ## ★ NOTIFICATION PROVENANCE + COOLDOWN RECOVERY (2026-10-30; ADR-0067; PR pending)
 Historical/monitoring ingestion must never announce externally-executed trades as GuvFX automation (39 false cards
 already sent: 37 #46, 2 #49). Fixed: strategy-result notifications require a verified same-account GuvFX execution-job

@@ -261,4 +261,99 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     const { container } = render(<DashboardPage />);
     await waitFor(() => expect(container.textContent || "").toContain("GBP→USD rate unavailable"));
   });
+
+  // ── ADR-0066: single non-USD account realized conversion rendered in the per-account performance strip ──
+  const _gbpAccountSummary = (metricsOver: Record<string, unknown> = {}, fxAvail = true) => ({
+    reporting_currency: "USD", scope: "49", generated_at: new Date().toISOString(),
+    account_count: 1, trading_count: 0, stale_accounts: [],
+    accounts: [{ account_id: 49, broker: "Pepperstone", account_masked: "••••5983", currency: "GBP", is_active: true, trading_state: { state: "TRADING", label: "Trading" }, balance_native: 518.22, equity_native: 518.22, net_pnl: 24.23, open_count: 0, open_pl_usd: null, stale: false }],
+    aggregate: {
+      balance_usd: { total_usd: 689.3, state: "OK", basis: "USD", included_count: 1, excluded_count: 0, converted_count: 1, unconverted: [] },
+      equity_usd: { total_usd: 689.3, state: "OK", basis: "USD", included_count: 1, excluded_count: 0, converted_count: 1, unconverted: [] },
+      open_pl_usd: { total_usd: 0, state: "EMPTY", basis: "USD", converted_count: 0, unconverted: [] },
+      daily_realized_pnl_usd: 5.33, daily_realized_pnl_basis: "USD",
+      metrics: { state: "OK", basis: "USD", net_pnl_total: 24.23, win_rate_pct: 66.67, wins: 4, losses: 2, total_trades: 6, profit_factor: 1.339, profit_factor_infinite: false, expectancy: 4.04, max_drawdown_money: 71.57, included_count: 1, excluded_count: 0, fx_converted: true, fx_currency: "GBP", fx_rate: 1.3301, fx_rate_as_of: "2026-10-28", fx_rate_source: "BOE:XUDLUSS rev1", ...metricsOver },
+    },
+    fx: { enabled: true, pair: "GBPUSD", available: fxAvail, source: "BOE", source_series: "XUDLUSS", direction: "USD_PER_GBP", as_of: "2026-10-29", rate: "1.3301", effective_date: "2026-10-28", revision_number: 1, observation_id: 14012, age_days: 1 },
+  });
+  const _gbpTradeHistory = (nativeNet: number) => ({
+    mt5_balance_current: 518.22, mt5_equity_current: 518.22, currency: "GBP",
+    observed_stats: { total_trades: 6, win_rate_pct: 66.67, max_drawdown_pct: 12.3, net_pnl_total: nativeNet, wins: 4, losses: 2 },
+    balance_series: [{ balance_after_trade: 500, net_pnl_money: 0 }, { balance_after_trade: 518.22, net_pnl_money: nativeNet }],
+  });
+  const _mockGbp = (summary: unknown, nativeNet: number) => apiFetch.mockImplementation(async (path: string) => {
+    if (path.startsWith("/api/analytics/portfolio/summary/")) return summary;
+    if (path.startsWith("/api/analytics/trade-history/")) return _gbpTradeHistory(nativeNet);
+    if (path.startsWith("/api/analytics/daily-pnl/")) return { series: [{ date: "2026-10-30", net_pnl: 2.85 }], totals: {} };
+    return defaultApiFetch(path);
+  });
+
+  it("#49 single GBP account: realized shows converted USD primary + native GBP secondary + BoE disclosure (EN)", async () => {
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    _mockGbp(_gbpAccountSummary(), 18.22);
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Converted from GBP using BoE GBP/USD 1.3301, effective 2026-10-28"));
+    const text = container.textContent || "";
+    expect(text).toContain("$24.23");        // primary converted USD realized net
+    expect(text).toContain("GBP 18.22");      // secondary native amount
+    expect(text).not.toContain("GBP 24.23");  // the USD figure is never mislabelled GBP
+  });
+
+  it("#49 single GBP account: BoE conversion disclosure is localised (JA)", async () => {
+    locale.value = "ja";
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    _mockGbp(_gbpAccountSummary(), 18.22);
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("BoE GBP/USD 1.3301"));
+    expect(container.textContent || "").toContain("2026-10-28");
+  });
+
+  it("#52 negative GBP realized converts with sign preserved", async () => {
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    _mockGbp(_gbpAccountSummary({ net_pnl_total: -27.95, win_rate_pct: 0, wins: 0, losses: 1, total_trades: 1, profit_factor: 0, expectancy: -27.95, max_drawdown_money: 27.95 }), -21.01);
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Converted from GBP using BoE"));
+    const text = container.textContent || "";
+    expect(text).toContain("-$27.95");        // converted USD, negative
+    expect(text).toContain("GBP 21.01");       // native secondary (sign shown by the "-" prefix in money())
+  });
+
+  it("single GBP account with NO vetted rate shows native + 'conversion unavailable', never a fabricated rate", async () => {
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    _mockGbp(_gbpAccountSummary({ fx_converted: false, state: "UNAVAILABLE", net_pnl_total: null, win_rate_pct: null, profit_factor: null, expectancy: null, max_drawdown_money: null }, false), 17.06);
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Realized P/L shown in GBP — USD conversion unavailable"));
+    expect(container.textContent || "").not.toContain("Converted from GBP using");
+  });
+
+  it("converted GBP account with no losing trades converts the Expectancy money fallback too (never native GBP as '$')", async () => {
+    // Expectancy renders as money (not R) exactly when there are no losing trades (avgLoss==0). That money is the
+    // NATIVE per-trade mean; under conversion it must be multiplied by the governed rate and shown in USD, otherwise a
+    // native GBP magnitude would be printed with a "$" sign (adversarial-review CONFIRMED defect). Series = all winners
+    // [50,100,150] GBP → mean 100 GBP → 100 × 1.3301 = $133.01; the pre-fix bug would have printed the native "$100".
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) return _gbpAccountSummary();
+      if (path.startsWith("/api/analytics/trade-history/")) return {
+        mt5_balance_current: 818.22, mt5_equity_current: 818.22, currency: "GBP",
+        observed_stats: { total_trades: 3, win_rate_pct: 100, max_drawdown_pct: 0, net_pnl_total: 300, wins: 3, losses: 0 },
+        balance_series: [
+          { balance_after_trade: 568.22, net_pnl_money: 50 },
+          { balance_after_trade: 668.22, net_pnl_money: 100 },
+          { balance_after_trade: 818.22, net_pnl_money: 150 },
+        ],
+      };
+      if (path.startsWith("/api/analytics/daily-pnl/")) return { series: [{ date: "2026-10-30", net_pnl: 2.85 }], totals: {} };
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Converted from GBP using BoE"));
+    const text = container.textContent || "";
+    expect(text).toContain("Expectancy$133.01");    // expectancy money converted to USD (100 GBP × 1.3301)
+    expect(text).not.toContain("Expectancy$100");     // the native GBP mean must never be printed as USD
+  });
 });
