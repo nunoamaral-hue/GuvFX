@@ -109,16 +109,20 @@ def enqueue_monitored_deal_syncs(account_ids=None,
                 continue
 
             if cutoff is not None:
-                # Only OUR OWN monitored probes count toward the backoff — an unrelated execution
-                # sync failure must not suppress monitored ingestion.
-                recent_fail = ExecutionJob.objects.filter(
-                    account_id=account_id,
-                    job_type=ExecutionJob.JobType.SYNC_POSITIONS,
-                    status=ExecutionJob.Status.FAILED,
-                    payload__monitored_ingest=True,
-                    created_at__gte=cutoff,
-                ).exists()
-                if recent_fail:
+                # Back off ONLY when the MOST RECENT monitored probe for this account FAILED within the window.
+                # A subsequent successful identity-verified sync (a recovered bridge) therefore clears the backoff
+                # IMMEDIATELY, so a recovered account resumes normal scheduled coverage without waiting out the full
+                # window (ADR-0067). Account-scoped: another account's failure never suppresses this one, and only
+                # OUR OWN monitored probes count (an unrelated execution sync never affects monitored ingestion).
+                latest = (ExecutionJob.objects
+                          .filter(account_id=account_id,
+                                  job_type=ExecutionJob.JobType.SYNC_POSITIONS,
+                                  payload__monitored_ingest=True)
+                          .order_by("-created_at")
+                          .values("status", "created_at").first())
+                if (latest is not None
+                        and latest["status"] == ExecutionJob.Status.FAILED
+                        and latest["created_at"] >= cutoff):
                     skipped_cooldown += 1
                     continue
 

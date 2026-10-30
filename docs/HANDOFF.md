@@ -1,5 +1,27 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-30 — Notification provenance + cooldown recovery + #46 reconciliation (ADR-0067)
+
+- **Verified (read-only audit).** #46 source closed position_ids = DB closed Trade tickets = **49**, EXACT match
+  (no dup, no loss; earlier 48/50 were live-trading snapshots). `NOTIFICATION_DISPATCH_ENABLED=true`; **39** false WIN
+  stakeholder cards transmitted for monitoring-only accounts (37 #46 + 2 #49), all status SENT, **0 PENDING**.
+  Cooldown had self-healed for the 6 monitored accounts (latest sync SUCCESS); #33 currently cooled-down.
+- **Root cause.** `close_monitor` set `is_delivery_candidate` from `outcome==WIN` alone; the customer path fired on a
+  post-save signal for every outcome; `_resolve_linkage`/`_trade_context` failed OPEN (strategy="GuvFX") when no plan
+  matched. An external `Trade` row was therefore announced as GuvFX automation.
+- **Change (ADR-0067, backend-only).** Gate every notification boundary on `TradeOutcomeRecord.execution_job`
+  (verified same-account GuvFX link): `is_delivery_candidate` requires it (`close_monitor.py`); customer
+  `enqueue_trade_outcome` suppresses without it (`event_sources.py`); `_resolve_linkage` is account-scoped
+  (cross-account prevention); `RealTelegramTransport.deliver` refuses a card without it. Cooldown
+  (`monitored_ingest.py`) backs off only when the LATEST probe FAILED, so a success clears it immediately.
+- **Tests.** New `execution/tests_notification_provenance.py` (7 cases); `tests_close_monitor` (linked/unlinked/
+  cross-account), `customer_notifications.tests` (linked still notifies — outcomes given their execution_job),
+  `tests_monitored_ingest` (recovery, still-backs-off, account-scoped). Full `execution`+`customer_notifications`+
+  `intelligence`(+`wims`+`analytics`) green. No migration. No frontend. No order/execution-path change.
+- **Constraint honoured.** Existing 39 Telegram messages NOT deleted/edited/resent; no test message to a real channel.
+- **Branch/base.** `fix/notification-provenance-and-cooldown` off `origin/main c7f454e5`. ADR-0067. Marker:
+  `NOTIFICATION_PROVENANCE_TRUTHFUL + RECOVERED_ACCOUNTS_SCHEDULED_IMMEDIATELY`.
+
 ## 2026-10-29 — Dashboard ingestion closure + GBP realized conversion + Open Trades UX (ADR-0066)
 
 - **Verified (source→DB, read-only).** All six monitored accounts ingested via the deployed PR #594 path: #46 USD 48

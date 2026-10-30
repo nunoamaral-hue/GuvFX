@@ -16,7 +16,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
-from execution.models import NotificationCandidate, NotificationDelivery, TradeOutcomeRecord
+from execution.models import ExecutionJob, NotificationCandidate, NotificationDelivery, TradeOutcomeRecord
 from execution.notifications.dispatcher import dispatch_pending
 from execution.notifications.real_transport import RealTelegramTransport, select_transport
 from execution.notifications.transport import TelegramDryRunTransport
@@ -49,9 +49,15 @@ class RealTransportBase(TestCase):
             open_time=timezone.now(), open_price=Decimal("1.0850"), close_time=timezone.now(),
             close_price=Decimal("1.0900"), profit=Decimal("21"), correlation_id="c-1",
         )
+        # A VERIFIED GuvFX execution link is required for a real strategy card (ADR-0067); the dispatch boundary
+        # refuses an unlinked candidate, so transport-mechanics fixtures carry a same-account execution job.
+        self.job = ExecutionJob.objects.create(
+            job_type=ExecutionJob.JobType.PLACE_ORDER, account=self.acct, status=ExecutionJob.Status.SUCCESS,
+        )
         self.outcome = TradeOutcomeRecord.objects.create(
             trade=self.trade, outcome=TradeOutcomeRecord.Outcome.WIN, net_pnl=Decimal("21"),
             is_delivery_candidate=True, correlation_id="c-1", signal_source="wayond",
+            execution_job=self.job,
         )
         self.candidate = NotificationCandidate.objects.create(
             outcome_record=self.outcome, correlation_id="c-1", signal_source="wayond",

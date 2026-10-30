@@ -52,7 +52,10 @@ def _resolve_linkage(trade):
         m = _COMMENT_TAG_RE.match(str(getattr(trade, "comment", "") or "").strip())
         if m:
             plan = SignalExecutionPlan.objects.filter(id=int(m.group(1))).first()
-    if plan is None:
+    # Account-scoped (ADR-0067): a plan/job is a causal link ONLY if it belongs to THIS trade's account — a
+    # correlation id or comment tag that resolves to a DIFFERENT account's plan is NOT evidence of GuvFX executing
+    # THIS trade (cross-account notification prevention). Fail closed to "no link".
+    if plan is None or plan.account_id != trade.account_id:
         return cid, "", None
     cid = cid or (plan.correlation_id or "")  # backfill correlation when comment-resolved
     leg = plan.legs.filter(execution_job__isnull=False).order_by("leg_index").first()
@@ -90,7 +93,11 @@ def process_closed_trades(*, limit: int = DEFAULT_LIMIT) -> dict:
                     trade=trade,
                     outcome=outcome,
                     net_pnl=net_pnl,
-                    is_delivery_candidate=(outcome == TradeOutcomeRecord.Outcome.WIN),
+                    # Provenance (ADR-0067): a WIN is a notification delivery candidate ONLY when it carries a
+                    # VERIFIED same-account GuvFX execution-job link (``job``). An externally-executed,
+                    # historically-ingested or monitoring-only trade (``job is None``) is NEVER a GuvFX
+                    # strategy-result notification — a Trade row alone is not evidence of GuvFX execution.
+                    is_delivery_candidate=(outcome == TradeOutcomeRecord.Outcome.WIN and job is not None),
                     correlation_id=cid,
                     signal_source=source,
                     execution_job=job,

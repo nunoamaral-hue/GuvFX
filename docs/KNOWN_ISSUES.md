@@ -2,6 +2,20 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 39 false "GuvFX automation" historical cards already transmitted (2026-10-30; fixed forward by ADR-0067)
+
+- **Was.** Monitored/historical ingestion (ADR-0065) created `Trade` rows for externally-executed broker trades; the
+  trade-result pipeline treated any closed `Trade` as a GuvFX execution and transmitted **39** WIN stakeholder cards
+  ("Automated strategy" / "Trade completed automatically") for monitoring-only accounts — **37 for #46, 2 for #49**
+  (`NOTIFICATION_DISPATCH_ENABLED=true`). False provenance.
+- **Now.** ADR-0067 gates every notification boundary on a verified same-account GuvFX execution-job link; external
+  trades no longer notify. 0 candidates were PENDING at fix time, so no further false cards queue.
+- **Residual (not auto-remediable).** The 39 already-transmitted Telegram messages are historical and were left
+  untouched per packet constraint (do not delete/edit/resend). If a correction/retraction is desired it is a
+  separate, human-authored communication — not performed here.
+- **Reproduce (read-only, counts only).** `NotificationDelivery.objects.filter(candidate__outcome_record__trade__account_id__in=[46,48,49,50,51,52], transmitted=True).count()` and group the candidates'
+  `outcome_record__execution_job__isnull`.
+
 ## 🟢 Packet-baseline P/L figures for #49/#52 included deposits — RECONCILED (2026-10-29)
 
 - A packet reported #49 "source trade P/L +517.28" and #52 "+784.99". The DB after ingestion shows #49 **+£17.28**

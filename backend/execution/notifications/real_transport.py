@@ -61,6 +61,13 @@ class RealTelegramTransport(NotificationTransport):
         if outcome is not None and str(outcome).upper() != "WIN":
             return self._failed(text, f"refused non-WIN outcome ({outcome})")
 
+        # Defence in depth — verified-execution-link (ADR-0067). A real "strategy" card must never describe an
+        # externally-executed / historically-ingested trade as GuvFX automation; refuse any candidate whose outcome
+        # carries no VERIFIED GuvFX execution-job link. (Primary gate: is_delivery_candidate in close_monitor —
+        # such a candidate is never created, so this only backstops a pre-existing one.)
+        if getattr(getattr(candidate, "outcome_record", None), "execution_job_id", None) is None:
+            return self._failed(text, "refused: no verified GuvFX execution link")
+
         # Fail closed on missing credentials — NO network call is made.
         if not self._token or not self._chat_id:
             return self._failed(text, "missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID")

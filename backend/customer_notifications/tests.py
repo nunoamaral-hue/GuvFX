@@ -990,6 +990,7 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         first_outcome = TradeOutcomeRecord.objects.create(
             trade=first, outcome=TradeOutcomeRecord.Outcome.WIN, net_pnl=Decimal("40"),
             correlation_id="customer-progress", signal_source="ti_signals",
+            execution_job=plan.legs.get(leg_index=1).execution_job,   # verified GuvFX link (ADR-0067)
         )
         update = enqueue_trade_outcome(first_outcome.pk)
         self.assertEqual(update.event_type, CustomerNotification.EventType.TRADE_UPDATED)
@@ -1012,6 +1013,7 @@ class EventSourceMappingTests(CustomerTelegramTestBase):
         final_outcome = TradeOutcomeRecord.objects.create(
             trade=trades[2], outcome=TradeOutcomeRecord.Outcome.WIN, net_pnl=Decimal("40"),
             correlation_id="customer-progress", signal_source="ti_signals",
+            execution_job=plan.legs.get(leg_index=3).execution_job,   # verified GuvFX link (ADR-0067)
         )
         closed = enqueue_trade_outcome(final_outcome.pk)
         self.assertEqual(closed.event_type, CustomerNotification.EventType.TRADE_CLOSED)

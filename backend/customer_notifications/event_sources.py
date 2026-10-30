@@ -125,6 +125,12 @@ def enqueue_trade_outcome(outcome_id: int, *, raise_errors: bool = False):
         from execution.models import TradeOutcomeRecord
         outcome = TradeOutcomeRecord.objects.select_related("trade__account__user").get(pk=outcome_id)
         trade = outcome.trade
+        # Provenance (ADR-0067): a customer strategy-result notification requires a VERIFIED GuvFX execution-job
+        # link on the outcome (set only for a same-account GuvFX plan). An externally-executed or
+        # historically-ingested/monitoring-only trade (no execution_job) is NEVER represented as GuvFX strategy
+        # execution — suppress silently (create no outbox row; re-running ingestion stays notification-idempotent).
+        if outcome.execution_job_id is None:
+            return None
         progress = _durable_leg_progress(outcome)
         event_type = (
             CustomerNotification.EventType.TRADE_CLOSED

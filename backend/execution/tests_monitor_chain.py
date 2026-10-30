@@ -22,8 +22,11 @@ from execution.models import (
     ExecutionJob,
     NotificationCandidate,
     NotificationDelivery,
+    ProposedOrderLeg,
+    SignalExecutionPlan,
     TradeOutcomeRecord,
 )
+from signal_intake.models import PendingSignalApproval
 from trading.models import Trade, TradingAccount
 from wims.models import ConsumptionContract
 
@@ -51,6 +54,27 @@ class MonitorChainBase(TestCase):
             profit=Decimal(str(profit)), comment=comment, correlation_id="",
         )
 
+    def _linked_closed_trade(self, *, ticket, profit):
+        """A closed trade with a VERIFIED same-account GuvFX execution link (plan + leg + execution_job), so a WIN is
+        a real notification delivery candidate — the only kind the chain may notify on (ADR-0067)."""
+        appr = PendingSignalApproval.objects.create(
+            source="wayond", message_id=f"m-{ticket}", symbol="EURUSD", direction="BUY",
+            stop_loss="1.0800", take_profits=["1.0950"], status=PendingSignalApproval.Status.APPROVED)
+        plan = SignalExecutionPlan.objects.create(
+            approval=appr, account=self.demo, source="wayond", message_id=f"m-{ticket}", symbol="EURUSD",
+            direction="BUY", stop_loss="1.0800", is_demo=True, signal_timestamp=timezone.now(),
+            correlation_id=f"cid-{ticket}", status=SignalExecutionPlan.Status.PROMOTED)
+        job = ExecutionJob.objects.create(
+            job_type=ExecutionJob.JobType.PLACE_ORDER, account=self.demo, status=ExecutionJob.Status.SUCCESS)
+        ProposedOrderLeg.objects.create(
+            plan=plan, leg_index=1, take_profit="1.0950", stop_loss="1.0800",
+            lot_size=Decimal("0.40"), status=ProposedOrderLeg.Status.PROMOTED, execution_job=job)
+        return Trade.objects.create(
+            account=self.demo, ticket=ticket, symbol="EURUSD", side="BUY",
+            volume=Decimal("0.01"), open_time=timezone.now(), open_price=Decimal("1.0850"),
+            close_time=timezone.now(), close_price=Decimal("1.0900"),
+            profit=Decimal(str(profit)), comment=f"WAY{plan.id}L1", correlation_id=f"cid-{ticket}")
+
 
 class MonitorChainSafetyTests(MonitorChainBase):
     def test_empty_db_is_safe_noop(self):
@@ -74,7 +98,7 @@ class MonitorChainSafetyTests(MonitorChainBase):
 
     def test_dispatch_is_noop_when_flag_off(self):
         # Default (flag off): a WIN produces a PENDING candidate that is NOT dispatched.
-        self._closed_trade(ticket="w2", profit=20)
+        self._linked_closed_trade(ticket="w2", profit=20)
         out, _ = _run()
         self.assertIn("dispatch[enabled=False", out)
         cand = NotificationCandidate.objects.get()
@@ -85,7 +109,7 @@ class MonitorChainSafetyTests(MonitorChainBase):
     def test_dispatch_transmits_nothing_even_when_enabled(self):
         # Even with the flag ON the transport is dry-run: the candidate is marked SENT but the
         # delivery audit records transmitted=False — no Telegram message ever leaves the process.
-        self._closed_trade(ticket="w3", profit=25)
+        self._linked_closed_trade(ticket="w3", profit=25)
         out, _ = _run()
         self.assertIn("dispatch[enabled=True", out)
         cand = NotificationCandidate.objects.get()
@@ -98,7 +122,7 @@ class MonitorChainPipelineTests(MonitorChainBase):
     def test_single_pass_flows_close_to_outcome_in_order(self):
         # A candidate can only exist if the outcome record existed when route_outcomes ran, so
         # its presence after ONE invocation proves close-monitor ran before outcome-router.
-        self._closed_trade(ticket="w4", profit=30)
+        self._linked_closed_trade(ticket="w4", profit=30)
         _run()
         rec = TradeOutcomeRecord.objects.get()
         self.assertEqual(rec.outcome, TradeOutcomeRecord.Outcome.WIN)
@@ -113,7 +137,7 @@ class MonitorChainPipelineTests(MonitorChainBase):
         self.assertEqual(NotificationCandidate.objects.count(), 0)  # losers never notify
 
     def test_chain_is_idempotent(self):
-        self._closed_trade(ticket="w5", profit=12)
+        self._linked_closed_trade(ticket="w5", profit=12)
         _run()
         _run()  # second pass must not duplicate anything
         self.assertEqual(TradeOutcomeRecord.objects.count(), 1)
