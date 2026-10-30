@@ -90,6 +90,15 @@ class AsciiArtefactTests(unittest.TestCase):
         for name in ("GuvFXHostedExecutor.xml", "GuvFXHostedExecutor.supervised.xml"):
             self.assertTrue(_is_ascii(os.path.join(_BUNDLE, "winsw", name)), f"{name} is not ASCII")
 
+    def test_catalogue_v3_primitives_are_ascii(self):
+        # RULE 9: the two Broker Catalogue V3 primitives must be ASCII-only so Windows PowerShell 5.1 parses them
+        # identically with or without a BOM (the host daemon ParseFile-gates them before first execution).
+        scripts = os.path.join(_REPO, "backend", "terminal_provisioning", "windows")
+        for name in ("Stage-GuvfxCatalogueArtefact.ps1", "Attest-GuvfxCatalogueArtefact.ps1"):
+            path = os.path.join(scripts, name)
+            self.assertTrue(os.path.isfile(path), f"{name} missing")
+            self.assertTrue(_is_ascii(path), f"{name} is not ASCII (RULE 9)")
+
 
 class WinSwContractTests(unittest.TestCase):
     def _read(self, name):

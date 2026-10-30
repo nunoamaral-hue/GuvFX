@@ -784,3 +784,152 @@ class CarryForwardTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("activate_catalogue_version", "--label", "v3")
         self.assertEqual(S.resolve_active_version().label, "v2")                  # v2 preserved
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Phase 1B/1C — catalogue host client + attest adapter + activation inventory (exact-agreement) gate.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+from unittest import mock as _mock                                     # noqa: E402
+from broker_catalogue import host_catalogue as HC                      # noqa: E402
+
+_HKR = {"k1": "catalogue-client-secret"}
+_HT = 3_000_000
+
+
+class _FakeHost:
+    """A fake host transport: runs the client's signed request through the REAL dispatch + a scripted primitive and
+    returns dispatch's signed response. Exercises client signing + response verification + dispatch validation
+    end-to-end (only the .ps1 is replaced). ``staged`` is broker_id -> {"sha","size"}."""
+
+    def __init__(self, staged=None):
+        self.staged = dict(staged or {})
+        self.writes = []
+
+    def __call__(self, base_url, req):
+        from hosted_workspace.host_agent_dispatch import dispatch as _dispatch
+        seen = set()
+
+        def burn(n, e):
+            first = n not in seen
+            seen.add(n)
+            return first
+
+        def run(primitive, args):
+            if primitive == "stage_catalogue_artefact":
+                self.staged[args["broker_id"]] = {"sha": args["expected_sha256"], "size": args["size_bytes"]}
+                self.writes.append(args["broker_id"])
+                return {"ok": True, "staged_sha256": args["expected_sha256"], "size_bytes": args["size_bytes"]}
+            if primitive == "attest_catalogue_artefact":
+                b = args["broker_id"]
+                if b == "":
+                    return {"ok": True, "brokers": [{"broker_id": k, "present": True, "sha256": v["sha"],
+                                                     "size_bytes": v["size"]} for k, v in self.staged.items()]}
+                ent = self.staged.get(b)
+                if not ent:
+                    return {"ok": False, "present": False, "verified_sha256": "", "reason": "artefact_missing"}
+                exp = args.get("expected_sha256") or ""
+                return {"ok": (exp == "" or exp == ent["sha"]), "present": True,
+                        "verified_sha256": ent["sha"], "size_bytes": ent["size"]}
+            return {"ok": False, "reason": "unknown_primitive"}
+        return _dispatch(req, keyring=_HKR, now=_HT, nonce_burn=burn, run_primitive=run)
+
+    def client(self):
+        return HC.CatalogueHostClient(keyring=_HKR, key_id="k1", base_url="http://host.invalid",
+                                      transport=self, clock=lambda: _HT)
+
+
+class CatalogueHostClientTests(TestCase):
+    def test_stage_round_trip_writes_and_verifies(self):
+        host = _FakeHost()
+        data = b"TRADERSWAY-servers-dat-bytes"
+        sha = __import__("hashlib").sha256(data).hexdigest()
+        res = host.client().stage(broker_id="tradersway", label="v3", expected_sha256=sha,
+                                  size_bytes=len(data), data=data)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["staged_sha256"], sha)
+        self.assertEqual(host.writes, ["tradersway"])
+
+    def test_attest_adapter_parses_relpath_and_matches(self):
+        sha = "d" * 64
+        host = _FakeHost({"tradersway": {"sha": sha, "size": 37280}})
+        adapter = HC.CatalogueAttestAdapter(host.client())
+        ok = adapter.attest_broker_artefact("versions/v3/tradersway/servers.dat", sha)
+        self.assertTrue(ok["ok"])
+        self.assertEqual(ok["verified_sha256"], sha)
+        bad = adapter.attest_broker_artefact("versions/v3/tradersway/servers.dat", "e" * 64)
+        self.assertFalse(bad["ok"])
+
+    def test_attest_adapter_rejects_malformed_relpath(self):
+        adapter = HC.CatalogueAttestAdapter(_FakeHost().client())
+        self.assertFalse(adapter.attest_broker_artefact("etc/passwd", "d" * 64)["ok"])
+
+    def test_inventory_exact_missing_and_extra(self):
+        host = _FakeHost({"is6": {"sha": "a" * 64, "size": 1}, "taurex": {"sha": "c" * 64, "size": 3}})
+        adapter = HC.CatalogueAttestAdapter(host.client())
+        self.assertTrue(adapter.attest_version_inventory("v3", ["is6", "taurex"])["ok"])
+        miss = adapter.attest_version_inventory("v3", ["is6", "taurex", "vantage"])
+        self.assertFalse(miss["ok"]); self.assertEqual(miss["missing"], ["vantage"])
+        extra = adapter.attest_version_inventory("v3", ["is6"])
+        self.assertFalse(extra["ok"]); self.assertEqual(extra["extra"], ["taurex"])
+
+    def test_resolver_dark_when_executor_disabled(self):
+        # No HOSTED_HOST_EXECUTOR_ENABLED / config -> fail-closed None (activation --attest-host then refuses).
+        self.assertIsNone(HC.resolve_catalogue_attest_executor())
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class ActivationInventoryGateTests(TestCase):
+    """--attest-host must require EXACT agreement with the DRAFT manifest (no missing, no extra, exact SHA)."""
+
+    def _arm(self, attester):
+        from broker_catalogue.management.commands import activate_catalogue_version as A
+        return _mock.patch.object(A, "_attest_executor", lambda: attester)
+
+    class _Attester:
+        def __init__(self, shas, inventory_ok=True, extra=None, missing=None):
+            self.shas = shas            # broker -> staged sha (per-artefact attest)
+            self.inventory_ok = inventory_ok
+            self.extra = extra or []
+            self.missing = missing or []
+
+        def attest_broker_artefact(self, host_relpath, expected_sha256):
+            broker = host_relpath.replace("\\", "/").split("/")[2]
+            got = self.shas.get(broker, "")
+            return {"ok": got == expected_sha256, "verified_sha256": got}
+
+        def attest_version_inventory(self, label, brokers):
+            return {"ok": self.inventory_ok, "extra": self.extra, "missing": self.missing}
+
+    def _draft_two(self):
+        _draft("w1", [("taurex", _HA, ["Taurex-Demo"], 100), ("is6", _HB, ["IS6Technologies-Demo"], 50)])
+        _approve_full("taurex", "w1", _HA, ["Taurex-Demo"], 100)
+        _approve_full("is6", "w1", _HB, ["IS6Technologies-Demo"], 50)
+
+    def test_exact_inventory_activates(self):
+        self._draft_two()
+        att = self._Attester({"taurex": _HA, "is6": _HB}, inventory_ok=True)
+        with self._arm(att):
+            call_command("activate_catalogue_version", "--label", "w1", "--attest-host")
+        self.assertEqual(S.resolve_active_version().label, "w1")
+
+    def test_extra_staged_file_blocks_activation(self):
+        self._draft_two()
+        att = self._Attester({"taurex": _HA, "is6": _HB}, inventory_ok=False, extra=["rogue"])
+        with self._arm(att):
+            with self.assertRaises(CommandError):
+                call_command("activate_catalogue_version", "--label", "w1", "--attest-host")
+        self.assertIsNone(S.resolve_active_version())
+
+    def test_missing_staged_file_blocks_activation(self):
+        self._draft_two()
+        att = self._Attester({"taurex": _HA, "is6": _HB}, inventory_ok=False, missing=["is6"])
+        with self._arm(att):
+            with self.assertRaises(CommandError):
+                call_command("activate_catalogue_version", "--label", "w1", "--attest-host")
+
+    def test_per_artefact_sha_mismatch_blocks_activation(self):
+        self._draft_two()
+        att = self._Attester({"taurex": _HA, "is6": _HC}, inventory_ok=True)   # is6 staged sha wrong
+        with self._arm(att):
+            with self.assertRaises(CommandError):
+                call_command("activate_catalogue_version", "--label", "w1", "--attest-host")

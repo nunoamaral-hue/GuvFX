@@ -1,5 +1,35 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-10-30 — Broker Catalogue V3 carry-forward + governed staging/attestation (ADR-0068; repository-only DARK PR)
+
+- **Problem.** ACTIVE catalogue is **v2** (is6/pepperstone/taurex). TradersWay (`tradersway/v1`, id=7) + Vantage
+  (`vantage/v1`, id=8) are APPROVED but the shipped `build_catalogue_version` groups approvals by ref-suffix, so it
+  cannot carry `*/v2` forward and add the `/v1` refs. `activate --attest-host` had no transport (`_attest_executor`
+  returned None).
+- **Change (repository + DARK host primitives; NO production mutation).**
+  1. `broker_catalogue/carry_forward.py` + `build_catalogue_version --carry-forward-active --include-approved-ref
+     <broker>/<label>`: carries the single ACTIVE version's approved artefacts byte-for-byte (only `host_relpath`
+     re-labelled) and adds only explicitly-named APPROVED, sanitiser-bound refs. Fail-closed on every drift/duplicate/
+     implicit-replacement/collision; DRAFT-only; deterministic + idempotent (divergent rerun refused).
+  2. `host_protocol`/`host_agent_dispatch`: two **account-independent** ops (`account_id==0`, no slot, no reserved
+     guard) — `STAGE_CATALOGUE_ARTEFACT` (approved bytes in the signed payload, SHA/size-bound, atomic, read-back,
+     overwrite-only-if-identical) and `ATTEST_CATALOGUE_ARTEFACT` (read-only SHA/size or full version inventory).
+  3. `Stage-GuvfxCatalogueArtefact.ps1` + `Attest-GuvfxCatalogueArtefact.ps1` (ASCII, confined under the catalogue
+     root, traversal/reparse refused); registered in `primitive_runner.CONTRACT` + `stage-manifest.json`.
+  4. `broker_catalogue/host_catalogue.py` (account-independent client + attest adapter, fail-closed/DARK); `activate
+     _catalogue_version._attest_executor()` wired to it + an **exact-inventory** (no extra/missing) activation gate.
+- **Phase 0 evidence.** v2 integrity OK; approvals id=7/8 exact. Hard-STOP cleared: #46 live `servers.dat` hashes to
+  `cd41d8d6…173bd4af` (the approved TradersWay SHA); captured an immutable read-only pin
+  `tradersway_v1_20261030T094626Z`. Vantage pin verified `34360ad9…`; #52 live has drifted (use the pin). v2
+  host-staged bytes match their approved SHAs.
+- **Tests.** `broker_catalogue` suite green (carry-forward 20 + host-client/adapter/inventory-gate); new
+  `hosted_workspace/tests_catalogue_host_ops.py`; ASCII guard for both `.ps1`. `terminal_provisioning`+`approvals`
+  green; secret scan + governance + evidence linter PASS. No migration.
+- **NOT done (human/Sponsor-gated):** merge/deploy, host dispatcher redeploy, build prod DRAFT v3, stage/attest/
+  activate/rollback, preseed. Production stays **v2 ACTIVE / no DRAFT**; execution OFF.
+- **Branch/base.** `feat/catalogue-carry-forward` off `main a120c80b`. ADR-0068. Runbook
+  `docs/BROKER_CATALOGUE_V3_RUNBOOK.md`.
+
 ## 2026-10-30 — GBP per-account realized conversion rendered in the dashboard UI (ADR-0066 follow-up)
 
 - **Problem (authenticated prod, 2026-10-30).** The backend already converts a single non-USD account's realized

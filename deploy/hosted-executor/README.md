@@ -19,6 +19,16 @@ path, username, or task definition can be submitted. The wire carries only `oper
 exactly one reviewed `.ps1`; execution is a fixed argument vector (never a shell string); the password is written
 to the child's stdin, never argv.
 
+Most operations are **account-scoped**: `account_id > 0`, from which the host derives the slot identity and every
+path, and the reserved-identity (Customer-Zero) guard applies. The **account-independent** operations
+(`host_protocol.ACCOUNT_INDEPENDENT_OPERATIONS` — `STAGE_CATALOGUE_ARTEFACT`, `ATTEST_CATALOGUE_ARTEFACT`, ADR-0068)
+act on the **shared catalogue root** `C:\GuvFX\catalogue\versions\<label>\<broker>\servers.dat`, not a slot: they
+carry the sentinel `account_id == 0`, derive no slot, and the reserved-id guard does not apply (there is no account).
+`STAGE` carries the approved bytes as a signed `payload` (bound via `payload_digest`, piped to the `.ps1` stdin as
+base64 — never argv), host-verified against `expected_sha256`/`size_bytes`; `ATTEST` is read-only (SHA/size, or the
+version's staged inventory). The destination is host-derived from the validated `broker`/`label` slugs and confined
+under the catalogue root (no traversal, no reparse-point escape).
+
 ## Files
 
 | File | Role |

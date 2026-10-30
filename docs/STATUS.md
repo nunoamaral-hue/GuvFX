@@ -1,5 +1,17 @@
 # GuvFX — Project Status
 
+> **2026-10-30 — Broker Catalogue V3 carry-forward + governed staging/attestation (ADR-0068; DARK PR).** The shipped
+> builder groups approvals by ref-suffix, so it cannot extend ACTIVE v2 with the separately-approved `tradersway/v1`
+> + `vantage/v1`. Added, repository-only: (1) `build_catalogue_version --carry-forward-active --include-approved-ref`
+> — a fail-closed DRAFT builder that carries the ACTIVE version's approved artefacts byte-for-byte and adds only
+> explicitly-named APPROVED refs (no auto-approve, no implicit active-broker replacement); (2) two account-independent
+> host ops `STAGE_CATALOGUE_ARTEFACT` / `ATTEST_CATALOGUE_ARTEFACT` (account_id==0; shared catalogue root; payload-
+> carried SHA-bound bytes; read-only attest) + two ASCII `.ps1`; (3) `activate --attest-host` wired to the fail-closed
+> catalogue attest executor + an exact-inventory (no extra/missing) gate. Hard-STOP cleared: #46's live bytes still
+> hash to the approved TradersWay SHA — an immutable pin was captured. Production stays **v2 ACTIVE / no DRAFT**;
+> host dispatcher NOT redeployed; execution OFF. Phases 4–7 (backend deploy → build v3 → host redeploy + stage/attest
+> → activate + disposable accept) remain human-gated — see `docs/BROKER_CATALOGUE_V3_RUNBOOK.md`.
+
 > **2026-10-30 — GBP per-account realized conversion UI rendering (ADR-0066 follow-up).** Authenticated screenshots
 > showed #49/#52 still rendering NATIVE GBP realized P/L with no BoE disclosure, though the backend summary already
 > returns the CONVERTED USD value + fx fields. Root cause (frontend-only): the per-account performance strip read the

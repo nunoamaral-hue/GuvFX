@@ -24,10 +24,21 @@ from __future__ import annotations
 import re
 
 from hosted_workspace.host_protocol import (
-    HostProtocolError, HOSTED_OPERATIONS, sign_hosted_response, verify_hosted_request,
+    ACCOUNT_INDEPENDENT_OPERATIONS, HostProtocolError, HOSTED_OPERATIONS,
+    sign_hosted_response, verify_hosted_request,
 )
 
 ACCOUNTS_BASE = r"C:\GuvFX\accounts"
+# Broker Catalogue V3 staging/attestation act under this SHARED root (never an account slot). The host-relative
+# layout is versions\<label>\<broker>\servers.dat; the host primitive re-derives + re-confines it from the
+# validated slug + label, so no caller path ever reaches the filesystem.
+CATALOGUE_VERSIONS_RELROOT = "versions"
+# Hard ceiling for a staged artefact's declared size (a broker servers.dat is tens-to-low-hundreds of KB). Bounds
+# the signed payload the host will decode + write; a larger declared size is refused before any copy.
+_MAX_CATALOGUE_ARTEFACT_BYTES = 2_000_000
+_BROKER_SLUG_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+_LABEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _USERNAME_FMT = "guvfx_u_{}"
 
 # Customer Zero keeps its already-published legacy RemoteApp alias for compatibility; every other account gets a
@@ -106,6 +117,15 @@ OP_PRIMITIVES = {
     # retired HostedExecutionEndpoint port, backend-derived + signed + range-validated) is the SOLE caller-
     # influenced value. Customer Zero refused (reserved) before this maps. Idempotent + per-step JSON verdict.
     "DECOMMISSION_RUNTIME":     {"primitive": "decommission_runtime",     "params_allow": ("port",)},
+    # Broker Catalogue V3 — ACCOUNT-INDEPENDENT (no slot). STAGE writes ONE approved servers.dat under
+    # versions\<label>\<broker>\ (bytes carried in the signed payload, re-verified against expected_sha256 +
+    # size_bytes, atomic, overwrite only if byte-identical); ATTEST is read-only (one artefact's SHA/size, or the
+    # version's full staged inventory when broker_id is empty). broker_id/label are validated slugs; the dest is
+    # host-derived + confined to the catalogue root — no caller path ever reaches the filesystem.
+    "STAGE_CATALOGUE_ARTEFACT": {"primitive": "stage_catalogue_artefact",
+                                 "params_allow": ("broker_id", "label", "expected_sha256", "size_bytes")},
+    "ATTEST_CATALOGUE_ARTEFACT": {"primitive": "attest_catalogue_artefact",
+                                  "params_allow": ("broker_id", "label", "expected_sha256")},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 
@@ -178,6 +198,18 @@ def dispatch(request: dict, *, keyring: dict, now: int, nonce_burn, run_primitiv
     correlation_id = fields["correlation_id"]
     nonce = fields["nonce"]
 
+    # ACCOUNT-INDEPENDENT ops (catalogue staging/attestation) act on the SHARED catalogue root, never a slot: no
+    # derive_slot, no reserved-identity guard (there is no account). Everything is derived from validated scalars.
+    if op in ACCOUNT_INDEPENDENT_OPERATIONS:
+        _validate_params(op, fields.get("params") or {})
+        args = _build_catalogue_args(op, fields)
+        primitive = OP_PRIMITIVES[op]["primitive"]
+        result = run_primitive(primitive, args)
+        if not isinstance(result, dict):
+            raise HostProtocolError("primitive_bad_result")
+        return sign_hosted_response(result=_sanitise_result(result), correlation_id=correlation_id, nonce=nonce,
+                                    keyring=keyring, key_id=fields["key_id"])
+
     reserved = reserved_ids_from(reserved_ids) if not isinstance(reserved_ids, frozenset) else reserved_ids
     if account_id in reserved:
         raise HostProtocolError("reserved_identity")               # Customer Zero refused, host-side layer
@@ -194,6 +226,59 @@ def dispatch(request: dict, *, keyring: dict, now: int, nonce_burn, run_primitiv
     # A signed response binds the (possibly security-relevant, e.g. ACL read-back) result to this request.
     return sign_hosted_response(result=_sanitise_result(result), correlation_id=correlation_id, nonce=nonce,
                                 keyring=keyring, key_id=fields["key_id"])
+
+
+def _build_catalogue_args(op: str, fields: dict) -> dict:
+    """Assemble the server-derived args for an ACCOUNT-INDEPENDENT catalogue primitive. The broker slug + version
+    label are regex-validated here (defence in depth over params_allow); the host-relative destination is DERIVED
+    (``versions\\<label>\\<broker>\\servers.dat``) — never taken from the caller — and the .ps1 re-confines it under
+    the catalogue root. For STAGE the approved bytes ride in the signed ``payload`` (bound via payload_digest); they
+    are decoded here and REFUSED unless their length == declared ``size_bytes`` and their SHA-256 == the declared
+    ``expected_sha256`` (the primitive re-verifies again host-side)."""
+    import base64
+    import hashlib
+
+    params = fields.get("params") or {}
+    broker = str(params.get("broker_id", ""))
+    label = str(params.get("label", ""))
+    sha = str(params.get("expected_sha256", "")).lower()
+
+    if not _LABEL_RE.fullmatch(label):
+        raise HostProtocolError("params_malformed")
+
+    if op == "ATTEST_CATALOGUE_ARTEFACT":
+        # Read-only. broker_id "" => whole-version inventory; a slug => that one artefact. expected_sha256 optional.
+        if broker and not _BROKER_SLUG_RE.fullmatch(broker):
+            raise HostProtocolError("params_malformed")
+        if sha and not _SHA256_RE.fullmatch(sha):
+            raise HostProtocolError("params_malformed")
+        return {"label": label, "broker_id": broker, "expected_sha256": sha}
+
+    # STAGE_CATALOGUE_ARTEFACT
+    if not _BROKER_SLUG_RE.fullmatch(broker):
+        raise HostProtocolError("params_malformed")
+    if not _SHA256_RE.fullmatch(sha):
+        raise HostProtocolError("params_malformed")
+    size = params.get("size_bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size > _MAX_CATALOGUE_ARTEFACT_BYTES:
+        raise HostProtocolError("params_malformed")
+    payload = fields.get("payload")
+    if not isinstance(payload, dict):
+        raise HostProtocolError("payload_missing")
+    b64 = payload.get("artefact_b64")
+    if not isinstance(b64, str) or not b64:
+        raise HostProtocolError("payload_missing")
+    try:
+        data = base64.b64decode(b64.encode("ascii"), validate=True)
+    except Exception:  # noqa: BLE001 — a malformed payload fails closed
+        raise HostProtocolError("payload_malformed")
+    if len(data) != size:
+        raise HostProtocolError("payload_size_mismatch")
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise HostProtocolError("payload_sha_mismatch")
+    # The validated base64 (an ASCII scalar) is handed to the runner, which pipes it to the primitive's STDIN
+    # (never argv) — so the bytes never touch a command line. The .ps1 decodes + re-verifies size/SHA on write.
+    return {"label": label, "broker_id": broker, "expected_sha256": sha, "size_bytes": size, "artefact_b64": b64}
 
 
 def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:

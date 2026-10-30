@@ -2,6 +2,24 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 Catalogue V3 staging/attestation require a host dispatcher redeploy before use (2026-10-30; ADR-0068)
+
+- The two new account-independent ops (`STAGE_CATALOGUE_ARTEFACT`, `ATTEST_CATALOGUE_ARTEFACT`) and their `.ps1`
+  primitives exist in the repo + `stage-manifest.json`, but the **Windows host executor must be re-staged and its
+  `GuvFXHostedExecutor` service restarted** (RULE 1 supported-service mechanism; RULE 8 launcher validation; RULE 9
+  ParseFile gate at daemon startup) before they can run. Until then `activate_catalogue_version --attest-host` is
+  **fail-closed** (`_attest_executor()` → None when the executor is DARK/unconfigured) and staging has no transport.
+- The TradersWay source account **#46**'s live `servers.dat` currently still hashes to the approved SHA but is a live
+  mutable terminal file (account #52 already drifted). The immutable pin `tradersway_v1_20261030T094626Z` was
+  captured for exactly this reason — **always stage V3 from the pins, never from the live account file.**
+
+## ✅ (historical) `--attest-host` had no transport — RESOLVED by ADR-0068
+
+- Previously `activate_catalogue_version._attest_executor()` returned `None` unconditionally (no production
+  attestation transport), so `--attest-host` could never succeed. It is now wired to the fail-closed
+  `broker_catalogue.host_catalogue.resolve_catalogue_attest_executor()` (ATTEST op). It still refuses when the host
+  executor is DARK/unconfigured — intended fail-closed behaviour, not a defect.
+
 ## 🟠 39 false "GuvFX automation" historical cards already transmitted (2026-10-30; fixed forward by ADR-0067)
 
 - **Was.** Monitored/historical ingestion (ADR-0065) created `Trade` rows for externally-executed broker trades; the

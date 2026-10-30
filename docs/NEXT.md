@@ -1,5 +1,13 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ BROKER CATALOGUE V3 (2026-10-30; ADR-0068; DARK PR ready)
+Repository mechanism for promoting ACTIVE v2 → v3 is complete and DARK: fail-closed carry-forward-active builder +
+two account-independent host ops (STAGE/ATTEST) + two ASCII `.ps1` + attest wiring + exact-inventory activation gate.
+Approved-byte immutable pins captured for TradersWay + Vantage. **One bounded next action:** governed squash-merge +
+rollback-first BACKEND deploy, then the human-gated live sequence — build DRAFT v3, **redeploy the Windows host
+dispatcher/service (RULE 1/8/9)**, stage + attest, activate v3, disposable-workspace accept. Production stays v2
+ACTIVE / no DRAFT until then. Runbook: `docs/BROKER_CATALOGUE_V3_RUNBOOK.md`.
+
 ## ★ GBP REALIZED CONVERSION UI (2026-10-30; ADR-0066 follow-up; PR pending)
 The per-account performance strip showed native GBP realized P/L with no BoE disclosure (the backend already converts).
 Fixed frontend-only: single non-USD account renders converted USD primary + native secondary + payload-sourced BoE

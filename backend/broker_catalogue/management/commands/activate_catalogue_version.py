@@ -26,15 +26,16 @@ from broker_catalogue import service as S
 from broker_catalogue.models import CatalogueVersion
 
 
-# Injection seam for host byte-staging attestation (Phase 7). Returns an object with
-# ``attest_broker_artefact(host_relpath, expected_sha256) -> {"ok": bool, "verified_sha256": str}`` or None.
-# STATUS: no production attestation transport is wired yet (the signed host executor has no attest primitive), so
-# ``--attest-host`` FAILS CLOSED until it is implemented — it is NOT a silent no-op. When ``--attest-host`` is NOT
-# passed, activation performs no host-byte check and relies on consumption-time read-back verification
-# (broker_catalogue.preseed + Preseed-GuvfxBrokerArtefact.ps1). Wiring a real machine-level attest primitive is a
-# tracked follow-up (see docs/KNOWN_ISSUES.md).
+# Injection seam for host byte-staging attestation. Returns an object with
+# ``attest_broker_artefact(host_relpath, expected_sha256) -> {"ok": bool, "verified_sha256": str}`` (and, when
+# available, ``attest_version_inventory(label, brokers) -> {"ok": bool, "extra": [...], "missing": [...]}``), or None.
+# Wired to the ACCOUNT-INDEPENDENT catalogue host client (broker_catalogue.host_catalogue). It stays FAIL-CLOSED:
+# ``resolve_catalogue_attest_executor()`` returns None unless the signed host executor is armed AND configured, so
+# ``--attest-host`` refuses (no transport) in the repository-only / DARK phase rather than silently passing. Tests
+# monkeypatch this to inject a fake attester.
 def _attest_executor():
-    return None
+    from broker_catalogue.host_catalogue import resolve_catalogue_attest_executor
+    return resolve_catalogue_attest_executor()
 
 
 class Command(BaseCommand):
@@ -131,6 +132,17 @@ class Command(BaseCommand):
                             S.norm_sha(res.get("verified_sha256", "")) == S.norm_sha(a.sha256)):
                         raise CommandError(f"REFUSED: host attestation failed for {a.broker_id} "
                                            f"(staged bytes at {a.host_relpath} do not match the approved SHA).")
+                # EXACT agreement with the DRAFT manifest: the staged version dir must carry NO extra and NO missing
+                # broker (every per-artefact SHA already matched above). When the attester supports a version
+                # inventory, require an exact broker-set match; a bare per-artefact attester (older contract) skips
+                # this — the per-artefact loop already guarantees no-missing + exact SHA for every manifest artefact.
+                inv = getattr(ex, "attest_version_inventory", None)
+                if callable(inv):
+                    rep = inv(version.label, [a.broker_id for a in arts])
+                    if not (rep and rep.get("ok")):
+                        raise CommandError(
+                            f"REFUSED: staged inventory for {version.label} does not exactly match the DRAFT "
+                            f"manifest (extra={(rep or {}).get('extra')}, missing={(rep or {}).get('missing')}).")
 
             now = timezone.now()
             if prev is not None:
