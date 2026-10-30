@@ -90,6 +90,15 @@ Win rate / profit factor stay dimensionless; max drawdown stays % and expectancy
 is computed from the native figure (currency-invariant) since equity stays native. **All Accounts is untouched**
 (it never uses this path and remains PARTIAL — non-USD realized excluded, no silent mixing).
 
-Evidence: `lib/realized-fx.test.ts` (7 — positive/negative GBP, fresh-value pass-through, source mapping, unavailable,
-USD unchanged, loading) and `dashboard/localization.test.tsx` (converted USD primary + native secondary + BoE
-disclosure EN/JA, negative sign, and the unavailable fallback). `tsc` clean; `next build` green. No backend change.
+Evidence: `lib/realized-fx.test.ts` (8 — positive/negative GBP, fresh-value pass-through, source mapping, unavailable,
+USD unchanged, loading, and a rate-less `fx_converted:true` payload falling to unavailable) and
+`dashboard/localization.test.tsx` (converted USD primary + native secondary + BoE disclosure EN/JA, negative sign,
+the unavailable fallback, and the all-winners Expectancy-money conversion). `next build` green; eslint 0 errors.
+No backend change.
+
+Adversarial review (post-implementation) found and fixed two issues before merge: (1) the **Expectancy** tile falls
+back from R to money only for an account with no losing trades, and that native per-trade mean must be converted to
+USD too under conversion (otherwise a native GBP magnitude would print with a `$`) — fixed via `expMoneyDisplay`
+(native mean × governed rate when converted); (2) the `converted` gate now also requires a numeric `fx_rate`, so a
+malformed payload can never emit a blank-rate disclosure (it falls to the honest native "unavailable" line). Max
+Drawdown money is unaffected — for a single account `ddMoney` is null, so only the `%` branch renders.
