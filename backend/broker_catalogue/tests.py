@@ -731,6 +731,23 @@ class CarryForwardTests(TestCase):
         with self.assertRaises(CommandError):
             self._build_v3("taurex/v9")
 
+    def test_mixed_case_carried_broker_refused(self):
+        # A non-lowercase carried broker_id would evade the case-sensitive implicit-replacement + host_relpath dedup
+        # guards (NTFS is case-insensitive). The builder must refuse it (canonical lowercase slug required).
+        _draft("v2", [("Taurex", _HC, ["Taurex-Demo"], 300)])                     # mixed-case broker_id
+        _approve_full("Taurex", "v2", _HC, ["Taurex-Demo"], 300)
+        call_command("activate_catalogue_version", "--label", "v2")
+        _approve_full("tradersway", "v1", _TW_SHA, ["Tradersway-Live"], 37280)
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")
+        self.assertFalse(CatalogueVersion.objects.filter(label="v3").exists())
+
+    def test_build_rejects_dotdot_label(self):
+        self._active_v2(); self._add_tw_va()
+        with self.assertRaises(CommandError):
+            call_command("build_catalogue_version", "--label", "..", "--carry-forward-active",
+                         "--include-approved-ref", "tradersway/v1")
+
     def test_added_ref_server_collision_refused(self):
         # ACTIVE "ab" owns "Ab-Cd-Demo"; an added ref "cd/v1" also owns it -> cross-broker collision -> refuse.
         _draft("v2", [("ab", _HA, ["Ab-Cd-Demo"], 10)])

@@ -243,7 +243,10 @@ def _build_catalogue_args(op: str, fields: dict) -> dict:
     label = str(params.get("label", ""))
     sha = str(params.get("expected_sha256", "")).lower()
 
-    if not _LABEL_RE.fullmatch(label):
+    # Label: charset + length (regex), AND reject traversal / dot-or-dash edges at the DISPATCHER layer too (defence
+    # in depth — not only in the .ps1), matching the PRESEED op's explicit ".." reject. `..` / `.` / `v3.` / `.v3` /
+    # `-v3` never reach the host. (broker is validated below against the lowercase slug, which excludes `.`/`-`.)
+    if (not _LABEL_RE.fullmatch(label)) or (".." in label) or (label[0] in ".-") or label.endswith("."):
         raise HostProtocolError("params_malformed")
 
     if op == "ATTEST_CATALOGUE_ARTEFACT":

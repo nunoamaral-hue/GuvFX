@@ -26,15 +26,16 @@ function Emit() { $result | ConvertTo-Json -Compress -Depth 5 }
 function Fail([string]$why) { $result.ok = $false; $result.reason = $why; Emit; exit 1 }
 
 try {
-  if ($Label -notmatch '^[A-Za-z0-9._\-]{1,32}$') { Fail "refusing_label_malformed" }
-  if ($Label -match '\.\.') { Fail "refusing_path_traversal" }
-  if ($BrokerId -ne "" -and $BrokerId -notmatch '^[a-z0-9_]{1,32}$') { Fail "refusing_broker_malformed" }
-  if ($ExpectedSha256 -ne "" -and $ExpectedSha256 -notmatch '^[0-9a-f]{64}$') { Fail "refusing_sha_malformed" }
+  # Case-SENSITIVE, \A..\z-anchored (see Stage-GuvfxCatalogueArtefact.ps1) so the host re-assertion matches the
+  # dispatcher exactly; Label also rejects traversal + dot/dash edges.
+  if ($Label -cnotmatch '\A[A-Za-z0-9._\-]{1,32}\z' -or $Label -match '\.\.' -or $Label.StartsWith('.') -or $Label.StartsWith('-') -or $Label.EndsWith('.')) { Fail "refusing_label_malformed" }
+  if ($BrokerId -ne "" -and $BrokerId -cnotmatch '\A[a-z0-9_]{1,32}\z') { Fail "refusing_broker_malformed" }
+  if ($ExpectedSha256 -ne "" -and $ExpectedSha256 -cnotmatch '\A[0-9a-f]{64}\z') { Fail "refusing_sha_malformed" }
 
   $verBase = [System.IO.Path]::GetFullPath((Join-Path $CATALOGUE_BASE "versions"))
   $verDir = [System.IO.Path]::GetFullPath((Join-Path $verBase $Label))
   if (-not $verDir.ToLower().StartsWith(($verBase.TrimEnd('\') + "\").ToLower())) { Fail "refusing_dest_outside_catalogue" }
-  foreach ($p in @($verBase, $verDir)) {
+  foreach ($p in @("C:\GuvFX", $CATALOGUE_BASE, $verBase, $verDir)) {
     if (Test-Path -LiteralPath $p) {
       $it = Get-Item -LiteralPath $p -Force
       if ($it.Attributes.ToString() -match 'ReparsePoint') { Fail "refusing_reparse_point" }

@@ -108,7 +108,10 @@ def plan_carry_forward(*, target_label: str, include_refs) -> list:
     """Compute the deterministic successor inventory (list of specs, sorted by broker_id) WITHOUT writing anything.
     Raises ``CarryForwardError`` on any gate failure. Shared by the writer and by read-only preview/tests."""
     label = str(target_label or "").strip()
-    if not label or not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", label):
+    # Charset + length, AND no traversal / dot-or-dash edge (parity with the dispatcher + host staging confinement,
+    # so the re-labelled host_relpath can never carry `..` / `.` / a trailing dot into the catalogue tree).
+    if (not label or not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", label)
+            or ".." in label or label[0] in ".-" or label.endswith(".")):
         raise CarryForwardError(f"malformed target label: {target_label!r}")
 
     # Exactly one ACTIVE source version (the single atomic pointer; defence-in-depth over the DB partial-unique).
@@ -129,6 +132,12 @@ def plan_carry_forward(*, target_label: str, include_refs) -> list:
     # 1) Carry every ACTIVE artefact — each MUST still resolve to an APPROVED exact-SHA row, and its approval's
     #    size/servers must still match (catch an approval that changed under a carried artefact).
     for a in source.artefacts.all().order_by("broker_id"):
+        # Carried broker_id must be a canonical lowercase slug — the SAME rule the added refs, the host staging and
+        # the attestation ops enforce. Otherwise a mixed-case carried id (e.g. "Pepperstone") would evade the
+        # case-sensitive implicit-replacement + host_relpath dedup guards while NTFS treats the dirs as one file.
+        if not _BROKER_RE.fullmatch(a.broker_id):
+            raise CarryForwardError(f"carried broker_id {a.broker_id!r} is not a canonical lowercase slug; "
+                                    f"the source version must be normalised before carry-forward")
         appr = S.approved_row_for(a)
         if appr is None:
             raise CarryForwardError(f"carried broker {a.broker_id} ({a.artefact_ref} {S.norm_sha(a.sha256)[:12]}) "
@@ -185,8 +194,9 @@ def plan_carry_forward(*, target_label: str, include_refs) -> list:
         by_broker[broker_id] = spec
         by_ref[ref] = spec
 
-    # 3) Whole-set invariants: unique destination host_relpath + no server-name claimed by two artefacts.
-    relpaths = [s["host_relpath"] for s in specs]
+    # 3) Whole-set invariants: unique destination host_relpath (CASE-INSENSITIVE — the host catalogue tree lives on
+    # case-insensitive NTFS) + no server-name claimed by two artefacts.
+    relpaths = [s["host_relpath"].lower() for s in specs]
     if len(set(relpaths)) != len(relpaths):
         raise CarryForwardError("duplicate destination host_relpath across the successor inventory")
     server_claims: dict = {}

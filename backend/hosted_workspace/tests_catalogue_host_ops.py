@@ -108,6 +108,18 @@ class StageOpTests(SimpleTestCase):
             _dispatch(_stage_req(label="../evil"), _Capture())
         self.assertEqual(cm.exception.reason_code, "params_malformed")
 
+    def test_stage_dotdot_label_refused(self):
+        # ".." matches the charset regex but must be rejected at the dispatcher (defence in depth over the .ps1).
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_stage_req(label=".."), _Capture())
+        self.assertEqual(cm.exception.reason_code, "params_malformed")
+
+    def test_stage_dot_edge_labels_refused(self):
+        for bad in (".", "v3.", ".v3", "-v3"):
+            with self.assertRaises(P.HostProtocolError) as cm:
+                _dispatch(_stage_req(label=bad), _Capture())
+            self.assertEqual(cm.exception.reason_code, "params_malformed", bad)
+
     def test_stage_oversize_declared_refused(self):
         big = 2_000_001
         # Build bytes matching the oversize so size/sha pass their own checks; the size ceiling must still refuse.

@@ -34,9 +34,12 @@ function Emit() { $result | ConvertTo-Json -Compress }
 function Fail([string]$why) { $result.ok = $false; $result.reason = $why; Emit; exit 1 }
 
 try {
-  if ($Label -notmatch '^[A-Za-z0-9._\-]{1,32}$') { Fail "refusing_label_malformed" }
-  if ($BrokerId -notmatch '^[a-z0-9_]{1,32}$') { Fail "refusing_broker_malformed" }
-  if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') { Fail "refusing_sha_malformed" }
+  # Case-SENSITIVE, \A..\z-anchored (a .NET '$' matches before a trailing newline; PowerShell -notmatch is
+  # case-insensitive by default) so the host re-assertion is exactly as strict as the dispatcher's. Label also
+  # rejects traversal + dot/dash edges (parity with the dispatcher's own reject).
+  if ($Label -cnotmatch '\A[A-Za-z0-9._\-]{1,32}\z' -or $Label -match '\.\.' -or $Label.StartsWith('.') -or $Label.StartsWith('-') -or $Label.EndsWith('.')) { Fail "refusing_label_malformed" }
+  if ($BrokerId -cnotmatch '\A[a-z0-9_]{1,32}\z') { Fail "refusing_broker_malformed" }
+  if ($ExpectedSha256 -cnotmatch '\A[0-9a-f]{64}\z') { Fail "refusing_sha_malformed" }
   if ($SizeBytes -le 0 -or $SizeBytes -gt $MAX_BYTES) { Fail "refusing_size_out_of_range" }
 
   # Read the approved bytes as base64 from STDIN (piped by the runner; never argv).
@@ -57,8 +60,9 @@ try {
   if (-not $destDir.ToLower().StartsWith(($verBase.TrimEnd('\') + "\").ToLower())) { Fail "refusing_dest_outside_catalogue" }
   $dest = Join-Path $destDir "servers.dat"
 
-  # Refuse any reparse point / symlink in the destination chain (escape via a junction).
-  foreach ($p in @($verBase, (Join-Path $verBase $Label), $destDir, $dest)) {
+  # Refuse any reparse point / symlink anywhere in the destination chain, INCLUDING the fixed ancestry (escape via
+  # a junction swapped in at C:\GuvFX or C:\GuvFX\catalogue).
+  foreach ($p in @("C:\GuvFX", $CATALOGUE_BASE, $verBase, (Join-Path $verBase $Label), $destDir, $dest)) {
     if (Test-Path -LiteralPath $p) {
       $it = Get-Item -LiteralPath $p -Force
       if ($it.Attributes.ToString() -match 'ReparsePoint') { Fail "refusing_reparse_point" }
