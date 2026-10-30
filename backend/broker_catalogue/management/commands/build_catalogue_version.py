@@ -24,9 +24,37 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--label", required=True)
+        # Option B — explicit, fail-closed carry-forward-active mode. Carries the single ACTIVE version's
+        # already-approved artefacts into the new DRAFT and adds ONLY the explicitly-named, separately-APPROVED
+        # refs. Never auto-approves; never implicitly replaces an active broker (see broker_catalogue.carry_forward).
+        parser.add_argument("--carry-forward-active", action="store_true",
+                            help="Carry the ACTIVE version's approved artefacts into the new DRAFT, plus the "
+                                 "explicitly listed --include-approved-ref additions (all must be APPROVED).")
+        parser.add_argument("--include-approved-ref", action="append", default=[], dest="include_refs",
+                            metavar="<broker>/<label>",
+                            help="An explicit extra APPROVED ref to add in carry-forward mode (repeatable). "
+                                 "Each broker must NOT already be in the ACTIVE set (no implicit replacement).")
 
     def handle(self, *args, **opts):
         label = opts["label"]
+        if opts.get("carry_forward_active"):
+            from broker_catalogue.carry_forward import build_carry_forward_draft, CarryForwardError, inventory_rows
+            try:
+                version = build_carry_forward_draft(target_label=label, include_refs=opts.get("include_refs") or [])
+            except CarryForwardError as e:
+                raise CommandError(str(e))
+            rows = inventory_rows(version)
+            self.stdout.write(f"[catalogue] carry-forward DRAFT {label} (status={version.status}) "
+                              f"artefacts={len(rows)}:")
+            for r in rows:
+                self.stdout.write(f"  - {r['broker_id']} ref={r['artefact_ref']} sha={r['sha256'][:12]} "
+                                  f"size={r['size_bytes']} servers={r['servers']} relpath={r['host_relpath']} "
+                                  f"approved={r['approved']}")
+            self.stdout.write("[catalogue] DRAFT only — NOT active; stage bytes + run activate_catalogue_version "
+                              "--attest-host after host staging.")
+            return
+        if opts.get("include_refs"):
+            raise CommandError("--include-approved-ref requires --carry-forward-active")
         version, _ = CatalogueVersion.objects.get_or_create(
             label=label, defaults={"status": CatalogueVersion.Status.DRAFT})
         if version.status != CatalogueVersion.Status.DRAFT:

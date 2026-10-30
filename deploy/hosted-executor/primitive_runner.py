@@ -191,6 +191,21 @@ CONTRACT = {
         script="Decommission-GuvfxRuntime.ps1",
         argmap={"username": "-Username", "runtime_root": "-RuntimeRoot", "account_id": "-AccountId",
                 "port": "-Port"}),
+    # Broker Catalogue V3 governed staging (ACCOUNT-INDEPENDENT): write ONE approved servers.dat to
+    # C:\GuvFX\catalogue\versions\<Label>\<BrokerId>\ and read-back verify. The approved BYTES are piped to the
+    # child's STDIN as base64 (stdin_arg) - NEVER argv, NEVER a log, NEVER a caller path. The .ps1 derives + confines
+    # the destination from -Label/-BrokerId, decodes stdin, verifies len==-SizeBytes and SHA==-ExpectedSha256 before
+    # an atomic rename, and refuses to overwrite non-identical existing bytes. No account, slot, golden or tenant.
+    "stage_catalogue_artefact": PrimitiveSpec(
+        script="Stage-GuvfxCatalogueArtefact.ps1",
+        argmap={"label": "-Label", "broker_id": "-BrokerId", "expected_sha256": "-ExpectedSha256",
+                "size_bytes": "-SizeBytes"},
+        stdin_arg="artefact_b64"),
+    # Broker Catalogue V3 read-only attestation (ACCOUNT-INDEPENDENT): report one staged artefact's SHA-256 + size
+    # (when -BrokerId is a slug) or the version's full staged inventory (when -BrokerId is empty). Mutates nothing.
+    "attest_catalogue_artefact": PrimitiveSpec(
+        script="Attest-GuvfxCatalogueArtefact.ps1",
+        argmap={"label": "-Label", "broker_id": "-BrokerId", "expected_sha256": "-ExpectedSha256"}),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and

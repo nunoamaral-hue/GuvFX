@@ -54,9 +54,19 @@ HOSTED_OPERATIONS = (
     "RELAUNCH_TERMINAL",         # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own MT5 (capability recovery; NEVER CZ; no order)
     "PRESEED_BROKER_ARTEFACT",   # Broker Catalogue V1: copy ONE approved+SHA-verified servers.dat into a FRESH runtime (RO source; no golden; no login)
     "DECOMMISSION_RUNTIME",      # Remove-account STAGE-2: stop THIS account's tenant bridge+watchdog+port, terminate its terminal64 (owner+path verified), end its session, remove tenant+runtime dirs, disable its Windows identity (NEVER CZ)
+    # Broker Catalogue V3 governed staging/attestation (ACCOUNT-INDEPENDENT: they act on the SHARED catalogue root
+    # C:\GuvFX\catalogue\versions\<label>\<broker>\servers.dat, not an account slot — so they carry account_id == 0
+    # and NEVER derive a slot or touch a tenant/golden/workspace). STAGE writes approved bytes (carried in the
+    # signed payload, bound via payload_digest) + read-back verifies; ATTEST is read-only (SHA/size/inventory).
+    "STAGE_CATALOGUE_ARTEFACT",  # write ONE approved servers.dat to versions\<label>\<broker>\ (atomic, read-back verified, overwrite only if byte-identical)
+    "ATTEST_CATALOGUE_ARTEFACT", # read-only: SHA+size of one staged artefact, or the version's full staged inventory
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.
 CREDENTIALED_HOSTED_OPERATIONS = ("PROVISION_IDENTITY",)
+# ACCOUNT-INDEPENDENT operations act on a SHARED host resource (the catalogue root), not a per-account slot. They
+# carry the sentinel account_id == 0, and the dispatcher neither derives a slot nor applies the reserved-identity
+# (Customer-Zero) guard for them (there is no account). Every other operation keeps account_id > 0 + slot derivation.
+ACCOUNT_INDEPENDENT_OPERATIONS = ("STAGE_CATALOGUE_ARTEFACT", "ATTEST_CATALOGUE_ARTEFACT")
 
 # Fields covered by the signature. Excludes ``signature`` itself and the opaque ``payload`` (bound via digest).
 _SIGNED_FIELDS = ("protocol_version", "account_id", "operation", "params_digest",
@@ -110,7 +120,10 @@ def sign_hosted_request(*, account_id, operation, correlation_id, keyring: dict,
         acct = int(account_id)
     except (TypeError, ValueError):
         raise HostProtocolError("account_id_not_int")
-    if acct <= 0:
+    if operation in ACCOUNT_INDEPENDENT_OPERATIONS:
+        if acct != 0:
+            raise HostProtocolError("account_id_out_of_range")   # shared-resource op MUST carry the 0 sentinel
+    elif acct <= 0:
         raise HostProtocolError("account_id_out_of_range")
     fields = {
         "protocol_version": HOSTED_PROTOCOL_VERSION,
@@ -155,7 +168,12 @@ def verify_hosted_request(request: dict, *, keyring: dict, now: int, nonce_burn,
     key_id = request["key_id"]
     if key_id not in keyring:
         raise HostProtocolError("unknown_key_id")
-    if not isinstance(request["account_id"], int) or request["account_id"] <= 0:
+    if not isinstance(request["account_id"], int):
+        raise HostProtocolError("account_id_invalid")
+    if op in ACCOUNT_INDEPENDENT_OPERATIONS:
+        if request["account_id"] != 0:                       # shared-resource op MUST carry the 0 sentinel
+            raise HostProtocolError("account_id_invalid")
+    elif request["account_id"] <= 0:
         raise HostProtocolError("account_id_invalid")
 
     ts, exp = request["timestamp"], request["expiry"]
