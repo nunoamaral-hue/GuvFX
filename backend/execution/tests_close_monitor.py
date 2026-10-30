@@ -41,6 +41,25 @@ def _trade(account, *, ticket, profit="0", commission="0", swap="0",
     )
 
 
+def _linked_trade(account, *, ticket, profit="0", commission="0", swap="0"):
+    """A trade with a VERIFIED same-account GuvFX execution link (plan + leg + execution_job) — the only kind that
+    is a legitimate strategy-result notification (ADR-0067). Linked by matching correlation_id."""
+    appr = PendingSignalApproval.objects.create(
+        source="wayond", message_id=f"m-{ticket}", symbol="EURUSD", direction="BUY",
+        stop_loss="1.0800", take_profits=["1.0950"], status=PendingSignalApproval.Status.APPROVED)
+    plan = SignalExecutionPlan.objects.create(
+        approval=appr, account=account, source="wayond", message_id=f"m-{ticket}", symbol="EURUSD",
+        direction="BUY", stop_loss="1.0800", is_demo=True, signal_timestamp=timezone.now(),
+        correlation_id=f"cid-{ticket}", status=SignalExecutionPlan.Status.PROMOTED)
+    job = ExecutionJob.objects.create(
+        job_type=ExecutionJob.JobType.PLACE_ORDER, account=account, status=ExecutionJob.Status.SUCCESS)
+    ProposedOrderLeg.objects.create(
+        plan=plan, leg_index=1, take_profit="1.0950", stop_loss="1.0800",
+        lot_size=Decimal("0.40"), status=ProposedOrderLeg.Status.PROMOTED, execution_job=job)
+    t = _trade(account, ticket=ticket, profit=profit, commission=commission, swap=swap, cid=f"cid-{ticket}")
+    return t, plan, job
+
+
 class CloseMonitorBase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="op", email="op@x.invalid", password="x")
@@ -57,13 +76,38 @@ class ClassificationTests(CloseMonitorBase):
         self.assertEqual(counts["processed"], 0)
 
     def test_win_classified(self):
-        _trade(self.account, ticket="t2", profit="10")
+        # A WIN with a VERIFIED GuvFX execution link is a delivery candidate (ADR-0067).
+        _linked_trade(self.account, ticket="t2", profit="10")
         close_monitor.process_closed_trades()
         rec = TradeOutcomeRecord.objects.get()
         self.assertEqual(rec.outcome, TradeOutcomeRecord.Outcome.WIN)
         self.assertEqual(rec.net_pnl, Decimal("10"))
+        self.assertIsNotNone(rec.execution_job)      # resolved same-account execution link
         self.assertTrue(rec.is_delivery_candidate)
         self.assertFalse(rec.delivered)
+
+    def test_unlinked_win_is_not_a_delivery_candidate(self):
+        # Provenance (ADR-0067): a WIN with NO GuvFX execution link (external / historical / monitoring-only
+        # ingestion) is classified WIN but is NEVER a delivery candidate — a Trade row is not execution evidence.
+        _trade(self.account, ticket="ext1", profit="10")
+        close_monitor.process_closed_trades()
+        rec = TradeOutcomeRecord.objects.get()
+        self.assertEqual(rec.outcome, TradeOutcomeRecord.Outcome.WIN)
+        self.assertIsNone(rec.execution_job)
+        self.assertFalse(rec.is_delivery_candidate)
+
+    def test_cross_account_link_is_not_a_delivery_candidate(self):
+        # A comment/correlation that resolves to a DIFFERENT account's plan is not a causal link for THIS trade.
+        other = TradingAccount.objects.create(
+            user=self.user, name="Other", account_number="D2", is_demo=True, broker_name="DemoBroker")
+        _t, plan, _job = _linked_trade(other, ticket="xacct", profit="10")
+        # A trade on self.account whose comment points at the OTHER account's plan id.
+        t = _trade(self.account, ticket="xtrade", profit="10")
+        t.comment = f"WAY{plan.id}L1"; t.save(update_fields=["comment"])
+        close_monitor.process_closed_trades()
+        rec = TradeOutcomeRecord.objects.get(trade=t)
+        self.assertIsNone(rec.execution_job)             # cross-account plan is NOT a link
+        self.assertFalse(rec.is_delivery_candidate)
 
     def test_loss_classified(self):
         _trade(self.account, ticket="t3", profit="-5")
@@ -90,7 +134,7 @@ class ClassificationTests(CloseMonitorBase):
 
 class RoutingTests(CloseMonitorBase):
     def test_win_is_internal_delivery_candidate_only(self):
-        _trade(self.account, ticket="w1", profit="25")
+        _linked_trade(self.account, ticket="w1", profit="25")   # verified GuvFX execution link (ADR-0067)
         close_monitor.process_closed_trades()
         rec = TradeOutcomeRecord.objects.get()
         self.assertTrue(rec.is_delivery_candidate)
@@ -189,7 +233,10 @@ class LinkageTests(CloseMonitorBase):
         close_monitor.process_closed_trades()
         rec = TradeOutcomeRecord.objects.get()
         self.assertEqual(rec.correlation_id, "")
-        self.assertTrue(rec.is_delivery_candidate)  # it is a WIN, still recorded
+        self.assertIsNone(rec.execution_job)
+        # Still RECORDED (the internal outcome exists), but with NO verified GuvFX execution link it is NOT a
+        # notification delivery candidate — a Trade row alone is not execution evidence (ADR-0067).
+        self.assertFalse(rec.is_delivery_candidate)
 
 
 class BoundaryAndCommandTests(CloseMonitorBase):

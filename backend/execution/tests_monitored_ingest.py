@@ -142,3 +142,41 @@ class EnqueueTests(Base):
         m.assert_called_once()
         self.assertEqual(summary["considered"], 1)
         self.assertEqual(summary["queued"], 1)
+
+    def _sync(self, acct, status, *, minutes_ago):
+        j = ExecutionJob.objects.create(
+            account_id=acct.id, terminal_node_id=self.node.id,
+            job_type=ExecutionJob.JobType.SYNC_POSITIONS, status=status,
+            payload={"windows_username": f"guvfx_u_{acct.account_number}", "monitored_ingest": True})
+        ExecutionJob.objects.filter(id=j.id).update(created_at=timezone.now() - timedelta(minutes=minutes_ago))
+        return j
+
+    def test_cooldown_clears_after_a_successful_recovery(self):
+        # ADR-0067: a recent FAILED probe would back off, but a SUBSEQUENT successful sync (recovered bridge) is the
+        # latest → backoff clears immediately; the account resumes scheduled coverage without waiting the full window.
+        acct = self._tenant("208")
+        self._sync(acct, ExecutionJob.Status.FAILED, minutes_ago=30)     # failed...
+        self._sync(acct, ExecutionJob.Status.SUCCESS, minutes_ago=5)     # ...then recovered (latest)
+        summary = enqueue_monitored_deal_syncs(account_ids=[acct.id], failure_cooldown_minutes=180)
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(summary["skipped_cooldown"], 0)
+
+    def test_cooldown_still_backs_off_when_latest_is_failed(self):
+        acct = self._tenant("209")
+        self._sync(acct, ExecutionJob.Status.SUCCESS, minutes_ago=30)    # older success...
+        self._sync(acct, ExecutionJob.Status.FAILED, minutes_ago=5)      # ...latest is a fresh failure → back off
+        summary = enqueue_monitored_deal_syncs(account_ids=[acct.id], failure_cooldown_minutes=180)
+        self.assertEqual(summary["queued"], 0)
+        self.assertEqual(summary["skipped_cooldown"], 1)
+
+    def test_cooldown_recovery_is_account_scoped(self):
+        recovered = self._tenant("210")      # latest = SUCCESS → queued
+        self._sync(recovered, ExecutionJob.Status.FAILED, minutes_ago=30)
+        self._sync(recovered, ExecutionJob.Status.SUCCESS, minutes_ago=5)
+        stuck = self._tenant("211")          # latest = FAILED → still backed off
+        self._sync(stuck, ExecutionJob.Status.FAILED, minutes_ago=5)
+        summary = enqueue_monitored_deal_syncs(account_ids=[recovered.id, stuck.id], failure_cooldown_minutes=180)
+        self.assertEqual(summary["queued"], 1)            # only the recovered one
+        self.assertEqual(summary["skipped_cooldown"], 1)  # the stuck one isolated
+        self.assertTrue(ExecutionJob.objects.filter(account_id=recovered.id, status=ExecutionJob.Status.PENDING).exists())
+        self.assertFalse(ExecutionJob.objects.filter(account_id=stuck.id, status=ExecutionJob.Status.PENDING).exists())

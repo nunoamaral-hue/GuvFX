@@ -1,5 +1,20 @@
 # GuvFX — Project Status
 
+> **2026-10-30 — Notification provenance + cooldown recovery + #46 reconciliation (ADR-0067).** A latent defect
+> surfaced by ADR-0065 monitored ingestion: the trade-result pipeline treated ANY closed `Trade` as a GuvFX
+> execution, so externally-executed HISTORICAL broker trades were announced as GuvFX automation. Audit: **39** false
+> WIN stakeholder cards were transmitted (37 for #46, 2 for #49); 0 currently PENDING; `NOTIFICATION_DISPATCH_ENABLED=true`.
+> **FIX (ADR-0067):** a strategy-result notification (stakeholder OR customer) now requires a VERIFIED same-account
+> GuvFX execution-job link (`TradeOutcomeRecord.execution_job`): `is_delivery_candidate` requires it, the customer
+> `enqueue_trade_outcome` suppresses without it, linkage is account-scoped (cross-account prevention), and the
+> dispatch boundary refuses a card without it. Externally-executed trades are NOT notified in V1; existing Telegram
+> messages left untouched (not deleted/edited/resent). **#46 reconciliation:** source closed position_ids = DB closed
+> tickets = **49**, EXACT match (the earlier "48/50" were live-trading snapshots of an actively-trading account — no
+> integrity issue). **Cooldown recovery:** a successful sync now clears the backoff immediately (was: wait 180 min);
+> account-scoped. Tests: new `tests_notification_provenance` (7 cases) + close_monitor/customer/monitored updated;
+> full `execution`+`customer_notifications`+`intelligence` green. Execution UNCHANGED (flags OFF, LEA=0, 0 broker
+> orders). Marker: `NOTIFICATION_PROVENANCE_TRUTHFUL + RECOVERED_ACCOUNTS_SCHEDULED_IMMEDIATELY`.
+
 > **2026-10-29 — Dashboard ingestion closure + GBP realized conversion + Open Trades layout (ADR-0066).** With all
 > six bridges now serving read-only deal history, the monitored-ingest path ingested every account and the source→DB
 > reconciliation is exact: #46 USD 48 closed (+$163.92, idempotent); #49 GBP **4** closed (+£17.28, swap −£3.07);

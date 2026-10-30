@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ NOTIFICATION PROVENANCE + COOLDOWN RECOVERY (2026-10-30; ADR-0067; PR pending)
+Historical/monitoring ingestion must never announce externally-executed trades as GuvFX automation (39 false cards
+already sent: 37 #46, 2 #49). Fixed: strategy-result notifications require a verified same-account GuvFX execution-job
+link at every boundary (candidate, customer enqueue, dispatch); linkage account-scoped. Cooldown now clears on a
+successful recovery. #46 reconciled to exactly 49 closed (source=DB, exact). Full execution/customer/intelligence
+tests green; execution untouched. **One bounded next action:** governed squash-merge + rollback-first BACKEND deploy
+(no migration; no frontend), then production acceptance (confirm no new candidates for external trades, recovered
+accounts scheduled, 0 broker orders). Markers: `NOTIFICATION_PROVENANCE_TRUTHFUL`, `RECOVERED_ACCOUNTS_SCHEDULED_IMMEDIATELY`.
+
 ## ★ DASHBOARD INGESTION CLOSURE + GBP REALIZED + OPEN TRADES UX (2026-10-29; ADR-0066; PR pending)
 All six accounts ingested and reconciled source→DB (deposits correctly excluded from trading P/L). Single-currency
 GBP realized metrics now convert+disclose for #49/#52 (ALL unchanged, no silent mixing); Open Trades tile is
