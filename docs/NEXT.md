@@ -1224,3 +1224,11 @@ Green/Amber items proceed autonomously; Red items are flagged for Nuno's approva
 
 ## Backlog (documented, not scheduled)
 - [ ] **Registration Flow Enhancement** — Multi-step registration with email verification, hosting selection, compliance acknowledgments, and 2FA. See [`docs/REGISTER_FLOW_TODO.md`](./REGISTER_FLOW_TODO.md) for full plan.
+
+## 2026-10-30 — LIVE copier exact-pair (ADR-0057, DARK PR)
+
+One bounded next action: **Sponsor review of the DARK PR and a go/no-go on Phase 1 (DARK deploy +
+`trade_copier/0008` migration) of `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md`.** Everything downstream
+(enable the follower runtime LIVE boundary, grant the authorization, arm, the one-order acceptance) stays
+Red/Sponsor-gated per-step and must not proceed on this packet. Do not merge, deploy, migrate, enable flags,
+create an authorization, change `is_active`, restart bridges, or place an order.

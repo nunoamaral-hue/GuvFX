@@ -1348,6 +1348,24 @@ partially or wholly English: billing/subscription, profile/settings, analytics/c
 dashboard, strategy-detail, and Terminal Access management copy outside the hosted ready-state. A native
 Japanese editorial pass and mobile-width visual certification also remain. Full scope and evidence are in
 `docs/product/BETA_EN_JA_AUDIT_2026-08-18.md`.
+# LIVE-copied position is not auto-managed (ADR-0057, recorded 2026-10-30)
+
+- **What:** the governed LIVE copy capability implements **OPEN only**. LIVE follower close/modify/
+  partial-close remain fail-closed (`follower_not_demo`) — GuvFX will NOT automatically close, move the SL/TP
+  of, or partially close a copied LIVE position.
+- **Impact:** a copied LIVE OPEN on the follower is left for the operator to manage. If the master closes,
+  the follower position does NOT auto-close.
+- **Why it is gated, not a defect:** the capability was deliberately scoped to a single bounded acceptance
+  order — `max_orders=1`, `max_concurrent_positions=1` per authorization — so at most one small (0.01)
+  unmanaged position can exist, and the acceptance runbook requires the operator to close it manually. An
+  unprotected master position (no SL+TP) is additionally rejected, so a copied LIVE position always carries a
+  stop.
+- **Status:** DOCUMENTED, BY DESIGN for this increment. LIVE close/modify/partial-close under the same
+  authorization + ownership checks is the revisit trigger in `docs/ADRs/0057-live-copier-exact-pair.md`.
+- **Operational note:** `MT5_ALLOW_LIVE` reaches a follower runtime only after re-provision/attach; the PR
+  does not touch the host. The DARK default (`COPIER_LIVE_EXECUTE_ENABLED` OFF, no authorization row) means
+  the path is unreachable until the runbook's Sponsor-gated steps are run.
+
 # Evidence factuality verifier limitations (recorded 2026-10-24)
 
 - The authoring-time verifier proves that recorded files, checksums, tracked-file

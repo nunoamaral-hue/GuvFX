@@ -92,6 +92,48 @@ def is_live_execution_authorized(account) -> bool:
         return False
 
 
+def copier_live_execution_authorized(account) -> bool:
+    """ADR-0057 — the copier analogue of ``is_live_execution_authorized``, kept DELIBERATELY separate so a
+    broad strategy authorization can never authorize a copier order and vice versa. FAIL-CLOSED: ``True`` ONLY
+    when the DARK global LIVE flag is on, no durable copier kill switch is engaged, and an ACTIVE, non-revoked,
+    unexpired, allowance-remaining ``trade_copier.CopierLiveAuthorization`` names THIS account as its follower
+    with its pinned ``(login, server)`` still matching the account's current identity. Any absence, drift,
+    exhausted allowance, or error ⇒ ``False``. Like the strategy predicate it authorizes NO order by itself —
+    it is one input to ``bridge_config.allow_live_for_account`` (the per-runtime ``MT5_ALLOW_LIVE`` boundary),
+    and the order-time bridge identity pin remains the final money-path authority.
+
+    It requires the FULL copier arm stack (``copier_live_execute_enabled`` ⇒ ``COPIER_ENABLED`` +
+    ``COPIER_EXECUTE_ENABLED`` + ``COPIER_LIVE_EXECUTE_ENABLED``) in ADDITION to the hosted LIVE flag, so the
+    runtime ``MT5_ALLOW_LIVE`` boundary matches the per-order producer gate and the documented invariant: a
+    LIVE runtime is never authorized before the copier is armed, and flipping ``COPIER_LIVE_EXECUTE_ENABLED``
+    OFF is a complete disarm of this boundary too (the second disarm being the durable kill switch)."""
+    try:
+        from trade_copier.flags import copier_live_execute_enabled
+        if not (copier_live_execute_enabled() and _hosted_live_execution_enabled()):
+            return False
+        from django.utils import timezone
+        from trade_copier.models import CopierLiveAuthorization, CopierLiveKillSwitch
+        if CopierLiveKillSwitch.objects.filter(engaged=True).exists():
+            return False
+        acct_id = getattr(account, "id", None) or getattr(account, "pk", None)
+        if acct_id is None:
+            return False
+        now = timezone.now()
+        authz = (CopierLiveAuthorization.objects
+                 .filter(follower_account_id=acct_id, status="ACTIVE", revoked_at__isnull=True,
+                         valid_from__lte=now, expires_at__gt=now)
+                 .order_by("-created_at").first())
+        if authz is None or authz.orders_consumed >= authz.max_orders:
+            return False
+        login, server = _current_identity(account)
+        if not login:
+            return False
+        return (str(authz.follower_login).strip() == login
+                and str(authz.follower_server).strip() == server)
+    except Exception:  # noqa: BLE001 — total fail-closed
+        return False
+
+
 def _material_facts_unchanged(authz, account) -> bool:
     """D4c invalidation: the authorized STRATEGY + SIZING must still match what was authorized. A reassigned,
     removed, deactivated, or resized strategy is a MATERIAL change that makes the authorization stale ⇒ invalid

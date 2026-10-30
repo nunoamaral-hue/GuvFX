@@ -90,9 +90,17 @@ class ProducerFixture(TestCase):
 
 class AdmissionTests(ProducerFixture):
     def test_live_follower_rejected(self):
+        # ADR-0057: a LIVE follower OPEN no longer fails with the blanket ``follower_not_demo`` — admit_open
+        # delegates to the LIVE-copier admission, which is fail-closed-by-default: with the LIVE arm flag OFF
+        # (the default here) it denies ``live_copier_arm_disabled``. The safety outcome is unchanged — a LIVE
+        # follower still produces NO order without the complete ADR-0057 authorization chain (see
+        # ``tests_live_copier`` for the full per-gate adversarial coverage). follower_not_demo stays the
+        # reject for LIVE close/modify/partial-close, which remain demo-only.
         f = self._follower(live=True)
         self._instrument(f.follower_account)
-        self.assertEqual(admit_open(self._replication(f))[1], "follower_not_demo")
+        ok, reason = admit_open(self._replication(f))
+        self.assertFalse(ok)
+        self.assertEqual(reason, "live_copier_arm_disabled")
 
     def test_non_authoritative_constraints_rejected(self):
         f = self._follower()
