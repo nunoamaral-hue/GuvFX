@@ -91,13 +91,18 @@ def admit_open(replication: CopierReplication) -> tuple[bool, str]:
         return False, "follower_disabled"
 
     acct = follower.follower_account
-    # DEMO ONLY — never a LIVE/ambiguous destination (fail-closed).
+    # OPEN admission (ADR-0057): a DEMO follower uses the demo admission below; a LIVE (non-demo) follower is
+    # admissible ONLY through the complete fail-closed per-pair LIVE-copier authorization — never the blanket
+    # ``follower_not_demo`` reject, which is replaced for OPEN (not weakened globally: close/modify/partial-close
+    # stay demo-only). ``admit_open_live`` is self-contained and returns the final verdict for a LIVE follower.
     try:
         from trading.account_policy import is_demo_environment
-        if not is_demo_environment(acct):
-            return False, "follower_not_demo"
+        _is_demo = is_demo_environment(acct)
     except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
         return False, "environment_unresolved"
+    if not _is_demo:
+        from trade_copier.live_execution import admit_open_live
+        return admit_open_live(replication)
     if not getattr(acct, "is_active", False):
         return False, "account_inactive"
 
@@ -212,6 +217,18 @@ def produce_one(replication: CopierReplication) -> dict:
             ok, reason = admit_open(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # LIVE follower (ADR-0057): admit_open already ran the complete LIVE-copier admission. Create the
+            # truthful LIVE order + consume exactly one authorization allowance unit under THIS same lock (so a
+            # retry can never place a second order). DEMO followers fall through to the SHADOW/DEMO path below.
+            from trading.account_policy import is_demo_environment
+            try:
+                _locked_is_demo = is_demo_environment(locked.follower.follower_account)
+            except Exception:  # noqa: BLE001
+                return {"replication_id": replication.id, "produced": False, "reason": "environment_unresolved"}
+            if not _locked_is_demo:
+                from trade_copier.live_execution import create_live_open_job
+                return create_live_open_job(locked)
 
             # AUTHORITATIVE in-lock ARM re-read — a flip-off after the preflight yields SHADOW, no real order.
             armed = copier_execute_demo_armed()

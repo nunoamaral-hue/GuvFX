@@ -5050,3 +5050,28 @@ deployment, workflow execution, normalisation, backfill, or data write occurred.
 The bounded next action is a fresh, broker-identity-pinned M1 comparison after
 the post-transition market opens. Evidence:
 `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
+
+# 2026-10-30 — Governed LIVE copy execution for one exact pair (ADR-0057, DARK)
+
+Built the narrowest fail-closed LIVE-copy capability so a copied LIVE order is possible **only** for an
+explicitly authorized exact pair, bounded to one future test order — preserving the DEMO path and every
+execution-OFF default. Previously the copier was DEMO-followers-only (`admit_open → follower_not_demo`), so
+no flag could cross the wall (see the 2026-10-30 P0 diagnosis).
+
+New: `COPIER_LIVE_EXECUTE_ENABLED` arm flag (default OFF); `CopierLiveAuthorization` + `CopierLiveKillSwitch`
+models (migration `trade_copier/0008`); `trade_copier/live_execution.py` (`admit_open_live` complete
+per-pair admission + truthful-LIVE job creation consuming a bounded order allowance under the row lock);
+`admit_open` delegates a non-demo follower to it for **OPEN only** (`follower_not_demo` replaced for OPEN,
+not weakened — close/modify/partial-close stay demo-only); `execution.live_authz.copier_live_execution_authorized`
+(DARK-gated by `HOSTED_LIVE_EXECUTION_ENABLED`) wired additively into `bridge_config.allow_live_for_account`
+so the per-runtime `MT5_ALLOW_LIVE` boundary admits the pair (strategy path unchanged); `execution_status`/
+`execution_banner` now report a truthful `LIVE COPIER ARMED` posture when armed. Human-gated commands:
+`grant_copier_live_authorization` (staff `--approved-by`, never automatic/LLM) and `copier_live_disarm`
+(durable one-action kill switch, audit preserved).
+
+Future-event-only (watermark: strictly later event sequence AND observed time) + supersede/freshness guards
+prevent historical/open-position replay. Truthful LIVE payload (`is_demo=false`, `execution_mode=LIVE`) with
+the order-time identity pin; idempotent (`copier-live:<pk>`, allowance consumed under lock). Adversarial tests
+`trade_copier/tests_live_copier.py` (one killing case per gate + bridge identity-pin via real
+`evaluate_binding`). DARK: all flags OFF, no authorization rows, no host change, no deploy. Acceptance +
+rollback runbook: `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md` (prepared, NOT executed).

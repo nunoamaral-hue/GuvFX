@@ -534,3 +534,116 @@ class InstrumentMapping(models.Model):
     def __str__(self) -> str:
         return (f"InstrumentMapping({self.master_account_id}:{self.master_symbol} -> "
                 f"{self.follower_account_id}:{self.follower_symbol or '∅'}, {self.classification})")
+
+
+# ───────────────────── LIVE COPIER EXACT-PAIR AUTHORIZATION (ADR-0057) ─────────────────────
+# The ONLY durable, human-created record that can let the DEMO-only copier producer admit a LIVE
+# (non-demo) follower — and ONLY for the exact (user, master, follower, symbol) it names, within its
+# window and bounded order allowance, with every identity pinned. It is DELIBERATELY separate from the
+# strategy ``execution.LiveExecutionAuthorization`` so a broad strategy authorization can never
+# accidentally authorize a copier order. It grants NO authority by itself: it is one required gate among
+# the full fail-closed chain in ``trade_copier.live_execution.admit_open_live``, and the final money-path
+# authorities (per-runtime ``MT5_ALLOW_LIVE`` + the order-time bridge identity pin) remain downstream.
+
+
+class CopierLiveAuthorizationStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", "Active"
+    CONSUMED = "CONSUMED", "Consumed (order allowance exhausted)"
+    REVOKED = "REVOKED", "Revoked"
+
+
+class CopierLiveAuthorization(models.Model):
+    """A human-created authorization for LIVE copy execution of ONE exact pair (ADR-0057).
+
+    Binds the tenant/user, the exact master and follower accounts WITH their immutable pinned broker
+    identities (login/server/environment), the exact source→follower symbol, the sizing and concurrency
+    caps, a bounded order allowance, a validity window, a future-event watermark, and the human approver +
+    reason. Admission (``live_execution.admit_open_live``) consults it fail-closed and re-verifies every
+    bound fact against the live account at order time; any drift, expiry, revocation, exhausted allowance
+    or kill switch denies. Never auto-created, never LLM-created — only the staff-gated
+    ``grant_copier_live_authorization`` management command writes one."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    master_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
+    follower_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
+
+    # Immutable identity snapshots taken at grant time (what the human reviewed). Drift ⇒ invalid.
+    master_login = models.CharField(max_length=64)
+    master_server = models.CharField(max_length=128)
+    master_environment = models.CharField(max_length=8)   # DEMO | LIVE (policy string)
+    follower_login = models.CharField(max_length=64)
+    follower_server = models.CharField(max_length=128)
+    follower_environment = models.CharField(max_length=8)
+
+    source_symbol = models.CharField(max_length=64)
+    follower_symbol = models.CharField(max_length=64)
+
+    max_volume = models.DecimalField(max_digits=12, decimal_places=3)
+    max_concurrent_positions = models.PositiveIntegerField(default=1)
+    max_orders = models.PositiveIntegerField(default=1, help_text="Bounded order allowance (1 = one test order).")
+    orders_consumed = models.PositiveIntegerField(default=0)
+
+    valid_from = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    # Future-event-only watermark (ADR-0057 §6): an OPEN qualifies ONLY if its MasterEvent.sequence is
+    # strictly greater than watermark_event_sequence AND its observed_at is strictly after watermark_at.
+    # Captured from the master's latest observed event at grant time, so no historical/open/previously
+    # evaluated position can ever replay.
+    watermark_at = models.DateTimeField()
+    watermark_event_sequence = models.BigIntegerField(
+        help_text="The master's max MasterEvent.sequence at grant time; only a strictly later OPEN qualifies.")
+
+    status = models.CharField(max_length=12, choices=CopierLiveAuthorizationStatus.choices,
+                              default=CopierLiveAuthorizationStatus.ACTIVE)
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                    blank=True, related_name="+")
+    reason = models.CharField(max_length=256)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                    blank=True, related_name="+")
+    revoke_reason = models.CharField(max_length=256, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Copier LIVE authorization"
+        constraints = [
+            # At most ONE active authorization per exact pair (a second active grant for the same pair is a
+            # governance error). Mirrors the one-APPROVED-per-key partial-unique idiom in the approvals app.
+            models.UniqueConstraint(
+                fields=["master_account", "follower_account"],
+                condition=models.Q(status="ACTIVE"),
+                name="uq_copier_live_authz_active_pair"),
+        ]
+        indexes = [
+            models.Index(fields=["master_account", "follower_account", "status"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self) -> str:
+        return (f"CopierLiveAuthorization(user={self.user_id}, {self.master_account_id}->"
+                f"{self.follower_account_id}, {self.source_symbol}->{self.follower_symbol}, "
+                f"{self.status}, {self.orders_consumed}/{self.max_orders})")
+
+
+class CopierLiveKillSwitch(models.Model):
+    """Durable one-action emergency disarm for ALL LIVE copier dispatch (ADR-0057 §12).
+
+    When ANY row is ``engaged`` the LIVE admission denies every pair, independent of flags — so a disarm
+    survives a flag flip and a process restart, and preserves its own audit (who/when/why). This is the
+    second, DB-backed disarm path; flipping ``COPIER_LIVE_EXECUTE_ENABLED`` OFF is the first. Engaged by
+    the ``copier_live_disarm`` command only."""
+
+    engaged = models.BooleanField(default=True)
+    engaged_at = models.DateTimeField(auto_now_add=True)
+    engaged_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                                   blank=True, related_name="+")
+    reason = models.CharField(max_length=256, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Copier LIVE kill switch"
+        indexes = [models.Index(fields=["engaged"])]
+
+    def __str__(self) -> str:
+        return f"CopierLiveKillSwitch(engaged={self.engaged}, at={self.engaged_at})"

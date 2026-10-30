@@ -8,6 +8,8 @@ from django.contrib import admin
 from trade_copier.models import (
     CopierFollower,
     CopierFollowerAudit,
+    CopierLiveAuthorization,
+    CopierLiveKillSwitch,
     CopierMaster,
     CopierReplication,
     CopierSymbolMap,
@@ -88,3 +90,22 @@ class CopierReplicationAdmin(_ReadOnlyAdmin):
 class CopierFollowerAuditAdmin(_ReadOnlyAdmin):
     list_display = ("id", "follower", "action", "actor", "at")
     list_filter = ("action",)
+
+
+@admin.register(CopierLiveAuthorization)
+class CopierLiveAuthorizationAdmin(_ReadOnlyAdmin):
+    """READ-ONLY (ADR-0057): a LIVE authorization is created ONLY by the staff-gated
+    ``grant_copier_live_authorization`` command — never through the admin. Logins are shown as stored
+    identifiers (not secrets), but no credential is ever displayed."""
+    list_display = ("id", "user", "master_account", "follower_account", "source_symbol", "follower_symbol",
+                    "max_volume", "max_concurrent_positions", "max_orders", "orders_consumed", "status",
+                    "valid_from", "expires_at")
+    list_filter = ("status",)
+    search_fields = ("source_symbol", "follower_symbol", "reason")
+
+
+@admin.register(CopierLiveKillSwitch)
+class CopierLiveKillSwitchAdmin(_ReadOnlyAdmin):
+    """READ-ONLY: engaged only by the ``copier_live_disarm`` command (audit preserved)."""
+    list_display = ("id", "engaged", "engaged_at", "engaged_by", "reason")
+    list_filter = ("engaged",)

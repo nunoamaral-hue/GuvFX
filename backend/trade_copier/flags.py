@@ -96,6 +96,21 @@ def copier_execute_demo_armed() -> bool:
     return copier_execute_enabled() and _flag("COPIER_EXECUTE_DEMO_ARMED")
 
 
+def copier_live_execute_enabled() -> bool:
+    """The explicit LIVE-copier ARM flag (ADR-0057). DEFAULT OFF, ANDed with the execute master gate.
+
+    This is the ONLY flag that can let the DEMO-only producer admit a LIVE (non-demo) follower, and even
+    then ONLY through the complete fail-closed LIVE-copier authorization admission
+    (``trade_copier.live_execution.admit_open_live``) — never as a broad "allow live" bypass. It is ANDed
+    with ``copier_execute_enabled()`` (hence with the master gate), so the whole stack
+    (``COPIER_ENABLED`` + ``COPIER_EXECUTE_ENABLED`` + ``COPIER_LIVE_EXECUTE_ENABLED``) must be on before a
+    single LIVE order is even considered, and it is distinct from the DEMO arm
+    (``COPIER_EXECUTE_DEMO_ARMED``): a LIVE destination is never reachable by arming DEMO, and vice versa.
+    Flipping it OFF is one of the two independent emergency-disarm paths (the other is the durable
+    ``CopierLiveKillSwitch``)."""
+    return copier_execute_enabled() and _flag("COPIER_LIVE_EXECUTE_ENABLED")
+
+
 def copier_reconcile_enabled() -> bool:
     """Gate for the follower-ticket reconciliation pass (ADR-0052). DEFAULT OFF, ANDed with the master gate.
 
@@ -116,7 +131,16 @@ def execution_status(*, note: str = "Saving configuration does not activate trad
     is therefore always reported blocked. The ``note`` is surface-specific (config vs catalogue matrix)."""
     execute = copier_execute_enabled()
     demo_armed = copier_execute_demo_armed()
-    if demo_armed:
+    live_armed = copier_live_execute_enabled()
+    if live_armed:
+        # ADR-0057: LIVE copy execution is armed. Even now a LIVE order is reachable ONLY for a pair with a
+        # complete, unexpired, human-created CopierLiveAuthorization — never broadly — but the UI must stop
+        # asserting "EXECUTION OFF"/"blocked" the instant the LIVE arm flag is on.
+        mode, execution, label, detail = (
+            "live_execution", "live_armed", "LIVE copier execution armed",
+            "LIVE follower orders may be produced for an explicitly authorized pair only "
+            "(exact pair, bounded allowance — never a broad enable).")
+    elif demo_armed:
         mode, execution, label, detail = (
             "demo_execution", "demo_armed", "DEMO execution armed",
             "DEMO follower orders are being produced (DEMO followers only — never LIVE).")
@@ -133,7 +157,10 @@ def execution_status(*, note: str = "Saving configuration does not activate trad
         "copier_enabled": copier_enabled(),
         "execute_enabled": execute,
         "demo_armed": demo_armed,
-        "live_follower_execution": "blocked",
+        "live_armed": live_armed,
+        # Blocked unless the LIVE arm flag is on; even armed, a real order still needs a complete per-pair
+        # CopierLiveAuthorization (so this reports the ARM posture, not that any order will be placed).
+        "live_follower_execution": "armed_authorized_pair" if live_armed else "blocked",
     }
 
 
@@ -146,4 +173,6 @@ def execution_banner() -> str:
         return "SHADOW — EXECUTION OFF"
     if execution == "shadow_jobs":
         return "SHADOW JOBS — NO ORDER SENT"
-    return "DEMO EXECUTION ARMED — DEMO ONLY"
+    if execution == "demo_armed":
+        return "DEMO EXECUTION ARMED — DEMO ONLY"
+    return "LIVE COPIER ARMED — AUTHORIZED PAIR ONLY"

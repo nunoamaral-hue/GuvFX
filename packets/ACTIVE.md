@@ -30,6 +30,13 @@
   protections unmodified; the five‑layer LIVE wall + kill switch unchanged; no production
   deploy/migration; DARK flag default OFF. If repository governance requires a separate
   recorded architecture ratification before merge, satisfy it before merging.
+- **Increment — governed LIVE copy for one exact pair (ADR-0057, 2026-10-30, DARK).**
+  Sponsor-authorized DARK build only. Adds a fail-closed per-pair LIVE OPEN path behind a new
+  `COPIER_LIVE_EXECUTE_ENABLED` arm flag (default OFF) + a human-created `CopierLiveAuthorization`
+  (+ `CopierLiveKillSwitch`), migration `trade_copier/0008`. `follower_not_demo` is replaced for
+  OPEN only (DEMO admission OR the complete LIVE admission); close/modify/partial-close stay
+  demo-only. No deploy/migration/flag/authorization/host change performed. Acceptance + rollback:
+  [`docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md`](../docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md).
 
 ## Active work in THIS repository (Claude-as-PM improvement backlog)
 
