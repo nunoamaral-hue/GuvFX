@@ -117,6 +117,14 @@ OP_PRIMITIVES = {
     # retired HostedExecutionEndpoint port, backend-derived + signed + range-validated) is the SOLE caller-
     # influenced value. Customer Zero refused (reserved) before this maps. Idempotent + per-step JSON verdict.
     "DECOMMISSION_RUNTIME":     {"primitive": "decommission_runtime",     "params_allow": ("port",)},
+    # ADR-0049 LIVE bridge provisioning integrator (ACCOUNT-SCOPED; mirror ACTIVATE_TENANT_BRIDGE). The sole
+    # caller-influenced param is the per-tenant ``port`` (signed + range-validated 8800-8899). The authoritative
+    # bridge env rides in the signed PAYLOAD (``bridge_env_b64``, bound via payload_digest): it is the exact
+    # output of the backend's ``render_bridge_env`` — the host decides NO policy, only writes what the backend
+    # (which re-evaluated ``allow_live_for_account``) rendered. ACTIVATE requires the rendered env to contain
+    # ``MT5_ALLOW_LIVE=1``; RESTORE requires it to be ABSENT.
+    "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED": {"primitive": "activate_tenant_bridge_live_authorized", "params_allow": ("port",)},
+    "RESTORE_TENANT_BRIDGE_EXECUTION_OFF":    {"primitive": "restore_tenant_bridge_execution_off",    "params_allow": ("port",)},
     # Broker Catalogue V3 — ACCOUNT-INDEPENDENT (no slot). STAGE writes ONE approved servers.dat under
     # versions\<label>\<broker>\ (bytes carried in the signed payload, re-verified against expected_sha256 +
     # size_bytes, atomic, overwrite only if byte-identical); ATTEST is read-only (one artefact's SHA/size, or the
@@ -130,6 +138,70 @@ OP_PRIMITIVES = {
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 
 _SCALAR = (str, int, bool)
+
+# ADR-0049 — the EXACT, fixed allow-list of env keys the backend's render_bridge_env can emit. The host
+# refuses a bridge-env payload containing any other key (no arbitrary environment key ever reaches the host),
+# as defence in depth over the signed payload_digest (the authoritative source is the backend render).
+_BRIDGE_ENV_ALLOWED_KEYS = frozenset({
+    "MT5_ACCOUNT_ID", "MT5_TERMINAL_PATH", "HTTP_SERVER_PORT", "MT5_EXPECTED_LOGIN", "MT5_EXPECTED_SERVER",
+    "MT5_EXPECTED_WINDOWS_USERNAME", "MT5_EXPECTED_WORKSPACE_UUID", "MT5_EXPECTED_IS_DEMO",
+    "MT5_REQUIRE_IDENTITY_PIN", "MT5_GUARDED_ATTACH", "MT5_ALLOW_LIVE",
+})
+_MAX_BRIDGE_ENV_BYTES = 8192
+
+
+def _validate_bridge_env_payload(fields: dict, *, require_allow_live: bool) -> str:
+    """Decode + structurally validate the backend-rendered bridge env carried in the signed payload. Returns the
+    validated base64 (an ASCII scalar) for the runner to pipe to the primitive's STDIN. Fail-closed: refuses a
+    missing/malformed payload, a non-ASCII env, an oversize env, any line that is not ``set <ALLOWLISTED_KEY>=…``
+    or a REM comment, and an MT5_ALLOW_LIVE posture that disagrees with the operation (ACTIVATE requires it
+    present and ==1; RESTORE requires it absent). The signed payload_digest is the authority; this is defence in
+    depth so no arbitrary key or disguised posture can reach the host even if the backend render were wrong."""
+    import base64
+    payload = fields.get("payload")
+    if not isinstance(payload, dict):
+        raise HostProtocolError("payload_missing")
+    b64 = payload.get("bridge_env_b64")
+    if not isinstance(b64, str) or not b64:
+        raise HostProtocolError("payload_missing")
+    try:
+        raw = base64.b64decode(b64.encode("ascii"), validate=True)
+    except Exception:  # noqa: BLE001 — malformed payload fails closed
+        raise HostProtocolError("payload_malformed")
+    if len(raw) == 0 or len(raw) > _MAX_BRIDGE_ENV_BYTES:
+        raise HostProtocolError("payload_size_invalid")
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        raise HostProtocolError("payload_not_ascii")
+    allow_live_val = None
+    for line in text.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if s == "" or s.upper().startswith("REM "):
+            continue
+        if not s.startswith("set "):
+            raise HostProtocolError("payload_env_malformed")
+        body = s[4:]
+        if "=" not in body:
+            raise HostProtocolError("payload_env_malformed")
+        key = body.split("=", 1)[0].strip()
+        if key not in _BRIDGE_ENV_ALLOWED_KEYS:
+            raise HostProtocolError("payload_env_key_not_allowed")
+        val = body.split("=", 1)[1]
+        # A cmd metacharacter in a value could start a second statement when the bridge `call`s bridge.env.bat
+        # (e.g. `...Live & set MT5_ALLOW_LIVE=1`). Every value is server-derived + signature-bound, so this is
+        # defence in depth, but it closes the "no disguised posture" hole for the LIVE/OFF env specifically.
+        if any(c in val for c in '&|<>^%"`'):
+            raise HostProtocolError("payload_env_value_unsafe")
+        if key == "MT5_ALLOW_LIVE":
+            allow_live_val = val.strip()
+    if require_allow_live:
+        if allow_live_val != "1":
+            raise HostProtocolError("payload_not_live_authorized")
+    else:
+        if allow_live_val is not None:
+            raise HostProtocolError("payload_unexpected_live")
+    return b64
 
 
 def reserved_ids_from(raw) -> frozenset:
@@ -346,6 +418,22 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
             raise HostProtocolError("params_not_allowed")
         return {"username": slot["username"], "runtime_root": slot["runtime_root"],
                 "account_id": slot["account_id"], "port": port}
+    if op in ("ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED", "RESTORE_TENANT_BRIDGE_EXECUTION_OFF"):
+        # ADR-0049: deploy the backend-rendered bridge env to THIS tenant's bridge + restart ONLY its task. The
+        # port (the sole caller-influenced scalar, signed + params_allow-validated) is re-range-validated here
+        # (defence in depth: a per-tenant port only, never a reserved GuvFX port). The AUTHORITATIVE env rides in
+        # the signed payload and is structurally re-validated (allow-listed keys, ASCII, correct MT5_ALLOW_LIVE
+        # posture per op). Everything else is server-derived from the slot; the .ps1 re-asserts the CZ refusal.
+        try:
+            port = int((fields.get("params") or {})["port"])
+        except (KeyError, TypeError, ValueError):
+            raise HostProtocolError("params_malformed")
+        if not (8800 <= port <= 8899):
+            raise HostProtocolError("params_not_allowed")
+        env_b64 = _validate_bridge_env_payload(
+            fields, require_allow_live=(op == "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED"))
+        return {"username": slot["username"], "terminal_root": slot["terminal_root"],
+                "account_id": slot["account_id"], "port": port, "bridge_env_b64": env_b64}
     if op == "PRESEED_BROKER_ARTEFACT":
         # Broker Catalogue V1: copy ONE approved catalogue servers.dat into the tenant's fresh runtime + read-back
         # verify. All identity/paths are server-derived from the account slot; the SOURCE is confined host-side to

@@ -54,6 +54,14 @@ HOSTED_OPERATIONS = (
     "RELAUNCH_TERMINAL",         # AJ#6.3: graceful in-session close+relaunch of THIS tenant's own MT5 (capability recovery; NEVER CZ; no order)
     "PRESEED_BROKER_ARTEFACT",   # Broker Catalogue V1: copy ONE approved+SHA-verified servers.dat into a FRESH runtime (RO source; no golden; no login)
     "DECOMMISSION_RUNTIME",      # Remove-account STAGE-2: stop THIS account's tenant bridge+watchdog+port, terminate its terminal64 (owner+path verified), end its session, remove tenant+runtime dirs, disable its Windows identity (NEVER CZ)
+    # ADR-0049 LIVE bridge provisioning integrator (ACCOUNT-SCOPED; mirror ACTIVATE_TENANT_BRIDGE). The backend
+    # RE-EVALUATES live eligibility (allow_live_for_account) and renders the bridge env; the fully-rendered env
+    # rides in the signed payload (bound via payload_digest) — the host NEVER decides allow_live and the .ps1
+    # writes exactly the backend-rendered env. ACTIVATE deploys a LIVE-authorized env (MT5_ALLOW_LIVE=1) to ONE
+    # tenant and restarts ONLY that tenant's task; RESTORE regenerates the canonical execution-OFF env (no
+    # MT5_ALLOW_LIVE) and is safe/idempotent even with no valid authorization and LIVE arm flags OFF.
+    "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED",  # deploy the backend-rendered LIVE env (MT5_ALLOW_LIVE=1) to THIS tenant's bridge + restart ONLY its task + attest
+    "RESTORE_TENANT_BRIDGE_EXECUTION_OFF",     # regenerate the canonical execution-OFF env (MT5_ALLOW_LIVE removed) for THIS tenant + restart ONLY its task + attest OFF
     # Broker Catalogue V3 governed staging/attestation (ACCOUNT-INDEPENDENT: they act on the SHARED catalogue root
     # C:\GuvFX\catalogue\versions\<label>\<broker>\servers.dat, not an account slot — so they carry account_id == 0
     # and NEVER derive a slot or touch a tenant/golden/workspace). STAGE writes approved bytes (carried in the

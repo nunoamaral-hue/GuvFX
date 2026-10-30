@@ -68,3 +68,18 @@ required value is missing or looks like a placeholder. See `config.example.env` 
 Add a new `key_id` to `HOSTED_EXECUTOR_KEYRING` on both the backend and the host (verify accepts any known key),
 cut over `HOSTED_EXECUTOR_KEY_ID`, then retire the old key. Envelope keys rotate the same way via
 `HOSTED_EXECUTOR_ENC_*`. Update `docs/SECRET_INVENTORY.md` (RULE 4).
+
+## Primitives added by ADR-0049 (LIVE bridge provisioning integrator)
+
+Two account-scoped primitives (mirror `activate_tenant_bridge`, NOT the account-independent catalogue ops):
+
+- `Activate-GuvfxTenantBridgeLive.ps1` (`ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED`) — writes the backend-rendered
+  LIVE env (`MT5_ALLOW_LIVE=1`, carried in the signed payload, base64 via STDIN) to `C:\GuvFX\tenants\<id>\`,
+  restarts ONLY `GuvFX_TenantBridge_<id>`, attests. The `.ps1` decides no policy; it re-validates allow-listed
+  keys + the live posture and writes what the backend rendered.
+- `Restore-GuvfxTenantBridgeExecutionOff.ps1` (`RESTORE_TENANT_BRIDGE_EXECUTION_OFF`) — the risk-reducing
+  counterpart: writes the execution-OFF env (refuses any residual `MT5_ALLOW_LIVE`), restarts ONLY that tenant,
+  attests OFF. Safe/idempotent with no valid authorization and the LIVE arm flags OFF.
+
+Both are DARK: `COPIER_LIVE_EXECUTE_ENABLED` + `HOSTED_LIVE_EXECUTION_ENABLED` default OFF, the signed executor
+is DARK-gated, and no authorization exists until a human runs `provision_authorized_live_copier_bridge --commit`.

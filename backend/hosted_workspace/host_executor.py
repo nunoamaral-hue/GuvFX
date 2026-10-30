@@ -259,6 +259,28 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "confinement_mismatch"}
         return self._send("ACTIVATE_TENANT_BRIDGE", params={"port": int(port)})
 
+    def activate_tenant_bridge_live_authorized(self, runtime_root, port, bridge_env_b64) -> dict:
+        """ADR-0049: deploy the BACKEND-RENDERED live-authorized bridge env (``bridge_env_b64``, carried in the
+        signed payload and bound via payload_digest) to THIS tenant's bridge, restart ONLY its task, and return
+        the signed attestation. The host decides no policy: ``bridge_env_b64`` is the exact output of
+        ``render_bridge_env(endpoint, allow_live=allow_live_for_account(account))`` — the caller (the live command)
+        re-evaluated every gate first. Confined on ``runtime_root`` + Customer-Zero refused in ``_send``; ``port``
+        is server-derived + signed + host-range-validated. Fail-closed/sanitised on any transport or host error."""
+        if not self._confined(runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED",
+                          params={"port": int(port)}, payload={"bridge_env_b64": str(bridge_env_b64)})
+
+    def restore_tenant_bridge_execution_off(self, runtime_root, port, bridge_env_b64) -> dict:
+        """ADR-0049 risk-reducing counterpart: deploy the BACKEND-RENDERED execution-OFF bridge env (rendered with
+        ``allow_live=False`` — never needs the LIVE arm flags or a valid authorization) to THIS tenant's bridge,
+        restart ONLY its task, and attest OFF. Idempotent; safe to invoke repeatedly even after the authorization
+        is expired/consumed/revoked. The host refuses any payload that still carries ``MT5_ALLOW_LIVE``."""
+        if not self._confined(runtime_root=runtime_root):
+            return {"ok": False, "reason": "confinement_mismatch"}
+        return self._send("RESTORE_TENANT_BRIDGE_EXECUTION_OFF",
+                          params={"port": int(port)}, payload={"bridge_env_b64": str(bridge_env_b64)})
+
     def observe(self, rdp_host=None) -> dict:
         """9E READ-ONLY live observation: ask the host to trigger THIS account's session-bound observer task
         (running as guvfx_u_<id>, guarded-attach to its already-running MT5) and return the resulting snapshot.
