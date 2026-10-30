@@ -5075,3 +5075,21 @@ the order-time identity pin; idempotent (`copier-live:<pk>`, allowance consumed 
 `trade_copier/tests_live_copier.py` (one killing case per gate + bridge identity-pin via real
 `evaluate_binding`). DARK: all flags OFF, no authorization rows, no host change, no deploy. Acceptance +
 rollback runbook: `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md` (prepared, NOT executed).
+
+# 2026-10-30 — ADR-0049 LIVE bridge provisioning integrator (DARK)
+
+Built the missing signed, account-scoped backend->host operation that was blocking the one-order LIVE
+acceptance: `render_bridge_env(allow_live=…)` previously had no production caller, so no supported command
+could put `MT5_ALLOW_LIVE=1` on a tenant bridge (the runbook's step 6 was unbacked). Added two account-scoped
+signed primitives — `ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED` + `RESTORE_TENANT_BRIDGE_EXECUTION_OFF`
+(`Activate-GuvfxTenantBridgeLive.ps1` / `Restore-GuvfxTenantBridgeExecutionOff.ps1`) — wired through
+`host_protocol`/`host_agent_dispatch`/`primitive_runner`/`stage-manifest.json`/`host_executor`, plus backend
+orchestration `trade_copier.live_bridge_provision` (full gate re-eval, render, TOCTOU re-check, dispatch,
+signed-attestation verify, fail-closed OFF restore) and commands `provision_authorized_live_copier_bridge`
+(dry-run default) + `restore_copier_bridge_execution_off`. The authoritative env is backend-rendered and carried
+in the signed payload; PowerShell decides no policy and accepts no bare boolean. DARK:
+`COPIER_LIVE_EXECUTE_ENABLED` + `HOSTED_LIVE_EXECUTION_ENABLED` default OFF, signed executor DARK-gated, no
+authorization rows, no host change, no deploy. Demo activation + #599 catalogue primitives + strategy LIVE path
+unchanged. Adversarial tests: `hosted_workspace/tests_live_bridge_dispatch.py` (17) +
+`trade_copier/tests_live_bridge_provision.py` (21). LIVE close/modify/partial-close remain fail-closed. See
+`docs/architecture/ADR-0049-PER-TENANT-EXECUTION-TRANSPORT.md` (Implementation status).

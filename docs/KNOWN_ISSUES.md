@@ -1375,3 +1375,18 @@ Japanese editorial pass and mobile-width visual certification also remain. Full 
 - Existing historical manifests remain schema/format checked in CI. They are not
   retroactively required to contain the optional `factuality` block, and current
   tree content is intentionally not compared with older point-in-time checksums.
+
+# LIVE bridge integrator — host wiring now exists; lifecycle limitation stands (ADR-0049/0057, 2026-10-30)
+
+- **Resolved gap:** the per-tenant LIVE bridge render/restart (ADR-0049 "future provisioning integrator") is now
+  implemented and DARK — a signed, account-scoped `ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED` deploys the
+  backend-rendered `MT5_ALLOW_LIVE=1` env to one tenant and restarts only its task; `RESTORE_TENANT_BRIDGE_EXECUTION_OFF`
+  reverses it. No more manual `.bat` edit is required (that path was forbidden by RULE 1).
+- **Standing limitation (unchanged):** LIVE close / modify / partial-close remain **unimplemented and
+  fail-closed**. A copied LIVE OPEN is NOT auto-managed; the operator manually closes it. The one-order
+  acceptance caps the exposure (`max_orders=1`, `max_concurrent_positions=1`, protected master order required).
+- **Host-side real-parse caveat (RULE 9/11):** the two new `.ps1` are ASCII-only and off-host parse-gated in CI
+  (`tests_host_primitive_runner.ParseGateTests`); the authoritative `ParseFile` runs host-side at daemon startup
+  (`primitive_runner.verify_scripts`). They have not been executed on a Windows host (DARK; no deploy).
+- **Enablement is multi-gate + Sponsor-RED per step** (arm flags, grant, `--commit`, then one manual master
+  order) per `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md`.

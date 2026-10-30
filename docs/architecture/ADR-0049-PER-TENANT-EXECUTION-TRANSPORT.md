@@ -89,3 +89,33 @@ wrong field; fresh-host port-allocation race; live-account re-home), fixed in th
   isolation) — host-side lifecycle, deployed and certified separately.
 - **Production capacity change** (`max_accounts` raise) is a distinct final gate, taken only after the
   two-tenant certification passes.
+
+## Implementation status — LIVE bridge provisioning integrator (2026-10-30, DARK)
+
+The "Wire-up contract (for the future provisioning integrator)" is now implemented (the ADR-0057 one-order LIVE
+copy acceptance was blocked on it: `render_bridge_env(allow_live=…)` had no production caller, so no supported
+operation could put `MT5_ALLOW_LIVE=1` on a tenant bridge). Added, account-scoped, mirroring
+`ACTIVATE_TENANT_BRIDGE` (NOT the account-independent catalogue ops), and DARK:
+
+- **Two signed primitives** (`host_protocol.HOSTED_OPERATIONS`, `host_agent_dispatch.OP_PRIMITIVES`,
+  `primitive_runner.CONTRACT`, `stage-manifest.json`):
+  `ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED` and `RESTORE_TENANT_BRIDGE_EXECUTION_OFF`. The authoritative bridge
+  env is **rendered by the backend** (`render_bridge_env(endpoint, allow_live=allow_live_for_account(account))`)
+  and carried in the **signed payload** (`bridge_env_b64`, bound via `payload_digest`, piped to the `.ps1` via
+  STDIN). The host writes exactly that env (atomic + read-back), re-validates allow-listed keys + the
+  `MT5_ALLOW_LIVE` posture, restarts ONLY `GuvFX_TenantBridge_<id>`, and returns a signed attestation. **No
+  allow_live policy is decided in PowerShell; no bare boolean is accepted as authority.**
+- **Backend orchestration** `trade_copier.live_bridge_provision`: `evaluate_live_gates` re-checks the full stack
+  (the 4 arm flags, the exact active `CopierLiveAuthorization`, allowance, tenant/user, master+follower ids,
+  both-side pinned identities, verified map, follower active, instrument, kill switch, runtime pause, READY
+  endpoint, and `allow_live_for_account`); `provision_live` renders → re-reads gates (TOCTOU) → dispatches →
+  verifies the attestation against the rendered env checksum + live posture + port + account + listening → on
+  mismatch fails closed to an OFF restore. `restore_off` renders `allow_live=False` and needs no flags/authz.
+- **Commands** `provision_authorized_live_copier_bridge` (dry-run default, `--commit`) and
+  `restore_copier_bridge_execution_off` (risk-reducing, idempotent).
+- **Darkness:** `COPIER_LIVE_EXECUTE_ENABLED` + `HOSTED_LIVE_EXECUTION_ENABLED` default OFF, the signed host
+  executor is DARK-gated, no authorization exists, and the OFF posture is the default render — so the integrator
+  changes nothing until a human runs `--commit` with the arm stack present and a valid per-pair authorization.
+- **Preserved:** `activate_tenant_bridge` (demo) and the #599 catalogue primitives are untouched; the strategy
+  LIVE path (`is_live_execution_authorized`) is not broadened. The LIVE close/modify/partial-close limitation
+  stands: still unimplemented and fail-closed (ADR-0057).

@@ -36,9 +36,19 @@ Rollback prepared FIRST: note the current follower bridge env + `is_active`. The
 4. Set follower **#48 `is_active=True`** (currently False) — required by admission + the account-stopped gate.
 5. Turn the DARK global gate on: `HOSTED_LIVE_EXECUTION_ENABLED=1` (backend env). This alone authorizes
    nothing (no authorization exists yet).
-6. Re-provision/attach #48's bridge runtime so `render_bridge_env` emits `MT5_ALLOW_LIVE=1`
-   (`allow_live_for_account(#48)` now true via the copier authorization once granted — see Phase 3). Confirm
-   the running bridge carries `MT5_ALLOW_LIVE=1`, `MT5_REQUIRE_IDENTITY_PIN=1`, `MT5_GUARDED_ATTACH=1`.
+6. Deploy the LIVE-authorized bridge env to **#48 only** via the ADR-0049 signed integrator (this replaces the
+   previously-unsupported manual `.bat` edit). The command must run with the arm stack present (so
+   `allow_live_for_account(#48)` resolves True and `render_bridge_env` emits `MT5_ALLOW_LIVE=1`), AFTER the grant
+   in Phase 3. Dry-run first, then `--commit`:
+   ```bash
+   cd /home/ubuntu/guvfx-prod && docker compose exec -T -e COPIER_ENABLED=1 -e COPIER_EXECUTE_ENABLED=1 -e COPIER_LIVE_EXECUTE_ENABLED=1 -e HOSTED_LIVE_EXECUTION_ENABLED=1 guvfx-backend \
+     python manage.py provision_authorized_live_copier_bridge --account-id 48 --authorization-id <ID>            # dry-run preview
+   # then re-run with --commit appended to dispatch the signed ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED
+   ```
+   It signs the account-scoped operation, the host writes the backend-rendered env atomically, restarts ONLY
+   `GuvFX_TenantBridge_48`, and returns a signed attestation (env checksum, `MT5_ALLOW_LIVE=1`, identity pin +
+   guarded attach, listening). The command verifies the attestation and fails closed to an OFF restore on any
+   mismatch. No other tenant's bridge is touched.
 
 ## Phase 3 — Human authorization ceremony (the grant)
 
@@ -77,8 +87,14 @@ Capture pre/post counters and the bridge log line for each stage.
 
 10. Disarm: `COPIER_LIVE_EXECUTE_ENABLED=0` (then `COPIER_EXECUTE_ENABLED=0`). The one-order allowance is
     already spent (authorization `CONSUMED`), so no further order can be produced regardless.
-11. `HOSTED_LIVE_EXECUTION_ENABLED=0`; re-render #48's bridge WITHOUT `MT5_ALLOW_LIVE`; restore `is_active` if
-    the Sponsor has not authorized continued LIVE operation.
+11. Restore #48's bridge to execution-OFF via the ADR-0049 integrator (risk-reducing; needs no arm flags and no
+    valid authorization), then clear the global gate + restore `is_active`:
+    ```bash
+    docker exec guvfx-backend python manage.py restore_copier_bridge_execution_off --account-id 48 --commit
+    ```
+    This re-renders #48's env WITHOUT `MT5_ALLOW_LIVE` and restarts ONLY `GuvFX_TenantBridge_48`, attesting OFF.
+    Then set `HOSTED_LIVE_EXECUTION_ENABLED=0` and restore `#48 is_active=False` if continued LIVE operation was
+    not separately authorized.
 12. **The copied LIVE position is NOT auto-managed** — the operator manually manages/closes it on #48 (LIVE
     close/modify/partial-close are fail-closed in this increment; see `docs/KNOWN_ISSUES.md`).
 
