@@ -655,6 +655,12 @@ export default function DashboardPage() {
   // the display is converted, because equity stays native — never mix USD net over GBP equity.
   const pnlForPct = realizedConverted ? snap.nativeNetPnl : netPnl;
   const pctOfEquity = pnlForPct != null && snap.equity ? (pnlForPct / snap.equity) * 100 : null;
+  // Expectancy falls back to money ONLY for an account with no losing trades (expR is null). That money is the NATIVE
+  // per-trade mean, so under conversion it must be converted to USD too — otherwise a native GBP magnitude would be
+  // shown with snap.currency forced to "" (a "$" sign). Dimensionless expR (the usual case) is unaffected (ADR-0066).
+  const expMoneyDisplay = realizedConverted && fxRealized?.rate != null && snap.expMoney != null
+    ? snap.expMoney * fxRealized.rate
+    : snap.expMoney;
 
   // Performance empty-state (Sponsor direction, LIVE read-only monitoring): a newly connected account with NO
   // closed trades has INSUFFICIENT history — its performance metrics must read N/A / "Insufficient data", NOT a
@@ -921,7 +927,7 @@ export default function DashboardPage() {
             <MetricTile label="Win Rate" value={!hasHistory ? "N/A" : snap.winRatePct != null ? `${snap.winRatePct}%` : "—"} sub={hasHistory && (snap.wins != null || snap.losses != null) ? `${snap.wins ?? "—"}W / ${snap.losses ?? "—"}L` : undefined} subColor={wrLabel?.c} />
             <MetricTile label="Profit Factor" info="Gross profit ÷ gross loss across observed trades. Above 1.0 means winners outweigh losers." value={!hasHistory ? "N/A" : snap.profitFactor == null ? "—" : snap.profitFactor === Infinity ? "∞" : snap.profitFactor.toFixed(2)} sub={pfLabel?.t} subColor={pfLabel?.c} />
             <MetricTile label="Max Drawdown" value={!hasHistory ? "N/A" : snap.ddPct != null ? `${snap.ddPct}%` : snap.ddMoney != null ? money(lang, snap.ddMoney, snap.currency) : "—"} sub={ddLabel?.t} subColor={ddLabel?.c} />
-            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={!hasHistory ? "N/A" : snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, snap.expMoney, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
+            <MetricTile label="Expectancy" info="Average result per trade. In R, it is the average expressed in units of your average losing trade. Not a prediction." value={!hasHistory ? "N/A" : snap.expMoney == null ? "—" : snap.expR != null ? `${snap.expR >= 0 ? "+" : ""}${snap.expR.toFixed(2)}R` : money(lang, expMoneyDisplay, snap.currency)} sub={expLabel?.t} subColor={expLabel?.c} />
           </div>
 
           {/* Realized FX disclosure (ADR-0066): for a SINGLE non-USD account the realized money above is CONVERTED to

@@ -42,7 +42,10 @@ export function realizedMoneyView(
 ): RealizedMoneyView {
   const native = acctNetPnl ?? null;
   const ccy = (perfCurrency || "").toUpperCase();
-  const converted = !!scopedMetrics && scopedMetrics.fx_converted === true && typeof scopedMetrics.net_pnl_total === "number";
+  // "converted" requires a numeric net P/L AND a numeric rate: a disclosure we cannot state in full (blank rate) is
+  // worse than the honest native + "unavailable" path, so a rate-less payload falls through rather than converting.
+  const converted = !!scopedMetrics && scopedMetrics.fx_converted === true
+    && typeof scopedMetrics.net_pnl_total === "number" && typeof scopedMetrics.fx_rate === "number";
   if (converted) {
     return {
       netPnl: scopedMetrics!.net_pnl_total,           // USD

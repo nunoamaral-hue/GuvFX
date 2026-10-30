@@ -328,4 +328,32 @@ describe("Dashboard authenticated EN/JA presentation", () => {
     await waitFor(() => expect(container.textContent || "").toContain("Realized P/L shown in GBP — USD conversion unavailable"));
     expect(container.textContent || "").not.toContain("Converted from GBP using");
   });
+
+  it("converted GBP account with no losing trades converts the Expectancy money fallback too (never native GBP as '$')", async () => {
+    // Expectancy renders as money (not R) exactly when there are no losing trades (avgLoss==0). That money is the
+    // NATIVE per-trade mean; under conversion it must be multiplied by the governed rate and shown in USD, otherwise a
+    // native GBP magnitude would be printed with a "$" sign (adversarial-review CONFIRMED defect). Series = all winners
+    // [50,100,150] GBP → mean 100 GBP → 100 × 1.3301 = $133.01; the pre-fix bug would have printed the native "$100".
+    locale.value = "en";
+    window.localStorage.setItem("guvfx.dashboard.scope", "49");
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/analytics/portfolio/summary/")) return _gbpAccountSummary();
+      if (path.startsWith("/api/analytics/trade-history/")) return {
+        mt5_balance_current: 818.22, mt5_equity_current: 818.22, currency: "GBP",
+        observed_stats: { total_trades: 3, win_rate_pct: 100, max_drawdown_pct: 0, net_pnl_total: 300, wins: 3, losses: 0 },
+        balance_series: [
+          { balance_after_trade: 568.22, net_pnl_money: 50 },
+          { balance_after_trade: 668.22, net_pnl_money: 100 },
+          { balance_after_trade: 818.22, net_pnl_money: 150 },
+        ],
+      };
+      if (path.startsWith("/api/analytics/daily-pnl/")) return { series: [{ date: "2026-10-30", net_pnl: 2.85 }], totals: {} };
+      return defaultApiFetch(path);
+    });
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(container.textContent || "").toContain("Converted from GBP using BoE"));
+    const text = container.textContent || "";
+    expect(text).toContain("Expectancy$133.01");    // expectancy money converted to USD (100 GBP × 1.3301)
+    expect(text).not.toContain("Expectancy$100");     // the native GBP mean must never be printed as USD
+  });
 });

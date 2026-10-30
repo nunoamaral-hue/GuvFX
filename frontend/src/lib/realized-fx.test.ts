@@ -54,6 +54,16 @@ describe("realizedMoneyView (ADR-0066 single-account realized FX)", () => {
     expect(v.unavailable).toBe(true);
   });
 
+  it("fx_converted true but no numeric rate -> NOT converted (no blank-rate disclosure); falls to native unavailable", () => {
+    const m = convertedGbp();
+    delete (m as Partial<PortfolioMetrics>).fx_rate;   // malformed: converted flag set, rate absent
+    const v = realizedMoneyView(m, 17.06, "GBP");
+    expect(v.fx).toBeNull();                 // never emit "using BoE GBP/USD <blank>"
+    expect(v.netPnl).toBe(17.06);            // honest native instead
+    expect(v.currency).toBe("GBP");
+    expect(v.unavailable).toBe(true);
+  });
+
   it("USD account is unchanged (native == USD, '$', no disclosure, not unavailable)", () => {
     const m = convertedGbp({ fx_converted: false, fx_currency: undefined, fx_rate: undefined, net_pnl_total: 163.92 });
     const v = realizedMoneyView(m, 163.92, "USD");
