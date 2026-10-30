@@ -8,7 +8,7 @@ before validation (no order_check, no order). All shadow — no order is ever pl
 """
 
 from decimal import Decimal
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -82,6 +82,25 @@ class PromotionRiskControlTests(TestCase):
         )
         return cm.exception.code
 
+    def _frozen_clock(self):
+        """Freeze ``timezone.now()`` at a fixed mid-day UTC instant for the enclosed block.
+
+        The daily-drawdown control (control 4) sums trades closed "today", where *today's*
+        midnight is derived from ``timezone.now()`` at evaluation time, while each test trade's
+        ``close_time`` is captured from ``timezone.now()`` at creation time. Those are two
+        separate reads of the wall clock: when they straddle the UTC midnight boundary (the
+        trade created just before 00:00Z, the evaluator running just after), the realised loss is
+        attributed to the previous day and silently dropped from the day's PnL — so the breaker
+        does not fire and the plan promotes. That is the CI flake ("PromotionRejected not
+        raised"): it surfaced in one of two same-commit runs because only that run happened to
+        execute across midnight UTC. Pinning both reads to one instant makes the window
+        deterministic regardless of wall-clock time or suite ordering. Production risk logic is
+        untouched — only the clock the test and the evaluator share is held fixed."""
+        return mock.patch(
+            "django.utils.timezone.now",
+            return_value=datetime(2026, 1, 15, 12, 0, 0, tzinfo=dt_timezone.utc),
+        )
+
     def test_clean_account_promotes(self):
         plan = self._plan()
         jobs = promote_plan_to_shadow_jobs(plan, actor=self.user)
@@ -109,8 +128,9 @@ class PromotionRiskControlTests(TestCase):
             self.assertEqual(self._reject_code(self._plan()), "max_open_positions_reached")
 
     def test_daily_drawdown_blocks(self):
-        self._open_trade(symbol="GBPUSD", volume="0.01", closed=True, profit="-150")
-        self.assertEqual(self._reject_code(self._plan()), "daily_drawdown_hit")
+        with self._frozen_clock():  # pin the "closed today" window; see _frozen_clock
+            self._open_trade(symbol="GBPUSD", volume="0.01", closed=True, profit="-150")
+            self.assertEqual(self._reject_code(self._plan()), "daily_drawdown_hit")
 
     def test_daily_drawdown_scaled_admits_signal_after_one_ti_loss(self):
         # GFX-PKT-POST-DEPLOY WS-B/C regression: at the re-scaled $2000 limit ONE ti_signals stop-out
@@ -122,9 +142,10 @@ class PromotionRiskControlTests(TestCase):
 
     def test_daily_drawdown_still_blocks_beyond_scaled_limit(self):
         # The circuit-breaker still fires once the day's realised loss exceeds the re-scaled limit.
-        self._open_trade(symbol="XAUUSD", volume="1.20", closed=True, profit="-2100")
-        with mock.patch.object(risk_controls, "MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
-            self.assertEqual(self._reject_code(self._plan()), "daily_drawdown_hit")
+        with self._frozen_clock():  # pin the "closed today" window; see _frozen_clock
+            self._open_trade(symbol="XAUUSD", volume="1.20", closed=True, profit="-2100")
+            with mock.patch.object(risk_controls, "MAX_DAILY_DRAWDOWN_ABS", Decimal("2000")):
+                self.assertEqual(self._reject_code(self._plan()), "daily_drawdown_hit")
 
     def test_concurrent_position_blocks(self):
         self._plan(status=SignalExecutionPlan.Status.PROMOTED, mid="other", lots=("0.01",))
