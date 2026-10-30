@@ -601,3 +601,186 @@ class SanitiserTests(TestCase):
     def test_verdict_is_bounded_language(self):
         v = SAN.scan_artefact(b"clean", identity_terms=[])
         self.assertIn("does NOT prove", v["note"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Option B — fail-closed carry-forward-active builder (broker_catalogue.carry_forward).
+# ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+from broker_catalogue import carry_forward as CF                       # noqa: E402
+
+_TW_SHA = "d" * 64   # stand-in TradersWay bytes SHA (tests use fixed hashes, not real artefacts)
+_VA_SHA = "e" * 64   # stand-in Vantage bytes SHA
+
+
+@override_settings(APPROVALS_ENABLED="1")
+class CarryForwardTests(TestCase):
+    """Option B: carry the single ACTIVE version forward + add explicit APPROVED refs, fail-closed."""
+
+    def _active_v2(self):
+        """An ACTIVE v2 = is6 + pepperstone + taurex (approved), mirroring production's shape."""
+        _draft("v2", [("is6", _HA, ["IS6Technologies-Demo", "IS6Technologies-Live"], 100),
+                      ("pepperstone", _HB, ["PepperstoneUK-Demo", "PepperstoneUK-Live"], 200),
+                      ("taurex", _HC, ["Taurex-Demo"], 300)])
+        _approve_full("is6", "v2", _HA, ["IS6Technologies-Demo", "IS6Technologies-Live"], 100)
+        _approve_full("pepperstone", "v2", _HB, ["PepperstoneUK-Demo", "PepperstoneUK-Live"], 200)
+        _approve_full("taurex", "v2", _HC, ["Taurex-Demo"], 300)
+        call_command("activate_catalogue_version", "--label", "v2")
+        self.assertEqual(S.resolve_active_version().label, "v2")
+
+    def _add_tw_va(self):
+        _approve_full("tradersway", "v1", _TW_SHA, ["Tradersway-Live"], 37280)
+        _approve_full("vantage", "v1", _VA_SHA, ["VantageMarkets-Live 10"], 140176)
+
+    def _build_v3(self, *refs):
+        args = ["build_catalogue_version", "--label", "v3", "--carry-forward-active"]
+        for r in refs:
+            args += ["--include-approved-ref", r]
+        call_command(*args)
+
+    def test_happy_path_carries_active_plus_adds_two(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        v3 = CatalogueVersion.objects.get(label="v3")
+        self.assertEqual(v3.status, CatalogueVersion.Status.DRAFT)                 # DRAFT only
+        self.assertEqual(sorted(v3.artefacts.values_list("broker_id", flat=True)),
+                         ["is6", "pepperstone", "taurex", "tradersway", "vantage"])
+        self.assertEqual(S.resolve_active_version().label, "v2")                  # v2 untouched + still active
+
+    def test_exact_active_inventory_retained(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        v3 = CatalogueVersion.objects.get(label="v3")
+        tx = v3.artefacts.get(broker_id="taurex")
+        self.assertEqual(tx.sha256, _HC)                                          # SHA carried byte-for-byte
+        self.assertEqual(tx.artefact_ref, "taurex/v2")                            # original approval ref kept
+        self.assertEqual(sorted(tx.servers), ["Taurex-Demo"])
+        self.assertEqual(tx.host_relpath, "versions/v3/taurex/servers.dat")       # ONLY the label is re-staged
+        self.assertEqual(tx.capture_provenance["carry_forward"]["from_version"], "v2")
+
+    def test_added_artefact_bound_to_approval_bytes(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        tw = CatalogueVersion.objects.get(label="v3").artefacts.get(broker_id="tradersway")
+        self.assertEqual(tw.sha256, _TW_SHA)
+        self.assertEqual(tw.size_bytes, 37280)
+        self.assertEqual(tw.host_relpath, "versions/v3/tradersway/servers.dat")
+
+    def test_explicit_additions_only_unlisted_approved_ref_not_added(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1")                                           # vantage approved but NOT listed
+        brokers = list(CatalogueVersion.objects.get(label="v3").artefacts.values_list("broker_id", flat=True))
+        self.assertIn("tradersway", brokers)
+        self.assertNotIn("vantage", brokers)
+
+    def test_no_active_version_refused(self):
+        self._add_tw_va()                                                         # no ACTIVE version exists
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")
+
+    def test_second_active_version_is_db_prevented(self):
+        # "multiple active versions" cannot exist: the partial-unique constraint forbids a second ACTIVE row.
+        from django.db import IntegrityError, transaction
+        self._active_v2()
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                CatalogueVersion.objects.create(label="vX", status=CatalogueVersion.Status.ACTIVE)
+
+    def test_carried_broker_approval_revoked_refused(self):
+        self._active_v2(); self._add_tw_va()
+        ArtefactApproval.objects.filter(artefact_ref="taurex/v2").update(
+            status=ArtefactApproval.Status.REJECTED)                              # carried approval revoked
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1", "vantage/v1")
+        self.assertFalse(CatalogueVersion.objects.filter(label="v3").exists())
+
+    def test_carried_server_list_change_refused(self):
+        self._active_v2(); self._add_tw_va()
+        ArtefactApproval.objects.filter(artefact_ref="taurex/v2").update(
+            metadata={"servers_intended": ["Taurex-Live"], "size_bytes": 300, "sanitiser": _sanv(_HC)})
+        with self.assertRaises(CommandError):                                     # servers differ from the artefact
+            self._build_v3("tradersway/v1")
+
+    def test_carried_size_change_refused(self):
+        self._active_v2(); self._add_tw_va()
+        ArtefactApproval.objects.filter(artefact_ref="taurex/v2").update(
+            metadata={"servers_intended": ["Taurex-Demo"], "size_bytes": 999, "sanitiser": _sanv(_HC)})
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")
+
+    def test_include_ref_not_approved_refused(self):
+        self._active_v2()
+        ArtefactApproval.objects.create(artefact_kind="broker_servers_dat", artefact_ref="tradersway/v1",
+                                        sha256=_TW_SHA, status=ArtefactApproval.Status.PENDING, metadata={})
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")
+
+    def test_include_ref_sanitiser_fail_refused(self):
+        self._active_v2()
+        _approve_full("tradersway", "v1", _TW_SHA, ["Tradersway-Live"], 37280, sanitiser_passed=False)
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")
+
+    def test_duplicate_include_ref_refused(self):
+        self._active_v2(); self._add_tw_va()
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1", "tradersway/v1")
+
+    def test_include_ref_for_active_broker_refused_no_implicit_replacement(self):
+        self._active_v2()
+        _approve_full("taurex", "v9", _HA, ["Taurex-Demo"], 300)                  # taurex is already ACTIVE (carried)
+        with self.assertRaises(CommandError):
+            self._build_v3("taurex/v9")
+
+    def test_added_ref_server_collision_refused(self):
+        # ACTIVE "ab" owns "Ab-Cd-Demo"; an added ref "cd/v1" also owns it -> cross-broker collision -> refuse.
+        _draft("v2", [("ab", _HA, ["Ab-Cd-Demo"], 10)])
+        _approve_full("ab", "v2", _HA, ["Ab-Cd-Demo"], 10)
+        call_command("activate_catalogue_version", "--label", "v2")
+        _approve_full("cd", "v1", _HB, ["Ab-Cd-Demo"], 20)
+        with self.assertRaises(CommandError):
+            self._build_v3("cd/v1")
+
+    def test_invalid_active_manifest_refused(self):
+        self._active_v2(); self._add_tw_va()
+        CatalogueVersion.objects.filter(label="v2").update(manifest_sha256=_HA)   # tamper the ACTIVE manifest stamp
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")
+
+    def test_idempotent_identical_rerun_is_noop(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        ids = sorted(CatalogueVersion.objects.get(label="v3").artefacts.values_list("id", flat=True))
+        self._build_v3("vantage/v1", "tradersway/v1")                             # same inputs, different order
+        ids2 = sorted(CatalogueVersion.objects.get(label="v3").artefacts.values_list("id", flat=True))
+        self.assertEqual(ids, ids2)                                               # no new rows; unchanged
+
+    def test_divergent_rerun_refused_and_draft_unchanged(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        before = sorted(CatalogueVersion.objects.get(label="v3").artefacts.values_list("broker_id", flat=True))
+        with self.assertRaises(CommandError):
+            self._build_v3("tradersway/v1")                                       # different inputs (drop vantage)
+        after = sorted(CatalogueVersion.objects.get(label="v3").artefacts.values_list("broker_id", flat=True))
+        self.assertEqual(before, after)                                           # DRAFT NOT mutated
+
+    def test_build_is_draft_only_no_activation_or_staging(self):
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        self.assertEqual(CatalogueVersion.objects.get(label="v3").status, CatalogueVersion.Status.DRAFT)
+        self.assertEqual(S.resolve_active_version().label, "v2")
+
+    def test_include_ref_without_carry_forward_flag_refused(self):
+        self._active_v2()
+        with self.assertRaises(CommandError):
+            call_command("build_catalogue_version", "--label", "v3",
+                         "--include-approved-ref", "tradersway/v1")               # missing --carry-forward-active
+
+    def test_activation_refused_if_carried_approval_revoked_after_build(self):
+        # Between-build-and-activation: a carried approval is revoked after the DRAFT is built -> activation refuses
+        # (the activation transaction re-checks every artefact's approval). DRAFT v3 cannot go ACTIVE.
+        self._active_v2(); self._add_tw_va()
+        self._build_v3("tradersway/v1", "vantage/v1")
+        ArtefactApproval.objects.filter(artefact_ref="taurex/v2").update(status=ArtefactApproval.Status.REJECTED)
+        with self.assertRaises(CommandError):
+            call_command("activate_catalogue_version", "--label", "v3")
+        self.assertEqual(S.resolve_active_version().label, "v2")                  # v2 preserved
