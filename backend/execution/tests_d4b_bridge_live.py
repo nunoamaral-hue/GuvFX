@@ -12,6 +12,7 @@ No Django, no DB, no MT5 — pure/simulated seam.
 import importlib.util
 import os
 import tempfile
+import time
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -59,9 +60,24 @@ class D4bBridgeRailsTests(SimpleTestCase):
         self.assertIn("Refusing", msg)
 
     def test_live_job_passes_demo_rail_with_allow_live(self):
-        with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "1"}, clear=False):
+        with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "1",
+                                          "MT5_LIVE_EXPIRY": str(int(time.time()) + 1800)}, clear=False):
             ok, msg = self.b.validate_job_safety(self._job(False))
-        self.assertTrue(ok, msg)   # passes the demo rail (symbol/lot valid) — runtime is authorized-live
+        self.assertTrue(ok, msg)   # passes the demo rail (symbol/lot valid) — runtime is authorized-live (ADR-0049.1: + valid host time-bound)
+
+    def test_live_job_refused_with_allow_live_but_bad_expiry(self):
+        # ADR-0049.1: validate_job_safety requires BOTH allow_live AND a valid host time-bound. This kills a
+        # mutant that drops the expiry half (reverting _bridge_live_admitted -> _bridge_allow_live): each bad
+        # expiry below must still REFUSE a non-demo job even though MT5_ALLOW_LIVE=1.
+        now = int(time.time())
+        for bad in ({"MT5_LIVE_EXPIRY": ""},                       # missing
+                    {"MT5_LIVE_EXPIRY": str(now - 1)},             # past
+                    {"MT5_LIVE_EXPIRY": str(now + 7201)},          # beyond the 7200s ceiling (absurd)
+                    {"MT5_LIVE_EXPIRY": "notanumber"}):            # malformed
+            with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "1", **bad}, clear=False):
+                ok, msg = self.b.validate_job_safety(self._job(False))
+            self.assertFalse(ok, bad)
+            self.assertIn("Refusing", msg)
 
     # ---- evaluate_hosted_startup_config ----
     def _hosted_env(self, **over):
@@ -74,7 +90,8 @@ class D4bBridgeRailsTests(SimpleTestCase):
         self.assertEqual(self.b.evaluate_hosted_startup_config(self._hosted_env()), [])   # no MT5_ALLOW_LIVE
 
     def test_hosted_live_permitted_with_pin_and_guard(self):
-        self.assertEqual(self.b.evaluate_hosted_startup_config(self._hosted_env(MT5_ALLOW_LIVE="1")), [])
+        self.assertEqual(self.b.evaluate_hosted_startup_config(
+            self._hosted_env(MT5_ALLOW_LIVE="1", MT5_LIVE_EXPIRY="9999999999")), [])   # ADR-0049.1 host time-bound
 
     def test_hosted_live_requires_pin(self):
         errs = self.b.evaluate_hosted_startup_config(

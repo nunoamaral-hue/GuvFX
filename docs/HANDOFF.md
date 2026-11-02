@@ -1780,3 +1780,32 @@ submit the isolated branch for GitHub review.
 - **Impact:** no trade/order/login/restart/deploy/config/data mutation; no secret
   disclosed. Full evidence:
   `docs/evidence/broker_timezone_evidence_v2_pretransition.md`.
+
+# 2026-10-30 — ADR-0049 LIVE bridge provisioning integrator (DARK PR)
+
+- **Status:** PASS (repository build; DARK). No deploy/migration/host change/order.
+- **What:** the signed, account-scoped backend->host operation that renders the reviewed bridge env
+  (`render_bridge_env`, the sole source of `MT5_ALLOW_LIVE`), deploys it to EXACTLY one tenant's bridge,
+  restarts only that tenant's scheduled task, verifies a signed attestation, and fails closed to an OFF
+  restore. Closes the ADR-0049 "future provisioning integrator" gap that blocked the ADR-0057 one-order
+  acceptance.
+- **Files added:** `backend/terminal_provisioning/windows/Activate-GuvfxTenantBridgeLive.ps1`,
+  `backend/terminal_provisioning/windows/Restore-GuvfxTenantBridgeExecutionOff.ps1`,
+  `backend/trade_copier/live_bridge_provision.py`,
+  `backend/trade_copier/management/commands/provision_authorized_live_copier_bridge.py`,
+  `backend/trade_copier/management/commands/restore_copier_bridge_execution_off.py`,
+  `backend/hosted_workspace/tests_live_bridge_dispatch.py`,
+  `backend/trade_copier/tests_live_bridge_provision.py`.
+- **Files modified:** `backend/hosted_workspace/host_protocol.py`,
+  `backend/hosted_workspace/host_agent_dispatch.py`, `backend/hosted_workspace/host_executor.py`,
+  `deploy/hosted-executor/primitive_runner.py`, `deploy/hosted-executor/stage-manifest.json`,
+  `deploy/hosted-executor/README.md`, `docs/architecture/ADR-0049-*.md`,
+  `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md`, `docs/STATUS.md`, `docs/KNOWN_ISSUES.md`, `docs/NEXT.md`,
+  this file.
+- **Tests:** new `tests_live_bridge_dispatch` (17) + `tests_live_bridge_provision` (21) green; existing host
+  suite (126) + ASCII/artefact (221) + governance inventories green; secret scan clean. 2 pre-existing macOS
+  `hosted_workspace.tests_observer_attach` CIM failures in untouched code (CI/Linux authoritative).
+- **Darkness:** `COPIER_LIVE_EXECUTE_ENABLED` + `HOSTED_LIVE_EXECUTION_ENABLED` default OFF; signed executor
+  DARK-gated; no authorization rows; no host change; no deploy.
+- **Red decisions requiring Nuno:** merge; DARK deploy; grant authorization; arm; `--commit`; place the order.
+- **One bounded next action:** Sponsor review + merge decision on the DARK integrator PR.

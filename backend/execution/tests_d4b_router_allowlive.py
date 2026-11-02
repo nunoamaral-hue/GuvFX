@@ -98,4 +98,9 @@ class D4bRouterAllowLiveTests(TestCase):
         ep = SimpleNamespace(trading_account_id=1, runtime_path="/x", port=8800, expected_login="L1",
                              expected_server="S", windows_username="u", workspace_uuid="w", is_demo=False)
         self.assertNotIn("MT5_ALLOW_LIVE", render_bridge_env(ep))                    # default: omitted
-        self.assertIn("set MT5_ALLOW_LIVE=1", render_bridge_env(ep, allow_live=True))
+        # ADR-0049.1: a LIVE render requires (and emits) a host time-bound alongside MT5_ALLOW_LIVE.
+        live = render_bridge_env(ep, allow_live=True, live_expiry_epoch=1_893_456_000)
+        self.assertIn("set MT5_ALLOW_LIVE=1", live)
+        self.assertIn("set MT5_LIVE_EXPIRY=1893456000", live)
+        with self.assertRaises(ValueError):
+            render_bridge_env(ep, allow_live=True)                                   # live without expiry refused

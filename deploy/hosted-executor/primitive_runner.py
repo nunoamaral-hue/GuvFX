@@ -171,6 +171,19 @@ CONTRACT = {
     "activate_tenant_bridge": PrimitiveSpec(
         script="Activate-GuvfxTenantBridge.ps1",
         argmap={"terminal_root": "-TerminalRoot", "account_id": "-AccountId", "port": "-Port"}),
+    # ADR-0049 LIVE bridge provisioning integrator (ACCOUNT-SCOPED). The backend re-evaluated allow_live_for_account
+    # and RENDERED the bridge env; the fully-rendered env is piped to the child's STDIN as base64 (stdin_arg) -
+    # NEVER argv, NEVER a log. The .ps1 decodes it, re-validates allow-listed keys + the MT5_ALLOW_LIVE posture,
+    # writes it atomically with read-back, restarts ONLY GuvFX_TenantBridge_<id>, and attests. ACTIVATE deploys
+    # the LIVE env (MT5_ALLOW_LIVE=1); RESTORE deploys the canonical execution-OFF env (no MT5_ALLOW_LIVE).
+    "activate_tenant_bridge_live_authorized": PrimitiveSpec(
+        script="Activate-GuvfxTenantBridgeLive.ps1",
+        argmap={"terminal_root": "-TerminalRoot", "account_id": "-AccountId", "port": "-Port"},
+        stdin_arg="bridge_env_b64"),
+    "restore_tenant_bridge_execution_off": PrimitiveSpec(
+        script="Restore-GuvfxTenantBridgeExecutionOff.ps1",
+        argmap={"terminal_root": "-TerminalRoot", "account_id": "-AccountId", "port": "-Port"},
+        stdin_arg="bridge_env_b64"),
     # Broker Catalogue V1: copy ONE approved+SHA-verified catalogue servers.dat into a FRESH runtime + read-back
     # verify. Reviewed .ps1 takes -Username/-TerminalRoot/-AccountId (server-derived, confined; refuses CZ) plus
     # -BrokerId/-ExpectedSha256/-HostRelpath (dispatch-validated: 64-hex sha, versions-relative path, no traversal).

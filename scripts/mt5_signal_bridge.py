@@ -302,6 +302,41 @@ def _bridge_allow_live() -> bool:
     return os.getenv("MT5_ALLOW_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# ADR-0049.1 — HOST-SIDE TIME-BOUND for a LIVE runtime. The backend writes MT5_LIVE_EXPIRY (UTC Unix epoch
+# SECONDS, base-10 integer) alongside MT5_ALLOW_LIVE=1; this bridge admits an OPENING LIVE order ONLY while the
+# current trusted host time is strictly before that expiry. It is read FRESH per order (never cached at
+# startup), so the bound is enforced on EVERY request and a bridge restart cannot reset or extend it (the value
+# lives in the env file, not process state). A missing / blank / non-integer / past / absurdly-distant expiry
+# fails CLOSED (LIVE denied; the runtime behaves exactly like an un-authorized/demo-only runtime). The upper
+# bound rejects a tampered, overflowed or clock-skewed far-future value; the backend caps the written window
+# (1h) well below it, so a legitimate one-order-test expiry always sits inside the band.
+MT5_LIVE_EXPIRY_MAX_FUTURE_SECONDS = 7200  # 2h ceiling (2x the backend 1h cap; margin for benign clock skew)
+
+
+def _bridge_live_expiry_ok(now_epoch=None) -> bool:
+    """FAIL-CLOSED: True ONLY when MT5_LIVE_EXPIRY is present, a base-10 integer, strictly in the future vs the
+    current trusted host UTC time, and not absurdly distant (``<= now + MT5_LIVE_EXPIRY_MAX_FUTURE_SECONDS``).
+    Absent / blank / malformed / overflowed / past / excessively-distant ⇒ False."""
+    raw = os.getenv("MT5_LIVE_EXPIRY", "").strip()
+    if not raw:
+        return False
+    try:
+        expiry = int(raw)                                 # base-10 int; a float/garbage string ⇒ ValueError ⇒ deny
+    except (TypeError, ValueError):
+        return False
+    now = time.time() if now_epoch is None else float(now_epoch)
+    return now < expiry <= now + MT5_LIVE_EXPIRY_MAX_FUTURE_SECONDS
+
+
+def _bridge_live_admitted(now_epoch=None) -> bool:
+    """The single per-order LIVE admission predicate the OPENING-order paths consult IN PLACE OF a bare
+    ``MT5_ALLOW_LIVE`` read: BOTH the per-runtime live authorization (MT5_ALLOW_LIVE=1) AND a valid, non-expired
+    host time-bound (MT5_LIVE_EXPIRY). Either absent/invalid ⇒ not admitted, so a non-demo account is refused by
+    ``evaluate_binding`` exactly as an un-authorized runtime. CLOSE / MODIFY / PARTIAL-CLOSE remain demo-only and
+    never consult this (they stay fail-closed for LIVE independently)."""
+    return _bridge_allow_live() and _bridge_live_expiry_ok(now_epoch)
+
+
 def _require_identity_pin() -> bool:
     """ADR-0033 Increment 2 (review MEDIUM). When set — on a persistent-workspace bridge — EVERY order
     must carry a per-job identity pin and the process-env pin fallback is REFUSED. This makes identity
@@ -460,6 +495,12 @@ def evaluate_hosted_startup_config(env) -> list:
     if _truthy("MT5_ALLOW_LIVE") and not (_truthy("MT5_REQUIRE_IDENTITY_PIN") and _truthy("MT5_GUARDED_ATTACH")):
         errors.append("MT5_ALLOW_LIVE on a hosted bridge requires MT5_REQUIRE_IDENTITY_PIN=1 and "
                       "MT5_GUARDED_ATTACH=1; refusing un-pinned/unguarded live execution")
+    # ADR-0049.1: a LIVE hosted bridge MUST carry a host time-bound. MT5_ALLOW_LIVE without a present, positive
+    # integer MT5_LIVE_EXPIRY (UTC epoch seconds) is refused at startup — defence in depth over the primary
+    # per-order admission (_bridge_live_admitted), which also rejects a past/absurd expiry fresh on every order.
+    if _truthy("MT5_ALLOW_LIVE") and not str(env.get("MT5_LIVE_EXPIRY", "")).strip().isdigit():
+        errors.append("MT5_ALLOW_LIVE on a hosted bridge requires an integer MT5_LIVE_EXPIRY (UTC epoch "
+                      "seconds, ADR-0049.1); refusing a live runtime with no parseable host time-bound")
     # Node-aware worker identity (capstone P1): hosted mode authenticates via the modern X-Worker-Id/Secret
     # path so the backend can resolve authorized_nodes. RULE 3: require BOTH — never silently fall back to the
     # shared legacy X-Worker-Token (which carries no authorized_nodes ⇒ a hosted job would be unclaimable, or
@@ -685,7 +726,7 @@ def verify_execution_binding(mt5, payload):
             exp_server = (os.getenv("MT5_EXPECTED_SERVER", "").strip() or None)
         expected = {
             "is_demo": bool(payload.get("is_demo", False)),
-            "allow_live": _bridge_allow_live(),
+            "allow_live": _bridge_live_admitted(),   # ADR-0049.1: MT5_ALLOW_LIVE AND a valid non-expired MT5_LIVE_EXPIRY
             "expected_login": exp_login,
             "expected_server": exp_server,
         }
@@ -876,6 +917,14 @@ def validate_config() -> bool:
             "MT5_ALLOW_LIVE is enabled but MT5_EXPECTED_LOGIN is not set: live execution requires an "
             "exact-account binding pin (set MT5_EXPECTED_LOGIN to the intended broker login)"
         )
+    # ADR-0049.1 — a live runtime must also carry a valid, non-expired host time-bound. This is a startup
+    # defence; the authoritative enforcement is per-order (_bridge_live_admitted reads MT5_LIVE_EXPIRY fresh
+    # on every opening order, so an expiry that lapses while the process runs still denies the next order).
+    if _bridge_allow_live() and not _bridge_live_expiry_ok():
+        errors.append(
+            "MT5_ALLOW_LIVE is enabled but MT5_LIVE_EXPIRY is missing/invalid/past/absurd (ADR-0049.1): a "
+            "live runtime must carry a valid, non-expired UTC-epoch-seconds host time-bound"
+        )
 
     # ADR-0034 Execution Engine (G6) — a HOSTED WORKSPACE execution bridge must refuse to start unless its
     # full safety configuration is present (guarded attach + mandatory pin + demo-only + no credential login).
@@ -1012,7 +1061,7 @@ def validate_job_safety(job: Dict) -> tuple[bool, str]:
     # runtime without MT5_ALLOW_LIVE, is byte-identical to before (refused). This is layer 2 of two: the backend
     # never routes/authorizes an un-authorized LIVE order, and the bridge independently refuses one here + at
     # evaluate_binding (identity pin + allow_live). Never a global switch — MT5_ALLOW_LIVE is per bridge process.
-    if not payload.get("is_demo", False) and not _bridge_allow_live():
+    if not payload.get("is_demo", False) and not _bridge_live_admitted():
         return False, "Job not marked as demo and runtime not live-authorized. Refusing to execute."
 
     # Check symbol is present. MT5-native availability (symbol_info/symbol_select) is

@@ -1232,3 +1232,11 @@ One bounded next action: **Sponsor review of the DARK PR and a go/no-go on Phase
 (enable the follower runtime LIVE boundary, grant the authorization, arm, the one-order acceptance) stays
 Red/Sponsor-gated per-step and must not proceed on this packet. Do not merge, deploy, migrate, enable flags,
 create an authorization, change `is_active`, restart bridges, or place an order.
+
+## 2026-10-30 — ADR-0049 LIVE bridge provisioning integrator (DARK PR)
+
+One bounded next action: **Sponsor review + merge decision on the DARK integrator PR**, then (separately
+Red-gated, not on this packet) a DARK backend deploy carrying it so `provision_authorized_live_copier_bridge`
+/ `restore_copier_bridge_execution_off` exist on the host, and finally the Sponsor-gated per-step one-order
+acceptance in `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md`. Nothing is armed/deployed by this packet. LIVE
+close/modify/partial-close remain fail-closed.

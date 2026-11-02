@@ -10,7 +10,7 @@ places no order; supervised launch is a separately-gated host concern.
 from __future__ import annotations
 
 
-def render_bridge_env(endpoint, *, allow_live: bool = False) -> str:
+def render_bridge_env(endpoint, *, allow_live: bool = False, live_expiry_epoch: int | None = None) -> str:
     """Return the ``.bat`` env body for ``endpoint``'s dedicated bridge. Parameterised per tenant: its OWN
     account id, terminal path, port, and the full server-derived identity the bridge enforces every order
     against (login/server/windows_username/workspace_uuid).
@@ -20,7 +20,18 @@ def render_bridge_env(endpoint, *, allow_live: bool = False) -> str:
     authorization + identity); the default (and every demo runtime) OMITS it entirely, byte-identical to the
     pre-D4 posture. Setting it is NEVER sufficient by itself: the bridge still enforces the mandatory identity
     pin + ``evaluate_binding`` at order time. ``MT5_EXPECTED_IS_DEMO`` continues to reflect the runtime's own
-    environment, so a live runtime is 0 and a demo runtime is 1."""
+    environment, so a live runtime is 0 and a demo runtime is 1.
+
+    ADR-0049.1 (host-side time-bound) — a LIVE env is ALWAYS time-bounded on the host. When ``allow_live`` is
+    emitted, ``MT5_LIVE_EXPIRY`` is emitted ALONGSIDE it: ``live_expiry_epoch`` is a positive integer **UTC Unix
+    epoch in SECONDS** after which the runtime bridge refuses every LIVE order (even if the OFF restore never
+    runs). ``allow_live=True`` therefore REQUIRES a positive-int ``live_expiry_epoch`` — emitting
+    ``MT5_ALLOW_LIVE`` without an expiry is a caller error and is refused here; the bridge independently
+    fail-closes on an absent/malformed/past expiry. The OFF render omits BOTH keys."""
+    if allow_live and not (isinstance(live_expiry_epoch, int) and not isinstance(live_expiry_epoch, bool)
+                           and live_expiry_epoch > 0):
+        raise ValueError("render_bridge_env(allow_live=True) requires a positive integer live_expiry_epoch "
+                         "(MT5_LIVE_EXPIRY, UTC seconds): a LIVE boundary must be time-bounded on the host")
     lines = [
         "REM GuvFX per-tenant order bridge env (P0-B1) - GENERATED, do not edit by hand.",
         "REM Server-derived from HostedExecutionEndpoint; ASCII-only (RULE 9).",
@@ -39,6 +50,10 @@ def render_bridge_env(endpoint, *, allow_live: bool = False) -> str:
     if allow_live:
         # Per-runtime live authorization (D4b). Only reached when the caller's allow_live_for_account() held.
         lines.append(_kv("MT5_ALLOW_LIVE", "1"))
+        # ADR-0049.1 — the host-side time bound, emitted in lockstep with MT5_ALLOW_LIVE (validated above to be a
+        # positive int). The bridge admits a LIVE order ONLY while now < MT5_LIVE_EXPIRY, so the LIVE boundary
+        # self-expires on the host independently of the backend authorization and the OFF restore.
+        lines.append(_kv("MT5_LIVE_EXPIRY", int(live_expiry_epoch)))
     return "\r\n".join(lines) + "\r\n"
 
 
