@@ -31,9 +31,11 @@ $TENANTS_BASE  = "C:\GuvFX\tenants"
 $SHARED_DIR    = "C:\GuvFX\node2"
 $ALLOWED_KEYS  = @("MT5_ACCOUNT_ID","MT5_TERMINAL_PATH","HTTP_SERVER_PORT","MT5_EXPECTED_LOGIN",
                    "MT5_EXPECTED_SERVER","MT5_EXPECTED_WINDOWS_USERNAME","MT5_EXPECTED_WORKSPACE_UUID",
-                   "MT5_EXPECTED_IS_DEMO","MT5_REQUIRE_IDENTITY_PIN","MT5_GUARDED_ATTACH","MT5_ALLOW_LIVE")
+                   "MT5_EXPECTED_IS_DEMO","MT5_REQUIRE_IDENTITY_PIN","MT5_GUARDED_ATTACH","MT5_ALLOW_LIVE",
+                   "MT5_LIVE_EXPIRY")
+$LIVE_EXPIRY_MAX_FUTURE = 7200   # ADR-0049.1: reject an expiry > 2h ahead (tamper/overflow/clock-skew guard)
 $result = [ordered]@{ account_id=$AccountId; port=$Port; ok=$false; reason="";
-                      allow_live=$false; require_pin=$false; guarded_attach=$false; env_sha256=""; task=""; listening=$false }
+                      allow_live=$false; require_pin=$false; guarded_attach=$false; live_expiry=0; env_sha256=""; task=""; listening=$false }
 function Fail([string]$why) { $result.ok=$false; $result.reason=$why; $result | ConvertTo-Json -Compress; exit 1 }
 function Done([string]$why) { $result.ok=$true;  $result.reason=$why; $result | ConvertTo-Json -Compress; exit 0 }
 
@@ -53,7 +55,7 @@ try {
   if ($envText.Length -eq 0 -or $envText.Length -gt 8192) { Fail "env_payload_size_invalid" }
 
   # ---- Re-validate every line (allow-listed keys only) + confirm the LIVE posture ----
-  $sawAllowLive=$false; $sawPin=$false; $sawGuard=$false
+  $sawAllowLive=$false; $sawPin=$false; $sawGuard=$false; $sawExpiry=$false; $expiryVal=[int64]0
   foreach ($ln in ($envText -replace "`r`n","`n").Split("`n")) {
     $s = $ln.Trim()
     if ($s -eq "" -or $s.ToUpper().StartsWith("REM ")) { continue }
@@ -64,14 +66,23 @@ try {
     $key = $body.Substring(0,$eq).Trim()
     $val = $body.Substring($eq+1).Trim()
     if ($ALLOWED_KEYS -notcontains $key) { Fail "env_key_not_allowed" }
-    if ($val.IndexOfAny([char[]]('&','|','<','>','^','%','"')) -ge 0) { Fail "env_value_unsafe" }
+    if ($val.IndexOfAny([char[]]('&','|','<','>','^','%','"','`')) -ge 0) { Fail "env_value_unsafe" }
     if ($key -eq "MT5_ALLOW_LIVE")        { $sawAllowLive = ($val -eq "1") }
     if ($key -eq "MT5_REQUIRE_IDENTITY_PIN") { $sawPin   = ($val -eq "1") }
     if ($key -eq "MT5_GUARDED_ATTACH")       { $sawGuard = ($val -eq "1") }
+    if ($key -eq "MT5_LIVE_EXPIRY") {
+      if ($val -notmatch '^[0-9]{1,19}$') { Fail "env_live_expiry_malformed" }   # base-10 UTC epoch seconds only
+      $sawExpiry = $true; $expiryVal = [int64]$val
+    }
   }
   if (-not $sawAllowLive) { Fail "env_not_live_authorized" }      # the LIVE op REQUIRES MT5_ALLOW_LIVE=1
   if (-not ($sawPin -and $sawGuard)) { Fail "env_missing_mandatory_pin_guard" }
-  $result.allow_live=$sawAllowLive; $result.require_pin=$sawPin; $result.guarded_attach=$sawGuard
+  # ADR-0049.1: the LIVE op REQUIRES a valid, non-expired, non-absurd host time-bound (trusted host UTC clock).
+  if (-not $sawExpiry) { Fail "env_live_expiry_missing" }
+  $nowUtc = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  if ($expiryVal -le $nowUtc) { Fail "env_live_expiry_past" }
+  if ($expiryVal -gt ($nowUtc + $LIVE_EXPIRY_MAX_FUTURE)) { Fail "env_live_expiry_excessive" }
+  $result.allow_live=$sawAllowLive; $result.require_pin=$sawPin; $result.guarded_attach=$sawGuard; $result.live_expiry=$expiryVal
 
   $bin = Join-Path $SHARED_DIR "mt5_signal_bridge.py"
   $wd  = Join-Path $SHARED_DIR "tenant_bridge_watchdog.ps1"

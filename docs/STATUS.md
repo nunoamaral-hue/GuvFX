@@ -5093,3 +5093,11 @@ authorization rows, no host change, no deploy. Demo activation + #599 catalogue 
 unchanged. Adversarial tests: `hosted_workspace/tests_live_bridge_dispatch.py` (17) +
 `trade_copier/tests_live_bridge_provision.py` (21). LIVE close/modify/partial-close remain fail-closed. See
 `docs/architecture/ADR-0049-PER-TENANT-EXECUTION-TRANSPORT.md` (Implementation status).
+
+**ADR-0049.1 host-side time-bound (adopted on top of `c351a6b4`).** The LIVE env now ALWAYS carries
+`MT5_LIVE_EXPIRY` (UTC epoch seconds) alongside `MT5_ALLOW_LIVE=1`; the backend caps the host window to
+`min(authz.expires_at, now+1h)`; the runtime bridge admits a LIVE order ONLY while `now < MT5_LIVE_EXPIRY`
+(read fresh per order — self-expires on the host, a restart cannot reset/extend it); dispatch + both PS1 +
+`render_bridge_env` enforce/attest/refuse it; OFF clears both keys. New tests
+`execution/tests_bridge_live_expiry.py` + expiry cases added to the two ADR-0049 suites; existing D4b/startup
+tests updated to carry a valid bound. Still DARK/OFF; no authorization, no host change, no deploy by this packet.

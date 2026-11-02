@@ -50,6 +50,14 @@ Rollback prepared FIRST: note the current follower bridge env + `is_active`. The
    guarded attach, listening). The command verifies the attestation and fails closed to an OFF restore on any
    mismatch. No other tenant's bridge is touched.
 
+   **ADR-0049.1 host time-bound.** The rendered LIVE env ALSO carries `MT5_LIVE_EXPIRY` (UTC epoch seconds),
+   derived as `min(authorization.expires_at, now+1h)` — a short, documented host cap. The runtime bridge admits
+   a LIVE order ONLY while `now < MT5_LIVE_EXPIRY`, re-checked FRESH on every order, so the LIVE boundary
+   self-expires on the host (independently of the backend and of the OFF restore) and a bridge restart neither
+   resets nor extends it. The dry-run `preview.host_live_expiry_epoch` and the attestation `live_expiry` show the
+   exact bound; verify it is `~now+≤1h` before `--commit`. After natural expiry the bridge refuses further LIVE
+   orders even if no OFF restore has run (confirm via a post-expiry read-back).
+
 ## Phase 3 — Human authorization ceremony (the grant)
 
 7. A human operator runs (staff `--approved-by`), bounded to one order:

@@ -19,6 +19,7 @@ import email.message  # noqa: F401  (kept parallel to the sibling bridge test mo
 import importlib.util
 import os
 import tempfile
+import time
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -234,7 +235,8 @@ class VerifyExecutionBindingTests(SimpleTestCase):
         self.assertTrue(reason.startswith("live_execution_not_authorised"))
 
     def test_env_allow_live_enables_real(self):
-        with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "true", "MT5_EXPECTED_LOGIN": "", "MT5_EXPECTED_SERVER": ""}):
+        with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "true", "MT5_EXPECTED_LOGIN": "", "MT5_EXPECTED_SERVER": "",
+                                          "MT5_LIVE_EXPIRY": str(int(time.time()) + 1800)}):   # ADR-0049.1 time-bound
             ok, reason, _ = self.mod.verify_execution_binding(self._mt5(_REAL, _TERM_OK), {"is_demo": False})
         self.assertTrue(ok)
 
@@ -285,10 +287,21 @@ class ValidateConfigLiveBindingTests(SimpleTestCase):
 
     def test_allow_live_with_login_pin_starts(self):
         mod = _load_bridge_configured()
-        with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "1", "MT5_EXPECTED_LOGIN": "62133489"}):
+        with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "1", "MT5_EXPECTED_LOGIN": "62133489",
+                                          "MT5_LIVE_EXPIRY": str(int(time.time()) + 1800)}):   # ADR-0049.1 time-bound
             self.assertTrue(mod.validate_config())
 
     def test_demo_default_needs_no_pin(self):
         mod = _load_bridge_configured()
         with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "", "MT5_EXPECTED_LOGIN": ""}):
             self.assertTrue(mod.validate_config())
+
+    def test_allow_live_with_pin_but_bad_expiry_refuses_startup(self):
+        # ADR-0049.1: validate_config refuses a live START when MT5_ALLOW_LIVE + a login pin are present but
+        # MT5_LIVE_EXPIRY is missing/past/excessive (the login pin passes, so the expiry check is the sole
+        # cause). Kills a mutant that deletes the startup time-bound defence.
+        mod = _load_bridge_configured()
+        now = int(time.time())
+        for bad in ({"MT5_LIVE_EXPIRY": ""}, {"MT5_LIVE_EXPIRY": str(now - 1)}, {"MT5_LIVE_EXPIRY": str(now + 7201)}):
+            with mock.patch.dict(os.environ, {"MT5_ALLOW_LIVE": "1", "MT5_EXPECTED_LOGIN": "62133489", **bad}):
+                self.assertFalse(mod.validate_config(), bad)

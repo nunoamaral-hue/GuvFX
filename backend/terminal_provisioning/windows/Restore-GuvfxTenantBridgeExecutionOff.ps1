@@ -56,8 +56,9 @@ try {
     $key = $body.Substring(0,$eq).Trim()
     $val = $body.Substring($eq+1).Trim()
     if ($key -eq "MT5_ALLOW_LIVE") { Fail "env_unexpected_live" }      # OFF env must NEVER carry it
+    if ($key -eq "MT5_LIVE_EXPIRY") { Fail "env_unexpected_live_expiry" }   # ADR-0049.1: nor a host time-bound
     if ($ALLOWED_KEYS -notcontains $key) { Fail "env_key_not_allowed" }
-    if ($val.IndexOfAny([char[]]('&','|','<','>','^','%','"')) -ge 0) { Fail "env_value_unsafe" }
+    if ($val.IndexOfAny([char[]]('&','|','<','>','^','%','"','`')) -ge 0) { Fail "env_value_unsafe" }
     if ($key -eq "MT5_REQUIRE_IDENTITY_PIN") { $sawPin   = ($val -eq "1") }
     if ($key -eq "MT5_GUARDED_ATTACH")       { $sawGuard = ($val -eq "1") }
   }

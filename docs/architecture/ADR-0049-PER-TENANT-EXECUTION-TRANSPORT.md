@@ -119,3 +119,38 @@ operation could put `MT5_ALLOW_LIVE=1` on a tenant bridge). Added, account-scope
 - **Preserved:** `activate_tenant_bridge` (demo) and the #599 catalogue primitives are untouched; the strategy
   LIVE path (`is_live_execution_authorized`) is not broadened. The LIVE close/modify/partial-close limitation
   stands: still unimplemented and fail-closed (ADR-0057).
+
+## ADR-0049.1 — host-side time-bound (`MT5_LIVE_EXPIRY`)
+
+**Problem.** ADR-0049 (above) gated LIVE rendering on the backend authorization window and the OFF restore, but
+the *host* carried no independent time bound: once `MT5_ALLOW_LIVE=1` was written, the bridge would admit LIVE
+indefinitely if the OFF restore never ran. A host-side LIVE boundary must self-expire even if the backend never
+speaks to it again.
+
+**Decision.** The LIVE env is ALWAYS time-bounded on the host, enforced per order, independent of the backend.
+
+- **Canonical variable:** `MT5_LIVE_EXPIRY` — a **UTC Unix epoch in SECONDS**, base-10 integer (e.g.
+  `set MT5_LIVE_EXPIRY=1762097400`). It is emitted by `render_bridge_env` **only** alongside `MT5_ALLOW_LIVE=1`
+  and in lockstep with it; the OFF render omits **both**. `render_bridge_env(allow_live=True)` REFUSES a missing
+  or non-positive-int expiry (a LIVE boundary that is not time-bounded is a caller error).
+- **Derivation + cap (backend).** `live_bridge_provision._host_live_expiry_epoch` = `min(authz.expires_at,
+  now + MAX_HOST_LIVE_SECONDS)` where `MAX_HOST_LIVE_SECONDS = 3600` (1 h — the documented maximum for the
+  one-order test). The cap can only **shorten** the authorization's own window, never extend it. The signed
+  attestation echoes the exact epoch the host wrote; `_verify_attestation` fails closed on any mismatch (defence
+  beyond `env_sha256`).
+- **Dispatch defence.** `host_agent_dispatch._validate_bridge_env_payload` allow-lists `MT5_LIVE_EXPIRY` and, for
+  the ACTIVATE op, REQUIRES it present, integer, and `now < expiry <= now + _LIVE_EXPIRY_SANE_MAX_SECONDS`
+  (`7200`, 2 h — a tamper/overflow/clock-skew ceiling, 2× the backend cap); the RESTORE op REFUSES it present.
+  `now` is the verified request timestamp.
+- **Runtime enforcement (authoritative).** `scripts/mt5_signal_bridge.py` reads `MT5_LIVE_EXPIRY` **fresh on
+  every opening order** via `_bridge_live_expiry_ok` (present, integer, `now < expiry <= now +
+  MT5_LIVE_EXPIRY_MAX_FUTURE_SECONDS=7200`, trusted host UTC clock). The OPENING-order admission uses
+  `_bridge_live_admitted = _bridge_allow_live() AND _bridge_live_expiry_ok()` in place of a bare
+  `MT5_ALLOW_LIVE` read, so a non-demo account is refused once the window lapses — even mid-process, and even if
+  the OFF restore never ran. Startup-config asserts the bound too (defence; per-order is primary). Reading fresh
+  per order means a **restart cannot reset or extend** the window (the value lives in the env file, not process
+  state), and a **replayed** signed ACTIVATE cannot extend it (single-use nonce + short TTL + the epoch is in
+  the digest-bound payload). The two PowerShell primitives validate/attest (ACTIVATE) and refuse (RESTORE)
+  `MT5_LIVE_EXPIRY` with `[DateTimeOffset]::UtcNow`; ASCII-only (RULE 9).
+- **Unchanged:** CLOSE / MODIFY / PARTIAL-CLOSE remain demo-only fail-closed (they never consult the LIVE
+  admission); DEMO and strategy paths are byte-identical; execution stays OFF by default.

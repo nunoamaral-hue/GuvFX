@@ -14,10 +14,13 @@ T = 2_000_000
 ACTIVATE = "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED"
 RESTORE = "RESTORE_TENANT_BRIDGE_EXECUTION_OFF"
 
+# ADR-0049.1: a LIVE env also carries MT5_LIVE_EXPIRY (UTC epoch seconds). With the request time T=2_000_000 and
+# the 7200s ceiling, a valid expiry sits in (T, T+7200]; 2_003_600 (T+1h) is the canonical in-band value here.
+_LIVE_EXPIRY = 2_003_600
 _LIVE_ENV = ("REM generated\r\nset MT5_ACCOUNT_ID=48\r\nset MT5_TERMINAL_PATH=C:\\GuvFX\\accounts\\48\\terminal\\terminal64.exe\r\n"
              "set HTTP_SERVER_PORT=8801\r\nset MT5_EXPECTED_LOGIN=5442\r\nset MT5_EXPECTED_SERVER=IS6Technologies-Live\r\n"
-             "set MT5_REQUIRE_IDENTITY_PIN=1\r\nset MT5_GUARDED_ATTACH=1\r\nset MT5_ALLOW_LIVE=1\r\n")
-_OFF_ENV = _LIVE_ENV.replace("set MT5_ALLOW_LIVE=1\r\n", "")
+             "set MT5_REQUIRE_IDENTITY_PIN=1\r\nset MT5_GUARDED_ATTACH=1\r\nset MT5_ALLOW_LIVE=1\r\nset MT5_LIVE_EXPIRY=2003600\r\n")
+_OFF_ENV = _LIVE_ENV.replace("set MT5_ALLOW_LIVE=1\r\n", "").replace("set MT5_LIVE_EXPIRY=2003600\r\n", "")
 
 
 def _b64(text):
@@ -36,7 +39,7 @@ def _burner():
 class _Capture:
     def __init__(self, result=None):
         self.calls = []
-        self.result = result or {"ok": True, "account_id": 48, "port": 8801, "allow_live": True,
+        self.result = result or {"ok": True, "account_id": 48, "port": 8801, "allow_live": True, "live_expiry": 2_003_600,
                                  "require_pin": True, "guarded_attach": True, "env_sha256": "x", "listening": True}
     def __call__(self, primitive, args):
         self.calls.append((primitive, dict(args)))
@@ -182,3 +185,56 @@ class LiveBridgeDispatchTests(SimpleTestCase):
         with self.assertRaises(P.HostProtocolError) as cm:
             _dispatch(req, _Capture())
         self.assertIn(cm.exception.reason_code, ("payload_not_ascii", "payload_malformed"))
+
+    # --- ADR-0049.1: host time-bound (MT5_LIVE_EXPIRY) enforced at dispatch (defence over the per-order bridge) ---
+    def test_env_passed_includes_expiry(self):
+        cap = _Capture()
+        _dispatch(_req(), cap)
+        env = base64.b64decode(cap.calls[0][1]["bridge_env_b64"]).decode("ascii")
+        self.assertIn("set MT5_LIVE_EXPIRY=2003600", env)
+
+    def test_activate_requires_expiry_present(self):
+        env = _LIVE_ENV.replace("set MT5_LIVE_EXPIRY=2003600\r\n", "")       # LIVE env but NO expiry
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(env=env), _Capture())
+        self.assertEqual(cm.exception.reason_code, "payload_live_expiry_missing")
+
+    def test_activate_expiry_past_refused(self):
+        env = _LIVE_ENV.replace("2003600", str(T - 1))
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(env=env), _Capture())
+        self.assertEqual(cm.exception.reason_code, "payload_live_expiry_out_of_window")
+
+    def test_activate_expiry_excessive_refused(self):
+        env = _LIVE_ENV.replace("2003600", str(T + 7201))                    # beyond the 7200s ceiling
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(env=env), _Capture())
+        self.assertEqual(cm.exception.reason_code, "payload_live_expiry_out_of_window")
+
+    def test_activate_expiry_boundary(self):
+        with self.assertRaises(P.HostProtocolError):                         # exactly now \u21d2 refused (strict >)
+            _dispatch(_req(env=_LIVE_ENV.replace("2003600", str(T))), _Capture())
+        cap = _Capture()                                                     # now+1 \u21d2 admitted
+        _dispatch(_req(env=_LIVE_ENV.replace("2003600", str(T + 1))), cap)
+        self.assertEqual(cap.calls[0][0], "activate_tenant_bridge_live_authorized")
+
+    def test_activate_expiry_malformed_refused(self):
+        env = _LIVE_ENV.replace("set MT5_LIVE_EXPIRY=2003600", "set MT5_LIVE_EXPIRY=notanumber")
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(env=env), _Capture())
+        self.assertEqual(cm.exception.reason_code, "payload_live_expiry_malformed")
+
+    def test_restore_refuses_residual_expiry(self):
+        env = _OFF_ENV + "set MT5_LIVE_EXPIRY=2003600\r\n"                    # OFF env must carry NO time-bound
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(operation=RESTORE, env=env), _Capture())
+        self.assertEqual(cm.exception.reason_code, "payload_unexpected_live_expiry")
+
+    def test_replayed_activation_cannot_extend_expiry(self):
+        # A stale signed ACTIVATE is rejected by the single-use nonce (it cannot be re-sent to push a new window);
+        # the time-bound itself is in the signed+digest-bound payload, so it can be neither forged nor extended.
+        burn = _burner()
+        _dispatch(_req(nonce="arm1"), _Capture(), burn=burn)
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(nonce="arm1"), _Capture(), burn=burn)
+        self.assertEqual(cm.exception.reason_code, "nonce_replayed")

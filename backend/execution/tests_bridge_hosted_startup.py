@@ -74,7 +74,7 @@ class HostedStartupConfigTests(SimpleTestCase):
         # D4b: a hosted bridge MAY carry MT5_ALLOW_LIVE (per-runtime authorized live, set by the backend only
         # for a §3-authorized account) WHEN the mandatory identity pin + guarded attach are present. It is no
         # longer a blanket Phase-1 demo-only abort. (_VALID_HOSTED has pin + guard.)
-        env = dict(_VALID_HOSTED); env["MT5_ALLOW_LIVE"] = "1"
+        env = dict(_VALID_HOSTED); env["MT5_ALLOW_LIVE"] = "1"; env["MT5_LIVE_EXPIRY"] = "9999999999"  # ADR-0049.1
         self.assertEqual(_BR.evaluate_hosted_startup_config(env), [])
 
     def test_live_mode_without_pin_rejected(self):

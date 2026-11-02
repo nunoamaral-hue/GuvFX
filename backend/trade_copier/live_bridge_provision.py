@@ -26,6 +26,22 @@ def _mask(v) -> str:
     return ("\u2026" + s[-4:]) if len(s) >= 4 else "****"
 
 
+# ADR-0049.1 \u2014 the host LIVE window is time-bounded. MT5_LIVE_EXPIRY (UTC epoch SECONDS) is derived from the
+# EXACT active authorization's expires_at, CAPPED to this short maximum appropriate for the one-order test, so
+# the runtime bridge self-expires on the host independently of the backend authorization and the OFF restore.
+MAX_HOST_LIVE_SECONDS = 3600  # 1h documented cap for the one-order LIVE test
+
+
+def _host_live_expiry_epoch(authz, now) -> int:
+    """The capped host expiry (UTC epoch seconds, int) for ``authz``: ``min(authz.expires_at, now + cap)``. The
+    caller reaches a LIVE render only after the ``within_window`` gate (authz.expires_at > now), so the result
+    is always strictly in the future; the cap bounds an authorization whose own window is longer than the test
+    needs. Never extends an authorization \u2014 it can only SHORTEN the host window, never lengthen it."""
+    authz_epoch = int(authz.expires_at.timestamp())
+    cap_epoch = int(now.timestamp()) + MAX_HOST_LIVE_SECONDS
+    return min(authz_epoch, cap_epoch)
+
+
 def resolve_ready_endpoint(account):
     """The single READY ``HostedExecutionEndpoint`` for this account, else ``None`` (fail-closed)."""
     try:
@@ -136,15 +152,18 @@ def evaluate_live_gates(account, authz_id):
     return (ok, gates)
 
 
-def render_env_b64(account, *, allow_live):
+def render_env_b64(account, *, allow_live, live_expiry_epoch=None):
     """Render the bridge env for ``account`` via render_bridge_env and return ``(b64, sha256, text)``. ``allow_live``
     is the authoritative flag the caller already evaluated (True only for the LIVE op after the full gate stack
-    passed; False for the OFF restore, which needs nothing). Fail-closed: no endpoint ⇒ ValueError."""
+    passed; False for the OFF restore, which needs nothing). ADR-0049.1: when ``allow_live`` the capped
+    ``live_expiry_epoch`` (UTC seconds) is REQUIRED and rendered as MT5_LIVE_EXPIRY — render_bridge_env itself
+    refuses allow_live without it. Fail-closed: no endpoint ⇒ ValueError."""
     from execution.bridge_config import render_bridge_env
     ep = resolve_ready_endpoint(account)
     if ep is None:
         raise ValueError("no_ready_endpoint")
-    text = render_bridge_env(ep, allow_live=bool(allow_live))
+    text = render_bridge_env(ep, allow_live=bool(allow_live),
+                             live_expiry_epoch=(int(live_expiry_epoch) if allow_live else None))
     raw = text.encode("ascii")
     return (base64.b64encode(raw).decode("ascii"), hashlib.sha256(raw).hexdigest(), text)
 
@@ -178,16 +197,24 @@ def provision_live(account_id, authz_id, *, commit=False, executor_resolver=None
     ok, gates = evaluate_live_gates(account, authz_id)
     failed = [n for (n, g, _d) in gates if not g]
     port = _endpoint_port(account)
+    # ADR-0049.1: derive the capped host time-bound from the EXACT active authorization. Only a LIVE render
+    # carries it; the cap can only SHORTEN (never extend) the authorization's own window.
+    from trade_copier.models import CopierLiveAuthorization
+    now = timezone.now()
+    authz = CopierLiveAuthorization.objects.filter(pk=authz_id).first()
+    live = allow_live_for_account(account)
+    host_expiry = _host_live_expiry_epoch(authz, now) if (live and authz is not None) else None
     # Render is authoritative: allow_live comes from the predicate, never a bare bool.
     try:
-        env_b64, env_sha, _text = render_env_b64(account, allow_live=allow_live_for_account(account))
+        env_b64, env_sha, _text = render_env_b64(account, allow_live=live, live_expiry_epoch=host_expiry)
     except ValueError as e:
         return {"ok": False, "armed": False, "reason": str(e), "gates_ok": ok, "failed_gates": failed}
 
     preview = {
         "account_id": account.id, "follower_login": _mask(account.account_number),
         "authorization_id": authz_id, "port": port, "env_sha256": env_sha,
-        "env_will_be_live": "MT5_ALLOW_LIVE=1" in _text, "gates_ok": ok, "failed_gates": failed,
+        "env_will_be_live": "MT5_ALLOW_LIVE=1" in _text, "host_live_expiry_epoch": host_expiry,
+        "gates_ok": ok, "failed_gates": failed,
         "operation": "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED",
     }
     if not ok:
@@ -213,7 +240,8 @@ def provision_live(account_id, authz_id, *, commit=False, executor_resolver=None
         port, env_b64)
 
     att_ok, att_reason = _verify_attestation(result, account_id=account.id, port=port,
-                                             expect_env_sha=env_sha, expect_live=True)
+                                             expect_env_sha=env_sha, expect_live=True,
+                                             expect_live_expiry=host_expiry)
     if att_ok:
         return {"ok": True, "armed": True, "reason": "live_bridge_activated",
                 "preview": preview, "attestation": result}
@@ -235,7 +263,7 @@ def restore_off(account_id, *, commit=False, executor_resolver=None):
         env_b64, env_sha, _text = render_env_b64(account, allow_live=False)
     except ValueError as e:
         return {"ok": False, "reason": str(e)}
-    if "MT5_ALLOW_LIVE" in _text:   # defence: the OFF render must never carry it
+    if "MT5_ALLOW_LIVE" in _text or "MT5_LIVE_EXPIRY" in _text:   # defence: the OFF render carries NEITHER
         return {"ok": False, "reason": "off_render_unexpected_live"}
     preview = {"account_id": account.id, "port": port, "env_sha256": env_sha,
                "operation": "RESTORE_TENANT_BRIDGE_EXECUTION_OFF"}
@@ -253,9 +281,10 @@ def restore_off(account_id, *, commit=False, executor_resolver=None):
             "preview": preview, "attestation": result}
 
 
-def _verify_attestation(result, *, account_id, port, expect_env_sha, expect_live):
+def _verify_attestation(result, *, account_id, port, expect_env_sha, expect_live, expect_live_expiry=None):
     """Prove the host's SIGNED attestation matches what we rendered: ok, account id, port, env checksum, the live
-    posture, the mandatory identity pin + guarded attach, and listening. Never trusts file-generation alone."""
+    posture, the ADR-0049.1 time-bound echo, the mandatory identity pin + guarded attach, and listening. Never
+    trusts file-generation alone."""
     if not isinstance(result, dict):
         return (False, "no_result")
     if not result.get("ok"):
@@ -273,6 +302,15 @@ def _verify_attestation(result, *, account_id, port, expect_env_sha, expect_live
         return (False, "env_sha_mismatch")
     if bool(result.get("allow_live")) != bool(expect_live):
         return (False, "live_posture_mismatch")
+    if expect_live:
+        # ADR-0049.1: the host attests the exact MT5_LIVE_EXPIRY it wrote; verify it echoes the capped epoch we
+        # rendered (defence beyond env_sha256 — a mismatch means the host wrote a different host time-bound than
+        # was authorized). The OFF restore passes expect_live=False and carries no expiry.
+        try:
+            if int(result.get("live_expiry", -1)) != int(expect_live_expiry):
+                return (False, "live_expiry_mismatch")
+        except (TypeError, ValueError):
+            return (False, "live_expiry_malformed")
     if not (result.get("require_pin") and result.get("guarded_attach")):
         return (False, "pin_or_guard_off")
     if not result.get("listening"):

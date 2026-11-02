@@ -145,18 +145,26 @@ _SCALAR = (str, int, bool)
 _BRIDGE_ENV_ALLOWED_KEYS = frozenset({
     "MT5_ACCOUNT_ID", "MT5_TERMINAL_PATH", "HTTP_SERVER_PORT", "MT5_EXPECTED_LOGIN", "MT5_EXPECTED_SERVER",
     "MT5_EXPECTED_WINDOWS_USERNAME", "MT5_EXPECTED_WORKSPACE_UUID", "MT5_EXPECTED_IS_DEMO",
-    "MT5_REQUIRE_IDENTITY_PIN", "MT5_GUARDED_ATTACH", "MT5_ALLOW_LIVE",
+    "MT5_REQUIRE_IDENTITY_PIN", "MT5_GUARDED_ATTACH", "MT5_ALLOW_LIVE", "MT5_LIVE_EXPIRY",
 })
 _MAX_BRIDGE_ENV_BYTES = 8192
+# ADR-0049.1 — host time-bound ceiling. A LIVE env carries MT5_LIVE_EXPIRY (UTC epoch SECONDS); the dispatcher
+# (defence in depth over the per-order bridge check) refuses an ACTIVATE whose expiry is not strictly after the
+# verified request time, or is more than this far ahead (tamper / overflow / clock-skew guard — the backend
+# caps the written window to 1h, well inside this 2h ceiling). The bridge re-enforces the same band per order.
+_LIVE_EXPIRY_SANE_MAX_SECONDS = 7200
 
 
-def _validate_bridge_env_payload(fields: dict, *, require_allow_live: bool) -> str:
+def _validate_bridge_env_payload(fields: dict, *, require_allow_live: bool, now: int) -> str:
     """Decode + structurally validate the backend-rendered bridge env carried in the signed payload. Returns the
     validated base64 (an ASCII scalar) for the runner to pipe to the primitive's STDIN. Fail-closed: refuses a
     missing/malformed payload, a non-ASCII env, an oversize env, any line that is not ``set <ALLOWLISTED_KEY>=…``
     or a REM comment, and an MT5_ALLOW_LIVE posture that disagrees with the operation (ACTIVATE requires it
-    present and ==1; RESTORE requires it absent). The signed payload_digest is the authority; this is defence in
-    depth so no arbitrary key or disguised posture can reach the host even if the backend render were wrong."""
+    present and ==1; RESTORE requires it absent). ADR-0049.1: ACTIVATE additionally requires a valid
+    ``MT5_LIVE_EXPIRY`` (UTC epoch seconds) strictly after the verified request ``now`` and within
+    ``_LIVE_EXPIRY_SANE_MAX_SECONDS`` (past / missing / malformed / absurd ⇒ refused); RESTORE requires it
+    ABSENT. The signed payload_digest is the authority; this is defence in depth so no arbitrary key, disguised
+    posture, or unbounded/expired time-bound can reach the host even if the backend render were wrong."""
     import base64
     payload = fields.get("payload")
     if not isinstance(payload, dict):
@@ -175,6 +183,7 @@ def _validate_bridge_env_payload(fields: dict, *, require_allow_live: bool) -> s
     except UnicodeDecodeError:
         raise HostProtocolError("payload_not_ascii")
     allow_live_val = None
+    live_expiry_val = None
     for line in text.replace("\r\n", "\n").split("\n"):
         s = line.strip()
         if s == "" or s.upper().startswith("REM "):
@@ -195,12 +204,28 @@ def _validate_bridge_env_payload(fields: dict, *, require_allow_live: bool) -> s
             raise HostProtocolError("payload_env_value_unsafe")
         if key == "MT5_ALLOW_LIVE":
             allow_live_val = val.strip()
+        if key == "MT5_LIVE_EXPIRY":
+            live_expiry_val = val.strip()
     if require_allow_live:
         if allow_live_val != "1":
             raise HostProtocolError("payload_not_live_authorized")
+        # ADR-0049.1: the LIVE env MUST carry a valid, non-expired, non-absurd host time-bound. The expiry is
+        # UTC epoch SECONDS as a base-10 integer, strictly after the verified request time and within the sane
+        # ceiling. A past expiry (clock replay), a missing one (unbounded LIVE), or an absurd/overflowed far-
+        # future one all fail closed here — belt over the per-order bridge check, which re-enforces the band.
+        if live_expiry_val is None:
+            raise HostProtocolError("payload_live_expiry_missing")
+        try:
+            expiry = int(live_expiry_val)
+        except (TypeError, ValueError):
+            raise HostProtocolError("payload_live_expiry_malformed")
+        if not (int(now) < expiry <= int(now) + _LIVE_EXPIRY_SANE_MAX_SECONDS):
+            raise HostProtocolError("payload_live_expiry_out_of_window")
     else:
         if allow_live_val is not None:
             raise HostProtocolError("payload_unexpected_live")
+        if live_expiry_val is not None:
+            raise HostProtocolError("payload_unexpected_live_expiry")   # OFF env must never carry a time-bound
     return b64
 
 
@@ -289,7 +314,7 @@ def dispatch(request: dict, *, keyring: dict, now: int, nonce_burn, run_primitiv
     slot = derive_slot(account_id)
     _validate_params(op, fields.get("params") or {})
 
-    args = _build_args(op, slot, fields, envelope_open=envelope_open)
+    args = _build_args(op, slot, fields, envelope_open=envelope_open, now=now)
     primitive = OP_PRIMITIVES[op]["primitive"]
     result = run_primitive(primitive, args)
     if not isinstance(result, dict):
@@ -356,9 +381,11 @@ def _build_catalogue_args(op: str, fields: dict) -> dict:
     return {"label": label, "broker_id": broker, "expected_sha256": sha, "size_bytes": size, "artefact_b64": b64}
 
 
-def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
+def _build_args(op: str, slot: dict, fields: dict, *, envelope_open, now: int = 0) -> dict:
     """Assemble the fixed, server-derived args for the mapped primitive. The ONLY caller-influenced value is the
-    sealed password for PROVISION_IDENTITY, which is OPENED here (never logged) — everything else is derived."""
+    sealed password for PROVISION_IDENTITY, which is OPENED here (never logged) — everything else is derived.
+    ``now`` is the verified request time threaded from ``dispatch`` (used only by the ADR-0049.1 LIVE op to
+    bound MT5_LIVE_EXPIRY against trusted time)."""
     base = {"username": slot["username"], "runtime_root": slot["runtime_root"],
             "terminal_root": slot["terminal_root"]}
     if op == "PROVISION_IDENTITY":
@@ -431,7 +458,7 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open) -> dict:
         if not (8800 <= port <= 8899):
             raise HostProtocolError("params_not_allowed")
         env_b64 = _validate_bridge_env_payload(
-            fields, require_allow_live=(op == "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED"))
+            fields, require_allow_live=(op == "ACTIVATE_TENANT_BRIDGE_LIVE_AUTHORIZED"), now=now)
         return {"username": slot["username"], "terminal_root": slot["terminal_root"],
                 "account_id": slot["account_id"], "port": port, "bridge_env_b64": env_b64}
     if op == "PRESEED_BROKER_ARTEFACT":

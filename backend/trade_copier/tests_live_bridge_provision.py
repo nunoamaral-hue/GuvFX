@@ -38,11 +38,14 @@ class _FakeExecutor:
         self.account_id = account_id
         self.override = override or {}
     def _attest(self, port, b64):
+        import re
         env = base64.b64decode(b64).decode("ascii")
         sha = hashlib.sha256(env.encode("ascii")).hexdigest()
+        m = re.search(r"set MT5_LIVE_EXPIRY=(\d+)", env)   # a faithful host attests the exact expiry it wrote
         res = {"ok": True, "account_id": self.account_id, "port": port, "env_sha256": sha,
                "allow_live": ("set MT5_ALLOW_LIVE=1" in env), "require_pin": ("set MT5_REQUIRE_IDENTITY_PIN=1" in env),
-               "guarded_attach": ("set MT5_GUARDED_ATTACH=1" in env), "listening": True, "task": "GuvFX_TenantBridge_48"}
+               "guarded_attach": ("set MT5_GUARDED_ATTACH=1" in env), "live_expiry": int(m.group(1)) if m else 0,
+               "listening": True, "task": "GuvFX_TenantBridge_48"}
         res.update(self.override)
         return res
     def activate_tenant_bridge_live_authorized(self, runtime_root, port, bridge_env_b64):
@@ -230,3 +233,62 @@ class LiveBridgeProvisionTests(TestCase):
             self.assertTrue(res["ok"], res)
             env = base64.b64decode(ex.calls[0][3]).decode("ascii")
             self.assertNotIn("MT5_ALLOW_LIVE", env)                      # OFF env never carries it
+
+    # --- ADR-0049.1 host time-bound: derivation (cap), rendering, attestation echo, OFF clears it ---
+    def test_live_env_and_preview_carry_capped_expiry(self):
+        res = LBP.provision_live(self.follower.id, self.authz.id, commit=False,
+                                 executor_resolver=lambda a: _FakeExecutor(self.follower.id))
+        exp = res["preview"]["host_live_expiry_epoch"]
+        self.assertIsNotNone(exp)
+        now = int(timezone.now().timestamp())
+        self.assertTrue(now < exp <= now + LBP.MAX_HOST_LIVE_SECONDS + 2)   # authz=1h, cap=1h ⇒ ~now+3600
+
+    def test_host_expiry_capped_below_long_authz(self):
+        self.authz.expires_at = timezone.now() + timedelta(hours=6)          # authz far longer than the host cap
+        self.authz.save(update_fields=["expires_at"])
+        res = LBP.provision_live(self.follower.id, self.authz.id, commit=False,
+                                 executor_resolver=lambda a: _FakeExecutor(self.follower.id))
+        now = int(timezone.now().timestamp())
+        self.assertLessEqual(res["preview"]["host_live_expiry_epoch"], now + LBP.MAX_HOST_LIVE_SECONDS + 2)
+
+    def test_host_expiry_is_authz_when_shorter_than_cap(self):
+        self.authz.expires_at = timezone.now() + timedelta(minutes=5)        # shorter than the 1h cap ⇒ authz wins
+        self.authz.save(update_fields=["expires_at"])
+        res = LBP.provision_live(self.follower.id, self.authz.id, commit=False,
+                                 executor_resolver=lambda a: _FakeExecutor(self.follower.id))
+        self.assertEqual(res["preview"]["host_live_expiry_epoch"], int(self.authz.expires_at.timestamp()))
+
+    def test_commit_attests_matching_expiry(self):
+        ex = _FakeExecutor(self.follower.id)
+        res = LBP.provision_live(self.follower.id, self.authz.id, commit=True, executor_resolver=lambda a: ex)
+        self.assertTrue(res["armed"], res)
+        env = base64.b64decode(ex.calls[0][3]).decode("ascii")
+        self.assertRegex(env, r"set MT5_LIVE_EXPIRY=\d+")
+
+    def test_commit_attestation_expiry_mismatch_fails_closed(self):
+        ex = _FakeExecutor(self.follower.id, override={"live_expiry": 123})   # host wrote a DIFFERENT time-bound
+        res = LBP.provision_live(self.follower.id, self.authz.id, commit=True, executor_resolver=lambda a: ex)
+        self.assertFalse(res["ok"])
+        self.assertIn("live_expiry_mismatch", res["reason"])
+        self.assertEqual([c[0] for c in ex.calls], ["activate", "restore"])  # fail closed to OFF restore
+
+    def test_off_restore_env_has_no_expiry(self):
+        ex = _FakeExecutor(self.follower.id, override={"allow_live": False})
+        res = LBP.restore_off(self.follower.id, commit=True, executor_resolver=lambda a: ex)
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("MT5_LIVE_EXPIRY", base64.b64decode(ex.calls[0][3]).decode("ascii"))
+
+    def test_attestation_guards_fail_closed_to_off_restore(self):
+        # A buggy/compromised host returning a malformed/absent attestation field must fail closed (and, on the
+        # commit path, fail closed to the OFF restore). Exercises the _verify_attestation branches the faithful
+        # fake never triggers — incl. the ADR-0049.1 live_expiry_malformed guard.
+        for override, needle in (({"live_expiry": "abc"}, "live_expiry_malformed"),
+                                 ({"listening": False}, "not_listening"),
+                                 ({"require_pin": False}, "pin_or_guard_off"),
+                                 ({"port": 9999}, "port_mismatch"),
+                                 ({"account_id": 999999}, "account_mismatch")):
+            ex = _FakeExecutor(self.follower.id, override=override)
+            res = LBP.provision_live(self.follower.id, self.authz.id, commit=True, executor_resolver=lambda a: ex)
+            self.assertFalse(res["ok"], override)
+            self.assertIn(needle, res["reason"])
+            self.assertEqual([c[0] for c in ex.calls], ["activate", "restore"])   # failed closed to OFF restore
