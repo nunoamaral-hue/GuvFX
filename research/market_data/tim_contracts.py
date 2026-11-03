@@ -392,6 +392,9 @@ def validate_export_response_v2(obj) -> None:
     observed_count = validate_bar_sequence(bars, tf, start, end, "export_response")
     if observed_count != count:
         raise ContractError("export_response: bar_count does not match the number of bars")
+    # PIT at the response layer: the source cannot make the window available before its last bar has closed.
+    if avail < parse_canonical_utc_instant(obj["range_end_utc"]):
+        raise ContractError("export_response: source_available_at_utc must be >= range_end_utc (window not yet closed)")
     _assert_chain([("source_available_at_utc", avail), ("collector_observed_at_utc", observed)],
                   "export_response")
 
@@ -581,6 +584,14 @@ def validate_quality_report(obj) -> None:
     _str_array(obj, "limitations", "quality")
     if re_ <= rs:
         raise ContractError("quality: range_end_utc must be after range_start_utc")
+    # Completeness is a DERIVED truth: expected_bar_count must equal the half-open range divided by the timeframe,
+    # so a short self-reported expected can never let an incomplete window certify as complete.
+    tf_seconds = _TIMEFRAME_SECONDS[obj["timeframe"]]
+    span = re_ - rs
+    if span % tf_seconds != 0:
+        raise ContractError("quality: [range_start,range_end) is not a whole multiple of the timeframe")
+    if expected != span // tf_seconds:
+        raise ContractError("quality: expected_bar_count must equal (range_end - range_start) / timeframe")
     clean = (all(obj[f] == 0 for f in _VIOLATION_COUNTS) and gap_count == 0 and observed == expected)
     if status == "PASS":
         if not clean:
@@ -660,6 +671,12 @@ def validate_release_manifest_v2(obj) -> None:
         _str(d, "session_timezone", "release.derivation", max_len=64)
         _str(d, "dst_policy", "release.derivation", enum=("calendar_versioned", "utc_fixed"))
         _str(d, "price_basis", "release.derivation", enum=("bid",))
+        # A derived series must be strictly COARSER than its source and an exact integer multiple — never an
+        # upsample (fabricating sub-source structure) and never a 1:1 identity relabel of native data.
+        src_s, tgt_s = _TIMEFRAME_SECONDS[d["source_timeframe"]], _TIMEFRAME_SECONDS[obj["timeframe"]]
+        if not (tgt_s > src_s and tgt_s % src_s == 0):
+            raise ContractError("release: DERIVED timeframe must be strictly coarser than, and an integer "
+                                "multiple of, source_timeframe")
     else:  # NATIVE
         if obj["derivation"] is not None:
             raise ContractError("release: NATIVE must not carry a derivation object")
@@ -682,8 +699,8 @@ def validate_release_manifest_v2(obj) -> None:
     _str(rm, "ready_marker_path", "release.ready_marker", regex=REL_PATH_RE, max_len=512)
     _str(rm, "ready_marker_sha256", "release.ready_marker", regex=SHA256_RE, min_len=64, max_len=64)
     # Timestamp chain: event_end <= source_available <= collector_observed <= ingested <= validated <= published.
-    if ev_e < ev_s:
-        raise ContractError("release: event_end_utc must be >= event_start_utc")
+    if ev_e <= ev_s:
+        raise ContractError("release: event_end_utc must be after event_start_utc (half-open)")
     _assert_chain([("event_end_utc", ev_e), ("source_available_at_utc", avail),
                    ("collector_observed_at_utc", observed), ("ingested_at_utc", ingested),
                    ("validated_at_utc", validated), ("published_at_utc", published)], "release")
@@ -691,6 +708,13 @@ def validate_release_manifest_v2(obj) -> None:
     if completeness == "COMPLETE":
         if not (present and written_last):
             raise ContractError("release: COMPLETE requires a READY marker present AND written last")
+        if obj["row_count"] <= 0:
+            raise ContractError("release: COMPLETE requires row_count > 0 (no empty, data-less release)")
+        if not any(f["role"] in ("canonical_parquet", "raw_ndjson") and (f["row_count"] or 0) > 0 for f in files):
+            raise ContractError("release: COMPLETE requires at least one canonical data file with row_count > 0")
+        if not any(f["role"] == "ready_marker" and f["rel_path"] == rm["ready_marker_path"]
+                   and f["content_sha256"] == rm["ready_marker_sha256"] for f in files):
+            raise ContractError("release: COMPLETE requires a ready_marker file entry matching ready_marker_path/sha256")
 
 
 def _min_as_instant(value, field):

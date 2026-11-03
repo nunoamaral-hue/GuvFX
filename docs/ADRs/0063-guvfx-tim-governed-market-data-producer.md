@@ -71,6 +71,11 @@ model promotion, operational signing keys, or any trading action. Merge and depl
 
 ## Consequences
 
+- **The dependency-free validator is the authoritative cross-field enforcement, not the JSON Schema alone.** The
+  draft-07 schemas intentionally do not encode the cross-field rules (NATIVE/DERIVED exclusivity, completeness ⇒
+  READY-present-and-last, the event→published timestamp chain, expected-count = range/timeframe, derived-timeframe
+  coarsening). A schema-only consumer would under-enforce; any consumer (including TIM) MUST run
+  `tim_contracts.py` (or a faithful port), not validate against the JSON Schema by itself.
 - The contracts and validators are inert, synthetic foundation: they describe and verify releases but acquire,
   publish and sign nothing real. The Synology ACL layout in the contract is documented for a later, separately
   authorised NAS assessment — no ACL is read or changed here.

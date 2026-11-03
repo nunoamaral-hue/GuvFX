@@ -282,4 +282,12 @@ def adversarial_cases():
     add("quality_pass_with_violation", "market_data_quality_report_v1",
         {**pf["market_data_quality_report_v1"], "ohlc_violation_count": 1}, "reject")
     add("unlicensed_source", "market_data_source_v1", {**pf["market_data_source_v1"], "licensing_reference": None}, "quarantine")
+    # Regression cases for the 2026-11-03 adversarial-review fixes (completeness/provenance/PIT holes):
+    add("quality_expected_not_matching_range", "market_data_quality_report_v1",
+        {**pf["market_data_quality_report_v1"], "expected_bar_count": 5, "observed_bar_count": 5}, "reject")
+    add("complete_release_zero_rows", "dataset_release_manifest_v2", {**nat, "row_count": 0}, "reject")
+    add("derived_identity_relabel", "dataset_release_manifest_v2", {**der, "timeframe": "M1"}, "reject")
+    add("response_available_before_window_close", "agent_market_data_export_response_v2",
+        {**resp, "source_available_at_utc": "2026-01-05T00:02:00Z",
+         "collector_observed_at_utc": "2026-01-05T00:03:06Z"}, "reject")
     return cases

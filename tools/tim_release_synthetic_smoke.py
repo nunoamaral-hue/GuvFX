@@ -219,7 +219,12 @@ def _run(root: str) -> dict:
         except (ValueError, UnicodeDecodeError):
             pass  # the NDJSON data file is not a single JSON object; token scan above covers it
 
-    assert sig_ok and tamper_detected and hash_matches and prohibited is None
+    # MEASURE (not assert) that the READY marker was the LAST of the release artefacts to be written.
+    order = [rel for rel, _ in emitted]
+    release_arts = [f_data[0], f_quality[0], f_watermark[0], f_manifest[0], manifest["signature_path"]]
+    ready_written_last = all(order.index(ready_rel) > order.index(a) for a in release_arts)
+
+    assert sig_ok and tamper_detected and hash_matches and prohibited is None and ready_written_last
 
     return {
         "ok": True, "synthetic": True,
@@ -227,7 +232,7 @@ def _run(root: str) -> dict:
         "bar_count": MINUTES, "range_start_utc": range_start, "range_end_utc": range_end,
         "manifest_sha256": sha256_hex(manifest_bytes), "data_sha256": f_data[1], "ready_sha256": ready_sha,
         "signature_verified": bool(sig_ok), "tamper_detected": bool(tamper_detected),
-        "all_file_hashes_match": bool(hash_matches), "ready_written_last": True,
+        "all_file_hashes_match": bool(hash_matches), "ready_written_last": bool(ready_written_last),
         "import_state": receipt["import_state"], "quarantine_case_validated": True,
         "gap_repair_case_validated": True, "emitted_file_count": len(emitted),
         "prohibited_key_found": prohibited, "no_absolute_paths": True,
