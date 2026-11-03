@@ -14,6 +14,22 @@
 > **Existing 006C v1 schemas byte-identical** (pinned SHA-256; `agent_history_export_*_v1` are the v1 request/response,
 > preserved). No MT5/NAS/broker/credential/production/TIM/training/trading action; no real signing key. Governed PR
 > open, **auto-merge OFF**, awaiting separate Sponsor merge GO. Separate workstream from PR #603 (capacity guard).
+> **2026-11-03 — Physical-host capacity guard (ADR-0069; DARK PR) + Windows host recertified for #54–#57.** The
+> "second physical host required" conclusion is withdrawn. Read-only CIM proves the MT5 box `100.79.101.19` was
+> UPGRADED to **8 cores / 16 logical / 64 GB** (2× the `SAFE_FOR_12` baseline of 4 cores / 8 logical / 32 GB), so
+> `SAFE_FOR_12` is **stale pre-upgrade governance**. Node-2 reports 12/12 only because the allocator enforces
+> per-node `max_accounts` and NEVER a sum across the two logical nodes co-resident on the one box — a latent
+> over-subscription hole. Added (repository-only, DARK): `execution.HostCapacity` (certified host-wide ceiling keyed
+> on `rdp_host`) + append-only `HostCapacityAudit`; a fail-closed host-wide guard in `allocate_workspace_node`
+> (flag `HOSTED_HOST_CAPACITY_GUARD_ENABLED`, default OFF; race-safe under the existing `select_for_update`);
+> `set_host_capacity` primitive; host-wide rollup in `hosted_capacity_report`. 13 new tests incl. a two-thread race;
+> hosted_workspace+execution suites green (2777 tests; 2 pre-existing, unrelated `observer_attach` env failures,
+> proven pre-existing by stash). **Next:** governed PR → DARK deploy → seed ceiling 20 → arm → incrementally raise
+> node2 `max_accounts` 12→16 → provision #54–#57 to `READY_FOR_LOCAL_BROKER_LOGIN` (17 total = 1.06× logical
+> oversubscription vs the accepted 1.5× on the old box). UI "11 vs 12": `/accounts`(staff)=`disconnected_at IS NULL`
+> hides 4 tombstoned occupants (#25 RETIRED, #30/#31/#34); occupancy counts bindings until `CLEANUP_SUCCEEDED`.
+> RDS CAL grace ~2026-12-07 is a SEPARATE estate-wide session cliff. Copy Trading PAUSED; #46 position untouched;
+> execution OFF.
 
 > **2026-10-30 — Broker Catalogue V3 carry-forward + governed staging/attestation (ADR-0068; DARK PR).** The shipped
 > builder groups approvals by ref-suffix, so it cannot extend ACTIVE v2 with the separately-approved `tradersway/v1`

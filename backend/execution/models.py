@@ -128,6 +128,64 @@ class TerminalNode(models.Model):
         return self.computed_active_accounts < self.max_accounts
 
 
+class HostCapacity(models.Model):
+    """ADR-0069 — a CERTIFIED, documented capacity ceiling for ONE PHYSICAL host, across ALL logical
+    ``TerminalNode`` rows that share it. The allocator (``allocate_workspace_node``) enforces a per-node
+    ``max_accounts`` ceiling but never a total across co-resident logical nodes on the same physical box; this
+    row is the single documented source for that host-wide ceiling. ``physical_host_key`` equals the nodes'
+    ``rdp_host`` (the only physical-host signal in the schema; operator-mutable, so the guard tolerates edits
+    and fails closed on a blank). Every change is recorded in ``HostCapacityAudit``. The guard reads this LIVE
+    and FAILS CLOSED when a host has nodes but no row — an uncertified host is never filled."""
+
+    physical_host_key = models.CharField(
+        max_length=255, unique=True,
+        help_text="Physical host identity — equals the co-resident TerminalNodes' rdp_host (e.g. an IP).")
+    max_total_occupants = models.PositiveIntegerField(
+        help_text="CERTIFIED host-wide ceiling: max distinct occupant accounts summed across ALL logical nodes "
+                  "on this physical host. The allocator fail-closes a bind that would exceed it.")
+    certified_safe = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Informational recommended-safe occupancy (<= max_total_occupants): the operational-headroom "
+                  "target. Not itself enforced — the enforced ceiling is max_total_occupants.")
+    basis = models.TextField(
+        blank=True, default="",
+        help_text="Secret-free certification basis (hardware, methodology, date). No credentials / PII.")
+    certified_at = models.DateTimeField(null=True, blank=True)
+    certified_by = models.CharField(max_length=150, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Host Capacity"
+        verbose_name_plural = "Host Capacities"
+        ordering = ["physical_host_key"]
+
+    def __str__(self) -> str:
+        return f"{self.physical_host_key}: ceiling={self.max_total_occupants} safe={self.certified_safe}"
+
+
+class HostCapacityAudit(models.Model):
+    """Append-only history of every ``HostCapacity`` ceiling set/change — so a capacity ceiling is never an
+    undocumented constant and every change carries an actor, a reason and a timestamp (governance: evidence.md)."""
+
+    physical_host_key = models.CharField(max_length=255, db_index=True)
+    previous_max = models.IntegerField(null=True, blank=True)
+    new_max = models.IntegerField()
+    previous_safe = models.IntegerField(null=True, blank=True)
+    new_safe = models.IntegerField(null=True, blank=True)
+    actor = models.CharField(max_length=150, blank=True, default="")
+    reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Host Capacity Audit"
+        verbose_name_plural = "Host Capacity Audit"
+
+    def __str__(self) -> str:
+        return f"{self.physical_host_key}: {self.previous_max}->{self.new_max}"
+
+
 # =============================================================================
 # Demo Trade Safety Constants
 # =============================================================================

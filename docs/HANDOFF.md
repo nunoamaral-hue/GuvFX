@@ -24,6 +24,37 @@
 - **Next (one bounded action).** Independent 3-lens adversarial review → fix CRITICAL/HIGH → open governed PR
   (auto-merge OFF) → run/repair CI within scope → STOP for a separate Sponsor merge GO.
 - **Git.** Branch `feat/tim-contract-v0_2-repo` off `origin/main` `d92aca95`. Separate from PR #603.
+## 2026-11-03 — Physical-host capacity guard (ADR-0069; DARK PR) + Windows host recertification
+
+- **Problem.** Four LIVE accounts #54 (IS6FX G01), #55 (IS6FX NRGM2), #56 (Pepperstone 02), #57 (TradersWay ACC02)
+  are stuck at "Setting up terminal" (`canonical_state=PROVISIONING`, `DA_NODE_UNASSIGNED`). A prior session
+  concluded a second physical host was needed (node-2 12/12 + node-1 CZ-forbidden). Nuno reopened it: the box was
+  upgraded. **Verified read-only** on `100.79.101.19`: now **8 cores / 16 logical / 64 GB** (was 4/8/32 at
+  `SAFE_FOR_12`), terminal64 load avg 3.07 / peak 4.11 logical cores at 10 terminals, 52 GB free RAM, pagefile peak 0.
+  The allocator enforces per-node `max_accounts` only — never a host-wide sum across the two co-resident logical
+  nodes — so the box could be over-subscribed. The packet mandates a host-wide guard **before** any capacity raise.
+- **Change (repository-only, DARK; NO production mutation).**
+  1. `execution.HostCapacity` (certified host-wide ceiling, keyed on `physical_host_key` == `rdp_host`) +
+     append-only `execution.HostCapacityAudit` (migration `execution/0036_hostcapacity`).
+  2. Host-wide guard in `hosted_workspace.provisioning.allocate_workspace_node`: ACTIVE node set materialised
+     up-front under the existing `select_for_update`; `host_capacity_block` refuses a bind that would exceed the
+     certified host ceiling (summing `node_occupant_count` over co-resident nodes). Gated by
+     `HOSTED_HOST_CAPACITY_GUARD_ENABLED` (default OFF ⇒ byte-identical). Fail-closed on blank `rdp_host`/no ceiling.
+     New reasons `host_capacity_exceeded` / `host_capacity_unconfigured`.
+  3. `set_host_capacity` management command (dry-run default; `--apply` writes ceiling + audit row).
+  4. `hosted_capacity_report` gains a physical-host-wide rollup.
+- **Tests.** `hosted_workspace/tests_host_capacity_guard.py` — 13 tests incl. same-host-node-3 bypass, CZ counts
+  toward host, fail-closed, flag gating, and a two-thread `select_for_update` race (no oversubscription). Full
+  `hosted_workspace` + `execution` suites: 2777 tests, 2 failures — both pre-existing, unrelated `observer_attach`
+  CIM env failures (proven pre-existing by stashing this change and re-running).
+- **Verified vs assumed.** Verified: host specs, live load, migration-matches-models (`makemigrations --check`),
+  new tests + suites. Assumed/separate: the certified ceiling NUMBER (20) is set by a separate governed incremental
+  certification (add-one-observe), recorded in `HostCapacity.basis`/audit — this change is the enforcement mechanism.
+- **Next (one bounded action).** Governed squash-merge → rollback-first DARK backend deploy → `set_host_capacity
+  --host-key 100.79.101.19 --max 20 --apply` → arm `HOSTED_HOST_CAPACITY_GUARD_ENABLED` → raise node2
+  `max_accounts` 12→16 → provision #54–#57 one-at-a-time with host observation to `READY_FOR_LOCAL_BROKER_LOGIN`.
+- **Git.** Branch `feat/host-capacity-guard` off `origin/main` `d92aca95`. Copy Trading PAUSED; #46 untouched;
+  execution/copier OFF throughout.
 
 ## 2026-10-30 — Broker Catalogue V3 carry-forward + governed staging/attestation (ADR-0068; repository-only DARK PR)
 

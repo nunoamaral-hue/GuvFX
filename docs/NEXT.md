@@ -6,6 +6,14 @@ offline 7-day EURUSD M1 release smoke + CI lane, all green locally; existing 006
 No MT5/NAS/broker/real-data/deploy/TIM/training. **One bounded next action:** await a **separate Sponsor merge GO**
 (auto-merge OFF); a later packet then wires acquisition/publication, performs the Synology ACL assessment, and
 selects the operational signing key/algorithm (replacing the injected synthetic verifier). Separate from PR #603.
+## ★ WINDOWS HOST RECERTIFICATION + CAPACITY GUARD (2026-11-03; ADR-0069; DARK PR ready)
+The MT5 box was upgraded (8c/16L/64 GB; `SAFE_FOR_12` is stale pre-upgrade). A physical-host-wide capacity guard
+(`HostCapacity` + fail-closed allocator check, flag `HOSTED_HOST_CAPACITY_GUARD_ENABLED` OFF) is built + green
+(13 tests incl. a race). **One bounded next action:** governed squash-merge → rollback-first DARK backend deploy →
+`set_host_capacity --host-key 100.79.101.19 --max 20 --apply` (records basis+audit) → arm the flag → raise node2
+`max_accounts` 12→16 → provision #54–#57 ONE AT A TIME with host observation to `READY_FOR_LOCAL_BROKER_LOGIN`
+(stop at the MT5 login screen; Nuno logs in locally). Separate standing P0: RDS CAL grace ~2026-12-07 estate-wide
+session cliff. Copy Trading stays PAUSED; #46 untouched; execution OFF. Runbook: ADR-0069 + HANDOFF 2026-11-03.
 
 ## ★ BROKER CATALOGUE V3 (2026-10-30; ADR-0068; DARK PR ready)
 Repository mechanism for promoting ACTIVE v2 → v3 is complete and DARK: fail-closed carry-forward-active builder +
