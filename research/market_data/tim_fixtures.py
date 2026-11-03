@@ -85,9 +85,9 @@ def _native_release():
         "event_end_utc": "2026-01-12T00:00:00Z", "source_available_at_utc": "2026-01-12T00:00:02Z",
         "collector_observed_at_utc": "2026-01-12T00:00:05Z", "ingested_at_utc": "2026-01-12T00:00:06Z",
         "validated_at_utc": "2026-01-12T00:00:07Z", "published_at_utc": "2026-01-12T00:03:00Z",
-        "row_count": 7200, "files": [
+        "row_count": 10080, "files": [
             {"rel_path": "exchange/releases/rel_synth_native_1/eurusd_m1.parquet", "role": "canonical_parquet",
-             "content_sha256": "b" * 64, "file_size_bytes": 123456, "row_count": 7200},
+             "content_sha256": "b" * 64, "file_size_bytes": 123456, "row_count": 10080},
             {"rel_path": "exchange/releases/rel_synth_native_1/quality.json", "role": "quality_report",
              "content_sha256": "c" * 64, "file_size_bytes": 512, "row_count": None},
             {"rel_path": "exchange/releases/rel_synth_native_1/READY", "role": "ready_marker",

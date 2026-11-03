@@ -12,7 +12,7 @@
       "file_size_bytes": 123456,
       "rel_path": "exchange/releases/rel_synth_native_1/eurusd_m1.parquet",
       "role": "canonical_parquet",
-      "row_count": 7200
+      "row_count": 10080
     },
     {
       "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -52,7 +52,7 @@
   "release_completeness": "COMPLETE",
   "release_id": "rel_synth_native_1",
   "representation": "bid_ohlc",
-  "row_count": 7200,
+  "row_count": 10080,
   "schema_version": "2.0",
   "signature_path": "exchange/releases/rel_synth_native_1/manifest.sig.json",
   "signing_key_id": "synthkey1",
