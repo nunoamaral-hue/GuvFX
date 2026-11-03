@@ -2,6 +2,28 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copier hybrid lifecycle (ADR-0071) — accepted bounds while DARK (2026-11-03)
+
+- The EVENT path has a **contract + pure fold only — no bridge emitter and no ingestion endpoint yet**. Until a
+  signed account-scoped ingestion endpoint is built (its own gate/ADR), the lifecycle is fed by the authoritative
+  **poll** path only; `revisions.py` is exercised by tests, not by production.
+- **Sub-second reconciliation cadence is refused** without a REAL `CapacityProfile`; the default floor is 1000 ms.
+  Do not lower it by assumption — record a measurement first (`cadence.CapacityProfile`).
+- **Concurrent first-creation** of the same `CopierPositionLifecycle` row can raise `IntegrityError` (the unique
+  constraint); the per-ticket try/except contains it and the next pass completes it. The projection pass is meant
+  to run single-threaded (cron); do not fan it out per-ticket in parallel without adding get-or-create handling.
+- The lifecycle **records decisions only** — it creates no `ExecutionJob`. It is not wired to the producers; the
+  execute/arm flags remain the sole order authority.
+
+## ⚪ Local `trade_copier` test env: pre-existing APPEND_SLASH `301`/`403` API-test failures (2026-11-03)
+
+- Running `manage.py test trade_copier` in **this local dev environment** reports **27 failures + 33 errors**,
+  concentrated in the API test modules (`tests_matrix_api`, `tests_config_api`, …) as `HttpResponsePermanentRedirect`
+  (301) / 403. Proven PRE-EXISTING: a pristine `origin/main` worktree shows the **identical** 27F/33E signature with
+  no local changes. These pass in CI (`make check`) — the local failure is an environment/settings artifact
+  (APPEND_SLASH on the DRF routes), **not** a code regression. When adding copier tests, compare the failure
+  *signature* against clean main rather than the absolute pass/fail.
+
 ## 🟠 `SAFE_FOR_12` capacity record is STALE (pre-upgrade); host-wide guard is DARK until armed (2026-11-03; ADR-0069)
 
 - The MT5 host `100.79.101.19` was upgraded to **8 cores / 16 logical / 64 GB**; the `SAFE_FOR_12` verdict in

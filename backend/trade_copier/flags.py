@@ -121,6 +121,22 @@ def copier_reconcile_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_RECONCILE_ENABLED")
 
 
+def copier_lifecycle_enabled() -> bool:
+    """Gate for the per-master-ticket lifecycle projection (ADR-0071 hybrid change propagation). DEFAULT OFF,
+    ANDed with the master gate.
+
+    The lifecycle projection is a READ-ONLY, DARK decision/record layer built ON TOP of the existing
+    ``MasterEvent`` ledger and the reconcile output. It derives the explicit per-master-ticket state machine
+    (OBSERVED_OPEN → ENTRY_PENDING → LINKED → MODIFY/CLOSE_PENDING → CLOSED, with ENTRY_FAILED_FINAL /
+    CONTAINED_FAILURE terminal), enforces the entry-admissibility deadline (no late-recovery entry), the
+    ordering contract (close supersedes a queued modify) and stale/out-of-order rejection, and records
+    latency/failure signals. It creates NO ExecutionJob and places/modifies/closes NO order: it is deliberately
+    SEPARATE from — and never ORs past — the execute/arm gates (``copier_execute_enabled`` /
+    ``copier_execute_demo_armed`` / ``copier_live_execute_enabled``), which continue to be the sole, independent
+    authority for any broker contact. Enabling this projects lifecycle rows only."""
+    return copier_enabled() and _flag("COPIER_LIFECYCLE_ENABLED")
+
+
 def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:
     """The copier's execution posture for the UI, DERIVED LIVE from the real execute flags — never a
     hardcoded label. While the execute producer is off (the default) this is observation/shadow and reads
