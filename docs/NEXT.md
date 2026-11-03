@@ -1,10 +1,9 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ GUVFX-TIM CONTRACT v0.2 REPOSITORY FOUNDATION (2026-11-03; GFX-PKT-TIM-C1; ADR-0070; PR open, NOT merged)
+## ★ GUVFX-TIM CONTRACT v0.2 REPOSITORY FOUNDATION (2026-11-03; GFX-PKT-TIM-C1; ADR-0070; MERGED (#604 -> main 26a2f6f0))
 Repository-only / synthetic-only: 12 additive JSON Schemas + dependency-free validators + synthetic fixtures +
 offline 7-day EURUSD M1 release smoke + CI lane, all green locally; existing 006C v1 schemas byte-identical.
-No MT5/NAS/broker/real-data/deploy/TIM/training. **One bounded next action:** await a **separate Sponsor merge GO**
-(auto-merge OFF); a later packet then wires acquisition/publication, performs the Synology ACL assessment, and
+No MT5/NAS/broker/real-data/deploy/TIM/training. **One bounded next action:** a later packet wires acquisition/publication, performs the Synology ACL assessment, and
 selects the operational signing key/algorithm (replacing the injected synthetic verifier). Separate from PR #603.
 ## ★ WINDOWS HOST RECERTIFICATION + CAPACITY GUARD (2026-11-03; ADR-0069; DARK PR ready)
 The MT5 box was upgraded (8c/16L/64 GB; `SAFE_FOR_12` is stale pre-upgrade). A physical-host-wide capacity guard

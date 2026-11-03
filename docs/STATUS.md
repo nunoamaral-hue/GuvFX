@@ -1,7 +1,7 @@
 # GuvFX — Project Status
 
 > **2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only /
-> synthetic-only; NOT merged, NOT deployed).** Implemented the Sponsor-approved additive contract set: 12 new
+> synthetic-only; MERGED (#604 -> main 26a2f6f0); NOT deployed).** Implemented the Sponsor-approved additive contract set: 12 new
 > draft-07 JSON Schemas under `research/contracts/` (market_data_source, canonical_instrument,
 > source_instrument_mapping, agent_market_data_export_request/response v2, raw_market_data_manifest v2,
 > acquisition_watermark, market_data_gap, market_data_quality_report, dataset_release_manifest v2,
