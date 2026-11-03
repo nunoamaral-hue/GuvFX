@@ -1,0 +1,14 @@
+{
+  "ambiguity_reason": null,
+  "asset_class": "fx",
+  "broker_native_symbol": "EURUSD",
+  "canonical_symbol": "EURUSD",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "mapping_status": "VERIFIED",
+  "price_precision": 5,
+  "schema_version": "1.0",
+  "source_id": "mt5_research_synth",
+  "volume_precision": 2
+}

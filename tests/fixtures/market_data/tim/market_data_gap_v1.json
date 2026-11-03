@@ -1,0 +1,23 @@
+{
+  "canonical_symbol": "EURUSD",
+  "declared_at_utc": "2026-01-10T22:10:00Z",
+  "gap_end_utc": "2026-01-10T22:05:00Z",
+  "gap_id": "9999999999999999999999999999999999999999999999999999999999999999",
+  "gap_start_utc": "2026-01-10T22:00:00Z",
+  "gap_state": "REPAIRED",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "range_semantics": "[start,end)",
+  "reason": "synthetic weekend/feed outage gap",
+  "repair": {
+    "repair_evidence_path": "raw/synth/gap_repair.json",
+    "repair_raw_object_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+    "repaired_at_utc": "2026-01-10T23:00:00Z",
+    "supersedes_gap_id": null
+  },
+  "representation": "bid_ohlc",
+  "schema_version": "1.0",
+  "source_id": "mt5_research_synth",
+  "timeframe": "M1"
+}

@@ -1,0 +1,15 @@
+{
+  "account_scope": "research_synth",
+  "broker_native_symbol": "EURUSD",
+  "canonical_symbol": "EURUSD",
+  "operation": "copy_rates_range",
+  "price_basis": "bid",
+  "range_end_utc": "2026-01-05T00:03:00Z",
+  "range_semantics": "[start,end)",
+  "range_start_utc": "2026-01-05T00:00:00Z",
+  "representation": "bid_ohlc",
+  "request_id": "524689fb2a7753930b952ebeb6fb384e10a243d8c78093079afbbbe652ef458c",
+  "schema_version": "2.0",
+  "source_id": "mt5_research_synth",
+  "timeframe": "M1"
+}

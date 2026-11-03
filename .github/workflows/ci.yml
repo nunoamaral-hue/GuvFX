@@ -178,3 +178,11 @@ jobs:
       - name: Market-data foundation unit tests
         run: |
           python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v
+
+      - name: Synthetic GUVFX-TIM v0.2 release smoke (no network, NAS, MT5, broker or credentials)
+        run: |
+          python tools/tim_release_synthetic_smoke.py
+
+      - name: GUVFX-TIM contract v0.2 unit tests (GFX-PKT-TIM-C1)
+        run: |
+          python -m unittest discover -s tests -p 'test_tim_contract_v0_2.py' -v

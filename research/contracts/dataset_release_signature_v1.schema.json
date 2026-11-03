@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/dataset_release_signature_v1.schema.json",
+  "title": "GuvFX Dataset Release Signature v1",
+  "description": "Detached signature envelope over a dataset-release manifest. Under GFX-PKT-TIM-C1 the algorithm is an INJECTED SYNTHETIC placeholder — no real/operational signing key or algorithm is created or finalised here. Carries NO private key or secret: public verification material only. TIM receives this envelope and verifies it with injected synthetic public material.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "instant_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "sha256_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rel_path": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$", "maxLength": 512 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "release_id": { "$ref": "#/definitions/slug" },
+    "signed_manifest_path": { "$ref": "#/definitions/rel_path" },
+    "signed_manifest_sha256": { "$ref": "#/definitions/sha256_hex" },
+    "signing_key_id": { "$ref": "#/definitions/slug" },
+    "public_key_fingerprint": { "$ref": "#/definitions/sha256_hex" },
+    "algorithm": {
+      "const": "synthetic-placeholder-v0",
+      "description": "Explicitly synthetic. The operational signing algorithm is NOT chosen or finalised under this packet."
+    },
+    "signature_scheme": { "const": "detached" },
+    "signature_value": {
+      "$ref": "#/definitions/sha256_hex",
+      "description": "Synthetic signature value produced by the injected synthetic verifier; never a real cryptographic signature."
+    },
+    "synthetic": { "const": true },
+    "created_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "release_id", "signed_manifest_path", "signed_manifest_sha256",
+    "signing_key_id", "public_key_fingerprint", "algorithm", "signature_scheme",
+    "signature_value", "synthetic", "created_at_utc", "limitations"
+  ]
+}

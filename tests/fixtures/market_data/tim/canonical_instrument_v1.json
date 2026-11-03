@@ -1,0 +1,13 @@
+{
+  "asset_class": "fx",
+  "base_currency": "EUR",
+  "canonical_symbol": "EURUSD",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "price_basis_default": "bid",
+  "price_precision": 5,
+  "quote_currency": "USD",
+  "schema_version": "1.0",
+  "volume_precision": 2
+}

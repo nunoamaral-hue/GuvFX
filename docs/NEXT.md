@@ -1,5 +1,12 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ GUVFX-TIM CONTRACT v0.2 REPOSITORY FOUNDATION (2026-11-03; GFX-PKT-TIM-C1; ADR-0063; PR open, NOT merged)
+Repository-only / synthetic-only: 12 additive JSON Schemas + dependency-free validators + synthetic fixtures +
+offline 7-day EURUSD M1 release smoke + CI lane, all green locally; existing 006C v1 schemas byte-identical.
+No MT5/NAS/broker/real-data/deploy/TIM/training. **One bounded next action:** await a **separate Sponsor merge GO**
+(auto-merge OFF); a later packet then wires acquisition/publication, performs the Synology ACL assessment, and
+selects the operational signing key/algorithm (replacing the injected synthetic verifier). Separate from PR #603.
+
 ## ★ BROKER CATALOGUE V3 (2026-10-30; ADR-0068; DARK PR ready)
 Repository mechanism for promoting ACTIVE v2 → v3 is complete and DARK: fail-closed carry-forward-active builder +
 two account-independent host ops (STAGE/ATTEST) + two ASCII `.ps1` + attest wiring + exact-inventory activation gate.

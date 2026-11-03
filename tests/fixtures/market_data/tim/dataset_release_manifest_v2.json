@@ -1,0 +1,64 @@
+{
+  "asset_class": "fx",
+  "canonical_symbol": "EURUSD",
+  "collector_observed_at_utc": "2026-01-12T00:00:05Z",
+  "contract_version": "0.2",
+  "derivation": null,
+  "event_end_utc": "2026-01-12T00:00:00Z",
+  "event_start_utc": "2026-01-05T00:00:00Z",
+  "files": [
+    {
+      "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "file_size_bytes": 123456,
+      "rel_path": "exchange/releases/rel_synth_native_1/eurusd_m1.parquet",
+      "role": "canonical_parquet",
+      "row_count": 7200
+    },
+    {
+      "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "file_size_bytes": 512,
+      "rel_path": "exchange/releases/rel_synth_native_1/quality.json",
+      "role": "quality_report",
+      "row_count": null
+    },
+    {
+      "content_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "file_size_bytes": 64,
+      "rel_path": "exchange/releases/rel_synth_native_1/READY",
+      "role": "ready_marker",
+      "row_count": null
+    }
+  ],
+  "ingested_at_utc": "2026-01-12T00:00:06Z",
+  "licensing_classification": "internal_research_only",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "partial_release_allowed": false,
+  "price_basis": "bid",
+  "producer_version": "guvfx-tim-0.2.0-synth",
+  "provenance": "NATIVE",
+  "published_at_utc": "2026-01-12T00:03:00Z",
+  "quality_report_path": "exchange/releases/rel_synth_native_1/quality.json",
+  "range_end_utc": "2026-01-12T00:00:00Z",
+  "range_semantics": "[start,end)",
+  "range_start_utc": "2026-01-05T00:00:00Z",
+  "ready_marker": {
+    "present": true,
+    "ready_marker_path": "exchange/releases/rel_synth_native_1/READY",
+    "ready_marker_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "written_last": true
+  },
+  "release_completeness": "COMPLETE",
+  "release_id": "rel_synth_native_1",
+  "representation": "bid_ohlc",
+  "row_count": 7200,
+  "schema_version": "2.0",
+  "signature_path": "exchange/releases/rel_synth_native_1/manifest.sig.json",
+  "signing_key_id": "synthkey1",
+  "source_available_at_utc": "2026-01-12T00:00:02Z",
+  "source_id": "mt5_research_synth",
+  "timeframe": "M1",
+  "validated_at_utc": "2026-01-12T00:00:07Z",
+  "watermark_path": "exchange/releases/rel_synth_native_1/watermark.json"
+}

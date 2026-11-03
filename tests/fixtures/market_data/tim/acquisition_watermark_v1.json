@@ -1,0 +1,18 @@
+{
+  "advanced_at_utc": "2026-01-12T00:03:00Z",
+  "canonical_symbol": "EURUSD",
+  "landed_and_verified": true,
+  "last_raw_object_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "price_basis": "bid",
+  "quality_accepted": true,
+  "range_semantics": "[start,end)",
+  "representation": "bid_ohlc",
+  "schema_version": "1.0",
+  "source_id": "mt5_research_synth",
+  "timeframe": "M1",
+  "validated": true,
+  "watermark_event_end_utc": "2026-01-12T00:00:00Z"
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/dataset_release_manifest_v2.schema.json",
+  "title": "GuvFX Dataset Release Manifest v2",
+  "description": "Immutable, signed dataset-release manifest. A release becomes visible to TIM ONLY when it is COMPLETE and a signed READY marker is written LAST. NATIVE and DERIVED candles are distinct releases; DERIVED declares full lineage. Partial releases are prohibited during the pilot. v2 successor to dataset_manifest_v1 (preserved). Synthetic/design contract under GFX-PKT-TIM-C1.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "instant_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "minute_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$" },
+    "sha256_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rel_path": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$", "maxLength": 512 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+    "canonical_symbol": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{2,31}$" },
+    "release_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rel_path": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$", "maxLength": 512 },
+        "role": { "type": "string", "enum": ["canonical_parquet", "raw_ndjson", "quality_report", "watermark", "gap", "signature", "ready_marker"] },
+        "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "file_size_bytes": { "type": "integer", "minimum": 0 },
+        "row_count": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "required": ["rel_path", "role", "content_sha256", "file_size_bytes", "row_count"]
+    },
+    "derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_timeframe": { "type": "string", "enum": ["M1", "M5", "M15", "M30", "H1", "H4", "D1"] },
+        "derivation_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "calendar_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+        "calendar_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "bucket_policy": { "const": "left_closed_right_open" },
+        "session_timezone": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "dst_policy": { "type": "string", "enum": ["calendar_versioned", "utc_fixed"] },
+        "price_basis": { "type": "string", "enum": ["bid"] }
+      },
+      "required": ["source_timeframe", "derivation_version", "calendar_id", "calendar_version", "bucket_policy", "session_timezone", "dst_policy", "price_basis"]
+    },
+    "ready_marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "present": { "type": "boolean" },
+        "written_last": { "type": "boolean" },
+        "ready_marker_path": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$", "maxLength": 512 },
+        "ready_marker_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "required": ["present", "written_last", "ready_marker_path", "ready_marker_sha256"]
+    }
+  },
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "release_id": { "$ref": "#/definitions/slug" },
+    "source_id": { "$ref": "#/definitions/slug" },
+    "canonical_symbol": { "$ref": "#/definitions/canonical_symbol" },
+    "asset_class": { "type": "string", "enum": ["fx", "metal", "index", "commodity", "crypto", "equity"] },
+    "timeframe": { "type": "string", "enum": ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"] },
+    "representation": { "type": "string", "enum": ["bid_ohlc"] },
+    "price_basis": { "type": "string", "enum": ["bid"] },
+    "provenance": { "type": "string", "enum": ["NATIVE", "DERIVED"] },
+    "derivation": {
+      "anyOf": [{ "$ref": "#/definitions/derivation" }, { "type": "null" }],
+      "description": "Null when provenance is NATIVE; a full lineage object when DERIVED."
+    },
+    "range_start_utc": { "$ref": "#/definitions/minute_utc" },
+    "range_end_utc": { "$ref": "#/definitions/minute_utc" },
+    "range_semantics": { "const": "[start,end)" },
+    "event_start_utc": { "$ref": "#/definitions/minute_utc" },
+    "event_end_utc": { "$ref": "#/definitions/minute_utc" },
+    "source_available_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "collector_observed_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "ingested_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "validated_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "published_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "row_count": { "type": "integer", "minimum": 0 },
+    "files": { "type": "array", "items": { "$ref": "#/definitions/release_file" }, "minItems": 1 },
+    "quality_report_path": { "$ref": "#/definitions/rel_path" },
+    "watermark_path": { "$ref": "#/definitions/rel_path" },
+    "release_completeness": { "type": "string", "enum": ["COMPLETE", "INCOMPLETE"] },
+    "partial_release_allowed": { "const": false },
+    "producer_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "contract_version": { "const": "0.2" },
+    "signing_key_id": { "$ref": "#/definitions/slug" },
+    "signature_path": { "$ref": "#/definitions/rel_path" },
+    "ready_marker": { "$ref": "#/definitions/ready_marker" },
+    "licensing_classification": { "type": "string", "enum": ["internal_research_only", "licensed_redistribution", "unlicensed_quarantine"] },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "release_id", "source_id", "canonical_symbol", "asset_class", "timeframe",
+    "representation", "price_basis", "provenance", "derivation", "range_start_utc", "range_end_utc",
+    "range_semantics", "event_start_utc", "event_end_utc", "source_available_at_utc",
+    "collector_observed_at_utc", "ingested_at_utc", "validated_at_utc", "published_at_utc",
+    "row_count", "files", "quality_report_path", "watermark_path", "release_completeness",
+    "partial_release_allowed", "producer_version", "contract_version", "signing_key_id",
+    "signature_path", "ready_marker", "licensing_classification", "limitations"
+  ]
+}

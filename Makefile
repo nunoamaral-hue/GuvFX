@@ -68,6 +68,8 @@ research-foundation-check: require-research-venv
 market-data-check: require-research-venv
 	.venv-research/bin/python tools/market_data_synthetic_smoke.py
 	.venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v
+	.venv-research/bin/python tools/tim_release_synthetic_smoke.py
+	.venv-research/bin/python -m unittest discover -s tests -p 'test_tim_contract_v0_2.py' -v
 
 # research-check composes both foundations so the market-data gate is not bypassed.
 research-check: research-foundation-check market-data-check

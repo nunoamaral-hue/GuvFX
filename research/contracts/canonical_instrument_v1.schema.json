@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/canonical_instrument_v1.schema.json",
+  "title": "GuvFX Canonical Instrument v1",
+  "description": "Provider-independent canonical instrument identity and numeric precision. The canonical anchor that broker-native symbols map to. Synthetic/design contract under GFX-PKT-TIM-C1.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "canonical_symbol": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{2,31}$" }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "canonical_symbol": {
+      "$ref": "#/definitions/canonical_symbol",
+      "description": "Provider-independent canonical symbol key (e.g. 'EURUSD')."
+    },
+    "asset_class": {
+      "type": "string",
+      "enum": ["fx", "metal", "index", "commodity", "crypto", "equity"]
+    },
+    "base_currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "quote_currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "price_precision": {
+      "type": "integer", "minimum": 0, "maximum": 12,
+      "description": "Decimal places for prices (e.g. 5 for EURUSD)."
+    },
+    "volume_precision": { "type": "integer", "minimum": 0, "maximum": 12 },
+    "price_basis_default": { "type": "string", "enum": ["bid", "ask", "mid"] },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "canonical_symbol", "asset_class", "base_currency", "quote_currency",
+    "price_precision", "volume_precision", "price_basis_default", "limitations"
+  ]
+}
