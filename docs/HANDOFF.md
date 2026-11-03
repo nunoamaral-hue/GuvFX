@@ -38,7 +38,7 @@ Initial branch/HEAD/status: feat/live-bridge-provisioning-integrator @ c351a6b4 
 Convergence base: origin/main @ 79f7ab6e (contains #600 ADR-0057, #602 ADR-0049 adoption, #603).
 Convergence branch: feat/copier-hybrid-change-propagation
 Preservation cherry-pick commit: None (fresh additive branch; no reconciliation of other work).
-Governance commit: <this branch's single feat commit — see PR>
+Governance commit: PR nunoamaral-hue/GuvFX#605 (reconciled onto main d19e80e0; squash SHA recorded on main post-merge)
 Files added:
   backend/trade_copier/lifecycle.py          (pure state machine + gated READ-ONLY projection)
   backend/trade_copier/revisions.py          (pure hybrid detection contract + monotonic-revision fold)
@@ -67,7 +67,7 @@ Make governance-check result: secret-scan PASS; tests/test_no_secrets PASS.
 Make check result: NOT run end-to-end locally (frontend untouched; backend-test signature proven above).
 Evidence/privacy validation: no credentials/logins/tickets in audit; transitions carry sanitised reason codes.
 Commit identity/message validation: conventional feat(trade_copier) commit; Co-Authored-By trailer.
-Final branch/HEAD/status: feat/copier-hybrid-change-propagation (pushed); DARK PR opened.
+Final branch/HEAD/status: feat/copier-hybrid-change-propagation reconciled onto main d19e80e0 (force-pushed with lease); DARK PR #605 — governed squash-merge pinned to the exact reconciled head.
 Flow A ref unchanged: Yes (origin/main untouched; no merge).
 Branch pushed: Yes.
 

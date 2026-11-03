@@ -1,6 +1,6 @@
 # ADR-0071 — Copier hybrid change detection & propagation (per-master-ticket lifecycle)
 
-- Status: **Accepted (DARK / repository-only)** — awaiting governed review
+- Status: **Accepted (DARK / repository-only)** — awaiting governed review (PR nunoamaral-hue/GuvFX#605; reconciled onto main d19e80e0)
 - Packet: GFX-COPIER-HYBRID-CHANGE-001
 - Date: 2026-11-03
 - Supersedes: nothing. **Additive** on top of ADR-0051 (observation/ordering), ADR-0052 (close +
