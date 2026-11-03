@@ -2,6 +2,21 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 `SAFE_FOR_12` capacity record is STALE (pre-upgrade); host-wide guard is DARK until armed (2026-11-03; ADR-0069)
+
+- The MT5 host `100.79.101.19` was upgraded to **8 cores / 16 logical / 64 GB**; the `SAFE_FOR_12` verdict in
+  `STATUS.md`/`KNOWN_ISSUES.md` and `reference_windows_host_capacity` was measured on the pre-upgrade 4c/8L/32 GB box.
+  Treat the OLD `SAFE_FOR_12` / "ceiling 16" numbers as superseded for this box; recertification target is
+  host-wide **20** (node2→16, total 17 incl CZ), set via `set_host_capacity`.
+- Until `HOSTED_HOST_CAPACITY_GUARD_ENABLED` is armed AND a `HostCapacity` row is seeded for `100.79.101.19`, the
+  allocator still enforces ONLY per-node `max_accounts` — raising a node's `max_accounts` or adding a same-host
+  logical node can over-subscribe the physical box. Arm the guard before/with any raise.
+- **Sharp edge:** the guard FAILS CLOSED when ON and a host has nodes but a blank `rdp_host` or no `HostCapacity`
+  row (`host_capacity_unconfigured`). Seed every active host's ceiling BEFORE arming, or allocation stops.
+- **Separate standing P0 (not fixed here):** RDS CAL licensing grace ~**2026-12-07** — each hosted terminal runs in
+  its own disconnected RDP session; after grace expiry the whole hosted estate's multi-session RDP reverts to the
+  2-session admin limit regardless of CPU/RAM capacity. Must be resolved independently before/again near that date.
+
 ## 🟠 Catalogue V3 staging/attestation require a host dispatcher redeploy before use (2026-10-30; ADR-0068)
 
 - The two new account-independent ops (`STAGE_CATALOGUE_ARTEFACT`, `ATTEST_CATALOGUE_ARTEFACT`) and their `.ps1`

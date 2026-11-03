@@ -14,10 +14,12 @@ READ-ONLY. No customer-facing surface; this is the operator oracle used to certi
 """
 from django.core.management.base import BaseCommand
 
-from execution.models import TerminalNode
+from execution.models import HostCapacity, TerminalNode
 from hosted_workspace.decommission import CLEANUP_SUCCEEDED
+from hosted_workspace.flags import hosted_host_capacity_guard_enabled
 from hosted_workspace.models import HostedMt5Workspace
-from hosted_workspace.provisioning import node_occupant_count
+from hosted_workspace.provisioning import (host_capacity_ceiling, host_occupant_count,
+                                           node_occupant_count)
 from hosted_workspace.state_machine import WorkspaceLifecycleState as S
 
 
@@ -47,3 +49,33 @@ class Command(BaseCommand):
                 f"TOTAL unexpected tombstoned allocations (run reclaim_node_allocations --apply): {grand_leak}"))
         else:
             self.stdout.write(self.style.SUCCESS("No unexpected tombstoned allocations. Capacity is honest."))
+
+        # ADR-0069 — PHYSICAL-HOST-WIDE rollup: logical nodes grouped by rdp_host (the physical box); the summed
+        # occupancy is compared to the certified HostCapacity ceiling. The per-node report above can look healthy
+        # while a shared box is oversubscribed — this section is the box-wide truth the allocator guard enforces.
+        self.stdout.write("")
+        guard = "ON" if hosted_host_capacity_guard_enabled() else "OFF"
+        self.stdout.write(f"=== physical-host-wide rollup (HOSTED_HOST_CAPACITY_GUARD_ENABLED={guard}) ===")
+        nodes_all = list(TerminalNode.objects.all())   # ALL statuses — a drained co-resident node still loads the box
+        hosts = {}
+        for n in nodes_all:
+            hosts.setdefault((n.rdp_host or "").strip(), []).append(n)
+        for hk, ns in sorted(hosts.items()):
+            node_ids = ",".join(f"{n.id}:{n.status}" for n in ns)
+            if not hk:
+                self.stdout.write(f"host=(blank rdp_host — NOT deliverable) nodes=[{node_ids}] -> fails closed when guard ON")
+                continue
+            occ = host_occupant_count(hk, nodes_all)
+            ceiling = host_capacity_ceiling(hk)
+            row = HostCapacity.objects.filter(physical_host_key__iexact=hk).first()
+            safe = row.certified_safe if row else None
+            if ceiling is None:
+                self.stdout.write(self.style.WARNING(
+                    f"host={hk} nodes=[{node_ids}] occupancy={occ} ceiling=UNCERTIFIED safe=n/a "
+                    f"-> guard fails closed here when ON (run set_host_capacity --apply)"))
+            else:
+                avail = max(0, ceiling - occ)
+                verdict = "AT/OVER CEILING" if occ >= ceiling else f"ok ({avail} free)"
+                self.stdout.write(
+                    f"host={hk} nodes=[{node_ids}] occupancy={occ} ceiling={ceiling} safe={safe} "
+                    f"available={avail} -> {verdict}")

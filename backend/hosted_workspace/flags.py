@@ -7,6 +7,11 @@ they toggle without a restart; every accessor defaults OFF (empty-string default
 All three ship DARK. In THIS increment nothing in the execution, onboarding, or delivery path reads
 these — the model and the pure matcher are inert foundation (ADR-0033). The flags exist so the later
 increments that DO wire behaviour ship gated from their first line.
+
+NOTE (updated): that ADR-0033 statement describes only the ORIGINAL three flags. Several gates added since ARE
+read in the execution/onboarding/delivery paths once armed (e.g. ``hosted_tenant_node_isolation_enabled``,
+``hosted_execution_path_gate_enabled`` and ``hosted_host_capacity_guard_enabled`` are read by the node allocator);
+each remains DARK (default OFF) until explicitly armed.
 """
 import os
 
@@ -47,6 +52,18 @@ def hosted_observation_scheduler_enabled() -> bool:
     order; it only advances PROVISIONING→WAITING_FOR_LOGIN and ingests observations through the certified
     single writer. Kept independent so the scheduler can be enabled without touching delivery/execution gates."""
     return _flag("HOSTED_OBSERVATION_SCHEDULER_ENABLED")
+
+
+def hosted_host_capacity_guard_enabled() -> bool:
+    """ADR-0069 (DARK, default OFF) — when ON, the node allocator additionally enforces a CERTIFIED
+    PHYSICAL-HOST-WIDE occupancy ceiling (``execution.HostCapacity``) summed across ALL co-resident logical
+    nodes that share one physical host (grouped by ``rdp_host``), closing the gap that the per-node
+    ``max_accounts`` check leaves open (two logical nodes on one box could otherwise oversubscribe it). OFF ⇒
+    zero behaviour change (the host sum is never computed; allocation is byte-identical). When ON it FAILS
+    CLOSED for a host that has no certified ``HostCapacity`` row. It never arms execution or authorises an
+    order; it only narrows which node a bind may land on. Deploy DARK, seed the ceiling, then arm; rollback =
+    flip OFF."""
+    return _flag("HOSTED_HOST_CAPACITY_GUARD_ENABLED")
 
 
 def hosted_bounded_observation_enabled() -> bool:

@@ -60,6 +60,8 @@ ALLOC_NO_CAPACITY = "no_node_capacity"
 ALLOC_NODE_NOT_DELIVERABLE = "node_not_deliverable"   # G12: node has capacity but no durable rdp_host
 ALLOC_CZ_NODE_FORBIDDEN = "cz_node_forbidden"         # ADR-0043 Addendum B: refuse a non-CZ tenant on a CZ node
 ALLOC_NODE_NOT_EXECUTION_OPERATIONAL = "node_not_execution_operational"  # ADR-0048: no execution-commissioned node
+ALLOC_HOST_CAPACITY_EXCEEDED = "host_capacity_exceeded"   # ADR-0069: physical host at its certified host-wide ceiling
+ALLOC_HOST_CAPACITY_UNCONFIGURED = "host_capacity_unconfigured"  # ADR-0069: guard ON but host has no certified ceiling
 ALLOC_ALREADY = "already_bound"
 ALLOC_OK = "allocated"
 CONFIRM_NOT_OWNER = "not_owner"
@@ -208,6 +210,55 @@ def node_occupant_count(node) -> int:
     occupants |= set(node.bound_hosted_workspaces.exclude(cleanup_state=CLEANUP_SUCCEEDED)
                      .values_list("trading_account_id", flat=True))
     return len(occupants)
+
+
+def host_capacity_ceiling(physical_host_key):
+    """ADR-0069 — the CERTIFIED host-wide ceiling for a physical host (its ``HostCapacity.max_total_occupants``),
+    or ``None`` when no ceiling is recorded. ``None`` means the guard (when ON) must FAIL CLOSED: an uncertified
+    host is never filled. Read LIVE so a governed ``set_host_capacity`` takes effect without a restart."""
+    from execution.models import HostCapacity
+    hk = (physical_host_key or "").strip()
+    if not hk:
+        return None
+    row = HostCapacity.objects.filter(physical_host_key__iexact=hk).first()
+    return row.max_total_occupants if row else None
+
+
+def host_occupant_count(physical_host_key, nodes=None):
+    """ADR-0069 — total occupant accounts across ALL logical nodes sharing one physical host, REGARDLESS of each
+    node's status (ACTIVE / DRAINING / OFFLINE / DISABLED). A non-ACTIVE co-resident node still holds occupants
+    that physically load the box, so they MUST count toward the physical ceiling — counting ACTIVE-only would
+    UNDER-count and let the guard oversubscribe a draining host. Grouped by ``rdp_host``; the host-wide analogue
+    of ``node_occupant_count``. Conservative by design — it SUMS per-node distinct counts (an account bound to two
+    co-resident nodes is counted twice, which can only TIGHTEN the guard; in practice an account is bound to one
+    node so the sum is exact). ``nodes`` may be a PRE-LOCKED list (the allocator passes its ``select_for_update``
+    set — EVERY node, any status — so the sum is computed under the lock that serialises concurrent allocators);
+    otherwise all co-resident nodes (any status) are queried."""
+    from execution.models import TerminalNode
+    hk = (physical_host_key or "").strip().lower()
+    if not hk:
+        return 0
+    if nodes is None:
+        nodes = list(TerminalNode.objects.filter(rdp_host__iexact=hk))   # ALL statuses — drained nodes still load the box
+    return sum(node_occupant_count(n) for n in nodes
+               if (getattr(n, "rdp_host", "") or "").strip().lower() == hk)
+
+
+def host_capacity_block(node, nodes):
+    """ADR-0069 — evaluate the PHYSICAL-HOST-WIDE ceiling for a candidate ``node`` against the certified
+    ``HostCapacity`` for its host, summing occupancy over the (pre-locked) co-resident ACTIVE ``nodes``. Returns
+    a stable reason code when the bind must be REFUSED, else ``None``:
+      * ``ALLOC_HOST_CAPACITY_UNCONFIGURED`` — blank ``rdp_host`` OR no certified ``HostCapacity`` row → fail closed;
+      * ``ALLOC_HOST_CAPACITY_EXCEEDED``    — the host is already at/over its certified ceiling.
+    Pure read; the caller holds the node-row lock. Factored out so the host-ceiling decision is unit-testable
+    without running the whole allocator."""
+    hk = (getattr(node, "rdp_host", "") or "").strip()
+    cap = host_capacity_ceiling(hk) if hk else None
+    if cap is None:
+        return ALLOC_HOST_CAPACITY_UNCONFIGURED
+    if host_occupant_count(hk, nodes) >= cap:
+        return ALLOC_HOST_CAPACITY_EXCEEDED
+    return None
 
 
 def _node_deliverable(node) -> bool:
@@ -402,6 +453,7 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
         # surface a DISTINCT reason so the driver/operator learns "provision a non-CZ host" rather than a
         # generic "no capacity". The single writer's raise is therefore never triggered from THIS path.
         from hosted_workspace.flags import (hosted_execution_path_gate_enabled,
+                                             hosted_host_capacity_guard_enabled,
                                              hosted_tenant_node_isolation_enabled)
         from hosted_workspace.tenant_isolation import forbidden_execution_node_ids, is_customer_zero_account
         _guard_on = hosted_tenant_node_isolation_enabled() and not is_customer_zero_account(ws.trading_account_id)
@@ -413,6 +465,10 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
         # honest via execution_path_state). Customer Zero uses the legacy path and is exempt.
         _exec_gate_on = (hosted_execution_path_gate_enabled()
                          and not is_customer_zero_account(ws.trading_account_id))
+        # ADR-0069 (DARK, default OFF): enforce a PHYSICAL-HOST-WIDE occupancy ceiling across co-resident logical
+        # nodes. Applies to EVERY tenant (the limit is physical, not per-tenant) — Customer Zero's own occupancy
+        # counts toward the host total. OFF ⇒ the host sum is never computed and allocation is byte-identical.
+        _host_guard_on = hosted_host_capacity_guard_enabled()
         # Whether we still need to drive PROVISIONING → WAITING_FOR_LOGIN. Guarded on canonical == PROVISIONING
         # so a RETRY converges a workspace left stuck at PROVISIONING (advance failed after a prior bind) yet
         # NEVER regresses a workspace that has already progressed (e.g. CONNECTED) back toward login.
@@ -430,8 +486,22 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
             capacity_but_undeliverable = False   # G12: distinguish "no room" from "room but no rdp_host"
             forbidden_blocked = False            # a viable node was refused SOLELY for CZ co-residency
             exec_not_operational = False         # ADR-0048: a viable node lacks a commissioned execution path
-            for node in (TerminalNode.objects.select_for_update()
-                         .filter(status=TerminalNode.Status.ACTIVE).order_by("id")):
+            host_capacity_full = False           # ADR-0069: a viable node's PHYSICAL host is at its certified ceiling
+            host_capacity_unconfigured = False   # ADR-0069: guard ON but the host has no certified ceiling (fail closed)
+            # ADR-0069: candidate selection is ACTIVE-only (a bind may only land on an ACTIVE node), but the
+            # host-wide occupancy SUM must include occupants on NON-active co-resident nodes — a DRAINING/OFFLINE/
+            # DISABLED node still physically loads the box — so when the guard is ON we lock + scan EVERY node (any
+            # status) and compute the host sum over all co-resident rows (candidacy still skips non-ACTIVE). Locking
+            # the full set keeps the host sum race-safe (concurrent allocators serialise on the same rows). Guard
+            # OFF ⇒ we lock the ACTIVE set exactly as before (byte-identical) and the status-skip is a no-op.
+            if _host_guard_on:
+                scan_nodes = list(TerminalNode.objects.select_for_update().order_by("id"))   # every node, any status
+            else:
+                scan_nodes = list(TerminalNode.objects.select_for_update()
+                                  .filter(status=TerminalNode.Status.ACTIVE).order_by("id"))
+            for node in scan_nodes:
+                if node.status != TerminalNode.Status.ACTIVE:
+                    continue                       # not a bind candidate; its occupants still count in the host sum
                 if node.pk in _forbidden:          # Customer Zero node — never for a non-CZ tenant
                     forbidden_blocked = True
                     continue
@@ -445,14 +515,33 @@ def allocate_workspace_node(workspace, *, actor="", request=None) -> AllocResult
                     if not node_execution_operational(node).operational:
                         exec_not_operational = True
                         continue
+                if _host_guard_on:                 # ADR-0069: physical-host-wide ceiling across co-resident nodes
+                    _hc = host_capacity_block(node, scan_nodes)
+                    if _hc == ALLOC_HOST_CAPACITY_UNCONFIGURED:
+                        host_capacity_unconfigured = True
+                        continue
+                    if _hc == ALLOC_HOST_CAPACITY_EXCEEDED:
+                        host_capacity_full = True
+                        continue
                 candidate = node
                 break
             if candidate is None:
-                # Fail closed. Prefer the CZ-forbidden reason when the ONLY blocker was a Customer Zero node
-                # (operator action = "provision a separate non-CZ host"), distinct from "buy capacity" /
-                # "set rdp_host" (G12) / "commission the node's execution path" (ADR-0048).
-                if forbidden_blocked and not capacity_but_undeliverable and not exec_not_operational:
+                # Fail closed. Reason precedence picks the most actionable operator signal. CZ-forbidden wins only
+                # when a Customer Zero node was the SOLE blocker (operator action = "provision a separate non-CZ
+                # host"), distinct from the capacity / rdp_host / exec / host-ceiling signals below.
+                if (forbidden_blocked and not capacity_but_undeliverable and not exec_not_operational
+                        and not host_capacity_full and not host_capacity_unconfigured):
                     return AllocResult(False, ALLOC_CZ_NODE_FORBIDDEN)
+                # ADR-0069: guard ON but the physical host has no certified ceiling → never fill an uncertified
+                # host; the operator must certify + record it (``set_host_capacity``).
+                if host_capacity_unconfigured and not host_capacity_full and not capacity_but_undeliverable:
+                    return AllocResult(False, ALLOC_HOST_CAPACITY_UNCONFIGURED)
+                # ADR-0069: the physical box is at its certified host-wide ceiling → operator action = re-certify
+                # more capacity on this host or add a physical host. Checked BEFORE the exec gate: when both a
+                # host-full and an exec-not-operational node were seen, the host ceiling is the binding constraint
+                # (commissioning the exec path would still not free a box slot), so surface it.
+                if host_capacity_full and not capacity_but_undeliverable:
+                    return AllocResult(False, ALLOC_HOST_CAPACITY_EXCEEDED)
                 if exec_not_operational and not capacity_but_undeliverable:
                     return AllocResult(False, ALLOC_NODE_NOT_EXECUTION_OPERATIONAL)
                 return AllocResult(False,
