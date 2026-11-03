@@ -1,6 +1,6 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
-## 2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0063; repository-only / synthetic-only)
+## 2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only / synthetic-only)
 
 - **Scope.** Sponsor GO authorised repository-only schemas, dependency-free validators, synthetic fixtures, an
   offline smoke and CI for the approved GUVFX-TIM Contract v0.2. Merge, deployment, MT5/broker/real-data, NAS,
@@ -8,7 +8,7 @@
 - **Added (all NEW files; 0 existing schema/validator files modified).**
   - 12 schemas in `research/contracts/` (the additive set); `research/market_data/tim_contracts.py` (validators +
     injected synthetic signer); `research/market_data/tim_fixtures.py`; `tools/tim_release_synthetic_smoke.py`;
-    `tests/test_tim_contract_v0_2.py`; `tests/fixtures/market_data/tim/*.json` (12); `docs/ADRs/0063-*.md`;
+    `tests/test_tim_contract_v0_2.py`; `tests/fixtures/market_data/tim/*.json` (12); `docs/ADRs/0070-*.md`;
     `evidence/manifests/GFX-EVD-TIM-C1-*.json`. Edited only: `.github/workflows/ci.yml` + `Makefile` (lane wiring)
     and docs.
 - **v1 preservation.** The 006C v1 request/response are `agent_history_export_request/response_v1` (the packet's

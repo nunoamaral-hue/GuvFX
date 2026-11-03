@@ -1,4 +1,4 @@
-# ADR-0063 — GuvFX Publishes Governed Market Data; TIM Is a Read-Only Consumer (repository counterpart of GFX-ADR-TIM-001)
+# ADR-0070 — GuvFX Publishes Governed Market Data; TIM Is a Read-Only Consumer (repository counterpart of GFX-ADR-TIM-001)
 
 - **Status:** Accepted — repository-only schema/validator/fixture foundation (GFX-PKT-TIM-C1). Implementation of
   real acquisition, NAS changes, deployment, TIM-side code, training and operational signing keys remains

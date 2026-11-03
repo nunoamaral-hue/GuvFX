@@ -229,7 +229,7 @@ timezone/server/legal identity, and broker-cost/specification capture all remain
 
 ## GUVFX-TIM Contract v0.2 additive set — Current (GFX-PKT-TIM-C1, repository-only / synthetic-only)
 
-> **Current (synthetic-only, repository foundation).** Established by **GFX-PKT-TIM-C1** under **ADR-0063** (repo
+> **Current (synthetic-only, repository foundation).** Established by **GFX-PKT-TIM-C1** under **ADR-0070** (repo
 > counterpart of Notion GFX-ADR-TIM-001; GUVFX-TIM Contract Definition v0.2). GuvFX is the governed market-data
 > **producer**; TIM is a **read-only consumer** of signed releases. Twelve additive draft-07 schemas live in
 > `research/contracts/`: `market_data_source_v1`, `canonical_instrument_v1`, `source_instrument_mapping_v1`,

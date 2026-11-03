@@ -57,7 +57,7 @@
     "tools/tim_release_synthetic_smoke.py",
     "tests/test_tim_contract_v0_2.py",
     "tests/fixtures/market_data/tim/ (12 committed synthetic fixtures)",
-    "docs/ADRs/0063-guvfx-tim-governed-market-data-producer.md",
+    "docs/ADRs/0070-guvfx-tim-governed-market-data-producer.md",
     ".github/workflows/ci.yml (market-data-foundation lane)",
     "Makefile (market-data-check)"
   ],
