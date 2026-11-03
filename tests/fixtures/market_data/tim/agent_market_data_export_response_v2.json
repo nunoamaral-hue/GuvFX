@@ -1,0 +1,52 @@
+{
+  "account_scope": "research_synth",
+  "bar_count": 3,
+  "bars": [
+    {
+      "close": 1.101,
+      "event_end_utc": "2026-01-05T00:01:00Z",
+      "event_start_utc": "2026-01-05T00:00:00Z",
+      "high": 1.105,
+      "low": 1.095,
+      "open": 1.1,
+      "volume": 10
+    },
+    {
+      "close": 1.1011,
+      "event_end_utc": "2026-01-05T00:02:00Z",
+      "event_start_utc": "2026-01-05T00:01:00Z",
+      "high": 1.1051,
+      "low": 1.0951,
+      "open": 1.1001,
+      "volume": 11
+    },
+    {
+      "close": 1.1012,
+      "event_end_utc": "2026-01-05T00:03:00Z",
+      "event_start_utc": "2026-01-05T00:02:00Z",
+      "high": 1.1052,
+      "low": 1.0952,
+      "open": 1.1002,
+      "volume": 12
+    }
+  ],
+  "broker_native_symbol": "EURUSD",
+  "canonical_symbol": "EURUSD",
+  "collector_observed_at_utc": "2026-01-05T00:03:05Z",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "price_basis": "bid",
+  "provenance": "NATIVE",
+  "range_end_utc": "2026-01-05T00:03:00Z",
+  "range_semantics": "[start,end)",
+  "range_start_utc": "2026-01-05T00:00:00Z",
+  "raw_object_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "representation": "bid_ohlc",
+  "request_id": "524689fb2a7753930b952ebeb6fb384e10a243d8c78093079afbbbe652ef458c",
+  "schema_version": "2.0",
+  "source_available_at_utc": "2026-01-05T00:03:02Z",
+  "source_id": "mt5_research_synth",
+  "source_timezone": "Etc/UTC",
+  "timeframe": "M1"
+}

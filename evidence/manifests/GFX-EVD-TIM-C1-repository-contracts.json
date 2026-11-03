@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-C1-repository-contracts",
+  "packet_id": "GFX-PKT-TIM-C1",
+  "created_at_utc": "2026-11-03T10:30:00Z",
+  "branch": "feat/tim-contract-v0_2-repo",
+  "base_commit": "d92aca95abbb29cfeafc2b9c54d66df3a13192b3",
+  "head_commit": "16c9c55636d39f17ed2b05ed03f04696298173da",
+  "environment": {
+    "mode": "repository-only / synthetic-only",
+    "existing_v1_schemas_changed": false,
+    "duckdb_required_for_market_data_lane": true,
+    "duckdb_used_by_tim_modules": false,
+    "network_blocked": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "market-data-foundation"
+  },
+  "commands": [
+    "python -m unittest discover -s tests -p 'test_tim_contract_v0_2.py' -v",
+    "python tools/tim_release_synthetic_smoke.py",
+    "python -c 'validator matrix: run every positive fixture + every adversarial case'",
+    "shasum -a 256 research/contracts/agent_history_export_request_v1.schema.json (and the other v1 schemas)",
+    "git diff --name-status d92aca95..HEAD -- research/contracts (all 12 additive schemas are status A)"
+  ],
+  "expected_results": [
+    "12 TIM unit tests pass offline",
+    "all 16 positive fixtures validate; all 25 adversarial fixtures are rejected or quarantined as specified",
+    "offline 7-day EURUSD M1 release smoke passes network-blocked: signature verified, tamper detected, file hashes match, READY written last, quarantine + gap-repair exercised",
+    "the 7 pre-existing v1 schemas are byte-identical to the recorded 006C hashes (existing_v1_schemas_changed=false)",
+    "no MT5/NAS/broker/credential/production/TIM/training/trading action; no real signing key; algorithm is synthetic-placeholder-v0",
+    "the new modules import no network/MT5/execution/order-path symbol"
+  ],
+  "actual_results": [
+    "Ran 12 tests ... OK",
+    "positives=16 accepted; adversarial=25 rejected/quarantined (matrix green)",
+    "smoke: ok=true, bar_count=10080, signature_verified=true, tamper_detected=true, all_file_hashes_match=true, ready_written_last=true, import_state=IMPORTED, prohibited_key_found=null, network=blocked, nas/mt5/broker/credentials/production/real_signing_key=none",
+    "v1 SHA-256 match the pinned values (agent_history_export_request_v1=bbafa2fe..., _response_v1=2e952cba..., raw_market_data_manifest_v1=44c1b8b7..., broker_timezone_evidence_v1=074fbc79...)",
+    "isolation test: no socket/urllib/http/requests/MetaTrader5/mt5/subprocess import; no place_order/open_trade/execution_job/order_transport/allow_live token",
+    "network_blocked() denies socket connect (TestNoNetwork)"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only, repository-only: no real market data, provider, broker identity/account, MT5, NAS, agent endpoint, acquisition service, deployment, TIM-side code, training or trading was added or accessed.",
+    "The signature boundary is an INJECTED SYNTHETIC placeholder (algorithm synthetic-placeholder-v0, synthetic:true). No real/operational signing key or algorithm was created or chosen.",
+    "The DuckDB market-data lane (existing market_data_synthetic_smoke + test_market_data_foundation) needs .venv-research; it was not re-run locally under the backend venv and is relied upon in the market-data-foundation CI lane. The TIM modules themselves use no DuckDB.",
+    "The Synology ACL layout is documented in the contract/ADR only; no NAS share or ACL was read or changed.",
+    "Cross-field rules are enforced by research/market_data/tim_contracts.py (the authoritative validator), not by the draft-07 JSON Schemas alone; a schema-only consumer would under-enforce.",
+    "Only the GFX-PKT-TIM-C1 surface was reviewed; unrelated changes on other branches were not."
+  ],
+  "artefact_locations": [
+    "research/contracts/ (12 additive v0.2 schemas)",
+    "research/market_data/tim_contracts.py",
+    "research/market_data/tim_fixtures.py",
+    "tools/tim_release_synthetic_smoke.py",
+    "tests/test_tim_contract_v0_2.py",
+    "tests/fixtures/market_data/tim/ (12 committed synthetic fixtures)",
+    "docs/ADRs/0070-guvfx-tim-governed-market-data-producer.md",
+    ".github/workflows/ci.yml (market-data-foundation lane)",
+    "Makefile (market-data-check)"
+  ],
+  "checksums": {
+    "research/contracts/acquisition_watermark_v1.schema.json": "sha256:1b6731ea034ea41cb8e216bbb13f522953efcfcf8ead586e56cb1f9959a39465",
+    "research/contracts/agent_history_export_request_v1.schema.json": "sha256:bbafa2fe1b3170167c1778b13dde369a406721f3a6fb2244daee0ffe82796a23",
+    "research/contracts/agent_history_export_response_v1.schema.json": "sha256:2e952cba01057536604bad720b8546c31e6e872a3d62f34a37cd5a8ac178fe24",
+    "research/contracts/agent_market_data_export_request_v2.schema.json": "sha256:896be9828dc052a799c2d5f15518a1bf3de1060107acd50f6aa0480001a2b0c8",
+    "research/contracts/agent_market_data_export_response_v2.schema.json": "sha256:002ed2374755d934070587495e37cf8c64fe93750e05b523a7aa6e7026589f5d",
+    "research/contracts/broker_cost_v1.schema.json": "sha256:868b4b37d0a78cc5f66d9755a2279c805db60dff5473fe055025539da379d08b",
+    "research/contracts/broker_timezone_evidence_v1.schema.json": "sha256:074fbc79344b4b549fbd674df36119eed6598b8258444cd11f15973e011477ab",
+    "research/contracts/canonical_instrument_v1.schema.json": "sha256:ee5f4801d23bebe2de817f6fe0c5267a4e713bd5f6dce96c503ec2af556112ca",
+    "research/contracts/dataset_import_receipt_v1.schema.json": "sha256:2be6c4dd3d1bd704bb1be9647bb8e4ae22a7a5498a40f2d3eda3bbed6c0730c2",
+    "research/contracts/dataset_manifest_v1.schema.json": "sha256:7a43418503067bf0f7c555d1afe8e80e6de5f404081d32a95e9af3e602249da8",
+    "research/contracts/dataset_release_manifest_v2.schema.json": "sha256:6f59a785d9b657b5162330d4fd32779574cec0dcb9de6e8ad31e7fdc744db26c",
+    "research/contracts/dataset_release_signature_v1.schema.json": "sha256:1073be7faf4ac9be3daaa3b64703e8248045a3c14320ddc69c52cde6960be9dd",
+    "research/contracts/market_data_gap_v1.schema.json": "sha256:526d64f42bc1e3cf58e802cf5865d9249a98a01abfecdf43fba26f454ac90e36",
+    "research/contracts/market_data_quality_report_v1.schema.json": "sha256:cb7eb55fbd46f911769ce435385765d8d4aca260a88481bb4d96dbd4c4696dd2",
+    "research/contracts/market_data_source_v1.schema.json": "sha256:ba106a77514b28b8da0f695d83f472ae5c17ebf7b414797234035f2046e08b82",
+    "research/contracts/market_observation_v1.schema.json": "sha256:936d4065f03ca9deb91e9e71fb26ee604f59d241222dd6c8877e9de6074fb9e5",
+    "research/contracts/raw_market_data_manifest_v1.schema.json": "sha256:44c1b8b74eb9a4eefb6c65b4b9815fff75f316021f202d42565e85a9de375675",
+    "research/contracts/raw_market_data_manifest_v2.schema.json": "sha256:088f0a860f4cc23035d7685a301e5abfc58006cd75ee51dd19e4a1314ed423be",
+    "research/contracts/source_instrument_mapping_v1.schema.json": "sha256:b524d646539ab45658484aeede4a60c5116ad114acfff2e0a0086b2f9b843dc5"
+  },
+  "reviewer": "3-lens adversarial workflow (contract/provenance, security/isolation, reliability/compatibility), 2026-11-03: security=ship, reliability=ship(+2 LOW), contract/provenance=fix_first(2 HIGH + 2 MEDIUM). All HIGH/MEDIUM + 1 LOW corrected with mutation-killing regression fixtures; re-verified green."
+}

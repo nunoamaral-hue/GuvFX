@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/source_instrument_mapping_v1.schema.json",
+  "title": "GuvFX Source Instrument Mapping v1",
+  "description": "Maps a source broker-native symbol to a canonical instrument. Ambiguous or unmapped entries fail closed (quarantine) and must never be treated as a verified mapping. Synthetic/design contract under GFX-PKT-TIM-C1.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+    "canonical_symbol": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{2,31}$" }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "source_id": { "$ref": "#/definitions/slug" },
+    "broker_native_symbol": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "canonical_symbol": {
+      "anyOf": [{ "$ref": "#/definitions/canonical_symbol" }, { "type": "null" }],
+      "description": "Resolved canonical symbol; null when mapping_status is AMBIGUOUS or UNMAPPED."
+    },
+    "asset_class": {
+      "anyOf": [
+        { "type": "string", "enum": ["fx", "metal", "index", "commodity", "crypto", "equity"] },
+        { "type": "null" }
+      ]
+    },
+    "price_precision": { "type": ["integer", "null"], "minimum": 0, "maximum": 12 },
+    "volume_precision": { "type": ["integer", "null"], "minimum": 0, "maximum": 12 },
+    "mapping_status": {
+      "type": "string",
+      "enum": ["VERIFIED", "AMBIGUOUS", "UNMAPPED"],
+      "description": "VERIFIED carries a complete canonical identity; AMBIGUOUS/UNMAPPED fail closed (quarantine)."
+    },
+    "ambiguity_reason": {
+      "type": ["string", "null"],
+      "description": "Required (non-null) when mapping_status is AMBIGUOUS or UNMAPPED; null when VERIFIED."
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "source_id", "broker_native_symbol", "canonical_symbol", "asset_class",
+    "price_precision", "volume_precision", "mapping_status", "ambiguity_reason", "limitations"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "algorithm": "synthetic-placeholder-v0",
+  "created_at_utc": "2026-01-12T00:03:01Z",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "public_key_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+  "release_id": "rel_synth_native_1",
+  "schema_version": "1.0",
+  "signature_scheme": "detached",
+  "signature_value": "53ee06d483219ca6507a9cfb9009f28a23eeadd59e604eb676e526965602bd90",
+  "signed_manifest_path": "exchange/releases/rel_synth_native_1/manifest.json",
+  "signed_manifest_sha256": "c72477aed519cd39459ace5843275adfd669d31b1a2f718633cfe416fc95c69c",
+  "signing_key_id": "synthkey1",
+  "synthetic": true
+}

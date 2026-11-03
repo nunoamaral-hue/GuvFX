@@ -1,0 +1,17 @@
+{
+  "account_scope": "research_synth",
+  "account_type": "research",
+  "broker_id": "synthbroker",
+  "capacity_certification_ref": "GFX-CAP-SYNTH-001",
+  "capacity_certified": true,
+  "licensing_classification": "internal_research_only",
+  "licensing_reference": "GFX-LIC-SYNTH-001",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "schema_version": "1.0",
+  "server_identity": "SynthBroker-Research",
+  "source_id": "mt5_research_synth",
+  "source_timezone": "Etc/UTC",
+  "source_type": "mt5_research"
+}

@@ -227,6 +227,30 @@ timezone/server/legal identity, and broker-cost/specification capture all remain
 
 ---
 
+## GUVFX-TIM Contract v0.2 additive set — Current (GFX-PKT-TIM-C1, repository-only / synthetic-only)
+
+> **Current (synthetic-only, repository foundation).** Established by **GFX-PKT-TIM-C1** under **ADR-0070** (repo
+> counterpart of Notion GFX-ADR-TIM-001; GUVFX-TIM Contract Definition v0.2). GuvFX is the governed market-data
+> **producer**; TIM is a **read-only consumer** of signed releases. Twelve additive draft-07 schemas live in
+> `research/contracts/`: `market_data_source_v1`, `canonical_instrument_v1`, `source_instrument_mapping_v1`,
+> `agent_market_data_export_request_v2`, `agent_market_data_export_response_v2`, `raw_market_data_manifest_v2`,
+> `acquisition_watermark_v1`, `market_data_gap_v1`, `market_data_quality_report_v1`, `dataset_release_manifest_v2`,
+> `dataset_release_signature_v1`, `dataset_import_receipt_v1`. The v2 export pair succeeds the 006C v1
+> `agent_history_export_*_v1` (preserved byte-identical; **not** renamed). Dependency-free validators:
+> `research/market_data/tim_contracts.py`. Offline smoke: `tools/tim_release_synthetic_smoke.py`. Tests:
+> `tests/test_tim_contract_v0_2.py` (+ 12 fixtures under `tests/fixtures/market_data/tim/`).
+>
+> Semantics enforced: half-open `[start,end)` intervals; the distinct instant chain `event_start_utc` /
+> `event_end_utc` / `source_available_at_utc` / `collector_observed_at_utc` / `ingested_at_utc` / `validated_at_utc`
+> / `published_at_utc` (PIT gates on availability = `published_at_utc`); NATIVE vs DERIVED as distinct identities
+> (DERIVED declares lineage/calendar/bucket/DST); quarantine / fail-closed on incomplete buckets, unresolved DST,
+> invalid mappings, missing licensing or un-certified capacity; watermarks advance only after
+> landing+checksum+validation+quality; gap repair creates new immutable evidence; a release is visible only when
+> COMPLETE with the signed READY marker written last; partial releases prohibited in the pilot. The signing
+> boundary is **injectable and synthetic** (`dataset_release_signature_v1.synthetic == true`,
+> `algorithm == synthetic-placeholder-v0`) — no real/operational key or algorithm is created here. No MT5, NAS,
+> broker, credential, production, TIM-side, training or trading action occurs.
+
 ## Candidate market-data contract — Candidate
 
 > **Candidate, not implemented.** No market-data ingestion store of this shape

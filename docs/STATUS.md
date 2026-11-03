@@ -1,5 +1,19 @@
 # GuvFX — Project Status
 
+> **2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only /
+> synthetic-only; NOT merged, NOT deployed).** Implemented the Sponsor-approved additive contract set: 12 new
+> draft-07 JSON Schemas under `research/contracts/` (market_data_source, canonical_instrument,
+> source_instrument_mapping, agent_market_data_export_request/response v2, raw_market_data_manifest v2,
+> acquisition_watermark, market_data_gap, market_data_quality_report, dataset_release_manifest v2,
+> dataset_release_signature, dataset_import_receipt); dependency-free validators `research/market_data/tim_contracts.py`
+> (half-open intervals, the 7-instant event→published chain gating PIT on availability, OHLC/finiteness,
+> native/derived identity separation, watermark/gap/quarantine fail-closed, no-partial-release, injected SYNTHETIC
+> signature verifier); synthetic fixtures `research/market_data/tim_fixtures.py` (16 positive + 21 adversarial) +
+> 12 committed fixture JSONs; an offline network-blocked 7-day EURUSD M1 release smoke `tools/tim_release_synthetic_smoke.py`;
+> tests `tests/test_tim_contract_v0_2.py`; extended the `market-data-foundation` CI lane + `market-data-check`.
+> **Existing 006C v1 schemas byte-identical** (pinned SHA-256; `agent_history_export_*_v1` are the v1 request/response,
+> preserved). No MT5/NAS/broker/credential/production/TIM/training/trading action; no real signing key. Governed PR
+> open, **auto-merge OFF**, awaiting separate Sponsor merge GO. Separate workstream from PR #603 (capacity guard).
 > **2026-11-03 — Physical-host capacity guard (ADR-0069; DARK PR) + Windows host recertified for #54–#57.** The
 > "second physical host required" conclusion is withdrawn. Read-only CIM proves the MT5 box `100.79.101.19` was
 > UPGRADED to **8 cores / 16 logical / 64 GB** (2× the `SAFE_FOR_12` baseline of 4 cores / 8 logical / 32 GB), so

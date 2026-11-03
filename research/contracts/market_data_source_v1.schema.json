@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/market_data_source_v1.schema.json",
+  "title": "GuvFX Market Data Source v1",
+  "description": "Identity and governance classification of a governed GuvFX market-data source (producer side). Carries NO login, account number, password, token or server credential. GuvFX is the producer; TIM is a read-only consumer (GFX-ADR-TIM-001). Synthetic/design contract under GFX-PKT-TIM-C1.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+    "scope_slug": { "type": "string", "pattern": "^(?=.*[a-z])[a-z0-9][a-z0-9_-]*$", "maxLength": 64 }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "source_id": { "$ref": "#/definitions/slug" },
+    "source_type": {
+      "type": "string",
+      "enum": ["mt5_demo", "mt5_research", "mt5_live"],
+      "description": "Source terminal class. The pilot uses a non-production demo/research source only."
+    },
+    "broker_id": { "anyOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+    "server_identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "Broker server label (an identifier only, never a credential)."
+    },
+    "account_scope": { "$ref": "#/definitions/scope_slug" },
+    "account_type": {
+      "type": "string",
+      "enum": ["research", "demo", "paper"],
+      "description": "Non-production research tier; never a live-execution account. No account number is carried."
+    },
+    "source_timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "IANA timezone name of the source (e.g. 'Etc/UTC', 'Europe/Athens'). Canonical records normalise to UTC."
+    },
+    "licensing_classification": {
+      "type": "string",
+      "enum": ["internal_research_only", "licensed_redistribution", "unlicensed_quarantine"],
+      "description": "Licensing class. No credentials or secrets are embedded; a missing/unlicensed classification fails closed."
+    },
+    "licensing_reference": {
+      "type": ["string", "null"],
+      "description": "Pointer to the written licensing-approval record; null when not yet approved (source then quarantines)."
+    },
+    "capacity_certified": { "type": "boolean" },
+    "capacity_certification_ref": { "type": ["string", "null"] },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "source_id", "source_type", "broker_id", "server_identity", "account_scope",
+    "account_type", "source_timezone", "licensing_classification", "licensing_reference",
+    "capacity_certified", "capacity_certification_ref", "limitations"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "canonical_symbol": "EURUSD",
+  "duplicate_count": 0,
+  "evaluated_at_utc": "2026-01-05T00:03:08Z",
+  "expected_bar_count": 3,
+  "gap_count": 0,
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "non_finite_count": 0,
+  "observed_bar_count": 3,
+  "ohlc_violation_count": 0,
+  "out_of_order_count": 0,
+  "overlap_count": 0,
+  "price_basis": "bid",
+  "provenance": "NATIVE",
+  "quality_status": "PASS",
+  "quarantine_reasons": [],
+  "range_end_utc": "2026-01-05T00:03:00Z",
+  "range_semantics": "[start,end)",
+  "range_start_utc": "2026-01-05T00:00:00Z",
+  "representation": "bid_ohlc",
+  "schema_version": "1.0",
+  "source_id": "mt5_research_synth",
+  "timeframe": "M1"
+}

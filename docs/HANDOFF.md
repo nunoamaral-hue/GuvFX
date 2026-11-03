@@ -1,5 +1,29 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only / synthetic-only)
+
+- **Scope.** Sponsor GO authorised repository-only schemas, dependency-free validators, synthetic fixtures, an
+  offline smoke and CI for the approved GUVFX-TIM Contract v0.2. Merge, deployment, MT5/broker/real-data, NAS,
+  TIM-side code, training, trading and operational signing keys are **out of scope and not performed**.
+- **Added (all NEW files; 0 existing schema/validator files modified).**
+  - 12 schemas in `research/contracts/` (the additive set); `research/market_data/tim_contracts.py` (validators +
+    injected synthetic signer); `research/market_data/tim_fixtures.py`; `tools/tim_release_synthetic_smoke.py`;
+    `tests/test_tim_contract_v0_2.py`; `tests/fixtures/market_data/tim/*.json` (12); `docs/ADRs/0070-*.md`;
+    `evidence/manifests/GFX-EVD-TIM-C1-*.json`. Edited only: `.github/workflows/ci.yml` + `Makefile` (lane wiring)
+    and docs.
+- **v1 preservation.** The 006C v1 request/response are `agent_history_export_request/response_v1` (the packet's
+  `agent_market_data_export_*` names did not exist; the v2 export pair is new/additive). Pinned SHA-256 in the test
+  prove all 7 pre-existing schemas byte-identical.
+- **Verified (local, offline).** 12-test TIM suite PASS; validator matrix 16 positive accept + 21 adversarial
+  reject/quarantine; 7-day 10080-bar release smoke PASS (signature verified + tamper detected + hashes match +
+  READY-last + quarantine/gap); network-blocked socket denial; isolation scan finds no network/MT5/execution/order
+  imports; `makemigrations` N/A (no models). `makemigrations --check` not relevant (no Django change).
+- **Verified vs assumed.** Verified: all of the above + schema parse/`$id`/hashes. Assumed/deferred: the DuckDB
+  market-data lane (needs `.venv-research`; relied on CI) and the real Synology ACL state (contract documents it;
+  no NAS access here).
+- **Next (one bounded action).** Independent 3-lens adversarial review → fix CRITICAL/HIGH → open governed PR
+  (auto-merge OFF) → run/repair CI within scope → STOP for a separate Sponsor merge GO.
+- **Git.** Branch `feat/tim-contract-v0_2-repo` off `origin/main` `d92aca95`. Separate from PR #603.
 ## 2026-11-03 — Physical-host capacity guard (ADR-0069; DARK PR) + Windows host recertification
 
 - **Problem.** Four LIVE accounts #54 (IS6FX G01), #55 (IS6FX NRGM2), #56 (Pepperstone 02), #57 (TradersWay ACC02)

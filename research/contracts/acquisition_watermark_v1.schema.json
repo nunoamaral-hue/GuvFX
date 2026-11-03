@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/acquisition_watermark_v1.schema.json",
+  "title": "GuvFX Acquisition Watermark v1",
+  "description": "Durable acquisition watermark for one (source, canonical_symbol, timeframe, representation, price_basis) series. The watermark advances ONLY after immutable landing + checksum verification + validation + quality acceptance. Synthetic/design contract under GFX-PKT-TIM-C1.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "instant_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "minute_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$" },
+    "sha256_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
+    "canonical_symbol": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{2,31}$" }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "source_id": { "$ref": "#/definitions/slug" },
+    "canonical_symbol": { "$ref": "#/definitions/canonical_symbol" },
+    "timeframe": { "type": "string", "enum": ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"] },
+    "representation": { "type": "string", "enum": ["bid_ohlc"] },
+    "price_basis": { "type": "string", "enum": ["bid"] },
+    "watermark_event_end_utc": {
+      "$ref": "#/definitions/minute_utc",
+      "description": "Exclusive end of the last contiguous, fully-accepted bar covered by the watermark (half-open)."
+    },
+    "range_semantics": { "const": "[start,end)" },
+    "last_raw_object_sha256": { "anyOf": [{ "$ref": "#/definitions/sha256_hex" }, { "type": "null" }] },
+    "landed_and_verified": { "type": "boolean", "description": "Raw object landed immutably AND its checksum was verified." },
+    "validated": { "type": "boolean", "description": "Contract + semantic validation passed." },
+    "quality_accepted": { "type": "boolean", "description": "Quality report accepted (not quarantined)." },
+    "advanced_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "source_id", "canonical_symbol", "timeframe", "representation", "price_basis",
+    "watermark_event_end_utc", "range_semantics", "last_raw_object_sha256", "landed_and_verified",
+    "validated", "quality_accepted", "advanced_at_utc", "limitations"
+  ]
+}

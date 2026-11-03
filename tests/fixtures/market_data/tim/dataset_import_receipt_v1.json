@@ -1,0 +1,15 @@
+{
+  "completeness_verified": true,
+  "hashes_verified": true,
+  "import_state": "IMPORTED",
+  "imported_at_utc": "2026-01-12T00:10:00Z",
+  "importer_identity": "tim_reader_synth",
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "quarantine_reason": null,
+  "release_id": "rel_synth_native_1",
+  "schema_version": "1.0",
+  "signature_verified": true,
+  "source_release_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
