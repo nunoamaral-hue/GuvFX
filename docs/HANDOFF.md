@@ -24,6 +24,86 @@
 - **Next (one bounded action).** Independent 3-lens adversarial review → fix CRITICAL/HIGH → open governed PR
   (auto-merge OFF) → run/repair CI within scope → STOP for a separate Sponsor merge GO.
 - **Git.** Branch `feat/tim-contract-v0_2-repo` off `origin/main` `d92aca95`. Separate from PR #603.
+## 2026-11-03 — Copier hybrid change detection & propagation: lifecycle layer (ADR-0071; DARK PR)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-COPIER-HYBRID-CHANGE-001
+Packet ID: GFX-COPIER-HYBRID-CHANGE-001
+Status: PASS (repository-only / DARK / execution OFF; awaiting governed review)
+
+Initial branch/HEAD/status: feat/live-bridge-provisioning-integrator @ c351a6b4 (unrelated #601 worktree);
+  new isolated worktree cut from origin/main @ 79f7ab6e.
+Convergence base: origin/main @ 79f7ab6e (contains #600 ADR-0057, #602 ADR-0049 adoption, #603).
+Convergence branch: feat/copier-hybrid-change-propagation
+Preservation cherry-pick commit: None (fresh additive branch; no reconciliation of other work).
+Governance commit: <this branch's single feat commit — see PR>
+Files added:
+  backend/trade_copier/lifecycle.py          (pure state machine + gated READ-ONLY projection)
+  backend/trade_copier/revisions.py          (pure hybrid detection contract + monotonic-revision fold)
+  backend/trade_copier/cadence.py            (pure bounded reconciliation cadence + latency model)
+  backend/trade_copier/migrations/0009_copierpositionlifecycle_copierlifecycletransition_and_more.py
+  backend/trade_copier/management/commands/run_copier_lifecycle.py
+  backend/trade_copier/tests_lifecycle.py    (pure engine scenarios + DB projection)
+  backend/trade_copier/tests_revisions.py
+  backend/trade_copier/tests_cadence.py
+  docs/architecture/ADR-0071-COPIER-HYBRID-CHANGE-PROPAGATION.md
+Files modified:
+  backend/trade_copier/flags.py              (+ copier_lifecycle_enabled(); execution_status UNCHANGED)
+  backend/trade_copier/models.py             (+ CopierPositionLifecycle, CopierLifecycleTransition)
+  docs/STATUS.md, docs/NEXT.md, docs/KNOWN_ISSUES.md, docs/HANDOFF.md
+Exact ignored local .claude files: None.
+Original draft hash verification: N/A (no Notion draft bytes to pin for this build).
+Scoped rules verification: architecture (additive, no silent replacement, no LLM order authority, no
+  speculative infra), data (immutable append-only transitions), security (no secrets; no new network surface),
+  evidence (machine-checked test counts; limitations stated), handoff (this block). All honoured.
+Secret-scan result: PASS (scripts/check_no_secrets.py over staged tree — no secret-shaped literals).
+Unit-test result: new modules 74/74 PASS (tests_lifecycle + tests_revisions + tests_cadence). Full
+  trade_copier suite = 494 tests, 27F/33E — IDENTICAL failure signature to a pristine origin/main probe
+  (420 tests, 27F/33E), so this packet adds 74 passing tests and ZERO new failures. The 27F/33E are a
+  pre-existing local-env APPEND_SLASH (301/403) artifact in the DRF API test modules; they pass in CI.
+Make governance-check result: secret-scan PASS; tests/test_no_secrets PASS.
+Make check result: NOT run end-to-end locally (frontend untouched; backend-test signature proven above).
+Evidence/privacy validation: no credentials/logins/tickets in audit; transitions carry sanitised reason codes.
+Commit identity/message validation: conventional feat(trade_copier) commit; Co-Authored-By trailer.
+Final branch/HEAD/status: feat/copier-hybrid-change-propagation (pushed); DARK PR opened.
+Flow A ref unchanged: Yes (origin/main untouched; no merge).
+Branch pushed: Yes.
+
+Commands executed: makemigrations trade_copier; manage.py test (new modules + full trade_copier suite, this
+  worktree + a pristine origin/main probe worktree for the baseline); showmigrations; git worktree add/remove.
+Verified facts: all copier flags OFF on main; the existing diff/producers already cover open/close/modify/
+  partial; the new layer creates no ExecutionJob (asserted in test); the failure baseline is pre-existing.
+Assumptions made: conservative policy defaults (entry 120s, modify-age 120s, event-age 300s) and cadence floor
+  1000ms are DEFAULTS, not measured values — explicitly configurable; sub-second refused without measurement.
+Deviations from packet: the EVENT-path ingestion endpoint + bridge emitter and alert DELIVERY are modelled
+  (contract + pure fold + recorded signals) but NOT wired — each is a SEPARATE governed gate (API/host surface
+  / outbound). Stated in the ADR and NEXT.
+Amber decisions proposed: none taken; the event-ingestion endpoint (API surface) is flagged as requiring its
+  own decision/ADR before build.
+Red decisions requiring Nuno: none in this packet (no merge/deploy/arm/authorization/order).
+Risks discovered: concurrent first-creation of a lifecycle row can raise IntegrityError (contained; pass is
+  single-threaded) — recorded in KNOWN_ISSUES.
+Out-of-scope access performed: No. No production mutation; #46 position untouched; no broker contact.
+Rollback/recovery: everything is DARK behind COPIER_LIFECYCLE_ENABLED (default OFF) + two new tables; reverting
+  the branch or leaving the flag OFF is a complete no-op for every existing path.
+Recommended next packet: governed review/merge of this DARK PR, THEN (separately) a signed account-scoped
+  event-ingestion endpoint + bridge emitter with its own ADR.
+```
+
+**Reconciliation — GFX-COPIER-HYBRID-CHANGE-002 (2026-11-03).** PR #605 was reconciled onto current canonical
+`main` by rebase (preserves all commits). The packet cited `main = 26a2f6f0`; the actual fetched `origin/main`
+was `d19e80e0` — main had advanced by one further docs commit (TIM contract-merge notes), so the rebase targeted
+actual current main `d19e80e0` (no-assumption rule). Conflicts were confined to the shared
+STATUS/NEXT/HANDOFF docs and resolved as a truthful union (TIM entries + Copy Trading entries both kept); the
+trade_copier code, migration `0009`, and the ADR file applied cleanly. **TIM owns ADR-0070**
+(`docs/ADRs/0070-guvfx-tim-governed-market-data-producer.md`), so this packet's ADR was renamed to
+**ADR-0071** and every Copy Trading reference renumbered 0070→0071; TIM's ADR-0070 and its references were not
+touched. Migration `0009` remains correctly based on `0008` (still the latest `trade_copier` migration on main).
+Re-verified green; then governed squash-merge pinned to the exact reconciled head (new-main SHA recorded in the
+packet return / `git log main`).
+
 ## 2026-11-03 — Physical-host capacity guard (ADR-0069; DARK PR) + Windows host recertification
 
 - **Problem.** Four LIVE accounts #54 (IS6FX G01), #55 (IS6FX NRGM2), #56 (Pepperstone 02), #57 (TradersWay ACC02)

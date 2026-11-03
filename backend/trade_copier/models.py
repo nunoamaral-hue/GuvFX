@@ -647,3 +647,111 @@ class CopierLiveKillSwitch(models.Model):
 
     def __str__(self) -> str:
         return f"CopierLiveKillSwitch(engaged={self.engaged}, at={self.engaged_at})"
+
+
+# ───────────────────── PER-MASTER-TICKET LIFECYCLE (ADR-0071 hybrid change propagation) ─────────────────────
+# A durable, additive PROJECTION of the per-(follower, master, master-ticket) lifecycle, derived by
+# ``trade_copier.lifecycle`` from the existing MasterEvent ledger + reconcile state. It is a DECISION/record
+# layer only: it holds the explicit state machine, the immutable follower-ticket LINK, the entry-admissibility
+# deadline, the ordering posture (pending op) and latency/failure signals. It creates NO ExecutionJob and
+# contacts NO broker — the execute/arm gates remain the sole authority for any order. All DARK (projected only
+# when ``COPIER_LIFECYCLE_ENABLED`` is on).
+
+
+class LifecycleStateChoices(models.TextChoices):
+    OBSERVED_OPEN = "OBSERVED_OPEN", "Observed open (admissible; no follower attempt)"
+    ENTRY_PENDING = "ENTRY_PENDING", "Entry attempted — awaiting link"
+    LINKED = "LINKED", "Linked to a follower ticket"
+    MODIFY_PENDING = "MODIFY_PENDING", "SL/TP modify queued"
+    CLOSE_PENDING = "CLOSE_PENDING", "Close queued (supersedes modify)"
+    ENTRY_FAILED_FINAL = "ENTRY_FAILED_FINAL", "Entry failed — terminal, never re-entered"
+    CLOSED = "CLOSED", "Closed (follower full close confirmed)"
+    CONTAINED_FAILURE = "CONTAINED_FAILURE", "Contained failure — needs an operator"
+
+
+class LifecyclePendingOp(models.TextChoices):
+    NONE = "NONE", "None"
+    MODIFY = "MODIFY", "Modify queued"
+    CLOSE = "CLOSE", "Close queued"
+
+
+class CopierPositionLifecycle(models.Model):
+    """One lifecycle per ``(follower, master, master_position_ticket)`` — the projected state machine.
+
+    ``follower_ticket`` is the IMMUTABLE master→follower link, set once on reaching LINKED and never rewritten.
+    ``applied_sequence`` is the per-ticket monotone high-water mark that makes the projection idempotent and
+    rejects stale/out-of-order master events. ``pending_op`` records the queued propagation (a CLOSE supersedes
+    a MODIFY). Timestamps carry the latency signals; the poll path cannot provide a true broker-event time, so
+    latency is detection→apply (see ``trade_copier.cadence.measure_latency``)."""
+
+    master = models.ForeignKey(CopierMaster, on_delete=models.CASCADE, related_name="position_lifecycles")
+    follower = models.ForeignKey(CopierFollower, on_delete=models.CASCADE, related_name="position_lifecycles")
+    master_position_ticket = models.BigIntegerField()
+
+    state = models.CharField(max_length=24, choices=LifecycleStateChoices.choices,
+                             default=LifecycleStateChoices.OBSERVED_OPEN)
+    pending_op = models.CharField(max_length=8, choices=LifecyclePendingOp.choices,
+                                  default=LifecyclePendingOp.NONE)
+    is_terminal = models.BooleanField(default=False)
+
+    applied_sequence = models.BigIntegerField(
+        default=0, help_text="Highest master-event sequence applied to this lifecycle (monotone HWM).")
+    entry_reference_at = models.DateTimeField(
+        null=True, blank=True, help_text="The OPEN's reference time — the admissibility clock origin.")
+    entry_deadline_at = models.DateTimeField(
+        null=True, blank=True, help_text="entry_reference_at + entry-admissibility window (reporting).")
+    attempted = models.BooleanField(default=False, help_text="An armed follower entry was attempted.")
+    follower_ticket = models.BigIntegerField(
+        null=True, blank=True, help_text="Immutable follower broker ticket — set once on LINKED, never rewritten.")
+
+    open_event = models.ForeignKey(MasterEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    failure_reason = models.CharField(max_length=64, blank=True, default="")
+
+    # Latency signals (timestamps; latency computed on read — cadence.measure_latency).
+    open_observed_at = models.DateTimeField(null=True, blank=True)
+    linked_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    last_transition_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Copier position lifecycle"
+        constraints = [
+            models.UniqueConstraint(fields=["follower", "master", "master_position_ticket"],
+                                    name="uq_copier_lifecycle_follower_master_ticket"),
+        ]
+        indexes = [
+            models.Index(fields=["master", "state"]),
+            models.Index(fields=["follower", "state"]),
+            models.Index(fields=["is_terminal"]),
+        ]
+
+    def __str__(self) -> str:
+        return (f"Lifecycle(follower={self.follower_id}, ticket={self.master_position_ticket}, "
+                f"{self.state}, pending={self.pending_op})")
+
+
+class CopierLifecycleTransition(_ImmutableRawEvidence):
+    """Append-only audit of every lifecycle state transition (the ordering/admissibility evidence).
+
+    Insert-once (``_ImmutableRawEvidence``): a transition row is written when the projection applies a state
+    change and is never edited. ``sequence`` is the master-event sequence that drove it (0 for a
+    follower-side link update). ``detail`` is sanitised — never a secret, login or raw payload."""
+
+    lifecycle = models.ForeignKey(CopierPositionLifecycle, on_delete=models.CASCADE, related_name="transitions")
+    from_state = models.CharField(max_length=24, blank=True, default="")
+    to_state = models.CharField(max_length=24)
+    trigger = models.CharField(max_length=48, help_text="The transition reason code (e.g. 'linked', 'superseded_by_close').")
+    sequence = models.BigIntegerField(default=0)
+    detail = models.JSONField(default=dict, blank=True)
+    at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Copier lifecycle transition"
+        ordering = ["id"]
+        indexes = [models.Index(fields=["lifecycle", "id"])]
+
+    def __str__(self) -> str:
+        return f"Transition(lifecycle={self.lifecycle_id}, {self.from_state}->{self.to_state}, {self.trigger})"

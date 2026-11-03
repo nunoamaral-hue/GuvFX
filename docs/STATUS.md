@@ -14,6 +14,25 @@
 > **Existing 006C v1 schemas byte-identical** (pinned SHA-256; `agent_history_export_*_v1` are the v1 request/response,
 > preserved). No MT5/NAS/broker/credential/production/TIM/training/trading action; no real signing key. Governed PR
 > open, **auto-merge OFF**, awaiting separate Sponsor merge GO. Separate workstream from PR #603 (capacity guard).
+> **2026-11-03 — Copier hybrid change detection & propagation: per-master-ticket lifecycle (ADR-0071; DARK PR).**
+> The copier already detected every master change (OPEN/close/partial/SL·TP via the `diff` ledger) and had
+> DEMO/SHADOW producers for open/close/modify/partial-close; what was missing was the connective tissue the
+> Sponsor's product decisions require. Added (repository-only, DARK, **execution OFF**) an additive lifecycle
+> layer behind new flag `COPIER_LIFECYCLE_ENABLED`: a pure per-`(follower, master, ticket)` state machine
+> (`lifecycle.py` — OBSERVED_OPEN→ENTRY_PENDING→LINKED⇄MODIFY_PENDING, →CLOSE_PENDING→CLOSED, with
+> ENTRY_FAILED_FINAL / CONTAINED_FAILURE terminal) enforcing a bounded **entry-admissibility deadline** (a
+> delayed entry is never placed; **no late recovery**), the **close-supersedes-modify** ordering contract,
+> stale/out-of-order rejection, and an **open-without-SL/TP** admission; a pure monotonic-revision hybrid
+> detection contract (`revisions.py`) that folds a bridge event feed into poll-equivalent snapshots for the
+> existing `diff`; a bounded rapid-cadence + latency model (`cadence.py`) whose failures only lengthen the
+> interval and whose sub-second floor is refused without a REAL measured capacity profile. Durable projection
+> (`CopierPositionLifecycle` + append-only `CopierLifecycleTransition`, migration 0009) via `run_copier_lifecycle`
+> — READ-ONLY, creates **no** ExecutionJob. 74 new tests (pure engine + revision gate + cadence + DB projection),
+> all green; the full `trade_copier` suite adds **zero** new failures vs clean main (27F/33E are a pre-existing
+> local-env APPEND_SLASH artifact, proven identical on a pristine `origin/main` probe). **Next:** governed review
+> → (separately gated) a signed event-ingestion endpoint + bridge emitter, alert delivery, and a measured
+> capacity profile before any sub-second cadence. #46 position untouched; copier flags all OFF.
+
 > **2026-11-03 — Physical-host capacity guard (ADR-0069; DARK PR) + Windows host recertified for #54–#57.** The
 > "second physical host required" conclusion is withdrawn. Read-only CIM proves the MT5 box `100.79.101.19` was
 > UPGRADED to **8 cores / 16 logical / 64 GB** (2× the `SAFE_FOR_12` baseline of 4 cores / 8 logical / 32 GB), so

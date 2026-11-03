@@ -5,6 +5,15 @@ Repository-only / synthetic-only: 12 additive JSON Schemas + dependency-free val
 offline 7-day EURUSD M1 release smoke + CI lane, all green locally; existing 006C v1 schemas byte-identical.
 No MT5/NAS/broker/real-data/deploy/TIM/training. **One bounded next action:** a later packet wires acquisition/publication, performs the Synology ACL assessment, and
 selects the operational signing key/algorithm (replacing the injected synthetic verifier). Separate from PR #603.
+## ★ COPIER HYBRID CHANGE PROPAGATION — lifecycle layer (2026-11-03; ADR-0071; DARK PR #605)
+Additive, DARK, execution-OFF per-master-ticket lifecycle state machine + hybrid detection contract + bounded
+rapid-cadence/latency model (flag `COPIER_LIFECYCLE_ENABLED` OFF). 74 new tests green; zero new failures vs clean
+main. **One bounded next action:** governed review of the DARK PR. Deferred, each a SEPARATE gate (do NOT bundle):
+a signed account-scoped event-ingestion endpoint + bridge emitter (API/host surface — needs its own ADR); wiring
+the lifecycle decision to the producers; alert delivery for ENTRY_FAILED_FINAL / CONTAINED_FAILURE; and a REAL
+measured capacity profile before any sub-second cadence. Copy Trading stays PAUSED; #46 untouched; execution OFF.
+Runbook: ADR-0071.
+
 ## ★ WINDOWS HOST RECERTIFICATION + CAPACITY GUARD (2026-11-03; ADR-0069; DARK PR ready)
 The MT5 box was upgraded (8c/16L/64 GB; `SAFE_FOR_12` is stale pre-upgrade). A physical-host-wide capacity guard
 (`HostCapacity` + fail-closed allocator check, flag `HOSTED_HOST_CAPACITY_GUARD_ENABLED` OFF) is built + green
