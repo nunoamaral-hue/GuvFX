@@ -49,6 +49,18 @@ def hosted_observation_scheduler_enabled() -> bool:
     return _flag("HOSTED_OBSERVATION_SCHEDULER_ENABLED")
 
 
+def hosted_host_capacity_guard_enabled() -> bool:
+    """ADR-0069 (DARK, default OFF) — when ON, the node allocator additionally enforces a CERTIFIED
+    PHYSICAL-HOST-WIDE occupancy ceiling (``execution.HostCapacity``) summed across ALL co-resident logical
+    nodes that share one physical host (grouped by ``rdp_host``), closing the gap that the per-node
+    ``max_accounts`` check leaves open (two logical nodes on one box could otherwise oversubscribe it). OFF ⇒
+    zero behaviour change (the host sum is never computed; allocation is byte-identical). When ON it FAILS
+    CLOSED for a host that has no certified ``HostCapacity`` row. It never arms execution or authorises an
+    order; it only narrows which node a bind may land on. Deploy DARK, seed the ceiling, then arm; rollback =
+    flip OFF."""
+    return _flag("HOSTED_HOST_CAPACITY_GUARD_ENABLED")
+
+
 def hosted_bounded_observation_enabled() -> bool:
     """P0 fresh-beta account-detection reliability gate. When ON, the scheduler observes every workspace with a
     BOUNDED, TENANT-ISOLATED concurrent pass: ONE host ``OBSERVE_WORKSPACE`` per workspace (de-duplicated — the
