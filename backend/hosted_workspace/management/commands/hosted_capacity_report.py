@@ -56,16 +56,16 @@ class Command(BaseCommand):
         self.stdout.write("")
         guard = "ON" if hosted_host_capacity_guard_enabled() else "OFF"
         self.stdout.write(f"=== physical-host-wide rollup (HOSTED_HOST_CAPACITY_GUARD_ENABLED={guard}) ===")
-        active = list(TerminalNode.objects.filter(status=TerminalNode.Status.ACTIVE))
+        nodes_all = list(TerminalNode.objects.all())   # ALL statuses — a drained co-resident node still loads the box
         hosts = {}
-        for n in active:
+        for n in nodes_all:
             hosts.setdefault((n.rdp_host or "").strip(), []).append(n)
         for hk, ns in sorted(hosts.items()):
-            node_ids = ",".join(str(n.id) for n in ns)
+            node_ids = ",".join(f"{n.id}:{n.status}" for n in ns)
             if not hk:
                 self.stdout.write(f"host=(blank rdp_host — NOT deliverable) nodes=[{node_ids}] -> fails closed when guard ON")
                 continue
-            occ = host_occupant_count(hk, active)
+            occ = host_occupant_count(hk, nodes_all)
             ceiling = host_capacity_ceiling(hk)
             row = HostCapacity.objects.filter(physical_host_key__iexact=hk).first()
             safe = row.certified_safe if row else None

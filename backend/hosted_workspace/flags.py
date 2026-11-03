@@ -7,6 +7,11 @@ they toggle without a restart; every accessor defaults OFF (empty-string default
 All three ship DARK. In THIS increment nothing in the execution, onboarding, or delivery path reads
 these — the model and the pure matcher are inert foundation (ADR-0033). The flags exist so the later
 increments that DO wire behaviour ship gated from their first line.
+
+NOTE (updated): that ADR-0033 statement describes only the ORIGINAL three flags. Several gates added since ARE
+read in the execution/onboarding/delivery paths once armed (e.g. ``hosted_tenant_node_isolation_enabled``,
+``hosted_execution_path_gate_enabled`` and ``hosted_host_capacity_guard_enabled`` are read by the node allocator);
+each remains DARK (default OFF) until explicitly armed.
 """
 import os
 

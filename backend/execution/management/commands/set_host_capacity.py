@@ -44,9 +44,11 @@ class Command(BaseCommand):
         prev_max = existing.max_total_occupants if existing else None
         prev_safe = existing.certified_safe if existing else None
 
+        # Omitting --safe on an update PRESERVES the existing certified_safe (it is not reset to None).
+        new_safe = o["safe"] if o["safe"] is not None else prev_safe
         self.stdout.write(f"host_key={hk}")
         self.stdout.write(f"  co-resident logical nodes: {node_desc}")
-        self.stdout.write(f"  host-wide ceiling: {prev_max} -> {o['max_total']}   safe: {prev_safe} -> {o['safe']}")
+        self.stdout.write(f"  host-wide ceiling: {prev_max} -> {o['max_total']}   safe: {prev_safe} -> {new_safe}")
         if not nodes:
             self.stdout.write(self.style.WARNING(
                 "  NOTE: no TerminalNode has this rdp_host yet; the ceiling is being pre-seeded."))
@@ -61,7 +63,8 @@ class Command(BaseCommand):
             if row is None:
                 row = HostCapacity(physical_host_key=hk)
             row.max_total_occupants = o["max_total"]
-            row.certified_safe = o["safe"]
+            if o["safe"] is not None:
+                row.certified_safe = o["safe"]        # preserve prior safe when --safe omitted on an update
             if o["basis"]:
                 row.basis = o["basis"]
             if o["actor"]:
@@ -70,6 +73,6 @@ class Command(BaseCommand):
             row.save()
             HostCapacityAudit.objects.create(
                 physical_host_key=hk, previous_max=prev_max, new_max=o["max_total"],
-                previous_safe=prev_safe, new_safe=o["safe"], actor=o["actor"], reason=o["basis"])
+                previous_safe=prev_safe, new_safe=row.certified_safe, actor=o["actor"], reason=o["basis"])
         self.stdout.write(self.style.SUCCESS(
-            f"Applied. {hk} host-wide ceiling now {o['max_total']} (safe {o['safe']}). Audit row written."))
+            f"Applied. {hk} host-wide ceiling now {o['max_total']} (safe {row.certified_safe}). Audit row written."))
