@@ -394,8 +394,22 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
                     return RequestResult(False, REQ_SERVER_METADATA_INCONSISTENT)
             elif server is not None:
                 if server.environment != desired_env:
-                    return RequestResult(False, REQ_ENV_MISMATCH)
-                # legacy inferred server, consistent with this account → proceed, no promotion/poisoning
+                    # The existing row disagrees with the customer's declared (broker-evidenced) environment, and
+                    # there is NO verified catalogue truth for this server. Only an OPERATOR-verified correction is
+                    # authoritative enough to reject the customer outright and fail closed (REQ_ENV_MISMATCH). An
+                    # ``inferred`` row is unverified and — per the 2026-10-12 governance — NEVER trusted as
+                    # authoritative: it was auto-created from some earlier registration's account_type, so a prior
+                    # DEMO account must not be able to brand a broker-confirmed LIVE server as demo and make GuvFX
+                    # tell the user to "use the correct server" when GuvFX cannot prove the supplied value is wrong
+                    # (the first-registration-poisoning class this governance exists to stop). For an unverified
+                    # disagreement the truthful state is UNKNOWN → route to the governed review path
+                    # (REQ_SERVER_METADATA_INCONSISTENT: "contact support to correct the server environment"),
+                    # never a false ENV_MISMATCH and never a silent create against the mislabelled row. No
+                    # promotion/poisoning either way.
+                    if server.environment_source == BrokerServer.OPERATOR:
+                        return RequestResult(False, REQ_ENV_MISMATCH)
+                    return RequestResult(False, REQ_SERVER_METADATA_INCONSISTENT)
+                # row AGREES with this account → proceed, no promotion/poisoning
             elif broker_server_catalogue_strict_enabled():
                 return RequestResult(False, REQ_SERVER_UNVERIFIED)
             else:
@@ -404,8 +418,14 @@ def request_hosted_workspace(user, *, expected_login, expected_server="", broker
                     defaults={"environment": desired_env,
                               "environment_source": BrokerServer.INFERRED})
                 if not _created and server.environment != desired_env:
-                    # a concurrent request created it with a different environment → honour the mismatch guard
-                    return RequestResult(False, REQ_ENV_MISMATCH)
+                    # A concurrent request created the row first with a different environment. Apply the SAME
+                    # source-aware rule as the existing-row branch above: only an OPERATOR-verified row is
+                    # authoritative enough to fail closed with REQ_ENV_MISMATCH; a concurrently-created ``inferred``
+                    # (unverified) row routes to governed review (REQ_SERVER_METADATA_INCONSISTENT), never a false
+                    # mismatch — so the race window can't resurrect the very defect this fix removes.
+                    if server.environment_source == BrokerServer.OPERATOR:
+                        return RequestResult(False, REQ_ENV_MISMATCH)
+                    return RequestResult(False, REQ_SERVER_METADATA_INCONSISTENT)
         # ``brokeridentity_present`` requires a broker_server OR a non-empty broker_name. The customer may
         # supply neither identifier at request time, so default broker_name to a safe placeholder (display
         # only — the certified matcher keys on broker_server.server_name, never on this string).

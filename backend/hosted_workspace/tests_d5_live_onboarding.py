@@ -84,13 +84,17 @@ class HostedLiveOnboardingTests(TestCase):
     # ---- demo/live disagreement with an EXISTING server fails closed ----
     @override_settings(**LIVE_ON)
     def test_live_on_a_demo_server_fails_closed(self):
+        # The existing row is an UNVERIFIED (``inferred``, the default when env_source is unspecified) demo row and
+        # the server is uncatalogued, so GuvFX cannot PROVE the customer's LIVE claim wrong (GFX-ACCOUNT-ONBOARDING-
+        # P0-001). It still fails closed (409, no account, row never overridden) but with the actionable review
+        # reason — never a false ENV_MISMATCH that tells the user to "use the correct server".
         BrokerServer.objects.create(server_name="Shared-Demo-Srv", environment=BrokerServer.DEMO)
         _u, c = _client("mismatch")
         before = TradingAccount.objects.count()
         r = c.post(ADD_URL, {"broker_name": "B", "expected_login": "9",
                              "expected_server": "Shared-Demo-Srv", "account_type": "live"}, format="json")
         self.assertEqual(r.status_code, 409, r.data)
-        self.assertEqual(r.data["reason"], P.REQ_ENV_MISMATCH)
+        self.assertEqual(r.data["reason"], P.REQ_SERVER_METADATA_INCONSISTENT)
         self.assertEqual(TradingAccount.objects.count(), before)        # never overrides a server's environment
 
     # ---- the journey projection tells the client whether LIVE onboarding may be offered ----
