@@ -302,6 +302,26 @@ def _bridge_allow_live() -> bool:
     return os.getenv("MT5_ALLOW_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# --- GFX-LIVE-POSITIONS-READONLY-001 (ADR-0072) — LIVE read-only OPEN-POSITIONS monitoring gate ----------
+# A MONITORING flag, NOT an execution flag. It is consulted in EXACTLY ONE place — fetch_positions — to decide
+# whether a LIVE (non-demo) terminal's OPEN POSITIONS may be READ. It appears in NO order/close/modify/
+# order_check path, is independent of MT5_ALLOW_LIVE / MT5_LIVE_EXPIRY / the copier flags /
+# LiveExecutionAuthorization, and cannot authorise, size, place, modify, close or cancel anything — a read can
+# never trade. Read FRESH per call (env-driven): ABSENT => OFF, so a bridge deployed or restarted WITHOUT this
+# var refuses LIVE position reads exactly like the pre-#472 bridge (account_not_demo, HTTP 400). DEMO reads are
+# never affected. #472 removed the live refusal UNCONDITIONALLY; this restores a DEFAULT-OFF gate so the
+# capability is activated only by explicit per-tenant host config, never implicitly by a bridge redeploy.
+def _live_readonly_positions_enabled() -> bool:
+    return os.getenv("MT5_LIVE_READONLY_POSITIONS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Bounded response size for the read-only positions payload (packet invariant). A real account's open-position
+# count is small; this is a defensive upper bound so a pathological terminal can never return an unbounded body.
+# Truncation is DISCLOSED (never silent): the response carries total_count + truncated so a reader never mistakes
+# a capped list for the full exposure.
+_READONLY_POSITIONS_MAX = 1000
+
+
 # ADR-0049.1 — HOST-SIDE TIME-BOUND for a LIVE runtime. The backend writes MT5_LIVE_EXPIRY (UTC Unix epoch
 # SECONDS, base-10 integer) alongside MT5_ALLOW_LIVE=1; this bridge admits an OPENING LIVE order ONLY while the
 # current trusted host time is strictly before that expiry. It is read FRESH per order (never cached at
@@ -2038,12 +2058,22 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
-        # LIVE READ-ONLY MONITORING (ADR: LIVE_READONLY_MONITORING_SAFETY_DESIGN): PURE READ (positions_get
-        # only — never order_send). Environment-agnostic like fetch_account_snapshot; the old
-        # `trade_mode != 0` refusal is removed HERE ONLY so LIVE accounts can be monitored read-only. A flat
-        # account now returns ok:true with an EMPTY list (HTTP 200), not account_not_demo (HTTP 400).
-        # DEMO/LIVE environment is verified at the backend read firewall against the observed identity below;
-        # all ORDER/CLOSE/MODIFY demo gates are untouched. A read can never place/modify/close a trade.
+        trade_mode = getattr(account_info, "trade_mode", None)  # 0=DEMO, 1=CONTEST, 2=REAL (None => unknown)
+        # LIVE READ-ONLY MONITORING (ADR LIVE_READONLY_MONITORING_SAFETY_DESIGN, refined by ADR-0072 /
+        # GFX-LIVE-POSITIONS-READONLY-001): PURE READ (positions_get only — never order_send). DEMO
+        # (trade_mode == 0) is byte-for-byte unchanged. #472 removed the live refusal UNCONDITIONALLY; this
+        # refines it into a DEFAULT-OFF gate — a LIVE/CONTEST terminal (trade_mode != 0, and None => treated
+        # non-demo, fail-closed) is READ ONLY when the purpose-specific, read-only MONITORING flag
+        # MT5_LIVE_READONLY_POSITIONS_ENABLED is set; otherwise it is refused with account_not_demo exactly as
+        # the pre-#472 bridge (fail-closed by default, so a redeploy can never silently turn LIVE monitoring
+        # on). This is a READ gate and NOT an execution flag: every ORDER/CLOSE/MODIFY demo gate is untouched,
+        # and the backend read firewall still verifies DEMO/LIVE environment against the observed identity below.
+        if trade_mode != 0 and not _live_readonly_positions_enabled():
+            # AUDIT (refusal): LIVE read declined because the read-only monitoring flag is OFF. Secret-free
+            # (trade_mode only, never the login) so "no live reads were served" stays an observable claim.
+            logger.warning("[positions] LIVE read refused: MT5_LIVE_READONLY_POSITIONS_ENABLED off (trade_mode=%s)",
+                           trade_mode)
+            return {"ok": False, "error": "account_not_demo", "detail": f"trade_mode={trade_mode}"}
 
         if symbol:
             positions = mt5.positions_get(symbol=symbol)
@@ -2058,8 +2088,12 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
             # read-only observer fails closed and never advances its baseline. Still a pure read.
             return {"ok": False, "error": "positions_get_failed", "detail": str(mt5.last_error())}
 
+        # Bounded response size (packet invariant): cap the serialised positions and DISCLOSE truncation —
+        # never silently drop exposure. total_count reflects the true number read from the terminal.
+        total_count = len(positions)
+        truncated = total_count > _READONLY_POSITIONS_MAX
         pos_list = []
-        for p in positions:
+        for p in (positions[:_READONLY_POSITIONS_MAX] if truncated else positions):
             pos_list.append({
                 "ticket": p.ticket,
                 "symbol": p.symbol,
@@ -2082,16 +2116,27 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
                 "identifier": getattr(p, "identifier", None),
             })
 
-        # Return the OBSERVED session identity alongside the positions so the backend read firewall can bind
-        # the batch to this account directly (login EXACT + server + environment), the same downstream-firewall
-        # contract fetch_deals_snapshot/fetch_account_snapshot already satisfy. trade_mode: 0=DEMO,1=CONTEST,2=REAL.
+        from datetime import datetime, timezone
+        if trade_mode != 0:
+            # AUDIT (success): a LIVE read-only monitoring read was served under the explicit flag. Secret-free
+            # (counts + trade_mode only, never the login) so served reads are observable and attributable.
+            logger.info("[positions] LIVE read-only served: trade_mode=%s count=%s truncated=%s",
+                        trade_mode, len(pos_list), truncated)
+        # Return the OBSERVED session identity + observation timestamp alongside the positions so the backend
+        # read firewall can bind the batch to this account directly (login EXACT + server + environment), the
+        # same downstream-firewall contract fetch_deals_snapshot/fetch_account_snapshot already satisfy.
+        # Provenance: account_login/account_server/trade_mode. Observation time: observed_at (bridge host UTC).
+        # trade_mode: 0=DEMO,1=CONTEST,2=REAL.
         return {
             "ok": True,
             "positions": pos_list,
             "count": len(pos_list),
+            "total_count": total_count,
+            "truncated": truncated,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
             "account_login": str(getattr(account_info, "login", "") or ""),
             "account_server": str(getattr(account_info, "server", "") or ""),
-            "trade_mode": getattr(account_info, "trade_mode", None),
+            "trade_mode": trade_mode,
         }
 
     except Exception as e:

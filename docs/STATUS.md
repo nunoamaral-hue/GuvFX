@@ -20,6 +20,33 @@
 > row is DEFERRED to a separate GO** — no clean supported one-shot primitive exists (governed path = operator
 > attestation + catalogue entry + `BrokerServer` OPERATOR correction), and it needs a PM/operator approval decision;
 > no hand-edit / no falsification performed. Governed PR, auto-merge OFF; deploy NOT authorised.
+> **2026-11-04 — LIVE read-only open-positions monitoring gate, default-OFF (GFX-LIVE-POSITIONS-READONLY-001;
+> ADR-0072; governed DARK PR; NOT deployed, NOT enabled).** Production returns `400 account_not_demo` on
+> `/mt5/positions` for LIVE accounts (#58, control #48), so the dashboard withholds live-position rows (equity
+> still reflects floating P/L via the ungated account snapshot). **Reconciliation (corrected):** PR #472 de-gated the
+> live positions read in the repo **unconditionally** (no in-code flag). It *was* activated in prod in Oct — but
+> as **out-of-band per-slot host edits** (`C:\GuvFX\tenants\<id>\mt5_signal_bridge.py` minus the 2 refusal lines;
+> 46 on 10-08, 48+49 on 10-23 — `200` then, this session's own prior evidence). **As of 2026-11-04 it reverted**
+> (#48 + new #58 → `400`): a per-slot script edit does not survive the host **reboot-recovery gap** or the
+> **Nov-3 #603/#606 node2 re-provisioning** (both regenerate a slot from the canonical, still-re-gated shared
+> bridge); #58 is new, never de-gated. **First broken boundary:** the capability had **no durable, default-safe,
+> version-controlled gate**, so it flips silently in BOTH directions — reverts on reboot/re-provision (observed),
+> and would turn ON for all live accounts if the shared de-gated bridge were deployed — invisibly, because the
+> read fails to *stale*, not loud. Exact revert vector needs a read-only host check (RED/out of scope).
+> **Fix (this packet):**
+> refine the de-gate into a purpose-specific, default-OFF **read-only** flag `MT5_LIVE_READONLY_POSITIONS_ENABLED`
+> (bridge `fetch_positions`) + a fail-closed, execution-independent per-tenant emission gate
+> (`bridge_config.readonly_positions_for_account` / `render_bridge_env(readonly_positions=)` /
+> `LIVE_READONLY_POSITIONS_MONITORING_ENABLED`). DEMO reads byte-for-byte unchanged; LIVE refused `account_not_demo`
+> unless the flag is set; response gains provenance + `observed_at` + bounded/`truncated`; audit logs served/refused
+> reads (secret-free). **Execution boundary preserved verbatim:** no `order_send` in any read, every
+> order/close/modify demo gate untouched, the read flag can never arm execution (adversarially tested). With the
+> flag OFF (default) deploying the refined bridge reproduces EXACTLY today's behaviour. Tests: updated #472 bridge
+> suite + new adversarial matrix (`tests_live_readonly_positions_flag`, maps reqs 1–18); focused 39 green; full
+> `execution` **1409 green**; `trade_copier`+`analytics.tests_portfolio` **576 green**; secret scan clean. Scope
+> note (RULE 7): `deals`/`account` snapshots remain ungated for LIVE (out of scope; #472 unchanged). Governed PR,
+> auto-merge OFF; **STOP before merge, deploy, and flag-enablement.** Does not touch #25 / #607 / #608 / Tailscale
+> / TIM / copier; execution + copier OFF, zero orders; #58's live position untouched.
 
 > **2026-11-04 — Governed broker-server environment attestation primitive (GFX-DOMINION-SERVER-ATTESTATION-001;
 > new management command; governed PR; NOT applied to prod).** The Sponsor attested `DominionMarkets-Live = LIVE`
