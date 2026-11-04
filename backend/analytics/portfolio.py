@@ -19,6 +19,7 @@ from typing import Callable, List, Optional
 from django.utils import timezone
 
 from analytics import portfolio_fx as FX
+from analytics.equity_snapshots import DEFAULT_FRESHNESS_S as _LEDGER_FRESHNESS_S
 from trading.models import Trade, TradingAccount
 
 logger = logging.getLogger("guvfx.portfolio")
@@ -520,6 +521,50 @@ def portfolio_open_pl(per_account, rate_source: FX.FxRateSource):
     return agg, stale_ids
 
 
+# Dashboard data-integrity (GFX-DASHBOARD-DATA-INTEGRITY-001): the summary's balance/equity come from a LIVE
+# per-account bridge read. When that read is unavailable (bridge down/slow, or the shared wall-clock budget was
+# exhausted by an earlier hung account), the account previously collapsed to ``stale`` — and when that happened
+# estate-wide the whole USD aggregate degraded to UNAVAILABLE even though the durable, identity-verified equity
+# ledger held a FRESH observation for that same account. ``_equity_snapshot_fallback`` lets each account fall back
+# to ITS OWN latest fresh ``AccountEquitySnapshot`` so an independently-fresh account stays INCLUDED (truthful
+# PARTIAL), never excluded because a DIFFERENT account's bridge was down (per-account isolation; no cross-tenant
+# read; no fabricated value). Reuses the equity-ledger staleness window (equity_snapshots.DEFAULT_FRESHNESS_S) so
+# the two can never silently diverge.
+_SUMMARY_SNAPSHOT_FRESHNESS_S = _LEDGER_FRESHNESS_S
+
+
+def _equity_snapshot_fallback(account, *, now, freshness_s: float = _SUMMARY_SNAPSHOT_FRESHNESS_S):
+    """``fetch_balance``-shaped dict from THIS account's latest durable equity snapshot, or ``None``.
+
+    Returns a value ONLY when the latest ``AccountEquitySnapshot`` for ``account`` is fresh (observed within
+    ``freshness_s`` seconds of ``now``) and carries at least one monetary figure. Never reads another account's
+    rows (tenant isolation) and never fabricates a figure — a missing field stays ``None`` so the aggregate
+    excludes it honestly rather than summing a zero. ``source``/``as_of``/``age_s`` are carried through so the UI
+    can disclose that the figure is a durable-ledger observation and how old it is (never a silent substitution).
+    """
+    from analytics.models import AccountEquitySnapshot
+    row = (AccountEquitySnapshot.objects
+           .filter(trading_account_id=account.id)
+           .order_by("-observed_at")
+           .values("observed_at", "account_currency", "balance", "equity").first())
+    if not row or row["observed_at"] is None:
+        return None
+    age_s = (now - row["observed_at"]).total_seconds()
+    if age_s > freshness_s:
+        return None
+    if row["balance"] is None and row["equity"] is None:
+        return None
+    return {
+        "balance": (float(row["balance"]) if row["balance"] is not None else None),
+        "equity": (float(row["equity"]) if row["equity"] is not None else None),
+        # A blank snapshot currency is UNKNOWN, not USD: the balance/equity path must fail CLOSED (excluded as
+        # currency_unconvertible) exactly like the open-position path, never silently denominate a figure as USD.
+        "currency": (row["account_currency"] or "").strip() or FX.UNKNOWN_CURRENCY,
+        "as_of": row["observed_at"].isoformat(),
+        "age_s": round(age_s, 1),
+    }
+
+
 def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_positions: Callable,
                   rate_source: FX.FxRateSource, stage: str = STAGE_ALL):
     """Assemble the portfolio summary for ``scope``. Returns ``(payload, error_status)``."""
@@ -531,6 +576,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     # One shared wall-clock budget across BOTH live-read passes (open positions + balances) so the whole summary
     # settles in bounded time even when an account's bridge is down; accounts not reached in time read stale.
     deadline = time.monotonic() + _AGG_BUDGET_SECONDS
+    summary_now = timezone.now()   # single clock for the per-account durable-snapshot freshness check
     # Bridge-observed currency per account (verified equity ledger) so open-position P/L is labelled in its true
     # currency and a non-USD account is excluded from the USD total, never defaulted to USD (currency-integrity).
     open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source,
@@ -553,6 +599,16 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             except Exception:  # noqa: BLE001
                 logger.warning("portfolio: balance fetch raised for account %s", a.id)
                 snap = None
+        equity_source = "live" if snap is not None else None
+        # Fall back to THIS account's own fresh durable snapshot when the live read gave no usable figure
+        # (unreachable bridge, exhausted budget, or a response with null balance AND equity) — never when a live
+        # figure is in hand. The fallback only WINS when it actually carries a value, so a missing/stale snapshot
+        # leaves the account honestly excluded rather than masking it. Provenance is set from THIS code path, not
+        # from a bridge-controlled dict key.
+        if snap is None or (snap.get("balance") is None and snap.get("equity") is None):
+            fb = _equity_snapshot_fallback(a, now=summary_now)
+            if fb is not None:
+                snap, equity_source = fb, "snapshot"
         cur = FX.normalise_currency((snap or {}).get("currency") or getattr(a, "account_currency", None))
         observed_ccy[a.id] = cur
         if cur != FX.USD:
@@ -574,6 +630,10 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             "currency": cur, "is_active": a.is_active,
             "trading_state": {"state": state, "label": state_label},
             "balance_native": balance, "equity_native": equity,
+            # Provenance/freshness disclosure (never a silent substitution): "live" = fresh bridge read,
+            # "snapshot" = durable equity-ledger fallback (``observed_as_of`` gives its instant), None = no fresh figure.
+            "equity_source": equity_source,
+            "observed_as_of": ((snap or {}).get("as_of") if equity_source == "snapshot" else None),
             "net_pnl": account_net_pnl(a, stage=stage, observed_usd=(cur == FX.USD),
                                        rate_source=rate_source, account_ccy=cur),
             "open_count": op.get("open_count", 0), "open_pl_usd": op.get("open_pl_usd"),
