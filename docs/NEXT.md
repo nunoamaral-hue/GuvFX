@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ LIVE READ-ONLY OPEN-POSITIONS MONITORING GATE (2026-11-04; GFX-LIVE-POSITIONS-READONLY-001; ADR-0072; DARK PR)
+Default-OFF, purpose-specific read flag `MT5_LIVE_READONLY_POSITIONS_ENABLED` in the bridge `fetch_positions`
+(refines #472's unconditional, undeployed de-gate) + fail-closed execution-independent emission gate. DEMO
+unchanged; LIVE refused unless flagged; `order_send` unreachable from reads; adversarial matrix 1–18 green
+(execution 1409 / copier+portfolio 576 green). **One bounded next action:** governed review of the DARK PR.
+Then a SEPARATE Sponsor/operator gate (RED) to deploy the refined bridge bundle (behaviourally a no-op with the
+flag OFF) and, one account at a time, arm `MT5_LIVE_READONLY_POSITIONS_ENABLED` — negative control #48 (withheld),
+positive control #58 (positions visible; its live position NEVER modified/closed). Runbook:
+`docs/LIVE_POSITIONS_READONLY_BUNDLE_AND_ROLLBACK.md`. Residual (separate decisions): host-bundle hash read-only
+check; whether `deals`/`account` LIVE reads should be flag-gated too (currently ungated, out of scope).
+
 ## ★ GUVFX-TIM CONTRACT v0.2 REPOSITORY FOUNDATION (2026-11-03; GFX-PKT-TIM-C1; ADR-0070; MERGED (#604 -> main 26a2f6f0))
 Repository-only / synthetic-only: 12 additive JSON Schemas + dependency-free validators + synthetic fixtures +
 offline 7-day EURUSD M1 release smoke + CI lane, all green locally; existing 006C v1 schemas byte-identical.
