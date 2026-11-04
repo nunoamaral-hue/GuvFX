@@ -259,11 +259,16 @@ class LegacyRowCompatTests(TestCase):
         self.assertEqual(res.workspace.trading_account.broker_server.environment_source, BrokerServer.INFERRED)
 
     def test_existing_inferred_row_mismatch_fails_closed(self):
+        # GFX-ACCOUNT-ONBOARDING-P0-001: an existing UNVERIFIED (inferred) demo row for an UNCATALOGUED server is
+        # NOT authoritative, so a broker-evidenced LIVE request still fails closed (no account) but routes to the
+        # governed review path (REQ_SERVER_METADATA_INCONSISTENT) rather than a false ENV_MISMATCH — GuvFX must not
+        # tell the user to "use the correct server" when it cannot prove the supplied value wrong. (An OPERATOR-
+        # verified row still yields REQ_ENV_MISMATCH — see UncataloguedInferredEnvGovernanceTests.)
         BrokerServer.objects.create(server_name="Legacy-Demo-Srv", environment=BrokerServer.DEMO,
                                     environment_source=BrokerServer.INFERRED)
         res = _req(_u("lc2"), "401", "Legacy-Demo-Srv", is_demo=False)
         self.assertFalse(res.ok)
-        self.assertEqual(res.reason, P.REQ_ENV_MISMATCH)
+        self.assertEqual(res.reason, P.REQ_SERVER_METADATA_INCONSISTENT)
 
     def test_cross_user_registration_does_not_leak_or_mutate(self):
         a = _req(_u("iso_a"), "500", IS6_DEMO, is_demo=True)
@@ -494,3 +499,86 @@ class CaseVariantIdempotencyTests(TestCase):
         self.assertEqual(again.reason, P.REQ_EXISTS)
         self.assertEqual(again.workspace.pk, first.workspace.pk)
         self.assertEqual(TradingAccount.objects.filter(user=self.user, account_number="900").count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# GFX-ACCOUNT-ONBOARDING-P0-001 — an UNCATALOGUED server whose only classification is an UNVERIFIED (``inferred``)
+# row must NOT act as an authoritative demo/live conflict gate. A prior DEMO registration poisoned
+# ``DominionMarkets-Live`` as demo; a broker-confirmed LIVE add then got a false REQ_ENV_MISMATCH ("use the correct
+# server") even though GuvFX cannot prove the supplied value wrong and the catalogue holds no truth for it. The fix
+# routes an unverified disagreement to the governed review path (REQ_SERVER_METADATA_INCONSISTENT), never a bare
+# mismatch, never a silent create against the mislabelled row — while an OPERATOR-verified row still fails closed.
+# ---------------------------------------------------------------------------
+UNCAT_LIVE = "Uncat-Dominion-Live"   # deliberately NOT in the seeded catalogue (resolve → UNKNOWN)
+UNCAT_DEMO = "Uncat-Dominion-Demo"
+
+
+@override_settings(**LIVE_ON)
+class UncataloguedInferredEnvGovernanceTests(TestCase):
+    def test_inferred_demo_poison_blocks_live_with_review_not_false_mismatch(self):
+        row = BrokerServer.objects.create(server_name=UNCAT_LIVE, environment=BrokerServer.DEMO,
+                                          environment_source=BrokerServer.INFERRED)
+        before = TradingAccount.objects.count()
+        res = _req(_u("uncat_poison"), "128736", UNCAT_LIVE, is_demo=False)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, P.REQ_SERVER_METADATA_INCONSISTENT)   # actionable review, NOT a false mismatch
+        self.assertNotEqual(res.reason, P.REQ_ENV_MISMATCH)
+        self.assertEqual(TradingAccount.objects.count(), before)           # no account created
+        row.refresh_from_db()
+        self.assertEqual(row.environment, BrokerServer.DEMO)               # row UNTOUCHED — never promoted/poisoned
+        self.assertEqual(row.environment_source, BrokerServer.INFERRED)
+
+    def test_operator_verified_demo_still_fails_closed_with_env_mismatch(self):
+        BrokerServer.objects.create(server_name="Uncat-Operator-Demo", environment=BrokerServer.DEMO,
+                                    environment_source=BrokerServer.OPERATOR)
+        before = TradingAccount.objects.count()
+        res = _req(_u("uncat_op"), "1", "Uncat-Operator-Demo", is_demo=False)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.reason, P.REQ_ENV_MISMATCH)                   # OPERATOR-verified → authoritative, fail closed
+        self.assertEqual(TradingAccount.objects.count(), before)
+
+    def test_inferred_row_agreeing_with_request_still_onboards(self):
+        row = BrokerServer.objects.create(server_name=UNCAT_DEMO, environment=BrokerServer.DEMO,
+                                          environment_source=BrokerServer.INFERRED)
+        res = _req(_u("uncat_ok"), "7", UNCAT_DEMO, is_demo=True)          # demo request AGREES with the demo row
+        self.assertTrue(res.ok, res.reason)
+        self.assertTrue(res.workspace.trading_account.is_demo)
+        row.refresh_from_db()
+        self.assertEqual(row.environment_source, BrokerServer.INFERRED)    # no promotion on a consistent use
+
+    def test_review_reject_creates_no_workspace_and_is_idempotent(self):
+        from hosted_workspace.models import HostedMt5Workspace
+        BrokerServer.objects.create(server_name=UNCAT_LIVE, environment=BrokerServer.DEMO,
+                                    environment_source=BrokerServer.INFERRED)
+        ws_before = HostedMt5Workspace.objects.count()
+        u = _u("uncat_noop")
+        r1 = _req(u, "128736", UNCAT_LIVE, is_demo=False)
+        r2 = _req(u, "128736", UNCAT_LIVE, is_demo=False)                  # identical resubmission
+        self.assertEqual(r1.reason, P.REQ_SERVER_METADATA_INCONSISTENT)
+        self.assertEqual(r2.reason, P.REQ_SERVER_METADATA_INCONSISTENT)   # idempotent — still review, no partial write
+        self.assertEqual(HostedMt5Workspace.objects.count(), ws_before)    # no workspace reserved by a failed request
+
+    def test_case_variant_resolves_same_row_no_false_collision(self):
+        BrokerServer.objects.create(server_name=UNCAT_LIVE, environment=BrokerServer.DEMO,
+                                    environment_source=BrokerServer.INFERRED)
+        res = _req(_u("uncat_case"), "128736", UNCAT_LIVE.upper(), is_demo=False)   # case variant of the same name
+        self.assertEqual(res.reason, P.REQ_SERVER_METADATA_INCONSISTENT)
+        self.assertEqual(BrokerServer.objects.filter(server_name__iexact=UNCAT_LIVE).count(), 1)  # no duplicate row
+
+    def test_stale_catalogue_source_row_without_catalogue_entry_routes_to_review(self):
+        # A row stamped environment_source=CATALOGUE but with NO current verified catalogue entry (the mirror is
+        # stale) is not authoritative now → an opposite-env request routes to review, never a false mismatch.
+        BrokerServer.objects.create(server_name="Uncat-StaleCat-Live", environment=BrokerServer.DEMO,
+                                    environment_source=BrokerServer.CATALOGUE)
+        res = _req(_u("stalecat"), "3", "Uncat-StaleCat-Live", is_demo=False)
+        self.assertEqual(res.reason, P.REQ_SERVER_METADATA_INCONSISTENT)
+
+    def test_global_inferred_row_routes_other_tenant_to_review_not_mismatch(self):
+        # BrokerServer rows are global; an inferred classification from one tenant must not become a false
+        # authoritative mismatch for another tenant — it routes to review, and never hands over any account.
+        BrokerServer.objects.create(server_name=UNCAT_LIVE, environment=BrokerServer.DEMO,
+                                    environment_source=BrokerServer.INFERRED)
+        before = TradingAccount.objects.count()
+        res = _req(_u("tenant_b"), "999", UNCAT_LIVE, is_demo=False)
+        self.assertEqual(res.reason, P.REQ_SERVER_METADATA_INCONSISTENT)
+        self.assertEqual(TradingAccount.objects.count(), before)

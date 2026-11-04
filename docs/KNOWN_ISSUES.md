@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟠 Stale/poisoned `BrokerServer` env rows need a governed correction path (GFX-ACCOUNT-ONBOARDING-P0-001, 2026-11-04)
+
+- Prod `BrokerServer "DominionMarkets-Live"` is `environment=demo, source=inferred` (poisoned by tombstoned demo
+  account #40) and `DominionMarkets` is also demo/inferred. The code fix stops these from BLOCKING a live add
+  (they now route to review), but the rows remain mislabelled until corrected. **A support@ user still cannot
+  complete the live add on prod until the stale row is corrected AND/OR this fix is deployed.**
+- **No clean supported one-shot repair primitive exists.** The governed correction is multi-step and
+  approval-gated: operator attestation → add a verified `BrokerServerCatalogue` entry (`build_catalogue_version`
+  + `activate_catalogue_version`) → correct the stale `BrokerServer` row to `environment=live, source=OPERATOR`
+  (otherwise the verified branch then returns `REQ_SERVER_METADATA_INCONSISTENT`). Requires a PM/operator decision
+  that `DominionMarkets-Live` is genuinely live (only the user's broker evidence attests it). Deferred to a
+  separate Sponsor GO; do NOT hand-edit columns or mark the catalogue verified without attestation.
+- The `bind_broker_identity` sibling path still treats an inferred row as an authoritative demo/live gate
+  (`BIND_LIVE_FORBIDDEN`) at identity-bind time. Not the user's blocker (the add-path gate fires first; after a
+  governed correction the row is OPERATOR/consistent), so left unchanged by this focused fix — flagged for a
+  possible follow-up to apply the same inferred-not-authoritative rule there.
+
 ## 🟡 Copier hybrid lifecycle (ADR-0071) — accepted bounds while DARK (2026-11-03)
 
 - The EVENT path has a **contract + pure fold only — no bridge emitter and no ingestion endpoint yet**. Until a

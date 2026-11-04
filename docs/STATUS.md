@@ -1,5 +1,26 @@
 # GuvFX — Project Status
 
+> **2026-11-04 — Onboarding P0: an unverified (inferred) server env must not be an authoritative conflict gate
+> (GFX-ACCOUNT-ONBOARDING-P0-001; backend-only; governed PR; NOT deployed).** A support@ user could not add a
+> broker-confirmed LIVE account "Dominion Markets NG02" / server `DominionMarkets-Live`: the add returned "That
+> broker server is already registered with a different (demo/live) environment. Use the correct server…". Root
+> cause (prod `79f7ab6e`): a prior tombstoned DEMO account (#40) auto-created the `BrokerServer "DominionMarkets-Live"`
+> row as `environment=demo, environment_source=inferred`; the catalogue holds no Dominion entry, so
+> `resolve_verified_environment` is UNKNOWN and `provisioning.request_hosted_workspace` fell to the `elif server is
+> not None` branch (first broken boundary) and treated the UNVERIFIED inferred value as authoritative → false
+> `REQ_ENV_MISMATCH`. This contradicts the 2026-10-12 governance ("inferred … never trusted as authoritative") and
+> tells the user their server is wrong when GuvFX cannot prove it. **No partial write** from the failed submissions
+> (both Dominion rows predate 2026-09-30; no `NG02` account); exec/copier/live-authz all OFF; zero orders. Fix:
+> in that branch, an `inferred` (or otherwise non-OPERATOR) disagreement now routes to the governed review path
+> `REQ_SERVER_METADATA_INCONSISTENT` ("contact support to correct the server environment"), never a false mismatch
+> and never a silent create against the mislabelled row; an OPERATOR-verified disagreement still fails closed
+> (`REQ_ENV_MISMATCH`), and verified-catalogue handling is unchanged. New + updated regression tests (uncatalogued
+> inferred→review, OPERATOR→mismatch, agreeing→onboards, no-workspace/idempotent, case-variant no-collision,
+> cross-tenant→review); targeted onboarding suites 154 green. **Production repair of the stale `DominionMarkets-Live`
+> row is DEFERRED to a separate GO** — no clean supported one-shot primitive exists (governed path = operator
+> attestation + catalogue entry + `BrokerServer` OPERATOR correction), and it needs a PM/operator approval decision;
+> no hand-edit / no falsification performed. Governed PR, auto-merge OFF; deploy NOT authorised.
+
 > **2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only /
 > synthetic-only; MERGED (#604 -> main 26a2f6f0); NOT deployed).** Implemented the Sponsor-approved additive contract set: 12 new
 > draft-07 JSON Schemas under `research/contracts/` (market_data_source, canonical_instrument,
