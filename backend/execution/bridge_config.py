@@ -10,7 +10,8 @@ places no order; supervised launch is a separately-gated host concern.
 from __future__ import annotations
 
 
-def render_bridge_env(endpoint, *, allow_live: bool = False, live_expiry_epoch: int | None = None) -> str:
+def render_bridge_env(endpoint, *, allow_live: bool = False, live_expiry_epoch: int | None = None,
+                      readonly_positions: bool = False) -> str:
     """Return the ``.bat`` env body for ``endpoint``'s dedicated bridge. Parameterised per tenant: its OWN
     account id, terminal path, port, and the full server-derived identity the bridge enforces every order
     against (login/server/windows_username/workspace_uuid).
@@ -27,7 +28,15 @@ def render_bridge_env(endpoint, *, allow_live: bool = False, live_expiry_epoch: 
     epoch in SECONDS** after which the runtime bridge refuses every LIVE order (even if the OFF restore never
     runs). ``allow_live=True`` therefore REQUIRES a positive-int ``live_expiry_epoch`` — emitting
     ``MT5_ALLOW_LIVE`` without an expiry is a caller error and is refused here; the bridge independently
-    fail-closes on an absent/malformed/past expiry. The OFF render omits BOTH keys."""
+    fail-closes on an absent/malformed/past expiry. The OFF render omits BOTH keys.
+
+    GFX-LIVE-POSITIONS-READONLY-001 (ADR-0072) — ``readonly_positions`` emits ``MT5_LIVE_READONLY_POSITIONS_ENABLED``
+    (a READ-ONLY monitoring flag) ONLY when the caller passes ``readonly_positions=True`` (derived from the
+    fail-closed, execution-independent ``readonly_positions_for_account``). It is INDEPENDENT of ``allow_live``:
+    a monitoring-only LIVE runtime may carry it with NO execution authority, and a live-execution runtime gains
+    NO read authority from ``MT5_ALLOW_LIVE``. Default OMITTED => the read capability is OFF (and cleared on
+    restart, as it lives in the env file, not process state). The bridge consults it in exactly one read path
+    (``fetch_positions``) and never in any order/close/modify path."""
     if allow_live and not (isinstance(live_expiry_epoch, int) and not isinstance(live_expiry_epoch, bool)
                            and live_expiry_epoch > 0):
         raise ValueError("render_bridge_env(allow_live=True) requires a positive integer live_expiry_epoch "
@@ -54,6 +63,11 @@ def render_bridge_env(endpoint, *, allow_live: bool = False, live_expiry_epoch: 
         # positive int). The bridge admits a LIVE order ONLY while now < MT5_LIVE_EXPIRY, so the LIVE boundary
         # self-expires on the host independently of the backend authorization and the OFF restore.
         lines.append(_kv("MT5_LIVE_EXPIRY", int(live_expiry_epoch)))
+    if readonly_positions:
+        # GFX-LIVE-POSITIONS-READONLY-001 (ADR-0072) — READ-ONLY monitoring flag, emitted ONLY when the caller's
+        # readonly_positions_for_account() held. INDEPENDENT of MT5_ALLOW_LIVE (emitted with or without it); the
+        # bridge consults it in exactly one read path (fetch_positions) and in NO order/close/modify path.
+        lines.append(_kv("MT5_LIVE_READONLY_POSITIONS_ENABLED", "1"))
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -75,6 +89,44 @@ def allow_live_for_account(account) -> bool:
         return bool(live_execution_permitted(account) or copier_live_execution_authorized(account))
     except Exception:  # noqa: BLE001 — fail closed
         return False
+
+
+def readonly_positions_for_account(account) -> bool:
+    """GFX-LIVE-POSITIONS-READONLY-001 (ADR-0072) — fail-closed per-tenant decision for whether a bridge may be
+    rendered with ``MT5_LIVE_READONLY_POSITIONS_ENABLED``. TRUE only when BOTH hold:
+
+      * the account is authoritatively LIVE (``is_live_environment`` — a DEMO account never needs this flag; it
+        reads positions unconditionally), AND
+      * the dedicated, default-OFF monitoring authority is armed
+        (``LIVE_READONLY_POSITIONS_MONITORING_ENABLED``, settings- or env-sourced).
+
+    This authority is SEPARATE from every execution gate (``MT5_ALLOW_LIVE`` / ``live_execution_permitted`` /
+    ``copier_live_execution_authorized`` / ``LiveExecutionAuthorization`` / ``HOSTED_LIVE_EXECUTION_ENABLED``):
+    arming it can never place, size or approve an order, and it is never consulted by the order path. Any error
+    => False. The emitted flag is a READ gate only; the bridge's own ``fetch_positions`` enforcement is the
+    backend-independent final authority."""
+    try:
+        from trading.account_policy import is_live_environment
+        if not is_live_environment(account):
+            return False
+        return _live_readonly_positions_monitoring_armed()
+    except Exception:  # noqa: BLE001 — fail closed
+        return False
+
+
+def _live_readonly_positions_monitoring_armed() -> bool:
+    """Default-OFF monitoring authority flag, independent of every execution flag. Settings override, else env
+    (mirrors ``hosted_workspace.flags._flag``): absent/blank/falsey => OFF."""
+    import os
+    val = None
+    try:
+        from django.conf import settings
+        val = getattr(settings, "LIVE_READONLY_POSITIONS_MONITORING_ENABLED", None)
+    except Exception:  # noqa: BLE001 — settings unavailable => fall back to env
+        val = None
+    if val is None:
+        val = os.getenv("LIVE_READONLY_POSITIONS_MONITORING_ENABLED", "")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _kv(key: str, value) -> str:

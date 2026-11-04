@@ -15,6 +15,25 @@ List active problems with reproduction steps and workarounds.
 - **Realized/metrics currency honesty:** with the snapshot fallback the per-account observed currency now resolves from
   the durable snapshot (e.g. GBP for #49/#52), so `daily_realized`/`metrics` classify those accounts' native currency
   honestly (PARTIAL/native) rather than summing GBP as USD — an intended correctness improvement, covered by tests.
+## 🟡 LIVE `/mt5/positions` withheld in prod; repo de-gate was merged-but-undeployed (2026-11-04; ADR-0072)
+
+- **Symptom:** `GET /mt5/positions` returns `HTTP 400 {"ok":false,"error":"account_not_demo"}` for every LIVE
+  terminal (confirmed #58 + control #48). The dashboard withholds individual live-position rows; equity is
+  unaffected (the account snapshot is ungated and reflects floating P/L).
+- **Root cause (corrected):** PR #472 de-gated the read **unconditionally** (no in-code flag). It *was* activated
+  in Oct as **out-of-band per-slot host edits** (per-slot script minus the 2 refusal lines; 46/48/49 → `200`
+  then), but that **reverted** by 2026-11-04 (#48 + new #58 → `400`) — a per-slot script edit does not survive
+  the host **reboot-recovery gap** or the **Nov-3 #603/#606 node2 re-provisioning** (both regenerate a slot from
+  the canonical re-gated bridge). #58 is new, never de-gated. (Current per-slot bundle/task state NOT read on the
+  host — RED/out of scope.)
+- **Governance finding:** the capability had **no durable, default-safe, version-controlled gate**, so it flips
+  silently in BOTH directions — reverts on reboot/re-provision (observed), and would turn LIVE reads ON for all
+  live accounts if the shared de-gated bridge were deployed — invisibly, because the read fails to *stale*, not
+  loud. ADR-0072's durable env flag emitted by the renderer is the fix.
+- **Fix status:** ADR-0072 adds a default-OFF read flag `MT5_LIVE_READONLY_POSITIONS_ENABLED` (DARK PR, NOT
+  deployed/enabled). With it OFF the behaviour above is unchanged; enabling it per-tenant is a separate RED gate.
+- **Scope caveat (RULE 7):** `fetch_deals_snapshot` / `fetch_account_snapshot` remain UNCONDITIONALLY ungated for
+  LIVE (out of this packet's scope; #472 unchanged). Whether they should also be flag-gated is a separate decision.
 
 ## 🟡 Copier hybrid lifecycle (ADR-0071) — accepted bounds while DARK (2026-11-03)
 
