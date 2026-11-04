@@ -1,5 +1,14 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ GUVFX-TIM v0.3 CANONICAL CONTRACT (2026-11-04; GFX-PKT-TIM-C2; ADR-0073; repository-only PR)
+Parquet canonical candles + immutable READY-last releases + hash-bound provenance + separate point-in-time +
+supersession + consumer-owned receipts + validator pinning + synthetic signature envelope (G1–G9). Strictly
+additive; 006C v1 + v0.2 byte-identical; 27 tests + genuine-Parquet smoke green. **One bounded next action:**
+governed review + merge of the repository-only PR, then Sponsor routing of the INFORMATION-ONLY TIM follow-up
+packet (merged SHA, contract inventory, consumer requirements, fixture/validator commands, acceptance criteria,
+deprecated temporary-adapter assumptions). SEPARATE / RED and NOT in scope: real source licensing + account
+capacity, NAS ACL, operational signing-key custody/algorithm, and the TIM-side consumer implementation. No deploy.
+
 ## ★ LIVE READ-ONLY OPEN-POSITIONS MONITORING GATE (2026-11-04; GFX-LIVE-POSITIONS-READONLY-001; ADR-0072; DARK PR)
 Default-OFF, purpose-specific read flag `MT5_LIVE_READONLY_POSITIONS_ENABLED` in the bridge `fetch_positions`
 (refines #472's unconditional, undeployed de-gate) + fail-closed execution-independent emission gate. DEMO

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/canonical_candles_parquet_v1.schema.json",
+  "title": "GuvFX Canonical Candles Parquet Column Contract v1",
+  "description": "The canonical analytical candle payload is Parquet (NDJSON is permitted ONLY as optional raw evidence; NDJSON-only canonical releases are not canonical-import eligible). This contract DESCRIBES the mandatory Parquet column surface, logical+physical types, UTC unit, decimal precision, integer widths, nullability and the uniqueness key; the authoritative enforcement is research/market_data/tim_contracts_v0_3.py against a read-back Parquet schema. GFX-PKT-TIM-C2, v0.3. Synthetic/design contract.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "column": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 64 },
+        "logical_type": { "type": "string", "enum": ["timestamp_utc", "decimal", "int", "uint"] },
+        "parquet_physical_type": { "type": "string", "enum": ["TIMESTAMP(isAdjustedToUTC=true,unit=MICROS)", "DECIMAL(38,18)", "INT64", "INT32", "UINT32"] },
+        "duckdb_type": { "type": "string", "enum": ["TIMESTAMP", "DECIMAL(38,18)", "BIGINT", "INTEGER", "UINTEGER"] },
+        "nullable": { "type": "boolean" },
+        "unit": { "type": ["string", "null"], "enum": ["microseconds_utc", "points", null] },
+        "precision": { "type": ["integer", "null"], "minimum": 0, "maximum": 38 },
+        "scale": { "type": ["integer", "null"], "minimum": 0, "maximum": 38 },
+        "description": { "type": "string", "minLength": 1 }
+      },
+      "required": ["name", "logical_type", "parquet_physical_type", "duckdb_type", "nullable", "unit", "precision", "scale", "description"]
+    }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "canonical_format": { "const": "parquet" },
+    "timeframe_pilot": { "type": "string", "enum": ["M1"] },
+    "utc_representation": { "const": "microseconds_since_epoch_utc_adjusted" },
+    "interval_semantics": { "const": "[start,end)" },
+    "row_order": { "const": "ascending_by_event_start_utc" },
+    "uniqueness_key": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Columns that uniquely identify a candle row within a release (event_start_utc)."
+    },
+    "mandatory_columns": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/column" },
+      "minItems": 1
+    },
+    "optional_columns": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/column" }
+    },
+    "partitioning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": { "type": "string", "enum": ["single_file_per_release"] },
+        "note": { "type": "string" }
+      },
+      "required": ["scheme", "note"]
+    },
+    "native_vs_derived": {
+      "type": "string",
+      "enum": ["declared_in_release_manifest"],
+      "description": "Native/derived identity is carried by the release manifest provenance/derivation, never inferred from the candle rows."
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "schema_version", "canonical_format", "timeframe_pilot", "utc_representation",
+    "interval_semantics", "row_order", "uniqueness_key", "mandatory_columns",
+    "optional_columns", "partitioning", "native_vs_derived", "limitations"
+  ]
+}

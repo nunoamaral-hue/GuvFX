@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-C2-v0_3-contracts",
+  "packet_id": "GFX-PKT-TIM-C2",
+  "created_at_utc": "2026-11-04T22:30:00Z",
+  "branch": "feat/tim-v0_3-contracts",
+  "base_commit": "2009a8a71e32efddb17b464b1bd00d732b4d27d8",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only / synthetic-only",
+    "existing_006c_v1_schemas_changed": false,
+    "existing_v0_2_schemas_changed": false,
+    "additive_only": true,
+    "duckdb_required_for_market_data_lane": true,
+    "network_blocked": true,
+    "real_data_or_acquisition": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "market-data-foundation"
+  },
+  "commands": [
+    "python -m unittest discover -s tests -p 'test_tim_contract_v0_3.py' -v",
+    "python tools/tim_release_v0_3_synthetic_smoke.py",
+    "python -m unittest discover -s tests -p 'test_tim_contract_v0_2.py' -v (unchanged; byte-identical)",
+    "python tools/market_data_synthetic_smoke.py ; python -m unittest discover -s tests -p 'test_market_data_foundation.py'",
+    "python tools/research_smoke.py ; python -m unittest discover -s tests -p 'test_research_foundation.py'",
+    "python3 scripts/check_no_secrets.py ; python3 scripts/check_evidence_manifests.py",
+    "git status --porcelain (only Makefile + .github/workflows/ci.yml are modified; all else is added)"
+  ],
+  "expected_results": [
+    "27 v0.3 unit tests pass offline under .venv-research (DuckDB 1.5.4)",
+    "11 positive fixtures validate; 29 adversarial fixtures are rejected or quarantined as specified",
+    "offline v0.3 release smoke passes network-blocked: genuine Parquet (10080 M1 bars) schema+rows verified, signature verified + tamper detected, all file hashes match + file tamper detected, READY written last, post-READY add blocked (immutable), import_state=ACCEPTED, receipt outside the release, point-in-time source/published accept+deny correct, 8 evidence roles bound, no prohibited key",
+    "the 7 pre-existing 006C v1 schemas are byte-identical to the recorded hashes (existing_006c_v1_schemas_changed=false)",
+    "the v0.2 schemas/validators/fixtures/smoke/test are byte-identical and still pass (existing_v0_2_schemas_changed=false)",
+    "no MT5/NAS/broker/credential/production/TIM-implementation/training/trading action; no real signing key; signature algorithm is synthetic-placeholder-v0 with synthetic:true",
+    "the new v0.3 modules import no network/MT5/execution/order-path symbol"
+  ],
+  "actual_results": [
+    "Ran 32 tests ... OK (includes regression tests for the 3 independent-review defects)",
+    "positives=11 accepted; adversarial=31 rejected/quarantined (matrix green)",
+    "smoke: ok=true, bar_count=10080, canonical_format=parquet, parquet_schema_verified=true, parquet_rows_verified=10080, signature_verified=true, tamper_detected=true, all_file_hashes_match=true, file_tamper_detected=true, ready_written_last=true, post_ready_add_blocked=true, import_state=ACCEPTED, receipt_outside_release=true, pit_source_admissible/blocked=true, pit_published_admissible/blocked=true, evidence_roles_bound=8, prohibited_key_found=null, network=blocked, nas/mt5/broker/credentials/production/real_signing_key=none",
+    "006C v1 byte-identical: git status shows no M under research/contracts; test_006c_v1_byte_identical passes",
+    "v0.2 byte-identical: no M under research/ or tests/test_tim_contract_v0_2.py or tools/tim_release_synthetic_smoke.py; v0.2 suite 12 OK; market-data 141 OK; research 35 OK",
+    "secret scan clean; evidence-lint PASS; isolation test: no socket/urllib/http/requests/MetaTrader5/mt5/subprocess import; no place_order/open_trade/execution_job/order_transport/allow_live token",
+    "network_blocked() denies socket connect"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Synthetic-only, repository-only: no real market data, provider, broker identity/account, MT5, NAS, agent endpoint, acquisition service, deployment, TIM-side code, training or trading was added or accessed.",
+    "The signature boundary is an INJECTED SYNTHETIC placeholder (algorithm synthetic-placeholder-v0, synthetic:true). No real/operational signing key or algorithm was created or chosen.",
+    "Parquet physical nullability is advisory: DuckDB writes every column as OPTIONAL regardless of a NOT NULL source constraint, so the mandatory-column non-null guarantee is enforced at the ROW level by validate_canonical_candle_rows, not from the Parquet flag.",
+    "Cross-field rules are enforced by research/market_data/tim_contracts_v0_3.py (the authoritative validator), not by the draft-07 JSON Schemas alone; a schema-only consumer would under-enforce.",
+    "ALIGN-004 proposed ADR-0072; that number was taken by the live-RO gate (PR #610), so this correction is ADR-0073. No existing ADR was renumbered or overwritten.",
+    "Remaining operational dependencies (NOT in scope): real source licensing + account-capacity approval, NAS ACL layout, operational signing-key custody/algorithm, and the TIM-side consumer implementation."
+  ],
+  "artefact_locations": [
+    "research/contracts/v0_3/ (7 additive v0.3 schemas)",
+    "research/market_data/tim_contracts_v0_3.py",
+    "research/market_data/tim_fixtures_v0_3.py",
+    "tools/tim_release_v0_3_synthetic_smoke.py",
+    "tests/test_tim_contract_v0_3.py",
+    "tests/fixtures/market_data/tim/v0_3/ (7 committed synthetic fixtures)",
+    "docs/ADRs/0073-guvfx-tim-v0_3-canonical-contract-correction.md",
+    ".github/workflows/ci.yml (market-data-foundation lane, additive steps)",
+    "Makefile (market-data-check, additive steps)"
+  ],
+  "checksums": {
+    "research/market_data/tim_contracts_v0_3.py": "sha256:002e96a072cbc0ee21f2447aedc899c32e04f1bca03b93b5956afa9008ae306f",
+    "research/market_data/tim_fixtures_v0_3.py": "sha256:247b4de254b5e3b7bc5a147c45131f777b51385cd1558694629d1e266009fb6e",
+    "tools/tim_release_v0_3_synthetic_smoke.py": "sha256:887ec9c384207a3e76fb0c74f38cbe60757154963ab4b0e71a37ef5c21be5da0",
+    "tests/test_tim_contract_v0_3.py": "sha256:316d69c43d6e46baa9b3b37a7a83737ba563e3437c727226ccbe1beca5680658",
+    "research/contracts/v0_3/canonical_candles_parquet_v1.schema.json": "sha256:e68c873be692c0bb20cc2c1ce3f7606079cd6d7709109c0dfc6b56781d44b28a",
+    "research/contracts/v0_3/dataset_release_manifest_v3.schema.json": "sha256:883e54e1c10580e830c097e7931ccac682350fdffb66d0066143a21caf09065d",
+    "research/contracts/v0_3/dataset_release_signature_v2.schema.json": "sha256:d4eef7674ac21783d8f537f1022ea009f7b5b8d71466a48ef8bf7f6b22eca758",
+    "research/contracts/v0_3/dataset_import_receipt_v2.schema.json": "sha256:683a0dacaa4805211aa4ab325de2700c7bf78effe2f6e2353f029b2ac3167d2b",
+    "research/contracts/v0_3/release_ready_marker_v1.schema.json": "sha256:5b8996e6347fa13df67bdf359a6e1e956f2733a41f5c1d37fa03e08acd4760c3",
+    "research/contracts/v0_3/source_eligibility_v1.schema.json": "sha256:9dc95164362c685f9a6904ad6351b23bae3f5ab3a200dd7d6f61a013d45e153a",
+    "research/contracts/v0_3/release_supersession_v1.schema.json": "sha256:65a99892c63fc5161825925674b9d1092332d0bdf720101bfc9e97b6016d4a5f"
+  },
+  "reviewer": "GFX-PKT-TIM-C2 author self-review + an independent adversarial review across all 12 risk classes (path-traversal, hash-confusion, signature-substitution, READY race/mutation, receipt-contamination, timestamp-leakage, supersession-loops, schema-downgrade, cross-source-identity, native/derived confusion, partial-release, synthetic-mislabeled-as-real). The review CONFIRMED 3 defects, all FIXED with mutation-killing regression tests before this manifest: (D1) non-finite OHLC/volume accepted + NaN raised a non-ContractError -> _as_decimal now fails closed on non-finite; (D2) a single trailing newline slipped past ^...$ regexes (re.match) -> a v0.3 control-character guard rejects it on every field without modifying v0.2; (D3) consumer admissibility helpers ignored release_completeness -> they now require a COMPLETE, non-empty release. Also bound producer_identity into the G9 signature material and enforced M1 minute-alignment. Re-verified green: matrix 11 positive / 31 adversarial; 32 v0.3 tests."
+}
