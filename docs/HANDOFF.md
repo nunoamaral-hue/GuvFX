@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-04 — LIVE read-only open-positions monitoring gate, default-OFF (GFX-LIVE-POSITIONS-READONLY-001; ADR-0072; DARK PR)
+
+- **Scope.** Governed DARK, repository + synthetic/test only. Refine #472's live-positions de-gate into a
+  default-OFF, purpose-specific read flag; prepare (not deploy) the host bundle + rollout. No deploy, no flag
+  enablement, no migration.
+- **Changed (3 files) + added (3).** `scripts/mt5_signal_bridge.py` (`_live_readonly_positions_enabled()` +
+  gate in `fetch_positions` + provenance/`observed_at` + bounded/`truncated` + audit logs);
+  `backend/execution/bridge_config.py` (`render_bridge_env(readonly_positions=)` + fail-closed
+  `readonly_positions_for_account` + default-OFF `_live_readonly_positions_monitoring_armed`). New:
+  `backend/execution/tests_live_readonly_positions_flag.py`, `docs/ADRs/0072-...md`,
+  `docs/LIVE_POSITIONS_READONLY_BUNDLE_AND_ROLLBACK.md`. Updated: `backend/execution/tests_bridge_live_readonly.py`
+  (to the new default-OFF contract — called out; no production behaviour removed).
+- **Verified fact.** Canonical `fetch_positions` de-gate came from #472, merged, DARK. Prod returns
+  `400 account_not_demo` on LIVE `/mt5/positions` (#58 + #48, prior packet). `order_send` has 5 call sites, all
+  execute/mutation, none in a read. Dispatch GET-only for positions; no PUT/PATCH/DELETE. Backend firewall
+  unchanged. Renderer had no production caller (tests only).
+- **Assumption (not fact).** The deployed host-bundle hash was NOT read (production access is RED / out of scope);
+  "deployed bundle predates the de-gate / never deployed" is inferred from repo + the observed `400`. Recorded as a
+  limitation; a read-only host hash check is a separate gate.
+- **Deviation.** ADR numbered **0072**, not 0071: 0071 was already reserved by the copier hybrid-lifecycle work
+  (`docs/architecture/ADR-0071-…`, PR #605). Declared to avoid a merge collision.
+- **Exact tests (local, PostgreSQL, no --parallel).**
+  `manage.py test execution.tests_bridge_live_readonly execution.tests_live_readonly_positions_flag execution.tests_live_readonly_firewall`
+  → 39 OK. `manage.py test execution` → **1409 OK** (163.9s). `manage.py test trade_copier analytics.tests_portfolio`
+  → **576 OK**. Secret scan (diff + new files) clean. `ast.parse` of bridge+renderer OK.
+- **Git.** Worktree branch `feat/live-positions-readonly` off `origin/main` `85f0430d` (#609). (PR opened — see Git
+  Status footer / STATUS.)
+- **Next (one bounded action).** Governed review of the DARK PR; then a SEPARATE Sponsor/operator gate to deploy
+  the refined bridge (no-op with flag OFF) and arm one account at a time (#48 negative control, #58 positive —
+  #58's position never touched).
+
 ## 2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only / synthetic-only; MERGED #604 -> main 26a2f6f0)
 
 - **Scope.** Sponsor GO authorised repository-only schemas, dependency-free validators, synthetic fixtures, an

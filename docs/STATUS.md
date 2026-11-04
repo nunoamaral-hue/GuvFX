@@ -1,5 +1,28 @@
 # GuvFX — Project Status
 
+> **2026-11-04 — LIVE read-only open-positions monitoring gate, default-OFF (GFX-LIVE-POSITIONS-READONLY-001;
+> ADR-0072; governed DARK PR; NOT deployed, NOT enabled).** Production returns `400 account_not_demo` on
+> `/mt5/positions` for LIVE accounts (#58, control #48), so the dashboard withholds live-position rows (equity
+> still reflects floating P/L via the ungated account snapshot). **Reconciliation:** PR #472 already de-gated the
+> live positions read in the repo — but **UNCONDITIONALLY** (no in-code flag) and **DARK/undeployed**; the
+> deployed host bridge predates it (inferred from repo + the observed `400`; host-bundle hash not read — RED).
+> **First broken boundary:** a security-relevant capability (live read) was merged with no default-OFF runtime
+> gate, so its activation would be coupled to any bridge redeploy rather than an explicit, revocable decision —
+> and repo/host divergence was invisible because the read fails to *stale*, not loud. **Fix (this packet):**
+> refine the de-gate into a purpose-specific, default-OFF **read-only** flag `MT5_LIVE_READONLY_POSITIONS_ENABLED`
+> (bridge `fetch_positions`) + a fail-closed, execution-independent per-tenant emission gate
+> (`bridge_config.readonly_positions_for_account` / `render_bridge_env(readonly_positions=)` /
+> `LIVE_READONLY_POSITIONS_MONITORING_ENABLED`). DEMO reads byte-for-byte unchanged; LIVE refused `account_not_demo`
+> unless the flag is set; response gains provenance + `observed_at` + bounded/`truncated`; audit logs served/refused
+> reads (secret-free). **Execution boundary preserved verbatim:** no `order_send` in any read, every
+> order/close/modify demo gate untouched, the read flag can never arm execution (adversarially tested). With the
+> flag OFF (default) deploying the refined bridge reproduces EXACTLY today's behaviour. Tests: updated #472 bridge
+> suite + new adversarial matrix (`tests_live_readonly_positions_flag`, maps reqs 1–18); focused 39 green; full
+> `execution` **1409 green**; `trade_copier`+`analytics.tests_portfolio` **576 green**; secret scan clean. Scope
+> note (RULE 7): `deals`/`account` snapshots remain ungated for LIVE (out of scope; #472 unchanged). Governed PR,
+> auto-merge OFF; **STOP before merge, deploy, and flag-enablement.** Does not touch #25 / #607 / #608 / Tailscale
+> / TIM / copier; execution + copier OFF, zero orders; #58's live position untouched.
+
 > **2026-11-04 — Governed broker-server environment attestation primitive (GFX-DOMINION-SERVER-ATTESTATION-001;
 > new management command; governed PR; NOT applied to prod).** The Sponsor attested `DominionMarkets-Live = LIVE`
 > from the broker-issued evidence. No runtime primitive existed to record an operator attestation into the

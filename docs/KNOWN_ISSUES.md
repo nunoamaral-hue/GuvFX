@@ -2,6 +2,22 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 LIVE `/mt5/positions` withheld in prod; repo de-gate was merged-but-undeployed (2026-11-04; ADR-0072)
+
+- **Symptom:** `GET /mt5/positions` returns `HTTP 400 {"ok":false,"error":"account_not_demo"}` for every LIVE
+  terminal (confirmed #58 + control #48). The dashboard withholds individual live-position rows; equity is
+  unaffected (the account snapshot is ungated and reflects floating P/L).
+- **Root cause:** PR #472 de-gated the live positions read in the repo but **unconditionally** and **DARK
+  (undeployed)**; the deployed host bridge predates it. The prior "de-gated for #46/#48/#49" note recorded a
+  *merge*, not a *deployment*. (Host-bundle hash NOT read — RED/out of scope; inferred from repo + the `400`.)
+- **Governance finding:** a security-relevant capability was merged with no default-OFF runtime gate, so a bridge
+  redeploy for any reason would have silently activated LIVE reads for all live accounts — and the divergence was
+  invisible because the read fails to *stale*, not loud.
+- **Fix status:** ADR-0072 adds a default-OFF read flag `MT5_LIVE_READONLY_POSITIONS_ENABLED` (DARK PR, NOT
+  deployed/enabled). With it OFF the behaviour above is unchanged; enabling it per-tenant is a separate RED gate.
+- **Scope caveat (RULE 7):** `fetch_deals_snapshot` / `fetch_account_snapshot` remain UNCONDITIONALLY ungated for
+  LIVE (out of this packet's scope; #472 unchanged). Whether they should also be flag-gated is a separate decision.
+
 ## 🟡 Copier hybrid lifecycle (ADR-0071) — accepted bounds while DARK (2026-11-03)
 
 - The EVENT path has a **contract + pure fold only — no bridge emitter and no ingestion endpoint yet**. Until a
