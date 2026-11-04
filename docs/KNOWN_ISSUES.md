@@ -2,6 +2,20 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Dashboard freshness — deferred items after GFX-DASHBOARD-DATA-INTEGRITY-001 (2026-11-04)
+
+- **Closed-deal freshness is bounded by the `*/15` `ingest_monitored_deals` cron + per-account cooldown.** A trade
+  closed just after a tick appears on the next tick (worst case ~15 min + cooldown + async apply). The equity-snapshot
+  fallback does NOT change this — realized P/L comes from `Trade` rows ingested by the monitored-deals path, not from
+  snapshots. Proposal (NOT applied; do not change prod cadence silently): tighten the cadence or add an event-driven
+  re-poll on position close; measure capacity first.
+- **Live OPEN-position aggregation stays a live bridge read** (there is no durable position ledger). A slow/down bridge
+  makes that account honestly `stale` in `open_pl_usd` (PARTIAL; surfaced in `stale_accounts`) — working-as-designed
+  honest-partial. A durable position snapshot would be a separate feature.
+- **Realized/metrics currency honesty:** with the snapshot fallback the per-account observed currency now resolves from
+  the durable snapshot (e.g. GBP for #49/#52), so `daily_realized`/`metrics` classify those accounts' native currency
+  honestly (PARTIAL/native) rather than summing GBP as USD — an intended correctness improvement, covered by tests.
+
 ## 🟡 Copier hybrid lifecycle (ADR-0071) — accepted bounds while DARK (2026-11-03)
 
 - The EVENT path has a **contract + pure fold only — no bridge emitter and no ingestion endpoint yet**. Until a

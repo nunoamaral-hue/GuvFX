@@ -1,5 +1,20 @@
 # GuvFX — Project Status
 
+> **2026-11-04 — Dashboard data-integrity: portfolio-summary durable-snapshot fallback (GFX-DASHBOARD-DATA-INTEGRITY-001;
+> backend-only; governed PR; NOT deployed).** Root cause (proven on prod `79f7ab6e`): `analytics.portfolio.build_summary`
+> sourced each account's balance/equity ONLY from a LIVE bridge read; when that read was unavailable estate-wide (bridge
+> down/slow, or the shared 10s wall-clock budget exhausted by an earlier hung account) every account read `stale` and the
+> USD aggregate collapsed to `UNAVAILABLE` (0 included / 10 excluded) **even though** the durable `AccountEquitySnapshot`
+> ledger (captured `*/5`, `EQUITY_SNAPSHOT_LEDGER_ENABLED=1`) held FRESH observations — #46/#48/#49 had snapshots <3 min old
+> yet reported null/stale. Fix: `build_summary` now falls back, PER ACCOUNT, to that account's OWN latest snapshot when the
+> live read is `None`, iff fresh within 900 s (reuses the equity-ledger staleness window), carrying `equity_source` /
+> `observed_as_of` for honest disclosure. Live read is still preferred when available (byte-identical when bridges are up).
+> Turns the prod ALL-equity `UNAVAILABLE (0/10)` into a truthful `PARTIAL (5/10)` — #46/#48/#51 USD + #49/#52 GBP→USD (BoE
+> cohort) included, the rest honestly excluded (stale/missing). No false zero, no cross-tenant read, no FX-provenance
+> regression, no order path. New `analytics/tests_portfolio_snapshot_fallback.py` (10) + full analytics suite (254) green.
+> Governed PR, **auto-merge OFF**; **production deploy NOT authorised** (main carries #606; #25 unreconciled). Deferred to a
+> separate gate: closed-deal `*/15` `ingest_monitored_deals` freshness; live OPEN-position live-read staleness.
+
 > **2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only /
 > synthetic-only; MERGED (#604 -> main 26a2f6f0); NOT deployed).** Implemented the Sponsor-approved additive contract set: 12 new
 > draft-07 JSON Schemas under `research/contracts/` (market_data_source, canonical_instrument,
