@@ -20,11 +20,19 @@ default so no redeploy can silently turn it on.
 - PR #472 (`feat(live-monitoring)…`, merged, DARK) removed the `trade_mode != 0` refusal from the bridge read
   handlers **unconditionally** — see `scripts/mt5_signal_bridge.py` `fetch_positions` (pre-change comment: "the
   old `trade_mode != 0` refusal is removed HERE ONLY"). There is no runtime flag gating it in-code.
-- The repo therefore already *allows* LIVE position reads; production refuses them. Reasoning from (a) the
-  merged de-gate and (b) the observed `400`, the **deployed** per-tenant bridge bundle on #48/#58 **predates the
-  #472 de-gate** — the de-gate was merged to the repo but its host-bundle component was never deployed (#472 is
-  DARK; `LIVE_READONLY_MONITORING_SAFETY_DESIGN.md` §7 explicitly returns deployment to a separate gate). The
-  prior "de-gated for #46/#48/#49" note recorded a *merge*, not a *deployment*.
+- The de-gate **was** activated in production in October 2026 — but as **out-of-band per-slot host edits**, not a
+  durable deployment: a hand-installed `C:\GuvFX\tenants\<id>\mt5_signal_bridge.py` = the shared bridge **minus the
+  two refusal lines**, with `start_tenant_bridge.bat` repointed to it (slot 46 on 2026-10-08, slots 48+49 on
+  2026-10-23). `/mt5/positions` returned `200` on 46/48/49 then (this session's own prior evidence).
+- **As of 2026-11-04 the de-gate is no longer in effect**: `/mt5/positions` returns `400 account_not_demo` on #48
+  (and on new account #58). So the October per-slot edit **was reverted / did not persist**, not "never deployed".
+  Confirmed live by the prior packet's reads; the exact regression vector requires a read-only host inspection
+  (RED/out of scope). Two confirmed candidate vectors regenerate a slot from the **canonical, still-re-gated**
+  shared bridge: the host **reboot-recovery gap** (per-tenant bridges/terminals do not auto-recover; the watchdog
+  relaunches via `start_tenant_bridge.bat`, which a reset restores to the shared script) and the **2026-11-03
+  #603/#606 node2 capacity re-provisioning** ("re-adding an account creates a brand-new instance — new
+  runtime/provisioning/endpoint"). #58 is a newer account provisioned from the canonical path and was never
+  de-gated.
 - `mt5.order_send` has exactly five call sites on `origin/main` (`execute_mt5_trade`, `execute_demo_order`,
   `close_position` ×2 for the partial-close lifecycle, `modify_position`); **none** is in a read handler.
   `fetch_positions` calls only `account_info` / `positions_get` / `guarded_initialize` / `shutdown`.
@@ -38,11 +46,14 @@ default so no redeploy can silently turn it on.
 
 ## Assumptions
 
-- The deployed-bundle hash on #48/#58 was **not read on the host** in this packet (production access is RED and
-  out of the packet's repo/test scope). "Predates the de-gate / never deployed" is inferred from repo + observed
-  `400`; it cannot be distinguished from "deployed then rolled back" without a separately-gated read-only host
-  hash check. No rollback artefact exists and #472's own doc deferred deployment, so "never deployed" is the
-  supported reading. This is recorded as a limitation, not a fact.
+- The current per-slot bundle hashes on #48/#58 were **not read on the host** in this packet (production access is
+  RED / out of the repo+test scope). That the October per-slot de-gate reverted (vs the slot being re-gated some
+  other way) and *which* vector caused it (reboot-recovery vs #603/#606 re-provisioning) are inferred from this
+  session's prior evidence + the observed `400`; a read-only host hash/task inspection (separate gate) would
+  confirm it. Recorded as a limitation, not a fact.
+- The regression is *why the fix matters*, but the fix does not depend on resolving it: a durable, default-OFF
+  env flag consumed by the canonical shared bridge survives re-provisioning; a hand-edited per-slot script copy
+  demonstrably did not.
 
 ## Decision drivers
 
@@ -51,9 +62,12 @@ Safety (a read must never trade), default-OFF (a redeploy must not activate it),
 
 ## Options considered
 
-- **A — leave #472's unconditional de-gate.** Rejected: deploying the bridge for any reason silently turns LIVE
-  reads ON for every live account with no explicit, revocable decision; repo/host divergence is invisible
-  because the read fails to "stale", not loud.
+- **A — leave #472's unconditional de-gate (activated by out-of-band per-slot host edits).** Rejected: this is
+  exactly the broken boundary. The capability has **no durable, default-safe, version-controlled gate**, so it
+  flips silently and invisibly in BOTH directions — (a) an out-of-band per-slot edit **reverts** on reboot /
+  re-provision (observed: #48 live reads regressed to `account_not_demo`), and (b) deploying the shared de-gated
+  bridge would **turn LIVE reads ON** for every live account with no explicit, revocable decision. Either flip is
+  invisible because the read fails to "stale", not loud.
 - **B — flag-gate the positions read, default-OFF (chosen).** A purpose-specific, read-only env flag
   `MT5_LIVE_READONLY_POSITIONS_ENABLED`. Absent ⇒ a LIVE terminal is refused `account_not_demo` exactly as the
   pre-#472 bridge; DEMO is unaffected. Activation is an explicit per-tenant host-config decision, independent of

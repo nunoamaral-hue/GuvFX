@@ -3,12 +3,17 @@
 > **2026-11-04 — LIVE read-only open-positions monitoring gate, default-OFF (GFX-LIVE-POSITIONS-READONLY-001;
 > ADR-0072; governed DARK PR; NOT deployed, NOT enabled).** Production returns `400 account_not_demo` on
 > `/mt5/positions` for LIVE accounts (#58, control #48), so the dashboard withholds live-position rows (equity
-> still reflects floating P/L via the ungated account snapshot). **Reconciliation:** PR #472 already de-gated the
-> live positions read in the repo — but **UNCONDITIONALLY** (no in-code flag) and **DARK/undeployed**; the
-> deployed host bridge predates it (inferred from repo + the observed `400`; host-bundle hash not read — RED).
-> **First broken boundary:** a security-relevant capability (live read) was merged with no default-OFF runtime
-> gate, so its activation would be coupled to any bridge redeploy rather than an explicit, revocable decision —
-> and repo/host divergence was invisible because the read fails to *stale*, not loud. **Fix (this packet):**
+> still reflects floating P/L via the ungated account snapshot). **Reconciliation (corrected):** PR #472 de-gated the
+> live positions read in the repo **unconditionally** (no in-code flag). It *was* activated in prod in Oct — but
+> as **out-of-band per-slot host edits** (`C:\GuvFX\tenants\<id>\mt5_signal_bridge.py` minus the 2 refusal lines;
+> 46 on 10-08, 48+49 on 10-23 — `200` then, this session's own prior evidence). **As of 2026-11-04 it reverted**
+> (#48 + new #58 → `400`): a per-slot script edit does not survive the host **reboot-recovery gap** or the
+> **Nov-3 #603/#606 node2 re-provisioning** (both regenerate a slot from the canonical, still-re-gated shared
+> bridge); #58 is new, never de-gated. **First broken boundary:** the capability had **no durable, default-safe,
+> version-controlled gate**, so it flips silently in BOTH directions — reverts on reboot/re-provision (observed),
+> and would turn ON for all live accounts if the shared de-gated bridge were deployed — invisibly, because the
+> read fails to *stale*, not loud. Exact revert vector needs a read-only host check (RED/out of scope).
+> **Fix (this packet):**
 > refine the de-gate into a purpose-specific, default-OFF **read-only** flag `MT5_LIVE_READONLY_POSITIONS_ENABLED`
 > (bridge `fetch_positions`) + a fail-closed, execution-independent per-tenant emission gate
 > (`bridge_config.readonly_positions_for_account` / `render_bridge_env(readonly_positions=)` /

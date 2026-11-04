@@ -12,13 +12,17 @@
   `backend/execution/tests_live_readonly_positions_flag.py`, `docs/ADRs/0072-...md`,
   `docs/LIVE_POSITIONS_READONLY_BUNDLE_AND_ROLLBACK.md`. Updated: `backend/execution/tests_bridge_live_readonly.py`
   (to the new default-OFF contract — called out; no production behaviour removed).
-- **Verified fact.** Canonical `fetch_positions` de-gate came from #472, merged, DARK. Prod returns
-  `400 account_not_demo` on LIVE `/mt5/positions` (#58 + #48, prior packet). `order_send` has 5 call sites, all
-  execute/mutation, none in a read. Dispatch GET-only for positions; no PUT/PATCH/DELETE. Backend firewall
-  unchanged. Renderer had no production caller (tests only).
-- **Assumption (not fact).** The deployed host-bundle hash was NOT read (production access is RED / out of scope);
-  "deployed bundle predates the de-gate / never deployed" is inferred from repo + the observed `400`. Recorded as a
-  limitation; a read-only host hash check is a separate gate.
+- **Verified fact.** Canonical `fetch_positions` de-gate came from #472 (merged, DARK), **unconditional** (no
+  in-code flag). It *was* activated in prod in Oct as **out-of-band per-slot host edits** (per-slot script copy
+  minus the 2 refusal lines; 46 on 10-08, 48+49 on 10-23 → `200` then; this session's own prior evidence). Prod
+  now returns `400 account_not_demo` on LIVE `/mt5/positions` (#48 + new #58, prior packet 2026-11-04) → the Oct
+  per-slot de-gate **reverted**. `order_send` has 5 call sites, all execute/mutation, none in a read. Dispatch
+  GET-only for positions; no PUT/PATCH/DELETE. Backend firewall unchanged. Renderer had no production caller.
+- **Assumption (not fact).** That the revert came from the host **reboot-recovery gap** and/or the **#603/#606
+  node2 re-provisioning** (both regenerate a slot from the canonical re-gated bridge) is inferred — both vectors
+  are confirmed in prior memory, but the current per-slot bundle hash/task state was NOT read (production access
+  RED / out of scope). A read-only host check is a separate gate. The fix does not depend on resolving this: a
+  durable env flag on the shared bridge survives re-provisioning; a per-slot script edit did not.
 - **Deviation.** ADR numbered **0072**, not 0071: 0071 was already reserved by the copier hybrid-lifecycle work
   (`docs/architecture/ADR-0071-…`, PR #605). Declared to avoid a merge collision.
 - **Exact tests (local, PostgreSQL, no --parallel).**
