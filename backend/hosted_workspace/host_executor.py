@@ -393,7 +393,16 @@ _DEFAULT_HTTP_TIMEOUT_S = 30
 # slow-but-successful observation is falsely reported host_unavailable and the slot never advances (the same
 # false-negative class as MATERIALISE_RUNTIME). 120s > the host's 60s wait + margin, and < the daemon's 600s
 # primitive timeout. There is NO repost/retry here — exactly one POST per cycle — so a longer wait cannot re-run.
-_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120}
+# DECOMMISSION_RUNTIME is the Stage-2 physical teardown: it enumerates processes to find the per-tenant bridge,
+# logs off the tenant's RDP session, recursively deletes the tenant+runtime directories (the ~378MB golden copy)
+# and disables the identity — work that routinely exceeds 30s on a loaded host. The host daemon runs it under the
+# SAME 600s primitive budget as MATERIALISE, so the client must likewise wait PAST that budget or a slow-but-
+# SUCCESSFUL teardown is falsely reported host_unavailable and the tombstoned slot is never reclaimed (observed on
+# account #55: the host completed the teardown — dir/tasks/port/process all gone — while the backend gave up at
+# the 30s default and left cleanup FAILED_RETRYABLE). 660s mirrors MATERIALISE_RUNTIME (> the daemon's 600s
+# primitive timeout + margin, > its 630s drain). There is NO repost/retry — exactly one POST per cleanup attempt —
+# so a longer wait can NEVER re-run the destructive teardown, which is idempotent (already-absent => step ok).
+_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120, "DECOMMISSION_RUNTIME": 660}
 # P0 bounded observation: when HOSTED_BOUNDED_OBSERVATION_ENABLED is on, the scheduler observes every workspace
 # CONCURRENTLY, so each OBSERVE_WORKSPACE must fail FAST (a busy first-run terminal must not consume the whole
 # host wait and starve others). This client read-timeout is deliberately > the (flag-shortened) host observer
