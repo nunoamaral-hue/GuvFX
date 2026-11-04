@@ -21,6 +21,24 @@
 > attestation + catalogue entry + `BrokerServer` OPERATOR correction), and it needs a PM/operator approval decision;
 > no hand-edit / no falsification performed. Governed PR, auto-merge OFF; deploy NOT authorised.
 
+> **2026-11-04 — Governed broker-server environment attestation primitive (GFX-DOMINION-SERVER-ATTESTATION-001;
+> new management command; governed PR; NOT applied to prod).** The Sponsor attested `DominionMarkets-Live = LIVE`
+> from the broker-issued evidence. No runtime primitive existed to record an operator attestation into the
+> authoritative `BrokerServerCatalogue` or to reconcile the mirrored `BrokerServer` row (both were migration-only —
+> 0020 pilots, 0021 Vantage), and ad-hoc SQL / hand-edits are forbidden. Added `trading` management command
+> `attest_broker_server_environment --server <name> --environment demo|live --evidence <text> [--apply]` (dry-run by
+> default): in one transaction it upserts the verified catalogue entry (additive `update_or_create` on `name_key` —
+> never alters another entry) and reconciles ONLY the exactly-named `BrokerServer` row(s) to
+> `environment=<env>, environment_source=operator` via the model's validated save path. It FAILS CLOSED before any
+> write when a verified catalogue entry or an `operator`/`catalogue`-stamped row contradicts the attestation;
+> NEVER touches other servers, accounts, workspaces, provisioning or entitlement; NEVER performs a broker login or
+> records a credential; audit-logs the transition; prints rollback evidence. Tests: 8 command tests + the
+> Phase-5 acceptance (after apply, a LIVE add for the server proceeds while a DEMO request still fails closed)
+> green; `trading` + broker-server-governance regression **402 green**; secret scan green. On prod (deploy gated):
+> `--dry-run` then `--apply` under a separate GO → `DominionMarkets-Live` resolves verified LIVE → the support@
+> live add proceeds. Governed PR, auto-merge OFF; **STOP before merge/deploy**. Does not merge/deploy #607 or #608,
+> does not change #25.
+
 > **2026-11-03 — GUVFX-TIM Contract v0.2 repository foundation (GFX-PKT-TIM-C1; ADR-0070; repository-only /
 > synthetic-only; MERGED (#604 -> main 26a2f6f0); NOT deployed).** Implemented the Sponsor-approved additive contract set: 12 new
 > draft-07 JSON Schemas under `research/contracts/` (market_data_source, canonical_instrument,
