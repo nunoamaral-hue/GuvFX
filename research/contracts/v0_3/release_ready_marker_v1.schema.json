@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://guvfx.local/schema/release_ready_marker_v1.schema.json",
+  "title": "GuvFX Release READY Marker v1",
+  "description": "The final producer action that permanently closes a release namespace. Written LAST, after the manifest and the detached signature envelope. It binds the release id, the manifest digest and the signature-envelope digest, so a consumer can prove it is reading the exact immutable release the producer sealed. READY itself permits no later mutation. GFX-PKT-TIM-C2, v0.3. Synthetic/design contract.",
+  "version": "1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "instant_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "sha256_hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "release_id": { "$ref": "#/definitions/slug" },
+    "state": { "const": "READY" },
+    "manifest_digest": { "$ref": "#/definitions/sha256_hex" },
+    "signature_envelope_digest": { "$ref": "#/definitions/sha256_hex" },
+    "contract_version": { "const": "0.3" },
+    "synthetic": { "type": "boolean" },
+    "created_at_utc": { "$ref": "#/definitions/instant_utc" },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["schema_version", "release_id", "state", "manifest_digest", "signature_envelope_digest", "contract_version", "synthetic", "created_at_utc", "limitations"]
+}

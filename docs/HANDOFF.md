@@ -1,5 +1,31 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-04 — GUVFX-TIM v0.3 canonical contract correction (GFX-PKT-TIM-C2; ADR-0073; repository-only; governed PR; NOT deployed)
+
+- **Scope.** Repository-only, synthetic-only correction of the v0.2 foundation for a persistent TIM consumer
+  (GUVFX-TIM-ALIGN-004 / v0.3-RC1, G1–G9). No deploy, no migration, no real data/MT5/NAS/broker/credential/
+  signing key/TIM-side code/training.
+- **Added (additive only).** `research/contracts/v0_3/` (7 draft-07 schemas: canonical_candles_parquet_v1,
+  dataset_release_manifest_v3, dataset_release_signature_v2, dataset_import_receipt_v2, release_ready_marker_v1,
+  source_eligibility_v1, release_supersession_v1); `research/market_data/tim_contracts_v0_3.py` (validators +
+  Parquet schema/row checks + point-in-time admissibility + synthetic signer); `tim_fixtures_v0_3.py`;
+  `tools/tim_release_v0_3_synthetic_smoke.py`; `tests/test_tim_contract_v0_3.py`; 7 committed fixtures under
+  `tests/fixtures/market_data/tim/v0_3/`; `docs/ADRs/0073-...md`; `evidence/manifests/GFX-EVD-TIM-C2-...json`.
+  Modified (non-contract): `Makefile` + `.github/workflows/ci.yml` (added v0.3 smoke+test to the market-data lane).
+- **006C v1 + v0.2 byte-identical** — git shows no `M` under `research/contracts` or the v0.2 test/smoke; pinned
+  SHA-256 asserts it.
+- **Key design.** The detached signature and READY marker are EXTERNAL artefacts (NOT members of the signed
+  `files[]`), so there is no circular digest; READY binds the manifest + signature-envelope digests and is
+  written last; the release is atomically published then made read-only (post-READY new-file write blocked).
+  Parquet physical nullability is advisory (DuckDB writes all columns optional) — the mandatory non-null
+  guarantee is enforced at the ROW level.
+- **Tests.** 27 v0.3 tests OK; matrix 11 positive / 29 adversarial; genuine-Parquet smoke green (schema+rows,
+  signature+tamper, hashes, READY-last, post-READY immutability, receipt outside release, PIT accept/deny);
+  research 35 / market-data 141 / v0.2 12 OK; secret-scan + evidence-lint PASS.
+- **One bounded next action.** Governed review + merge of the repository-only PR, then Sponsor routing of the
+  INFORMATION-ONLY TIM follow-up packet. Operational deps (separate, RED): real source licensing +
+  account-capacity approval, NAS ACL, operational signing-key custody/algorithm, TIM-side consumer implementation.
+
 ## 2026-11-04 — LIVE read-only open-positions monitoring gate, default-OFF (GFX-LIVE-POSITIONS-READONLY-001; ADR-0072; DARK PR)
 
 - **Scope.** Governed DARK, repository + synthetic/test only. Refine #472's live-positions de-gate into a

@@ -1,0 +1,1 @@
+{"correction_window":null,"created_at_utc":"2026-01-13T00:00:00Z","limitations":["SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"],"reason":"synthetic correction of a late-arriving bar","release_id":"rel_synth_v3_eurusd_m1_7d_r2","schema_version":"1.0","scope":"CORRECTION","supersedes_release_id":"rel_synth_v3_eurusd_m1_7d","synthetic":true}

@@ -5,6 +5,14 @@
 > *current* claim cites a repository path or ADR. Nothing here asserts a
 > capability that is not in the repository.
 
+> **2026-11-04 — GUVFX-TIM v0.3 (GFX-PKT-TIM-C2, ADR-0073):** the canonical market-data producer→consumer
+> contract is corrected for a persistent TIM consumer. Canonical analytical candles are **Parquet**
+> (`research/contracts/v0_3/canonical_candles_parquet_v1`); releases are immutable, signed and READY-last
+> (`dataset_release_manifest_v3`, `dataset_release_signature_v2`, `release_ready_marker_v1`), with hash-bound
+> provenance/eligibility (`source_eligibility_v1`), separate point-in-time instants, supersession
+> (`release_supersession_v1`) and consumer-owned receipts (`dataset_import_receipt_v2`). Repository-only /
+> synthetic — not deployed. v0.2 (ADR-0070) remains byte-identical and readable for synthetic compatibility.
+
 ## Contract status model
 
 | Status | Meaning |

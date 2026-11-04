@@ -1,5 +1,18 @@
 # GuvFX — Project Status
 
+> **2026-11-04 — GUVFX-TIM v0.3 canonical contract correction (GFX-PKT-TIM-C2; ADR-0073; repository-only,
+> synthetic-only; governed PR; NOT deployed).** Corrects the v0.2 foundation for a persistent TIM consumer per
+> GUVFX-TIM-ALIGN-004 / v0.3-RC1 (G1–G9): canonical **Parquet** candles (NDJSON only as raw evidence; NDJSON-only
+> rejected), immutable **READY-last** releases with the signature + READY as **external** artefacts (no circular
+> digest), hash-bound provenance/eligibility/quality/gap/watermark/mapping/timezone/licensing, **separate**
+> point-in-time instants with explicit admissibility, supersession (new immutable release, loop-guarded),
+> ACCEPTED/QUARANTINED/REJECTED receipts written **outside** the release, producer+consumer validator pinning and
+> an algorithm-agile **synthetic** signature envelope. Strictly ADDITIVE — new `research/contracts/v0_3/` (7
+> schemas) + `tim_contracts_v0_3.py` / `tim_fixtures_v0_3.py` / `tim_release_v0_3_synthetic_smoke.py` /
+> `test_tim_contract_v0_3.py` + 7 committed fixtures; **006C v1 and v0.2 BYTE-IDENTICAL**. Green: 27 v0.3 tests,
+> matrix 11/29, genuine-Parquet smoke; research 35 / market-data 141 / v0.2 12 / governance all pass. No real
+> data, MT5, NAS, broker, credential, signing key, deployment, TIM-side code or training.
+
 > **2026-11-04 — Onboarding P0: an unverified (inferred) server env must not be an authoritative conflict gate
 > (GFX-ACCOUNT-ONBOARDING-P0-001; backend-only; governed PR; NOT deployed).** A support@ user could not add a
 > broker-confirmed LIVE account "Dominion Markets NG02" / server `DominionMarkets-Live`: the add returned "That
