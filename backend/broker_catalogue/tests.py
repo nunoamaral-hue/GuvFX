@@ -366,18 +366,24 @@ class ManifestIntegrityTests(TestCase):
         art.servers = ["Taurex-Demo"]; art.size_bytes = 200; art.save()
         self.assertNotEqual(base, S.compute_manifest_sha(v))          # size change -> manifest change
 
-    def test_byte_mutation_after_activation_detected(self):
+    def test_byte_mutation_after_activation_prevented(self):
+        # ADR-0078 (Stream A) STRENGTHENS this guarantee: a post-activation artefact mutation is now PREVENTED
+        # at BOTH the ORM save-guard AND a DB BEFORE UPDATE trigger, so the DB-row tamper this test previously
+        # *detected after the fact* can no longer occur via the DB at all. Out-of-band host-byte drift (a
+        # restore / host-side write the DB cannot see) remains covered by manifest re-verification at preseed
+        # time and by test_manifest_field_tamper_detected below.
+        from django.db import Error, connection, transaction
         v = _draft("m2", [("taurex", _HA, ["Taurex-Demo"], 100)])
         _approve_full("taurex", "m2", _HA, ["Taurex-Demo"], 100)
         call_command("activate_catalogue_version", "--label", "m2")
         self.assertTrue(S.verify_version_integrity(S.resolve_active_version()))
-        # Simulate a post-activation DB tamper (bypass the model save-guard with a raw UPDATE).
-        CatalogueArtefact.objects.filter(version__label="m2", broker_id="taurex").update(sha256=_HB)
+        if connection.vendor == "postgresql":
+            with self.assertRaises(Error):
+                with transaction.atomic():
+                    CatalogueArtefact.objects.filter(version__label="m2", broker_id="taurex").update(sha256=_HB)
         v = CatalogueVersion.objects.get(label="m2")
-        self.assertFalse(S.verify_version_integrity(v))
-        plan = S.resolve_broker_preseed(_account("Taurex-Demo"))
-        self.assertFalse(plan.preseed)
-        self.assertEqual(plan.reason_code, S.PRESEED_MANIFEST_INVALID)
+        self.assertEqual(v.artefacts.get(broker_id="taurex").sha256, _HA)   # bytes-pin intact
+        self.assertTrue(S.verify_version_integrity(v))                      # integrity still holds
 
     def test_manifest_field_tamper_detected(self):
         v = _draft("m3", [("taurex", _HA, ["Taurex-Demo"], 100)])

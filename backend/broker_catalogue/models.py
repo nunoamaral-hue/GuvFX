@@ -18,6 +18,7 @@ fails closed / falls back to native discovery otherwise. Nothing here mutates th
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -103,3 +104,37 @@ class CatalogueArtefact(models.Model):
 
     def __str__(self):
         return f"CatalogueArtefact({self.broker_id}@{self.version.label}, {self.sha256[:12]})"
+
+
+class CatalogueCaptureCandidate(models.Model):
+    """GFX-BROKER-INTELLIGENCE-FOUNDATION-001 Stream A / ADR-0078 — the governed NEEDS_CAPTURE entry point.
+
+    A broker whose authoritative ``servers.dat`` has NOT yet been captured (e.g. Dominion Markets) cannot have a
+    ``CatalogueArtefact`` or an ``ArtefactApproval`` — there are no bytes and no SHA to approve. This row is the
+    governed placeholder that records *that a capture is outstanding* so the broker enters the catalogue pipeline
+    through a reviewable front door rather than an ad-hoc artefact. It holds IDENTITY + a non-secret server hint
+    ONLY: deliberately NO servers.dat bytes, NO SHA-256, NO approval, NO credential, NO account/PII. It NEVER
+    becomes an artefact here — promotion from NEEDS_CAPTURE requires a separate, authorised capture step
+    (STOP boundary). Writing a candidate is DARK (gated by ``broker_catalogue.flags.capture_workflow_enabled``).
+    """
+
+    class Status(models.TextChoices):
+        NEEDS_CAPTURE = "NEEDS_CAPTURE", "Needs capture"   # no authoritative servers.dat captured yet
+        CAPTURED = "CAPTURED", "Captured"                  # set ONLY by a separate authorised capture step
+        SUPERSEDED = "SUPERSEDED", "Superseded"            # retired in favour of a newer candidate
+
+    broker_id = models.CharField(max_length=32, unique=True)      # stable slug, e.g. "dominion_markets"
+    display_name = models.CharField(max_length=64)               # e.g. "Dominion Markets"
+    # Broker-published, non-PII server identity hint (e.g. "DominionMarkets-Live"). NOT an account/credential.
+    server_identity_hint = models.CharField(max_length=160, blank=True, default="")
+    capture_status = models.CharField(max_length=16, choices=Status.choices, default=Status.NEEDS_CAPTURE,
+                                      db_index=True)
+    reason = models.CharField(max_length=200, blank=True, default="")   # non-secret governance note
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="catalogue_capture_candidates")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"CatalogueCaptureCandidate({self.broker_id}, {self.capture_status})"
