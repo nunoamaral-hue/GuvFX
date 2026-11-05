@@ -755,3 +755,117 @@ class CopierLifecycleTransition(_ImmutableRawEvidence):
 
     def __str__(self) -> str:
         return f"Transition(lifecycle={self.lifecycle_id}, {self.from_state}->{self.to_state}, {self.trigger})"
+
+
+# ───────────────────── HYBRID COMPLETION (ADR-0074) — fast-path ingestion, dispatch, replay store ─────────────────────
+# Additive, DARK. None of these models is on the execution path. ``CopierIngestedRevision`` is the durable,
+# IMMUTABLE record of a signed fast-path emission (the fast half of the hybrid detector); ``CopierIngestNonce``
+# is the single-use replay-burn store for the signed endpoint; ``CopierLifecycleDispatch`` is the SYNTHETIC,
+# append-only record of a lifecycle→producer-boundary SHADOW dispatch decision — it creates NO ExecutionJob.
+
+
+class CopierIngestedRevision(_ImmutableRawEvidence):
+    """One accepted, normalised position-state emission from the SIGNED fast-path event-ingestion endpoint
+    (ADR-0074). IMMUTABLE raw evidence (``.claude/rules/data.md``): written once on acceptance, never edited; a
+    correction is a new revision, never an overwrite.
+
+    Idempotency is the monotone per-(master, ticket) ``revision`` contract (``trade_copier.revisions``): the
+    unique ``(master, ticket, revision)`` makes a re-sent emission a DB duplicate (the endpoint maps the
+    IntegrityError to a 200 ``duplicate``). It persists OBSERVATIONS only — it is never read by an order path
+    and creates no ExecutionJob and no authoritative ``MasterEvent``."""
+
+    master = models.ForeignKey(CopierMaster, on_delete=models.CASCADE, related_name="ingested_revisions")
+    account_id = models.BigIntegerField(help_text="The signed account scope (TradingAccount id) — audit only.")
+    ticket = models.BigIntegerField()
+    revision = models.BigIntegerField(help_text="Monotone per-(account, ticket) emission ordinal (starts at 1).")
+    source = models.CharField(max_length=8, default="EVENT", help_text="Detection source (EVENT fast path).")
+    event_id = models.CharField(max_length=64, blank=True, default="", help_text="Bridge-unique emission id (audit).")
+    payload_digest = models.CharField(max_length=64, blank=True, default="", help_text="Digest of the signed body.")
+
+    closed = models.BooleanField(default=False)
+    symbol = models.CharField(max_length=64, blank=True)
+    side = models.CharField(max_length=8, blank=True)
+    volume = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    original_volume = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    sl = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    tp = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    price_open = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    open_time = models.DateTimeField(null=True, blank=True)
+    close_reason = models.CharField(max_length=32, blank=True, default="")
+    broker_login = models.CharField(max_length=64, blank=True, default="")
+    broker_server = models.CharField(max_length=128, blank=True, default="")
+
+    broker_event_time = models.DateTimeField(null=True, blank=True)
+    observed_time = models.DateTimeField(help_text="When the bridge observed/emitted the revision.")
+    correlation_id = models.CharField(max_length=40, blank=True, default="")
+    ingested_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Copier ingested revision"
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["master", "ticket", "revision"],
+                                    name="uq_copier_ingested_master_ticket_rev"),
+        ]
+        indexes = [
+            models.Index(fields=["master", "ticket", "revision"]),
+            models.Index(fields=["master", "event_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"IngestedRevision(master={self.master_id}, ticket={self.ticket}, rev={self.revision})"
+
+
+class CopierIngestNonce(models.Model):
+    """Single-use replay-burn store for the signed event-ingestion endpoint (ADR-0074). A nonce is inserted
+    ONLY after the signature verifies; the unique constraint makes a replayed request fail closed. Rows are
+    disposable (expired nonces may be pruned) — they carry no secret."""
+
+    nonce = models.CharField(max_length=80, unique=True)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Copier ingest nonce"
+        indexes = [models.Index(fields=["expires_at"])]
+
+    def __str__(self) -> str:
+        return f"IngestNonce(…{self.nonce[-8:]}, expires={self.expires_at:%Y-%m-%dT%H:%M:%SZ})"
+
+
+class CopierLifecycleDispatch(_ImmutableRawEvidence):
+    """A SYNTHETIC, append-only record of a lifecycle→producer-boundary SHADOW dispatch decision (ADR-0074).
+
+    The dispatch pass re-checks the EXISTING producer-boundary admission (``execution_producer.admit_*`` — which
+    create nothing) for an actionable lifecycle decision and records the verdict + the deterministic idempotency
+    key the producer WOULD use. It NEVER calls ``produce_*`` and creates NO ``ExecutionJob``: ``would_execute``
+    records what WOULD happen once the execute/arm gates are flipped, so the wiring is provably correct while
+    execution stays OFF. ``(lifecycle, idempotency_key)`` is unique so the pass is idempotent (a re-run records
+    nothing new)."""
+
+    lifecycle = models.ForeignKey(CopierPositionLifecycle, on_delete=models.CASCADE, related_name="dispatches")
+    replication = models.ForeignKey(CopierReplication, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    op = models.CharField(max_length=16, help_text="OPEN / MODIFY / CLOSE / PARTIAL_CLOSE.")
+    idempotency_key = models.CharField(max_length=48, help_text="The producer's deterministic key (e.g. copier:123).")
+    admit_ok = models.BooleanField(default=False, help_text="The producer-boundary admission verdict (read-only).")
+    admit_reason = models.CharField(max_length=64, blank=True, default="")
+    would_execute = models.BooleanField(default=False,
+                                        help_text="True iff this intent WOULD create an order once armed (synthetic).")
+    detail = models.JSONField(default=dict, blank=True, help_text="Sanitised — never a secret/login/raw payload.")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Copier lifecycle dispatch"
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["lifecycle", "idempotency_key"],
+                                    name="uq_copier_dispatch_lifecycle_key"),
+        ]
+        indexes = [
+            models.Index(fields=["lifecycle", "id"]),
+            models.Index(fields=["op", "admit_ok"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Dispatch(lifecycle={self.lifecycle_id}, op={self.op}, admit_ok={self.admit_ok}, would_exec={self.would_execute})"

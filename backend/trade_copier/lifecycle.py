@@ -440,6 +440,14 @@ def project_follower_ticket(follower, master, ticket, *, now, policy, open_event
         if d.next is not None:
             if d.applied:
                 transitions.append(((prev.state.value if prev else ""), d.next.state.value, d.reason, ev.sequence))
+            elif (d.reason == "terminal_absorbed" and prev is not None
+                  and category_for(ev.event_type) in (CAT_OPEN, CAT_MODIFY, CAT_FULL_CLOSE, CAT_PARTIAL_CLOSE)):
+                # Phase 6 (ADR-0074): a later SL/TP/close change on a FINALLY-failed/closed/contained entry must
+                # never create an entry — record it as NON-EXECUTABLE lifecycle evidence (same state, clear
+                # reason), not a state change. Idempotent: each absorbed event's sequence is recorded once.
+                cat = category_for(ev.event_type).lower()
+                transitions.append((prev.state.value, d.next.state.value,
+                                    f"post_terminal_{cat}_ignored"[:48], ev.sequence))
             ctx = d.next
 
     # Overlay the current follower-side link facts (one update reflecting present reconcile state).

@@ -1,5 +1,32 @@
 # GuvFX — Project Status
 
+> **2026-11-05 — Copy Trading hybrid COMPLETION (GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK, backend-only;
+> governed PR; NOT deployed; execution OFF).** Completes the five gaps left after ADR-0071, all additive and
+> behind three new default-OFF flags (ANDed with `COPIER_ENABLED`): **(1) signed, account-scoped fast-path event
+> ingestion** — `POST /api/copy-trading/event-ingest/` (gate `COPIER_EVENT_INGESTION_ENABLED`, 503 when off),
+> HMAC-SHA256 over a canonical envelope binding `account_id`+`timestamp`+`expiry`+`nonce`+`key_id`+`payload_digest`
+> (mirrors `host_protocol`), single-use nonce burn, 256 KiB cap, dedicated throttle, OWN secret via
+> `resolve_secret("COPIER_INGEST_HMAC_KEY")` (never `GUVFX_AGENT_TOKEN`), identity cross-checked via
+> `expected_identity`; **persists immutable `CopierIngestedRevision` only** (idempotent on `(master,ticket,revision)`)
+> — no `MasterEvent`, no `ExecutionJob`, no broker contact. **(2) normalized state + named change taxonomy**
+> (`change_types`, reuses the pure `diff`; floating price/P&L/formatting never emit). **(3) lifecycle→producer
+> SHADOW dispatch** (`COPIER_LIFECYCLE_DISPATCH_ENABLED`) — re-checks `admit_*` read-only and records synthetic
+> `CopierLifecycleDispatch` rows with the producer's deterministic idempotency key; **never calls `produce_*`, so
+> creates ZERO `ExecutionJob`**; PARTIAL admission deferred (no live read). **(4) governed terminal-failure
+> alerting** (`COPIER_ALERTS_ENABLED`) via the existing `reliability.AlertEvent` channel (dedup, secret-free,
+> retryable-vs-terminal; new `COPY_TRADING` component — NOT critical/terminal-scoped; read-only `_copier_block` on
+> the ops summary; no new channel, nothing pushed outward). **(5) synthetic capacity measurement** (p50/p95/p99 +
+> per-batch query cost recorded; sub-second cadence stays refused without a measured profile; default cadence
+> unchanged). Phase-6 no-late-recovery now records `post_terminal_*_ignored` EVIDENCE. New: migration
+> `trade_copier/0010` (3 models) + `reliability/0005` (choices-only, no schema change); `event_ingestion[_api]`,
+> `change_types`, `lifecycle_dispatch`, `failure_alerts`, 2 gated (unscheduled) commands, 6 test modules. **The
+> ONE deliberately-deferred integration:** unifying the EVENT path into the authoritative `MasterEvent` sequence
+> (mutates shared ordering — its own Amber gate); until then the poll path stays authoritative (ADR-0071) and the
+> fast path is corroborating detection evidence — hence the honest marker says "MODELED", not "live propagation".
+> Green: **62 new tests pass**; full `trade_copier` suite 556 tests = **27F/33E pre-existing** (APPEND_SLASH/SSL
+> artifact in the local env's DRF tests; proven identical on a pristine `2f859cac` probe — zero new failures). No
+> deploy, no prod migration, no flag armed, no execution, Sponsor's TradersWay position untouched.
+
 > **2026-11-04 — GUVFX-TIM v0.3 canonical contract correction (GFX-PKT-TIM-C2; ADR-0073; repository-only,
 > synthetic-only; governed PR; NOT deployed).** Corrects the v0.2 foundation for a persistent TIM consumer per
 > GUVFX-TIM-ALIGN-004 / v0.3-RC1 (G1–G9): canonical **Parquet** candles (NDJSON only as raw evidence; NDJSON-only

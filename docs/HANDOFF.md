@@ -1,5 +1,47 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-05 — Copy Trading hybrid COMPLETION (GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK; governed PR; NOT deployed)
+
+- **Scope.** Backend-only, DARK, execution-OFF completion of the five gaps after ADR-0071. Base: canonical main
+  `2f859cac` (verified; prod backend `2009a8a7` is an ancestor). Branch `feat/copier-hybrid-completion`.
+- **Verified fact vs assumption.** VERIFIED (repo): canonical/prod SHAs, ADR-0071 inventory, migration 0009,
+  flags default OFF, no lifecycle scheduler in repo, TIM ADR-0070 intact, no overlapping implementation of this
+  scope. NOT verified (prod access forbidden by the packet, so deliberately not asserted): prod lifecycle tables
+  empty, 0009 applied in prod, `CopierLiveAuthorization=0`, the `46→48` mapping rows — none touched.
+- **Added (additive only).** Models (migration `trade_copier/0010`): `CopierIngestedRevision` (immutable),
+  `CopierIngestNonce`, `CopierLifecycleDispatch` (immutable). Modules: `event_ingestion.py` (pure signer/verifier
+  + gated persistence service), `event_ingestion_api.py` (DRF view + throttle), `change_types.py`,
+  `lifecycle_dispatch.py`, `failure_alerts.py`. Commands (gated, UNSCHEDULED): `run_copier_lifecycle_dispatch`,
+  `run_copier_failure_alerts`. Flags: `COPIER_EVENT_INGESTION_ENABLED`, `COPIER_LIFECYCLE_DISPATCH_ENABLED`,
+  `COPIER_ALERTS_ENABLED` (all default OFF, ANDed with `COPIER_ENABLED`, fail-closed). URL `event-ingest/`;
+  throttle rate `copier_event_ingest`. `revisions.PositionRevision` gained optional normalized-state fields.
+  `lifecycle.py` projection records `post_terminal_*_ignored` evidence (Phase 6). `reliability`: `COPY_TRADING`
+  component + `_copier_block` ops rollup + choices-only migration `reliability/0005` (no schema change).
+  Tests: `tests_change_types`, `tests_event_ingestion`, `tests_lifecycle_dispatch`, `tests_failure_alerts`,
+  `tests_completion_lifecycle`, `tests_measurement`. ADR `docs/architecture/ADR-0074-…`; one-line forward ref
+  added to ADR-0071.
+- **Key design / safety.** Ingestion persists observations only (no `MasterEvent`, no job, no broker).
+  Dispatch reuses the read-only `admit_*` and records synthetic rows — it NEVER calls `produce_*` (the OPEN
+  producer mints a `PLACE_ORDER_SHADOW` job even unarmed), so it creates ZERO `ExecutionJob`; PARTIAL admission
+  (a live follower read) is deferred. Alerting is gated, dedup'd, secret-free, pushes nothing outward, recovers
+  nothing. The 8-state lifecycle invariant is unchanged (failure categories are an alert taxonomy, not states).
+- **Deviation from packet.** None material. One scoping decision, documented in ADR-0074: unifying the EVENT
+  path into the authoritative `MasterEvent` sequence is DEFERRED (it mutates shared ordering — Amber); the fast
+  path is persisted + classified as detection evidence. Honest marker therefore says "MODELED".
+- **Exact tests run.** `DJANGO_SECRET_KEY=dev DB_NAME=copier_ci DB_USER=dev DB_PASSWORD=dev .venv/bin/python
+  manage.py test trade_copier` → 556 tests, **27 failures / 33 errors**, ALL pre-existing APPEND_SLASH/SSL
+  artifacts in the local env's DRF test modules (`config_api`/`matrix_api`/`consumer_api`/`views`); proven
+  identical on a pristine `2f859cac` probe (same 27F/33E) → **my 62 new tests add zero new failures**. Also
+  `makemigrations --check` clean for `trade_copier`; `manage.py check` 0 issues; Django system check clean.
+  My new view tests set `SECURE_SSL_REDIRECT=False` (test-scoped) so they pass locally and in CI. Frontend
+  untouched (backend-only) — relies on CI lint/build.
+- **Commit/branch state.** Branch `feat/copier-hybrid-completion` off `2f859cac`; to be opened as a governed
+  DARK PR. Nothing pushed/merged/deployed at handoff time. **Expected conflict:** PR #601 (ADR-0049 bridge
+  provisioning, still open/CONFLICTING) also edits STATUS/HANDOFF/NEXT/KNOWN_ISSUES — union-resolve on whichever
+  merges second; no code-file overlap (I avoided its `live_bridge_provision.py` / provision commands / host_*).
+- **One bounded next action.** Governed review + squash-merge of the DARK PR (gates: exact-head CI 5/5,
+  MERGEABLE/CLEAN, auto-merge OFF, zero unresolved threads). Deploy/flag-arming are SEPARATE Sponsor gates.
+
 ## 2026-11-04 — GUVFX-TIM v0.3 canonical contract correction (GFX-PKT-TIM-C2; ADR-0073; repository-only; governed PR; NOT deployed)
 
 - **Scope.** Repository-only, synthetic-only correction of the v0.2 foundation for a persistent TIM consumer
