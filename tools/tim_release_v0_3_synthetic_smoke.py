@@ -171,20 +171,17 @@ def _run(base: str) -> dict:
     with open(os.path.join(rel_dir, "eurusd_m1.raw.ndjson"), "rb") as fh:
         emitted.append((os.path.join(rel_dir, "eurusd_m1.raw.ndjson"), fh.read()))
 
-    # 2. hash-bound evidence (G3/G6): eligibility (v0.3) + quality/gap/watermark/mapping (v0.2) + 3 attestations.
+    # 2. hash-bound evidence (G3/G6): eligibility (v0.3) + FULL-COVERAGE quality (K-1) / gap / watermark /
+    #    mapping (v0.2) + the three FORMAL v0.3 evidence schemas (K-3) + the quality-coverage attestation (K-1).
     eligibility = F.source_eligibility(); V.validate_source_eligibility(eligibility)
     v2 = F2.positive_fixtures()
-    quality = v2["market_data_quality_report_v1"]; T2.validate_quality_report(quality)
+    quality = F.full_coverage_quality_report(expected=MINUTES); T2.validate_quality_report(quality)
     gap = v2["market_data_gap_v1"]; T2.validate_market_data_gap(gap)
     watermark = v2["acquisition_watermark_v1"]; T2.validate_acquisition_watermark(watermark)
     mapping = v2["source_instrument_mapping_v1"]; T2.validate_source_instrument_mapping(mapping)
-    broker_server = {"schema_version": "1.0", "source_id": F.SOURCE_ID, "broker_id": "synthbroker",
-                     "server_identity": "SynthBroker-Research", "synthetic": True, "limitations": [F.SYNTH]}
-    timezone_ev = {"schema_version": "1.0", "source_id": F.SOURCE_ID, "timezone_status": "VERIFIED",
-                   "source_timezone": "Etc/UTC", "synthetic": True, "limitations": [F.SYNTH]}
-    licensing = {"schema_version": "1.0", "source_id": F.SOURCE_ID,
-                 "licensing_classification": "internal_research_only", "licensing_reference": "GFX-LIC-SYNTH-001",
-                 "permitted_use": "internal_research_only", "synthetic": True, "limitations": [F.SYNTH]}
+    broker_server = F.broker_server_identity(); V.validate_broker_server_identity(broker_server)
+    timezone_ev = F.timezone_evidence_v0_3(); V.validate_timezone_evidence_v0_3(timezone_ev)
+    licensing = F.licensing_evidence(); V.validate_licensing_evidence(licensing)
     ev = {
         "quality_report": emit_json("quality.json", quality),
         "gap_report": emit_json("gap.json", gap),
@@ -195,6 +192,25 @@ def _run(base: str) -> dict:
         "timezone_evidence": emit_json("timezone.json", timezone_ev),
         "licensing": emit_json("licensing.json", licensing),
     }
+    # K-1: the release-scoped quality-coverage attestation. It references the bound quality/gap/watermark
+    # evidence and the canonical Parquet by path+digest (release-root-relative); it is itself a signed evidence
+    # file, so manifest_digest is null (the manifest digest is bound by READY and the signature envelope).
+    coverage = {
+        "schema_version": "1.0", "release_id": RELEASE_ID, "manifest_digest": None,
+        "canonical_symbol": SYMBOL, "timeframe": "M1",
+        "range_start_utc": "2026-01-05T00:00:00Z", "range_end_utc": "2026-01-12T00:00:00Z",
+        "range_semantics": "[start,end)",
+        "first_event_start_utc": "2026-01-05T00:00:00Z", "last_event_start_utc": "2026-01-11T23:59:00Z",
+        "expected_row_count": MINUTES, "observed_row_count": MINUTES, "quality_assessed_row_count": MINUTES,
+        "partition_coverage": {"scheme": "single_file_per_release", "files_total": 1, "files_assessed": 1},
+        "canonical_file": {"relative_path": f"{RELEASE_ID}/eurusd_m1.parquet", "sha256": parquet_sha},
+        "quality_report_ref": {"relative_path": f"{RELEASE_ID}/{ev['quality_report'][0]}", "sha256": ev["quality_report"][1]},
+        "gap_report_ref": {"relative_path": f"{RELEASE_ID}/{ev['gap_report'][0]}", "sha256": ev["gap_report"][1]},
+        "watermark_ref": {"relative_path": f"{RELEASE_ID}/{ev['watermark'][0]}", "sha256": ev["watermark"][1]},
+        "completeness_status": "COMPLETE", "synthetic": True, "limitations": [F.SYNTH],
+    }
+    V.validate_release_quality_coverage(coverage)
+    ev["quality_coverage"] = emit_json("quality_coverage.json", coverage)
 
     # 3. the SIGNED set (payload + evidence only; signature + READY are external, written after).
     def frec(rel, role, media, sv, vv, sha, size, rc):
@@ -208,10 +224,11 @@ def _run(base: str) -> dict:
         frec(ev["gap_report"][0], "gap_report", "application/json", "1.0", "0.2.0", ev["gap_report"][1], ev["gap_report"][2], None),
         frec(ev["watermark"][0], "watermark", "application/json", "1.0", "0.2.0", ev["watermark"][1], ev["watermark"][2], None),
         frec(ev["source_eligibility"][0], "source_eligibility", "application/json", "1.0", "0.3.0", ev["source_eligibility"][1], ev["source_eligibility"][2], None),
-        frec(ev["broker_server_identity"][0], "broker_server_identity", "application/json", "1.0", "0.2.0", ev["broker_server_identity"][1], ev["broker_server_identity"][2], None),
+        frec(ev["broker_server_identity"][0], "broker_server_identity", "application/json", "1.0", "0.3.0", ev["broker_server_identity"][1], ev["broker_server_identity"][2], None),
         frec(ev["instrument_mapping"][0], "instrument_mapping", "application/json", "1.0", "0.2.0", ev["instrument_mapping"][1], ev["instrument_mapping"][2], None),
-        frec(ev["timezone_evidence"][0], "timezone_evidence", "application/json", "1.0", "0.2.0", ev["timezone_evidence"][1], ev["timezone_evidence"][2], None),
+        frec(ev["timezone_evidence"][0], "timezone_evidence", "application/json", "1.0", "0.3.0", ev["timezone_evidence"][1], ev["timezone_evidence"][2], None),
         frec(ev["licensing"][0], "licensing", "application/json", "1.0", "0.3.0", ev["licensing"][1], ev["licensing"][2], None),
+        frec(ev["quality_coverage"][0], "quality_coverage", "application/json", "1.0", "0.3.0", ev["quality_coverage"][1], ev["quality_coverage"][2], None),
     ]
     contract_bundle_digest = _bundle_digest(
         [os.path.join(REPO_ROOT, "research", "contracts", "v0_3", n + ".schema.json") for n in V.TIM_V0_3_SCHEMA_FILES])
@@ -246,6 +263,10 @@ def _run(base: str) -> dict:
         "ready_marker": {"present": True, "written_last": True, "ready_marker_path": f"{RELEASE_ID}/READY"},
         "licensing_classification": "internal_research_only", "synthetic": True, "limitations": [F.SYNTH]}
     V.validate_release_manifest_v3(manifest)
+    # K-1: the quality-coverage attestation must cover the whole release, and the bound quality report must
+    # actually assess the attested rows. A 3-bar report under a 10,080-bar release fails closed here.
+    V.validate_release_coverage_consistency(manifest, coverage)
+    V.validate_quality_report_covers(coverage, quality)
     manifest_bytes = canonical_json_bytes(manifest)
     manifest_digest = sha256_hex(manifest_bytes)
 
@@ -281,30 +302,103 @@ def _run(base: str) -> dict:
     except (PermissionError, OSError):
         post_ready_add_blocked = True
 
-    # 7. TIM read-only consume: re-read manifest + signature, verify signature + every bound file digest.
+    # 7. TIM read-only consume: re-read manifest + signature with the duplicate-key-rejecting strict loader
+    #    (K-8), cross-bind the signature to the manifest (K-7), verify every bound file digest, RECOUNT the
+    #    canonical Parquet and reconcile it against the declared counts (K-1 HIGH), run the evidence validators
+    #    and cross-check evidence source_id vs the release source (K-3 HIGH), and re-run the quality-coverage
+    #    checks (K-1) — so every receipt check is honestly derived, never hard-coded.
     with open(os.path.join(published, "manifest.json"), "rb") as fh:
         consumed_manifest_bytes = fh.read()
     with open(os.path.join(published, "manifest.sig.json"), "rb") as fh:
-        consumed_sig = json.loads(fh.read().decode("utf-8"))
-    consume_sig_ok = V.verify_release_signature_v2(consumed_sig, consumed_manifest_bytes)
-    consumed_manifest = json.loads(consumed_manifest_bytes.decode("utf-8"))
+        consumed_sig = V.strict_json_loads_v0_3(fh.read())
+    consumed_manifest = V.strict_json_loads_v0_3(consumed_manifest_bytes)
+    consume_sig_ok = V.verify_release_signature_v2(consumed_sig, consumed_manifest_bytes, manifest=consumed_manifest)
     hash_matches = True
     for entry in consumed_manifest["files"]:
         with open(os.path.join(releases, entry["relative_path"]), "rb") as fh:
             if sha256_hex(fh.read()) != entry["digest"]["value"]:
                 hash_matches = False
     file_tamper_detected = sha256_hex(parquet_bytes + b"x") != manifest["files"][0]["digest"]["value"]
+    with open(os.path.join(published, "quality_coverage.json"), "rb") as fh:
+        consumed_coverage = V.strict_json_loads_v0_3(fh.read())
+    with open(os.path.join(published, "quality.json"), "rb") as fh:
+        consumed_quality = V.strict_json_loads_v0_3(fh.read())
+    # Recount + re-describe the canonical Parquet consumer-side (never trust the declared counts).
+    cp_entry = next(f for f in consumed_manifest["files"] if f["logical_role"] == "canonical_parquet")
+    cpar = os.path.join(releases, cp_entry["relative_path"])
+    con2 = duckdb.connect(":memory:")
+    try:
+        desc2 = con2.execute(f"DESCRIBE SELECT * FROM read_parquet('{cpar}')").fetchall()
+        observed_schema2 = [{"name": r[0], "type": r[1], "nullable": (str(r[2]).upper() == "YES")} for r in desc2]
+        quoted2 = ", ".join('"' + c + '"' for c in _CANDLE_COLS)
+        back2 = con2.execute(f"SELECT {quoted2} FROM read_parquet('{cpar}') ORDER BY event_start_utc").fetchall()
+        readback2 = [dict(zip(_CANDLE_COLS, row)) for row in back2]
+    finally:
+        con2.close()
+    parquet_schema_ok = True
+    try:
+        V.validate_canonical_candle_parquet_schema(observed_schema2)
+        physical_rows = V.validate_canonical_candle_rows(readback2)
+    except V.ContractError:
+        parquet_schema_ok = False
+        physical_rows = len(readback2)
+    rowcount_ok = True
+    try:
+        V.reconcile_physical_rowcount(consumed_manifest, consumed_coverage, physical_rows)
+    except V.ContractError:
+        rowcount_ok = False
+    coverage_ok = True
+    try:
+        V.validate_release_coverage_consistency(consumed_manifest, consumed_coverage)
+        V.validate_quality_report_covers(consumed_coverage, consumed_quality)
+    except (V.ContractError, V.QuarantineRequired):
+        coverage_ok = False
+    # Evidence validators + source-identity cross-check (K-3 HIGH): run the formal v0.3 evidence validators and
+    # confirm every evidence doc belongs to THIS release's source.
+    consumed_evidence_docs = {}
+    for role, fname in (("timezone_evidence", "timezone.json"), ("broker_server_identity", "broker_server.json"),
+                        ("licensing", "licensing.json"), ("source_eligibility", "eligibility.json")):
+        with open(os.path.join(published, fname), "rb") as fh:
+            consumed_evidence_docs[role] = V.strict_json_loads_v0_3(fh.read())
+    evidence_identity_ok = True
+    try:
+        V.validate_release_evidence_identity(consumed_manifest, consumed_evidence_docs)
+    except (V.ContractError, V.QuarantineRequired):
+        evidence_identity_ok = False
 
-    # 8. import receipt v2 -> SEPARATE consumer namespace (never inside the release) (G2/G7).
+    # 8. point-in-time admissibility (G4): source-side gates on evidenced availability; published on publication.
+    pit_source_ok = V.admissible_source_side(consumed_manifest, "2026-01-12T00:00:03Z")
+    pit_source_block = not V.admissible_source_side(consumed_manifest, "2026-01-12T00:00:01Z")
+
+    # 9. import receipt v2 -> SEPARATE consumer namespace (never inside the release) (G2/G7). The disposition is
+    #    derived from the FIRST failing check and its registry disposition (K-4): permanent faults REJECT; a
+    #    coverage shortfall QUARANTINES — quarantine is never collapsed into reject (or vice-versa).
+    reason = None
+    if not consume_sig_ok:
+        reason = "signature_invalid"
+    elif not hash_matches:
+        reason = "manifest_hash_mismatch"
+    elif not parquet_schema_ok:
+        reason = "parquet_schema_mismatch"
+    elif not rowcount_ok:
+        reason = "row_count_mismatch"
+    elif not evidence_identity_ok:
+        reason = "identity_mismatch"
+    elif not coverage_ok:
+        reason = "incomplete_quality_coverage"
+    accepted = reason is None
+    disposition = "ACCEPTED" if accepted else V.REASON_CODE_REGISTRY[reason][0]
     receipt = F.import_receipt_v2(
         source_release_manifest_sha256=sha256_hex(consumed_manifest_bytes),
         source_signature_envelope_sha256=sha256_hex(canonical_json_bytes(consumed_sig)),
         checks={"signature_verified": bool(consume_sig_ok), "manifest_hashes_verified": bool(hash_matches),
-                "parquet_schema_verified": True, "evidence_complete": True, "point_in_time_admissible": True},
-        import_state="ACCEPTED" if (consume_sig_ok and hash_matches) else "QUARANTINED",
-        reason_code=None if (consume_sig_ok and hash_matches) else "incomplete_release",
-        retryable=not (consume_sig_ok and hash_matches),
-        research_admissible=bool(consume_sig_ok and hash_matches))
+                "parquet_schema_verified": bool(parquet_schema_ok and rowcount_ok),
+                "evidence_complete": bool(coverage_ok and evidence_identity_ok),
+                "point_in_time_admissible": bool(pit_source_ok)},
+        import_state=disposition,
+        reason_code=reason,
+        retryable=(disposition == "QUARANTINED"),
+        research_admissible=accepted)
     V.validate_import_receipt_v2(receipt)
     receipt_rel = os.path.join("receipts", RELEASE_ID + ".receipt.json")
     r_rel, _s, _z = _write(consumer, receipt_rel, receipt)
@@ -312,9 +406,25 @@ def _run(base: str) -> dict:
     emitted.append((receipt_abs, canonical_json_bytes(receipt)))
     receipt_outside_release = not os.path.abspath(receipt_abs).startswith(os.path.abspath(releases) + os.sep)
 
-    # 9. point-in-time admissibility (G4): source-side gates on evidenced availability; published on publication.
-    pit_source_ok = V.admissible_source_side(consumed_manifest, "2026-01-12T00:00:03Z")
-    pit_source_block = not V.admissible_source_side(consumed_manifest, "2026-01-12T00:00:01Z")
+    # 9b. NEGATIVE controls (K-1): (i) a 3-bar quality report under the full-coverage attestation QUARANTINES;
+    #     (ii) a manifest/coverage UNDER-declaring the physically-larger Parquet (row_count 3 vs 10,080 real
+    #     rows) is REJECTED for row_count_mismatch — the adversarial-round regression that was missing.
+    defective_quality = F.full_coverage_quality_report(expected=3, start="2026-01-05T00:00:00Z",
+                                                        end="2026-01-05T00:03:00Z")
+    negative_quarantined = False
+    try:
+        V.validate_quality_report_covers(coverage, defective_quality)
+    except V.QuarantineRequired:
+        negative_quarantined = True
+    negative_rowcount_rejected = False
+    liar_manifest = dict(consumed_manifest, row_count=3)
+    liar_coverage = dict(consumed_coverage, expected_row_count=3, observed_row_count=3, quality_assessed_row_count=3)
+    try:
+        V.reconcile_physical_rowcount(liar_manifest, liar_coverage, physical_rows)
+    except V.ContractError:
+        negative_rowcount_rejected = True
+
+    # 9c. published point-in-time admissibility (positive + blocked-before-publication).
     pit_pub_ok = V.admissible_published(consumed_manifest, "2026-01-12T00:05:00Z", "2026-01-12T00:11:00Z",
                                         receipt["imported_at_utc"])
     pit_pub_block = not V.admissible_published(consumed_manifest, "2026-01-12T00:02:59Z", "2026-01-12T00:11:00Z",
@@ -336,6 +446,9 @@ def _run(base: str) -> dict:
     assert sig_ok and tamper_detected and consume_sig_ok and hash_matches and file_tamper_detected
     assert post_ready_add_blocked and receipt_outside_release and prohibited is None
     assert pit_source_ok and pit_source_block and pit_pub_ok and pit_pub_block
+    assert coverage_ok and negative_quarantined
+    assert parquet_schema_ok and rowcount_ok and evidence_identity_ok and physical_rows == MINUTES
+    assert negative_rowcount_rejected
 
     return {
         "ok": True, "synthetic": True, "contract_version": "0.3", "release_id": RELEASE_ID, "symbol": SYMBOL,
@@ -350,6 +463,12 @@ def _run(base: str) -> dict:
         "pit_source_admissible": bool(pit_source_ok), "pit_source_blocked_before_availability": bool(pit_source_block),
         "pit_published_admissible": bool(pit_pub_ok), "pit_published_blocked_before_publication": bool(pit_pub_block),
         "evidence_roles_bound": len(V._EVIDENCE_ROLES), "emitted_file_count": len(emitted),
+        "quality_coverage_bound": True, "coverage_consistent": bool(coverage_ok),
+        "quality_report_full_coverage": True, "negative_release_quarantined": bool(negative_quarantined),
+        "parquet_rows_recounted": physical_rows, "rowcount_reconciled": bool(rowcount_ok),
+        "evidence_identity_verified": bool(evidence_identity_ok),
+        "negative_rowcount_rejected": bool(negative_rowcount_rejected),
+        "reason_code_registry_version": V.REASON_CODE_REGISTRY_VERSION,
         "prohibited_key_found": prohibited, "no_absolute_paths": True,
         "network": "blocked", "nas": "none", "mt5": "none", "broker": "none", "credentials": "none",
         "production": "none", "real_signing_key": "none",
