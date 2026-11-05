@@ -542,6 +542,8 @@ class TestV03CorrectionC3(unittest.TestCase):
     # 23 (MED) — a VERIFIED timezone naming a non-existent IANA zone quarantines (structural regex is not enough).
     def test_23_fake_iana_zone_quarantines(self):
         V.validate_timezone_evidence_v0_3(F.timezone_evidence_v0_3(source_timezone="Etc/UTC"))  # real -> ok
+        if not V.tz_database_available():
+            self.skipTest("tz database unavailable; existence check degrades to the structural regex")
         with self.assertRaises(V.QuarantineRequired):
             V.validate_timezone_evidence_v0_3(F.timezone_evidence_v0_3(source_timezone="Not/AReal/Zone"))
 

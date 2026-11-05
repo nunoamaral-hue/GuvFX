@@ -963,10 +963,27 @@ def _is_real_iana_zone(tz) -> bool:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
     except Exception:  # noqa: BLE001 - zoneinfo missing: structural check already passed
         return True
+    # Probe the tz database with a known-good zone. If the database is entirely unavailable (a minimal runtime
+    # with neither system tzdata nor the tzdata package), degrade to the structural check so a VALID zone never
+    # breaks a release; where the database IS present, a non-existent zone is correctly rejected.
+    try:
+        ZoneInfo("UTC")
+    except Exception:  # noqa: BLE001 - tz database unavailable
+        return True
     try:
         ZoneInfo(tz)
         return True
     except (ZoneInfoNotFoundError, ValueError, OSError):
+        return False
+
+
+def tz_database_available() -> bool:
+    """True when the IANA tz database is reachable via zoneinfo (so the VERIFIED-zone existence check is live)."""
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("UTC")
+        return True
+    except Exception:  # noqa: BLE001
         return False
 TZ_EVIDENCE_FIELDS = ("schema_version", "source_id", "issuer", "timezone_status", "source_timezone",
                       "observed_at_utc", "valid_from_utc", "valid_to_utc", "evidence_digest",

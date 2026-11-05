@@ -67,10 +67,10 @@
     "docs/ADRs/0076-guvfx-tim-v0_3-c3-coverage-and-evidence-correction.md"
   ],
   "checksums": {
-    "research/market_data/tim_contracts_v0_3.py": "sha256:aefbfd94faeb6f12f12b4add597b329fe57835317d23d1f752235fa8d01971f1",
+    "research/market_data/tim_contracts_v0_3.py": "sha256:eb487f13b85dca600d76e84bc950d4e28952958850de698f52b1e2e391cf8798",
     "research/market_data/tim_fixtures_v0_3.py": "sha256:49fb60ba8f268df4fa7fc40ec46010020954fd32500728d3fbe8d2e7dd3431e0",
     "tools/tim_release_v0_3_synthetic_smoke.py": "sha256:cadc9b87f936aa6f4a1ea4bfd6c1e853045f0ec26b720506fe41d1802157487d",
-    "tests/test_tim_contract_v0_3.py": "sha256:5662fcd80aed002242eabe243206930ff0cd43e8a61ae9d63639592d8b29d4cc",
+    "tests/test_tim_contract_v0_3.py": "sha256:e2fbf4d4f288463d454923ed090d0cdb7527e866c939421acb0122a541f6718e",
     "docs/ADRs/0076-guvfx-tim-v0_3-c3-coverage-and-evidence-correction.md": "sha256:e75c50a0600758f8cc54f1ae96e0e9ffe6bc3977da99126afa723358f2bae0b5",
     "research/contracts/v0_3/release_quality_coverage_v1.schema.json": "sha256:f9e7b333c9e4f106294e020cb7bdcd1fdd72943e0fdf6b100309e102cd252f61",
     "research/contracts/v0_3/timezone_evidence_v1.schema.json": "sha256:5283d0d61d33edb8ccd889d1e4e4ab05ff5d67ab016ae03290d4c76ad22140b9",
