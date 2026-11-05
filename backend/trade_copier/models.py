@@ -70,6 +70,10 @@ class CopierMaster(models.Model):
     # order == persist order and removes any dependence on response-arrival wall-clock timestamps.
     observation_lease_token = models.CharField(max_length=36, blank=True, default="")
     observation_lease_until = models.DateTimeField(null=True, blank=True)
+    # Monotone high-water mark for the gated EVENT projection (ADR-0074): the highest
+    # ``CopierIngestedRevision.id`` already folded into the authoritative ``MasterEvent`` ledger for this
+    # master. A re-run reads only rows above it, so promotion is idempotent and never re-emits a folded change.
+    last_projected_ingest_id = models.BigIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -180,6 +184,15 @@ class MasterEvent(_ImmutableRawEvidence):
     new_tp = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
     reason = models.CharField(max_length=32, blank=True, help_text="Broker close reason if known (else blank).")
     origin = models.CharField(max_length=16, blank=True, help_text="manual/ea/script/guvfx if derivable (else blank).")
+    # Detection provenance (ADR-0074). ``POLL`` = derived by the authoritative observer poll diff (the historical
+    # and still-default producer). ``EVENT`` = promoted from a signed fast-path emission by the gated event
+    # projection, which shares THIS ledger, sequence space and poll baseline (no second event namespace).
+    source = models.CharField(max_length=8, default="POLL", help_text="POLL (observer) or EVENT (fast-path projection).")
+    # The true broker change time, when the detection source can provide it. The POLL path cannot (MT5's
+    # positions feed exposes no per-change broker timestamp — see diff.py), so it stays NULL for poll events and
+    # the lifecycle falls back to ``observed_at`` exactly as before. The EVENT path DOES carry it, so a stale
+    # buffered emission's admissibility deadline is measured from the real change time → no late entry.
+    broker_event_time = models.DateTimeField(null=True, blank=True)
     observed_at = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -869,3 +882,77 @@ class CopierLifecycleDispatch(_ImmutableRawEvidence):
 
     def __str__(self) -> str:
         return f"Dispatch(lifecycle={self.lifecycle_id}, op={self.op}, admit_ok={self.admit_ok}, would_exec={self.would_execute})"
+
+
+class CopierAlertDelivery(models.Model):
+    """Durable outbound-DELIVERY outbox for a governed copier operator alert (ADR-0074 Phase-9 completion).
+
+    Mirrors the audited ``execution.notifications`` outbox/dispatcher/transport pattern, scoped to copier
+    ``reliability.AlertEvent`` rows (there is no reusable governed AlertEvent delivery mechanism — the only
+    inline push covers ComponentHealth-derived alerts, not these). The flow:
+
+      * ``failure_alerts.raise_copier_alert`` CREATES the immutable ``AlertEvent`` (surfaced read-only) and,
+        while ``copier_alerts_enabled`` is on, ALSO enqueues ONE row here — idempotent via the unique
+        ``dedup_key`` (= the alert's ``dedup_key``), so a re-raise never double-enqueues.
+      * A SEPARATE gated dispatcher (``copier_alert_dispatch_enabled``) atomically claims PENDING/FAILED rows,
+        sends through an INJECTED transport that DEFAULTS to an inert dry-run/NULL transport with NO real
+        destination, records a per-attempt ``CopierAlertDeliveryAttempt`` and advances the durable state +
+        attempt counter (FAILED is retried until ``max_attempts`` → terminal DEAD).
+
+    The row is mutable (state machine) so it is NOT ``_ImmutableRawEvidence``; the per-attempt audit IS
+    immutable. The payload is sanitised (ids + reason codes only — never a secret, login or raw body) and
+    nothing here ever recovers a trade. PENDING/FAILED/DEAD counts are surfaced read-only on the operations
+    summary so a disabled or unsuccessful delivery is operator-visible."""
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing"
+        SENT = "SENT", "Sent"
+        FAILED = "FAILED", "Failed (will retry)"
+        DEAD = "DEAD", "Dead (retries exhausted)"
+
+    alert = models.ForeignKey("reliability.AlertEvent", on_delete=models.CASCADE, related_name="+",
+                              null=True, blank=True)
+    dedup_key = models.CharField(max_length=200, unique=True,
+                                 help_text="Deterministic idempotency key (= the alert dedup_key).")
+    category = models.CharField(max_length=32)
+    severity = models.CharField(max_length=16, blank=True, default="")
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=5)
+    payload = models.JSONField(default=dict, blank=True, help_text="Sanitised delivery payload — never a secret.")
+    last_error = models.CharField(max_length=128, blank=True, default="")
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Copier alert delivery"
+        ordering = ["id"]
+        indexes = [models.Index(fields=["status", "id"])]
+
+    def __str__(self) -> str:
+        return f"AlertDelivery(id={self.pk}, {self.category}, {self.status}, attempts={self.attempts})"
+
+
+class CopierAlertDeliveryAttempt(_ImmutableRawEvidence):
+    """Append-only audit of ONE outbound delivery attempt for a ``CopierAlertDelivery`` (ADR-0074).
+
+    Insert-once (``_ImmutableRawEvidence``): the dispatcher writes one row per attempt with the transport name,
+    the attempt ordinal, whether it transmitted, and a sanitised detail code. Never edited; carries no secret."""
+
+    delivery = models.ForeignKey(CopierAlertDelivery, on_delete=models.CASCADE, related_name="attempts_audit")
+    attempt = models.PositiveIntegerField()
+    transport = models.CharField(max_length=32, blank=True, default="")
+    transmitted = models.BooleanField(default=False)
+    detail = models.CharField(max_length=128, blank=True, default="")
+    at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Copier alert delivery attempt"
+        ordering = ["id"]
+        indexes = [models.Index(fields=["delivery", "id"])]
+
+    def __str__(self) -> str:
+        return f"DeliveryAttempt(delivery={self.delivery_id}, n={self.attempt}, transmitted={self.transmitted})"

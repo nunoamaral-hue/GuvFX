@@ -11,10 +11,12 @@ For each actionable lifecycle decision the pass:
      idempotency key, the admission verdict, and ``would_execute`` (what WOULD happen once armed).
 
 It NEVER calls ``produce_*`` (the OPEN producer mints a ``PLACE_ORDER_SHADOW`` ExecutionJob even unarmed), so it
-creates **no ExecutionJob** and contacts **no broker**. The one admission that requires a live follower read —
-``admit_partial_close`` — is deliberately DEFERRED (recorded, never executed) so the DARK pass performs no
-broker contact. Gated by ``copier_lifecycle_dispatch_enabled`` (default OFF) and independent of the execute/arm
-gates, which remain the sole authority for any order.
+creates **no ExecutionJob** and contacts **no broker**. OPEN/MODIFY/CLOSE re-check the read-only
+``admit_open/admit_modify/admit_close``; PARTIAL_CLOSE re-checks ``model_partial_close`` — a DARK, ledger-only
+admission that MODELS the reduction against the durable opened follower volume and performs NO live broker read
+(the live read is needed only for the armed execution, which stays gated), recording the modeled
+reduction/remaining in ``detail``. Gated by ``copier_lifecycle_dispatch_enabled`` (default OFF) and independent
+of the execute/arm gates, which remain the sole authority for any order.
 """
 from __future__ import annotations
 
@@ -54,23 +56,27 @@ def _latest_replication(lc, requested_ops):
 
 
 def _admit(op, rep):
-    """Call the EXISTING producer-boundary admission (read-only, creates nothing). Returns (ok, reason).
+    """Call the EXISTING producer-boundary admission (read-only, creates nothing). Returns
+    ``(ok, reason, detail)`` where ``detail`` is a sanitised dict (empty unless modeling adds to it).
 
-    PARTIAL_CLOSE admission requires a live follower read (``read_follower_position``) — forbidden in the DARK
-    pass — so it is DEFERRED here rather than executed."""
+    OPEN/MODIFY/CLOSE use the read-only ``admit_*``. PARTIAL_CLOSE uses ``model_partial_close`` — a DARK,
+    ledger-only admission that MODELS the reduction (no live broker read, no job); the authoritative
+    execution-time lot is re-derived only on the gated/armed path."""
     from trade_copier import execution_producer as ep
     if op == "OPEN":
         ok, reason = ep.admit_open(rep)
-        return bool(ok), str(reason)
+        return bool(ok), str(reason), {}
     if op == "MODIFY":
         ok, _ticket, reason = ep.admit_modify(rep)
-        return bool(ok), str(reason)
+        return bool(ok), str(reason), {}
     if op == "CLOSE":
         ok, _ticket, reason = ep.admit_close(rep)
-        return bool(ok), str(reason)
+        return bool(ok), str(reason), {}
     if op == "PARTIAL_CLOSE":
-        return False, "partial_admission_requires_live_read_deferred_dark"
-    return False, "unknown_op"
+        ok, _ticket, reduction, remaining, reason = ep.model_partial_close(rep)
+        return bool(ok), str(reason), {"modeled_reduction": reduction, "modeled_remaining": remaining,
+                                       "requires_live_volume_at_arm": True}
+    return False, "unknown_op", {}
 
 
 def dispatch_one(lc) -> dict:
@@ -83,14 +89,16 @@ def dispatch_one(lc) -> dict:
         if rep is None:
             continue   # no intent recorded for this op yet (replication pass has not produced it)
         idem = f"{key_prefix}:{rep.pk}"[:48]
-        ok, reason = _admit(op, rep)
-        would_execute = bool(ok) and op != "PARTIAL_CLOSE"
+        ok, reason, extra = _admit(op, rep)
+        would_execute = bool(ok)   # WOULD create an order once armed (PARTIAL re-reads the live lot at arm time)
+        detail = {"state": lc.state, "requested_op": rep.requested_op, "ticket": lc.master_position_ticket}
+        detail.update(extra)
         _row, created = CopierLifecycleDispatch.objects.get_or_create(
             lifecycle=lc, idempotency_key=idem,
             defaults={
                 "replication": rep, "op": op, "admit_ok": bool(ok),
                 "admit_reason": reason[:64], "would_execute": would_execute,
-                "detail": {"state": lc.state, "requested_op": rep.requested_op, "ticket": lc.master_position_ticket},
+                "detail": detail,
             })
         if created:
             recorded += 1

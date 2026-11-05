@@ -1,11 +1,14 @@
 """trade_copier.failure_alerts — governed copier terminal-failure alerting (ADR-0074 Phase 9).
 
 Routes copier terminal-failure SIGNALS to the EXISTING governed operator alert channel
-(``reliability.AlertEvent``) — no new Telegram/email path is created, and nothing is pushed outward (a
-directly-created ``AlertEvent`` is surfaced on the read-only operations summary + the alerts API; it is not
-auto-delivered). Alerts are de-duplicated (``dedup_key``), secret-free (title/body/detail carry only ids and
-reason codes), carry the exact failure reason, distinguish a RETRYABLE observation failure from a TERMINAL
-execution failure, and NEVER recover a trade — they only expose operator action.
+(``reliability.AlertEvent``) — no new ad-hoc Telegram/email path is created. A directly-created ``AlertEvent``
+is surfaced on the read-only operations summary + the alerts API; OUTBOUND delivery is handled by the SEPARATE,
+default-OFF governed outbox+dispatcher (``trade_copier.alert_delivery``), whose default transport has NO real
+destination — so raising an alert enqueues a durable delivery row but nothing is actually sent until an operator
+both arms ``COPIER_ALERT_DISPATCH_ENABLED`` and configures a real transport. Alerts are de-duplicated
+(``dedup_key``), secret-free (title/body/detail carry only ids and reason codes), carry the exact failure
+reason, distinguish a RETRYABLE observation failure from a TERMINAL execution failure, and NEVER recover a
+trade — they only expose operator action.
 
 Gated by ``copier_alerts_enabled()`` (default OFF). When OFF the terminal failure is still durably recorded as
 append-only ``CopierLifecycleTransition`` evidence by the lifecycle projection; this module only governs whether
@@ -66,9 +69,10 @@ def raise_copier_alert(category: str, *, scope_key: str, trading_account=None, t
             "retryable": category in _RETRYABLE,
             "correlation_id": (correlation_id or "")[:40],
         }
-        AlertEvent.objects.create(
+        severity = _severity(category)
+        alert = AlertEvent.objects.create(
             component=Component.COPY_TRADING,
-            severity=_severity(category),
+            severity=severity,
             trading_account=trading_account,
             title=f"Copy trading: {category}"[:200],
             body=(f"ticket={detail['ticket']} reason={detail['reason']} "
@@ -76,6 +80,11 @@ def raise_copier_alert(category: str, *, scope_key: str, trading_account=None, t
             dedup_key=dedup_key,
             detail=detail,
         )
+        # Governed DELIVERY (ADR-0074 Phase-9): also enqueue ONE durable outbox row (idempotent via dedup_key).
+        # Enqueue is governed by this same flag; the SEPARATE dispatcher (copier_alert_dispatch_enabled, default
+        # OFF) decides whether a queued delivery is ever SENT, and the default transport has no real destination.
+        from trade_copier.alert_delivery import enqueue_delivery
+        enqueue_delivery(alert, category=category, severity=str(severity), payload=detail)
         return True
     except Exception:  # noqa: BLE001 — alerting is fail-open; never raise into the caller
         logger.exception("copier failure-alert raise failed (category=%s)", category)

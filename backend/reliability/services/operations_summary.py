@@ -711,8 +711,10 @@ def _copier_block(now):
     never secrets. NEVER triggers recovery and never contacts a broker — the copier stays execution-OFF."""
     try:
         from reliability.models import AlertEvent
+        from trade_copier.alert_delivery import delivery_backlog
         from trade_copier.flags import (
-            copier_alerts_enabled, copier_enabled, copier_event_ingestion_enabled,
+            copier_alert_dispatch_enabled, copier_alerts_enabled, copier_enabled,
+            copier_event_ingestion_enabled, copier_event_projection_enabled,
             copier_lifecycle_dispatch_enabled, copier_lifecycle_enabled,
         )
         from trade_copier.lifecycle import LifecycleState
@@ -724,16 +726,23 @@ def _copier_block(now):
             is_terminal=True, state=LifecycleState.CONTAINED_FAILURE.value).count()
         entry_failed = CopierPositionLifecycle.objects.filter(
             is_terminal=True, state=LifecycleState.ENTRY_FAILED_FINAL.value).count()
+        # Operator-visible DELIVERY status (ADR-0074 Phase-9): a disabled dispatcher leaves rows PENDING; a
+        # failed/dead delivery is surfaced here so an unsuccessful or unconfigured delivery is never silent.
+        backlog = delivery_backlog()
+        undelivered = backlog["pending"] + backlog["failed"] + backlog["dead"]
         return {
             "copier_enabled": copier_enabled(),
             "event_ingestion_enabled": copier_event_ingestion_enabled(),
+            "event_projection_enabled": copier_event_projection_enabled(),
             "lifecycle_enabled": copier_lifecycle_enabled(),
             "lifecycle_dispatch_enabled": copier_lifecycle_dispatch_enabled(),
             "alerts_enabled": copier_alerts_enabled(),
+            "alert_dispatch_enabled": copier_alert_dispatch_enabled(),
             "open_copier_alerts": open_alerts,
             "contained_failures": contained,
             "entry_failed_final": entry_failed,
-            "status": "WARNING" if open_alerts else "HEALTHY",
+            "alert_delivery": backlog,
+            "status": "WARNING" if (open_alerts or undelivered) else "HEALTHY",
         }
     except Exception:  # pragma: no cover — read-only; the status page must never 500 on this block
         return {"status": "UNKNOWN", "error": "unavailable"}

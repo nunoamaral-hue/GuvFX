@@ -1,17 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ COPY TRADING HYBRID COMPLETION (2026-11-05; GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK PR)
-Signed account-scoped fast-path event ingestion + named change taxonomy + lifecycle→producer SHADOW dispatch +
-governed terminal-failure alerting + synthetic capacity measurement — all additive, behind three default-OFF
-flags, execution OFF. Persists observations only; creates ZERO `ExecutionJob`; no broker contact; Sponsor's
-TradersWay position untouched. 62 new tests green; full `trade_copier` 27F/33E = pre-existing (proven on a
-pristine `2f859cac` probe). **One bounded next action:** governed review + squash-merge of the DARK PR (gates:
+## ★ COPY TRADING HYBRID COMPLETION — FULL (2026-11-05; GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK PR #612)
+The full repository-side hybrid chain is now implemented and DARK: signed fast-path ingestion + named change
+taxonomy + **bridge emitter** + **authoritative event→`MasterEvent` projection** (overlay; one ledger, no
+competing truth; no late OPEN) + lifecycle→producer SHADOW dispatch (incl. **modeled** partial close) +
+governed terminal-failure alerting **+ a default-OFF delivery outbox** + bounded nonce pruning + full
+emitter→ingest→projection→lifecycle→SHADOW-dispatch→alert end-to-end tests + emitter→dispatch capacity profile.
+Additive, behind FIVE default-OFF flags, execution OFF; ZERO `ExecutionJob`; no broker; Sponsor's TradersWay
+position untouched. ~47 new tests (plus the first increment's) green; full `trade_copier` 27F/33E =
+pre-existing only. **One bounded next action:** governed review + squash-merge of PR #612 (gates: fresh
 exact-head CI 5/5, MERGEABLE/CLEAN, auto-merge OFF, zero unresolved threads). SEPARATE / Sponsor-gated (RED),
-NOT in scope: (a) rollback-first DARK deploy of migration `trade_copier/0010` + `reliability/0005`; (b) a
-synthetic/SHADOW acceptance run behind the flags (no broker); (c) the ONE deferred integration — unify the
-EVENT path into the authoritative `MasterEvent` sequence (its own ADR; mutates shared ordering); (d) the signed
-bridge EMITTER itself; (e) a measured host capacity profile before any sub-second production cadence. No deploy,
-no flag armed.
+NOT in scope: (a) rollback-first DARK deploy of `trade_copier/0010`+`0011` + `reliability/0005`; (b) a
+synthetic/SHADOW acceptance run behind the flags (no broker); (c) host INSTALLATION of the bridge emitter on
+Windows; (d) a REAL alert delivery transport (none configured); (e) a measured host capacity profile before any
+sub-second cadence. No deploy, no flag armed.
 
 ## ★ GUVFX-TIM v0.3 CANONICAL CONTRACT (2026-11-04; GFX-PKT-TIM-C2; ADR-0073; repository-only PR)
 Parquet canonical candles + immutable READY-last releases + hash-bound provenance + separate point-in-time +

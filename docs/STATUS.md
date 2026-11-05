@@ -1,5 +1,28 @@
 # GuvFX — Project Status
 
+> **2026-11-05 — Copy Trading hybrid COMPLETION — completion increment (Sponsor hold response; same packet
+> GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK; execution OFF; NOT deployed).** On the Sponsor's hold of the
+> first-increment merge, the four previously-deferred capabilities are now IMPLEMENTED and DARK, all additive,
+> behind TWO further default-OFF flags (`COPIER_EVENT_PROJECTION_ENABLED`, `COPIER_ALERT_DISPATCH_ENABLED`):
+> **(5) the repository-side bridge EMITTER** (`bridge_emitter.py`) — observe-only, monotonic per-ticket
+> revisions, signed envelopes that verify against the real verifier, explicit-missing SL/TP preserved,
+> open/modify/partial/full-close coverage, bounded durable spool + retry→dead-letter, at-least-once dedup,
+> restart/replay via a file spool, and a retry that NEVER rewrites a revision's true `broker_event_time` (so it
+> can't extend an entry deadline); default OFF, NOT installed on Windows. **(6) the authoritative
+> event→`MasterEvent` projection** (`event_projection.py`, `COPIER_EVENT_PROJECTION_ENABLED`) — folds accepted
+> revisions, OVERLAYS them onto the shared `last_poll` baseline, and appends `MasterEvent` rows
+> (`source='EVENT'`, true `broker_event_time`) under the SAME row lock + monotone sequence the observer uses:
+> ONE ledger, one sequence space, no competing event truth; a stale OPEN is ruled `ENTRY_FAILED_FINAL` by the
+> unchanged state machine (no late entry). **(7) partial-close is now MODELED** (`model_partial_close`,
+> ledger-only, no live read, no job) — not deferred. **(8) a governed alert-DELIVERY outbox**
+> (`alert_delivery.py`, `COPIER_ALERT_DISPATCH_ENABLED`) — durable `CopierAlertDelivery` + per-attempt audit,
+> dedup, bounded retry→DEAD, inert dry-run transport with NO real destination, operator-visible backlog on the
+> ops summary. **(9) bounded nonce pruning** (`prune_copier_ingest_nonces`, dry-run default). Migration
+> `trade_copier/0011` is additive/reversible (two nullable/defaulted `MasterEvent` columns, one `CopierMaster`
+> counter, two delivery tables). ~47 new tests green incl. a full bridge→ingest→projection→lifecycle→SHADOW
+> dispatch→alert end-to-end; full `trade_copier` 27F/33E = pre-existing only (unchanged baseline). Still DARK:
+> no deploy, no flag armed, no `ExecutionJob`, no broker; Sponsor's TradersWay position untouched.
+
 > **2026-11-05 — Copy Trading hybrid COMPLETION (GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK, backend-only;
 > governed PR; NOT deployed; execution OFF).** Completes the five gaps left after ADR-0071, all additive and
 > behind three new default-OFF flags (ANDed with `COPIER_ENABLED`): **(1) signed, account-scoped fast-path event

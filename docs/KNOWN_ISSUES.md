@@ -2,26 +2,31 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 Copy Trading hybrid completion — DARK, with one deferred integration (GFX-COPIER-HYBRID-COMPLETION-003 / ADR-0074, 2026-11-05)
+## 🟡 Copy Trading hybrid completion — DARK, chain complete (GFX-COPIER-HYBRID-COMPLETION-003 / ADR-0074, 2026-11-05)
 
-- **The fast EVENT path does NOT yet drive the lifecycle.** The signed ingestion endpoint persists normalised
-  `CopierIngestedRevision` observations and classifies changes as DETECTION EVIDENCE; it does NOT write into the
-  authoritative `MasterEvent` sequence. Until that unification is done (its own Amber-gated ADR — it mutates
-  shared ordering + needs poll/event dedup), the poll path remains the lifecycle's sole authoritative ordering
-  (ADR-0071) and the fast path is corroborating evidence only. The honest marker says "MODELED", not "live
-  propagation". Not a bug — a deliberate scope boundary.
-- **Nothing is wired to deploy/arm.** All three new flags default OFF; the endpoint is 503 when off; the two new
-  management commands are UNSCHEDULED. Migration `trade_copier/0010` (+ choices-only `reliability/0005`) is NOT
-  applied in production. Deploy + flag-arming + the signed bridge EMITTER are SEPARATE Sponsor gates.
-- **`admit_partial_close` is deferred in the SHADOW dispatch pass** because it performs a live follower read
-  (forbidden in DARK); a PARTIAL dispatch row is recorded with `would_execute=False` and reason
-  `partial_admission_requires_live_read_deferred_dark`. Full-close / modify / open admissions are DB-only and
-  evaluated normally.
+- **RESOLVED — the fast EVENT path now drives the lifecycle.** The gated `event_projection` promotes accepted
+  `CopierIngestedRevision` rows into the authoritative `MasterEvent` ledger via an OVERLAY on the shared
+  `last_poll` baseline (one ledger, one sequence space, no competing event truth); a stale OPEN is ruled
+  `ENTRY_FAILED_FINAL` by the unchanged state machine (true `broker_event_time` threaded) — no late entry. The
+  marker's `_MODELED` now denotes SHADOW (execution OFF), not absent propagation.
+- **RESOLVED — partial-close SHADOW dispatch is modeled, not deferred.** `model_partial_close` models the
+  reduction against the durable opened follower volume (no live read, no job); the live follower read is needed
+  only for the gated/armed execution-time lot (`admit_partial_close`, unchanged).
+- **RESOLVED — `CopierIngestNonce` pruning exists** (`prune_copier_ingest_nonces`, dry-run default, expired-only,
+  unscheduled). (Former adversarial L2.)
+- **RESOLVED — alert DELIVERY is governed** (`alert_delivery`): a raised alert enqueues a durable
+  `CopierAlertDelivery`; a default-OFF dispatcher sends via an inert dry-run transport with NO real destination;
+  backlog/failed/dead counts are on the ops summary.
+- **Nothing is wired to deploy/arm.** All FIVE new flags default OFF; the endpoint is 503 when off; the bridge
+  emitter is default-OFF and NOT installed on Windows; all new commands are UNSCHEDULED. Migrations
+  `trade_copier/0010`+`0011` (+ choices-only `reliability/0005`) are NOT applied in production. Deploy,
+  flag-arming, emitter installation, and a real alert transport are SEPARATE Sponsor/operator gates.
+- **Delayed projection collapses to the net state (by design).** If several changes to one ticket accumulate
+  between projection passes, the fold records the NET change (e.g. the latest SL), not each intermediate — this
+  is correct copy semantics (the follower only needs the current state). Per-change events require the fast-path
+  projection to run promptly.
 - **`MasterEvent.reason` is always blank** (the poll `diff` never observes a broker close reason), so
   "close by SL/TP vs manual" is NOT distinguishable today — recorded honestly, never guessed.
-- **`CopierIngestNonce` has no pruning job** (ADR-0074 adversarial L2). Harmless while DARK; once ingestion is
-  armed it grows unboundedly, so a bounded pruning command is a **pre-arming follow-up** (deliberately not added
-  here — no new production schedule in this packet). Replay protection is unaffected (it only strengthens).
 - **Pre-existing local test artifact (NOT introduced here):** the full `trade_copier` suite reports 27F/33E in
   this local environment (APPEND_SLASH / `SECURE_SSL_REDIRECT` 301 in the DRF API test modules) — identical on a
   pristine `2f859cac` probe; these pass in CI. New view tests set `SECURE_SSL_REDIRECT=False` (test-scoped) to be

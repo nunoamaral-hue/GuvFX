@@ -2,7 +2,7 @@
 
 The load-bearing invariant: the dispatch pass records synthetic ``CopierLifecycleDispatch`` rows and creates
 **zero** ``ExecutionJob`` — it never calls ``produce_*``. Also: gated off, idempotent, LINKED not dispatched,
-PARTIAL admission deferred (no broker read)."""
+PARTIAL admission MODELED (ledger-only, no broker read; ADR-0074 Phase-3 completion)."""
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -115,12 +115,17 @@ class DispatchTests(DispatchBase):
         self.assertEqual(ExecutionJob.objects.count(), 0)
 
     @override_settings(**DISPATCH_ON)
-    def test_close_pending_partial_is_deferred_no_broker_read(self):
+    def test_close_pending_partial_is_modeled_no_broker_read(self):
+        # ADR-0074 Phase-3: the partial branch now MODELS admission (ledger-only, no live read). With no matched
+        # OPEN here it fails closed with a REAL ledger reason (not a 'live-read deferred' placeholder) and still
+        # records a row marked as requiring the live volume at arm time — and NEVER creates a job.
         self._lifecycle("CLOSE_PENDING", pending="CLOSE", follower_ticket=555)
         self._rep(self._event(MasterEvent.EventType.PARTIAL_CLOSE), "PARTIAL_CLOSE")
         run_lifecycle_dispatch_pass()
         d = CopierLifecycleDispatch.objects.get(op="PARTIAL_CLOSE")
         self.assertFalse(d.admit_ok)
         self.assertFalse(d.would_execute)
-        self.assertIn("deferred", d.admit_reason)
+        self.assertNotIn("deferred", d.admit_reason)
+        self.assertEqual(d.admit_reason, "no_verified_follower_ticket")
+        self.assertTrue(d.detail.get("requires_live_volume_at_arm"))
         self.assertEqual(ExecutionJob.objects.count(), 0)

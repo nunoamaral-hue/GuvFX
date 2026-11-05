@@ -141,6 +141,9 @@ class PositionRevision:
             volume=float(self.volume or 0.0),
             sl=_to_level(self.sl),
             tp=_to_level(self.tp),
+            # Carry the entry price so an event-sourced snapshot is equivalent to a poll-sourced one (the
+            # producer's OPEN admission + SL-weakening check read price_open from the same-poll snapshot).
+            price_open=self.price_open,
         )
 
 

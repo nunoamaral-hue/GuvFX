@@ -386,7 +386,11 @@ def _classify(event) -> MasterEventInput:
         sequence=int(event.sequence),
         category=cat,
         observed_at=event.observed_at,
-        broker_event_time=None,   # the POLL path exposes no per-change broker timestamp (diff.py docstring)
+        # POLL events expose no per-change broker timestamp (diff.py docstring) → stays None → the deadline is
+        # measured from observed_at exactly as before. EVENT-sourced events (ADR-0074 projection) DO carry the
+        # true broker change time, so a stale/buffered emission's admissibility is judged from when the master
+        # actually changed — a late OPEN is ruled ENTRY_FAILED_FINAL, never entered.
+        broker_event_time=getattr(event, "broker_event_time", None),
         has_protection=bool(
             (event.new_sl is not None and abs(float(event.new_sl)) > diff._PRICE_EPS)
             or (event.new_tp is not None and abs(float(event.new_tp)) > diff._PRICE_EPS)),

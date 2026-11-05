@@ -1,5 +1,33 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-05 — Copy Trading hybrid COMPLETION — completion increment (Sponsor hold response; ADR-0074; DARK; PR #612; NOT deployed)
+
+- **Why.** The Sponsor held the first-increment merge: a `_MERGED` marker would have overstated completion while
+  the bridge emitter, authoritative lifecycle wiring, partial-close propagation, and alert DELIVERY were still
+  deferred. This increment completes them within the SAME packet/PR/authorization — repository-only, DARK, no
+  new live authority.
+- **Added (additive only).** Modules: `bridge_emitter.py` (host-side observe-and-emit; default OFF; injectable
+  spool/transport/key; no broker write; no secret logged), `event_projection.py` (gated promotion of ingested
+  revisions into the authoritative `MasterEvent` ledger via an OVERLAY on `last_poll`), `alert_delivery.py`
+  (governed delivery outbox + dispatcher + inert dry-run transport). `execution_producer.model_partial_close`
+  (ledger-only modeled partial close — no live read, no job). `event_ingestion.prune_ingest_nonces`. Models
+  (migration `trade_copier/0011`, additive): `MasterEvent.source`/`broker_event_time`,
+  `CopierMaster.last_projected_ingest_id`, `CopierAlertDelivery`, `CopierAlertDeliveryAttempt` (immutable
+  audit). Flags: `COPIER_EVENT_PROJECTION_ENABLED`, `COPIER_ALERT_DISPATCH_ENABLED` (default OFF, ANDed).
+  Commands (gated/unscheduled): `run_copier_event_projection`, `run_copier_alert_dispatch`,
+  `prune_copier_ingest_nonces`. `lifecycle._classify` now threads `broker_event_time`; `lifecycle_dispatch`
+  calls `model_partial_close`; `failure_alerts.raise_copier_alert` enqueues a delivery; `operations_summary`
+  surfaces the delivery backlog. The audited observer `record_observation` is UNCHANGED (the event projection is
+  a separate function that reuses the pure helpers).
+- **Verified.** `manage.py check` clean; `makemigrations trade_copier --check` clean; ~47 new tests green incl.
+  the full bridge→ingest→projection→lifecycle→SHADOW-dispatch→alert end-to-end; full `trade_copier` 605 tests
+  = 27F/33E (the SAME pre-existing APPEND_SLASH/SSL artifacts — one old test that encoded the now-removed
+  "partial deferred" behaviour was updated); `reliability` 117 green. Capacity (n=20, synthetic): detection
+  p99≈0.14 ms, ingestion p99≈14.6 ms, lifecycle p99≈127 ms, total emitter→dispatch p99≈134 ms.
+- **DARK invariants held.** No deploy, no prod migration, no flag armed, no `ExecutionJob`, no broker contact,
+  no real alert destination, no `GUVFX_AGENT_TOKEN` use; the `46→48` mapping and the execute/arm walls are
+  untouched. The former "deferred integration" KNOWN_ISSUE is resolved (see KNOWN_ISSUES).
+
 ## 2026-11-05 — Copy Trading hybrid COMPLETION (GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK; governed PR; NOT deployed)
 
 - **Scope.** Backend-only, DARK, execution-OFF completion of the five gaps after ADR-0071. Base: canonical main

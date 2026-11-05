@@ -352,6 +352,31 @@ def _identity_matches(rev, expected_login, expected_server) -> bool:
     return True
 
 
+def prune_ingest_nonces(*, now=None, dry_run: bool = True, margin_seconds: int = 0) -> dict:
+    """Bounded, safe retention for ``CopierIngestNonce`` (ADR-0074 Phase-6). Dry-run by default.
+
+    Deletes ONLY nonces whose validity window has fully elapsed (``expires_at < now - margin``), so replay
+    protection inside the active window is NEVER weakened — an in-window nonce is always retained, so a replay
+    of a still-valid signed request is still rejected. A non-negative ``margin_seconds`` only makes pruning MORE
+    conservative (it keeps recently-expired nonces a little longer). The counts are secret-free: a nonce value is
+    never read or logged, only tallied. Unscheduled: run on demand. Returns ``{eligible, pruned, retained,
+    dry_run}``."""
+    from datetime import timedelta
+    from django.utils import timezone as _tz
+    from trade_copier.models import CopierIngestNonce
+
+    now = now or _tz.now()
+    margin = max(0, int(margin_seconds))
+    cutoff = now - timedelta(seconds=margin)
+    expired = CopierIngestNonce.objects.filter(expires_at__lt=cutoff)
+    eligible = expired.count()
+    total = CopierIngestNonce.objects.count()
+    pruned = 0
+    if not dry_run and eligible:
+        pruned = expired.delete()[0]
+    return {"eligible": eligible, "pruned": pruned, "retained": total - pruned, "dry_run": bool(dry_run)}
+
+
 def _dec(v):
     from decimal import Decimal
     return Decimal(str(v or 0.0))
