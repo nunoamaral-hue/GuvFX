@@ -203,6 +203,21 @@ def copier_alert_dispatch_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ALERT_DISPATCH_ENABLED")
 
 
+def copier_attestation_verify_enabled() -> bool:
+    """Gate for the NON-LIFECYCLE host-emitter identity-ATTESTATION verification surface (ADR-0077). DEFAULT OFF,
+    ANDed with the master gate.
+
+    The endpoint ``POST /api/copy-trading/attest-verify/`` verifies a signed emitter attestation envelope. It
+    DB-cross-checks the authoritative identity — account, broker login, broker server, the observed live login
+    (the terminal the emitter actually reached, when probed), and the bridge/terminal route when a
+    ``HostedExecutionEndpoint`` exists; the signed host id / build SHA are tamper-bound by the signature and
+    recorded, but are not DB-cross-checked here (the backend holds no authoritative value for them). Verifying
+    proves identity ONLY — it creates NO lifecycle state, ``MasterEvent``, ``ExecutionJob``, alert or broker
+    contact, and is fully independent of ingestion/projection/dispatch/alert/execution. When OFF the endpoint
+    returns 503 and verifies nothing."""
+    return copier_enabled() and _flag("COPIER_ATTESTATION_VERIFY_ENABLED")
+
+
 def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:
     """The copier's execution posture for the UI, DERIVED LIVE from the real execute flags — never a
     hardcoded label. While the execute producer is off (the default) this is observation/shadow and reads

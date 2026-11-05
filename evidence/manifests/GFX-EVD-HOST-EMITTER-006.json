@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-HOST-EMITTER-006",
+  "packet_id": "GFX-COPIER-HOST-EMITTER-BUILD-006 (ADR-0077)",
+  "created_at_utc": "2026-11-05T10:00:00Z",
+  "branch": "feat/copier-host-emitter-build",
+  "base_commit": "4aef7bba",
+  "head_commit": "4d0ff80f",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test trade_copier.emitter trade_copier.tests_attestation_verify",
+    "cd backend && .venv/bin/python manage.py test trade_copier   (full app regression)",
+    "sha256 of every deploy/copier-emitter artefact vs MANIFEST.json; ASCII/no-BOM scan",
+    "Independent adversarial review (14 vectors) + fix CRITICAL/HIGH with regression tests"
+  ],
+  "expected_results": [
+    "System check clean",
+    "No trade_copier migration drift (this packet adds NO model/migration)",
+    "All new emitter + attestation-verify tests green",
+    "Full trade_copier suite: only the pre-existing APPEND_SLASH/SECURE_SSL_REDIRECT local artefacts fail (27F/33E), zero new failures",
+    "Bundle hashes match the manifest; every artefact ASCII/no-BOM",
+    "No CRITICAL/HIGH adversarial finding left unresolved"
+  ],
+  "actual_results": [
+    "PASS - System check identified no issues (0 silenced)",
+    "PASS - No changes detected in app 'trade_copier' (no new model/migration; attestation reuses CopierIngestNonce)",
+    "PASS - 51 tests green (emitter.tests_config/adapter/attestation/app/e2e/bundle/capacity + tests_attestation_verify)",
+    "PASS - Ran 658 tests, 27F/33E == the unchanged pre-existing baseline (identical set; the +51 new tests all pass; zero new failures)",
+    "PASS - manifest hashes match; all deploy/copier-emitter artefacts ASCII/no-BOM; PowerShell structurally balanced (ParseFile runs on the target host before first execution per RULE 9)",
+    "PASS - independent adversarial review (14 vectors): NO CRITICAL/HIGH. Fixed with regression tests: M1 (backend now cross-checks observed login; claims corrected), M4 (attest fails closed on observed mismatch), M2 (corrupt spool quarantined + fail-closed, not silent reset), M3 (installer restore-on-failure + locale-independent disabled verify), L2 (key_id only, no secret-derived value), L3 (installer XML escaping). Accepted/recorded: L1 (pre-auth account enumeration - throttled+gated; signature-first reorder is a follow-up), redundant account_id check (harmless). 55 emitter+verify tests green after fixes."
+  ],
+  "status": "PASS",
+  "feature_gate_defaults": {
+    "COPIER_ATTESTATION_VERIFY_ENABLED": "OFF (backend verify endpoint 503)",
+    "config.attestation_allowed": "OFF",
+    "config.observation_allowed": "OFF",
+    "config.delivery_allowed": "OFF",
+    "service_state": "disabled/manual, not scheduled, no auto-restart",
+    "fast_loop": "OFF until a positive fast_interval_seconds is configured",
+    "execution": "OFF (no ExecutionJob, no order surface in the adapter)"
+  },
+  "capacity_synthetic_one_account": {
+    "note": "EVIDENCE only; NOT a production-cadence claim. A host measurement is required before any sub-second interval.",
+    "snapshot_ms": "p50/p95/p99 ~ 0.001/0.001/0.002",
+    "classify_sign_spool_deliver_ms": "p50/p95/p99 ~ 0.065/0.077/0.152",
+    "end_to_end_ms": "p50/p95/p99 ~ 0.066/0.077/0.154"
+  },
+  "limitations": [
+    "Repository-only / DARK: no Windows host access, no credential provisioning, no service install, no enablement, no broker contact, no real MT5 read in this packet.",
+    "The host emitter is NOT installed; the bundle is a repository artefact (lib/ vendored + source_sha stamped at a separate bundle-build step).",
+    "The read snapshot uses the live snapshot_transport /mt5/positions primitive; the ADR-0075 gateway is composed only as an optional readiness gate (DARK/undeployed; returns readiness counts, not rows).",
+    "PowerShell ParseFile is mirrored repo-side by a structural balance + ASCII check; the authoritative ParseFile gate runs on the target Windows PowerShell before first execution (RULE 9/11), a host step.",
+    "Per-change broker_event_time is not in the positions feed and is left None; open_time (no-late-OPEN) IS carried from the per-position time field.",
+    "No production data mutated; no DB model/migration added."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/emitter/{config,mt5_adapter,attestation,app}.py",
+    "backend/trade_copier/attestation_verify.py",
+    "backend/trade_copier/attestation_api.py",
+    "backend/trade_copier/flags.py (copier_attestation_verify_enabled)",
+    "backend/trade_copier/urls.py (attest-verify/)",
+    "backend/trade_copier/bridge_emitter.py (corrupt-spool quarantine)",
+    "deploy/copier-emitter/ (launcher, Install/Uninstall/Status/Attest .ps1, task template, config template, MANIFEST.json, README.md)",
+    "docs/architecture/ADR-0077-COPIER-HOST-EMITTER.md",
+    "docs/COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md",
+    "backend/trade_copier/emitter/tests_{config,adapter,attestation,app,e2e,bundle,capacity}.py",
+    "backend/trade_copier/tests_attestation_verify.py"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/run_emitter.py": "sha256:10f88be54f407c5f5389042dd63629affae9aca21b60524121e0788b04c5377d",
+    "deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1": "sha256:2940e4dbbedfbfb20eb645a6912b7c9bd24ae4ee46cb92bf12841de8fe061988",
+    "deploy/copier-emitter/Uninstall-GuvfxCopierEmitter.ps1": "sha256:8512ed4147235beb52ec7ebd1fdab4759cdb82c8a53831ffe1c5d31008140570",
+    "deploy/copier-emitter/Status-GuvfxCopierEmitter.ps1": "sha256:8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",
+    "deploy/copier-emitter/Attest-GuvfxCopierEmitter.ps1": "sha256:cccbf1416ed5c798f2c6b62320b588194ee64fdbbfce31fbd99c79ae6cf63378",
+    "deploy/copier-emitter/emitter_task_template.xml": "sha256:51c88ef13790b7ca3ab2c43a14f5ceb0a1f5bc54fb88ab55a1f3300d23ec8ce9",
+    "deploy/copier-emitter/config.template.json": "sha256:56f1bd86e6ba23314b32262b442190e5f998a1cfee6dac0c0ebd9a55f5662d85",
+    "deploy/copier-emitter/README.md": "sha256:c7553625a47bc54f60326abb42ade10d81f2c44000b5beb8b69da1819e04d52f"
+  },
+  "reviewer": "Independent adversarial review (14 vectors) + single-agent fix verification; no CRITICAL/HIGH",
+  "adversarial_review": {
+    "status": "complete",
+    "critical": 0,
+    "high": 0,
+    "vectors": [
+      "cross-tenant identity substitution",
+      "broker/server spoofing",
+      "service-path hijack",
+      "secret leakage",
+      "nonce/revision reset",
+      "restart/replay",
+      "stale OPEN delivery",
+      "close/modify reordering",
+      "spool corruption",
+      "disk exhaustion",
+      "bridge impersonation",
+      "unsafe installer rollback",
+      "accidental execution capability",
+      "DoS via rapid changes"
+    ],
+    "fixed_with_regression_tests": [
+      "M1 backend cross-checks observed login + claims corrected (host/build signature-bound not DB-checked)",
+      "M4 attest fails closed on observed-identity mismatch (no usable envelope)",
+      "M2 corrupt spool quarantined + fail-closed (not silent revision-ledger reset) + surfaced",
+      "M3 installer restore-on-failed-apply + locale-independent DISABLED verify (task XML)",
+      "L2 key_id only (no secret-derived fingerprint)",
+      "L3 installer XML interpolation escaped"
+    ],
+    "accepted_recorded": [
+      "L1 verify endpoint reveals account existence + pre-auth DB lookup (throttled 60/min + gated OFF; signature-first reorder = follow-up)",
+      "redundant account_id equality check (harmless; login/server cross-check enforces the real account binding)"
+    ]
+  },
+  "separate_gates": [
+    "host emitter installation + identity attestation on the live host",
+    "secure provisioning of the emitter authentication material",
+    "scheduler / continuous-emission enablement",
+    "ingestion/projection/dispatch/alert flag enablement",
+    "a real alert transport",
+    "read-only/shadow production observation",
+    "any live one-order acceptance"
+  ]
+}

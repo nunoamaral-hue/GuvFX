@@ -48,6 +48,11 @@ from trade_copier.diff import ObservedPosition, diff_positions
 
 logger = logging.getLogger(__name__)
 
+
+class SpoolError(Exception):
+    """A durable spool could not be read because it is corrupt/unreadable. Raised (not swallowed) so the caller
+    fails closed and surfaces the corruption, instead of silently resuming on a wiped revision ledger."""
+
 DEFAULT_MAX_PENDING = 1000          # bounded spool depth (backpressure recorded, never unbounded)
 DEFAULT_MAX_ATTEMPTS = 5            # bounded retries before dead-letter (never an infinite retry)
 DEFAULT_TTL_SECONDS = 30            # signed-envelope validity window (<= backend MAX_EXPIRY_WINDOW)
@@ -115,8 +120,20 @@ class FileSpool:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 return _deserialize(fh.read())
-        except (FileNotFoundError, ValueError, OSError):
-            return _SpoolState()
+        except FileNotFoundError:
+            return _SpoolState()                       # normal first run — not corruption
+        except (ValueError, OSError) as e:
+            # A corrupt/unreadable spool must NOT be silently reset to empty: that would zero the monotone
+            # per-ticket revision ledger (re-emitting rev 1 for live positions, which the backend then dedups
+            # away → a genuine change is swallowed) and would report healthy. QUARANTINE the file (data.md: never
+            # destroy) and FAIL CLOSED so the caller surfaces spool_corruption instead of resuming on a wiped
+            # ledger.
+            try:
+                import time as _t
+                os.replace(self.path, f"{self.path}.corrupt-{int(_t.time())}")
+            except OSError:
+                pass
+            raise SpoolError(f"corrupt_spool:{type(e).__name__}")
 
     def save(self, state: _SpoolState) -> None:
         tmp = f"{self.path}.{uuid.uuid4().hex}.tmp"
