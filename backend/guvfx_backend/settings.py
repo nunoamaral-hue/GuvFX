@@ -261,6 +261,7 @@ REST_FRAMEWORK = {
         # is DARK (503) until COPIER_EVENT_INGESTION_ENABLED is armed; this is the proposed pre-activation
         # default (one account-scoped bridge, bursty on change). Final value is a governance/capacity decision.
         "copier_event_ingest": "240/min",
+        "copier_attest_verify": "60/min",
     },
 }
 
