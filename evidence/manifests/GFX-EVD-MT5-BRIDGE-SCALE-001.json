@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-MT5-BRIDGE-SCALE-001",
+  "packet_id": "GFX-MT5-BRIDGE-SCALE-001",
+  "created_at_utc": "2026-11-05T00:00:00Z",
+  "branch": "feat/mt5-monitoring-scale-foundation",
+  "base_commit": "2f859cac7abbca4425151529285d22e49d5ee693",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only / DARK (default-OFF)",
+    "app": "execution (no new Django app, no settings.py edit)",
+    "additive_only": true,
+    "pr612_files_touched": false,
+    "settings_py_touched": false,
+    "reliability_constants_or_migration_touched": false,
+    "ci_yaml_touched": false,
+    "host_contacted": false,
+    "tailscale_mutated": false,
+    "order_or_execution": false,
+    "agent_token_read_or_printed": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test covers the execution app incl. the host_gateway component tests)"
+  },
+  "commands": [
+    "cd backend && python manage.py check",
+    "cd backend && python manage.py makemigrations --check (0037 present; the two signal_intake/strategies index-rename diffs are a pre-existing local Django-patch-version artefact, not from this change)",
+    "cd backend && python manage.py test execution.tests_monitoring_gateway_component execution.tests_monitoring_allocation execution.tests_monitoring_readiness execution.tests_monitoring_client execution.tests_monitoring_reconcile execution.tests_monitoring_capacity",
+    "cd backend && python manage.py test execution  (full app regression)",
+    "cd backend && python manage.py test execution.tests_per_tenant_transport  (pre-existing, re-run)",
+    "python scripts/check_no_secrets.py",
+    "git status --porcelain  (only backend/execution/models.py modified; all else added; no PR #612 / settings.py / reliability-constants file touched)"
+  ],
+  "expected_results": [
+    "Django system check passes; migration 0037_monitoring_gateway is additive (only CreateModel/AddIndex/AddConstraint) + reversible, depends on execution 0036 with no reliability/trade_copier dependency.",
+    "The new monitoring-gateway suite passes: deterministic + concurrent allocation, slot-keyed generation monotonicity, persistent integrity quarantine, 8-gate readiness that never collapses unavailable into zero, gateway auth/allow-list/route-by-identity/cross-tenant/replay/attestation security, reconcile governed alerting with no reliability migration, and capacity p50/p95/p99 at 11 and 20 routes.",
+    "The full execution app suite stays green (no regression from the additive models.py import + migration).",
+    "Secret scan clean; no agent-token value in code or results.",
+    "Two independent adversarial review rounds; all CONFIRMED findings fixed with regression tests."
+  ],
+  "actual_results": [
+    "manage.py check: no issues. makemigrations --check: 0037 present (no missing monitoring migration); unrelated signal_intake 0013 / strategies 0016 index-rename diffs are a local Django-version naming artefact, not introduced here.",
+    "monitoring suite: Ran 78 tests OK (gateway component 22 pure incl. NaN/huge-int ts + bounded nonce cache; allocation 16; readiness 9; client 10; reconcile 11; capacity 7 with measured reserve p50\u22483ms p95/p99<10ms and a 12-thread concurrency pass yielding distinct ports, no collision).",
+    "full execution app suite: Ran 1485 tests OK (189s); tests_per_tenant_transport 32 OK.",
+    "scripts/check_no_secrets.py: no findings.",
+    "git status: only backend/execution/models.py modified (one additive import block); 20 added paths; grep confirms NO settings.py / reliability/constants.py / reliability/services/operations_summary.py / reliability/migrations / trade_copier/** / ADR-0071 / ADR-0074 / docs/{STATUS,HANDOFF,NEXT,KNOWN_ISSUES}.md touched.",
+    "Review round 1 (6 dimensions \u2192 adversarial verify, 20 agents): 13 CONFIRMED findings (3 HIGH) all fixed. Round 2 re-verification (3 agents): all 13 fixes confirmed correct + regression-free; 4 new LOW residuals (error-classification, docstring honesty, decommission alert-leak) all fixed with tests."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / DARK: every flag defaults OFF; nothing is deployed, scheduled, armed, or run on any host by this packet. The host_gateway component is NOT installed or run on Windows; its LIVE behaviour is unproven until a separate DARK deployment + on-host Phase-9 isolation certification (see docs/MT5_MONITORING_SCALE_DARK_DEPLOYMENT.md).",
+    "The five-account diagnosis is a read-only production snapshot (2026-11-05, prod 2009a8a7). No production repair was performed; #50 terminal re-init and the ADR-0072 positions gate remain separate Sponsor-gated actions.",
+    "Quarantine durability holds for all current callers (autocommit) and is written within the caller's transaction; a future caller that wraps a lifecycle op in its own atomic and discards it would discard the quarantine too (documented precondition in monitoring_allocation.py).",
+    "Allocation capacity (pool + certified HostCapacity ceiling) is explicitly distinct from measured host/terminal capacity (ADR-0069), which is a separate certified number NOT claimed here.",
+    "No reliability migration / constants.py edit: alerts use a raw namespaced component string (reconcile tolerates unknown components). No ci.yml edit: the backend CI lane already runs the execution tests.",
+    "Handoff deviation (Amber, intentional): the four shared handoff docs (STATUS/HANDOFF/NEXT/KNOWN_ISSUES) are NOT edited to keep this PR CLEAN/MERGEABLE alongside PR #612; continuity is in ADR-0075, docs/MT5_MONITORING_SCALE_FOUNDATION.md, this manifest, and Notion."
+  ],
+  "artefact_locations": [
+    "backend/execution/monitoring_models.py, monitoring_allocation.py, monitoring_readiness.py, monitoring_gateway_client.py, monitoring_reconcile.py, monitoring_flags.py, monitoring_onboarding.py",
+    "backend/execution/management/commands/reconcile_monitoring_routes.py",
+    "backend/execution/migrations/0037_monitoring_gateway.py",
+    "backend/host_gateway/ (gateway_core.py, registry.py, gateway_http.py, __init__.py)",
+    "backend/execution/tests_monitoring_*.py (6 suites) + monitoring_testkit.py",
+    "docs/architecture/ADR-0075-MT5-MONITORING-SCALE-GATEWAY.md, docs/MT5_MONITORING_SCALE_FOUNDATION.md, docs/MT5_MONITORING_SCALE_DARK_DEPLOYMENT.md",
+    "backend/execution/models.py (one additive import block registering the three models)"
+  ],
+  "checksums": {
+    "backend/execution/monitoring_models.py": "sha256:c2e2e2fb12eaada4f00ee5d58d238922fdec55f099a4be52b733ff00ca4b4931",
+    "backend/execution/monitoring_allocation.py": "sha256:80f1fcacb11fe873ba522d18dbca869b26a2463a5790b8d3d1d57d551fce90b0",
+    "backend/execution/monitoring_readiness.py": "sha256:b9bcd14cacc42421b913e72a78117aa8b6274972e30ac51ae352330782763148",
+    "backend/execution/monitoring_gateway_client.py": "sha256:998ae843e62a3320b5dac9de01091fac27eaf344048904e1d8dc81d005bd22d7",
+    "backend/execution/monitoring_reconcile.py": "sha256:9cc4f390f00f32aee71326d4a89f4c5247e6649ab30c230196cdba4e1e147936",
+    "backend/execution/monitoring_flags.py": "sha256:41800fe06bf032c0090ecf1e215653fce3cb75d766dcb6bcec67187cfa1d1b7e",
+    "backend/execution/monitoring_onboarding.py": "sha256:a99a80f7c0d8fc777528b5030f94ceffc2630b043ddd778cab4e4727643e393e",
+    "backend/execution/management/commands/reconcile_monitoring_routes.py": "sha256:1e33b3cc489d1dd5c184642b4344ef1e63e5721e851d05969d2961adab911e1a",
+    "backend/execution/migrations/0037_monitoring_gateway.py": "sha256:b51af3c4a84edfb776e95a0b9a04475940b3aee04dc27ca9d85c76827dc33dbd",
+    "backend/host_gateway/__init__.py": "sha256:97441c8d1be4af94315e22d33912a664ee7dfd3c7799e3fcf8cc8fccd32a911d",
+    "backend/host_gateway/gateway_core.py": "sha256:10ff7b9a5297b1d50796fc6ca5b8a5082a583833de8aa0332741be0e1d26ffd0",
+    "backend/host_gateway/registry.py": "sha256:ea2805df8caf18b13fbe2c875002fb2908bda61dd0e7992565319e004c6df948",
+    "backend/host_gateway/gateway_http.py": "sha256:b6b1de74d5d28f9549df957e03e189495b65f19de3f2eea1a29a9f4c3f637a45",
+    "docs/architecture/ADR-0075-MT5-MONITORING-SCALE-GATEWAY.md": "sha256:31bea83665b4e3d3f66dfcd080d046009842070a01741d8d80a14133dd0c35fe"
+  },
+  "reviewer": "Two independent adversarial workflow rounds (round 1: 6 dimensions x find+verify, 20 agents, 13 CONFIRMED findings incl. 3 HIGH, all fixed; round 2: 3-cluster re-verification, all 13 fixes confirmed, 4 LOW residuals fixed). All findings have regression tests."
+}
