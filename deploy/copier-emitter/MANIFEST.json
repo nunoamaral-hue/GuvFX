@@ -1,0 +1,37 @@
+{
+  "bundle": "guvfx-copier-emitter",
+  "adr": "ADR-0076",
+  "packet": "GFX-COPIER-HOST-EMITTER-BUILD-006",
+  "source_sha": "STAMP_AT_PACKAGE_TIME",
+  "runtime": {"python": ">=3.11", "dependencies": []},
+  "defaults": {
+    "attestation_allowed": false,
+    "observation_allowed": false,
+    "delivery_allowed": false,
+    "service_state": "disabled_stopped",
+    "scheduled": false,
+    "auto_restart": false
+  },
+  "files": {
+    "run_emitter.py": "e9b6eeb548b1edbc468c6e1b5191e49e702fdb0f9bb91f15a664c0825e72b268",
+    "Install-GuvfxCopierEmitter.ps1": "e4be6f72c6acfdc3b9532786377d3086617091f4dab263ff2b3f2dba3ee275f1",
+    "Uninstall-GuvfxCopierEmitter.ps1": "6f091ec86a51df6463ab6dedbb37eb361b6b2dd1f2cc0bf3f8c0d2d4fcf643f4",
+    "Status-GuvfxCopierEmitter.ps1": "e17071528e7e9c078ceadb7238726ef57ea6bbb4bc2b4452dc256b8397879b4b",
+    "Attest-GuvfxCopierEmitter.ps1": "5d0f2d5998eda37c42846b8203b0f571bf3e00102167882750d119fd8d990615",
+    "emitter_task_template.xml": "985cc038a98b99889463e84e29148d444cf09c4f29fc252cb7e1da7652d79016",
+    "config.template.json": "1a20ac8a036336186fe22b28c6bdd1c782e697e906502b4a5a458bc1466f6782",
+    "README.md": "90c51f2441620cbcbe77c65427d592e55b68d63074fd31945935ba7ee8249d32"
+  },
+  "lib_subset": [
+    "backend/trade_copier/__init__.py",
+    "backend/trade_copier/emitter/__init__.py",
+    "backend/trade_copier/emitter/config.py",
+    "backend/trade_copier/emitter/attestation.py",
+    "backend/trade_copier/emitter/mt5_adapter.py",
+    "backend/trade_copier/emitter/app.py",
+    "backend/trade_copier/bridge_emitter.py",
+    "backend/trade_copier/event_ingestion.py",
+    "backend/trade_copier/diff.py",
+    "backend/trade_copier/revisions.py"
+  ]
+}

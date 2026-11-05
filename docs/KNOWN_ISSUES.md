@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading host emitter — repository-only, DARK, NOT installed (GFX-COPIER-HOST-EMITTER-BUILD-006 / ADR-0076, 2026-11-05)
+
+- **Nothing is installed or armed.** The emitter is a repository artefact (`deploy/copier-emitter/` + the
+  Django-free `trade_copier/emitter/` modules). No Windows host was touched; no auth material provisioned; the
+  scheduled-task template is DISABLED/no-trigger/no-auto-restart; all gates (`attestation_allowed`,
+  `observation_allowed`, `delivery_allowed`, backend `COPIER_ATTESTATION_VERIFY_ENABLED`) default OFF. Adds NO
+  model/migration. Install, credential provisioning, attestation on a live host, and any enablement are SEPARATE
+  Sponsor gates.
+- **PowerShell ParseFile is host-side.** Repo tests mirror it with a structural balance + ASCII/no-BOM check;
+  the authoritative `[...Parser]::ParseFile()` gate must run on the TARGET Windows PowerShell before first
+  execution (RULE 9/11) — a host step at bundle-build/install time.
+- **Read path is `snapshot_transport` `/mt5/positions`, not the #613 gateway.** The ADR-0075 gateway is
+  DARK/undeployed and its client returns readiness counts, not position rows; it is composed only as an optional
+  readiness gate. Migrating the snapshot read behind `monitoring_gateway_routing_enabled()` is a follow-up.
+- **Per-change `broker_event_time` is not in the positions feed** — the emitter leaves it None and carries the
+  position's broker `open_time` (from the `time` field) as the no-late-OPEN admissibility reference. A true
+  per-change time would require the `/mt5/snapshots/deals` feed (optional, not wired here).
+- **Bundle `source_sha` is a placeholder** (`STAMP_AT_PACKAGE_TIME`) stamped at the separate bundle-build step;
+  `lib/` is vendored from `MANIFEST.json.lib_subset` at that step (not committed as a duplicated copy).
+
 ## 🟡 Copy Trading hybrid completion — DARK, chain complete (GFX-COPIER-HYBRID-COMPLETION-003 / ADR-0074, 2026-11-05)
 
 - **RESOLVED — the fast EVENT path now drives the lifecycle.** The gated `event_projection` promotes accepted

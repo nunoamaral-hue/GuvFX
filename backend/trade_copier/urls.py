@@ -6,6 +6,7 @@ from trade_copier.consumer_api import (
     PartialCloseClaimView,
     PartialCloseCompleteView,
 )
+from trade_copier.attestation_api import AttestationVerifyView
 from trade_copier.config_api import CopyTradingConfigView
 from trade_copier.event_ingestion_api import SignedEventIngestView
 from trade_copier.matrix_api import InstrumentMatrixView
@@ -27,6 +28,9 @@ urlpatterns = [
     # ADR-0074 — SIGNED, account-scoped fast-path event ingestion (bridge → backend). DARK: fails closed with
     # 503 unless COPIER_EVENT_INGESTION_ENABLED is on. Persists immutable observations only; no order, no job.
     path("event-ingest/", SignedEventIngestView.as_view(), name="copy-trading-event-ingest"),
+    # ADR-0076 — NON-LIFECYCLE host-emitter identity-attestation verification (emitter → backend). DARK: 503
+    # unless COPIER_ATTESTATION_VERIFY_ENABLED is on. Proves identity only; no lifecycle, no order, no job.
+    path("attest-verify/", AttestationVerifyView.as_view(), name="copy-trading-attest-verify"),
     # ADR-0056 — dedicated DEMO partial-close consumer (modern worker auth only; DARK, no worker granted
     # the permission outside tests; serves ONLY PARTIAL_CLOSE_TRADE).
     path("partial-close/claim/", PartialCloseClaimView.as_view(), name="copy-trading-pclose-claim"),

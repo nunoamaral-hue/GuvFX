@@ -1,5 +1,25 @@
 # GuvFX — Project Status
 
+> **2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0076; repository-only,
+> synthetic-only; DARK; governed PR; STOP before merge).** Builds the installable Windows host emitter that the
+> packet-005 install preflight proved was missing (`fb4ee402` had only the `bridge_emitter.py` signing library).
+> Off main `4aef7bba`. **(1) Read-only MT5 adapter** (`emitter/mt5_adapter.py`) — reuses the host bridge's
+> read-only `/mt5/positions` + `/mt5/snapshots/account` (mirrors `snapshot_transport`), NO order/modify/close
+> method, NO broker credential, preserves missing SL/TP, reads broker `open_time` from `time`. **(2) One-shot
+> identity attestation** (`emitter/attestation.py` + backend `attestation_verify.py`/`attestation_api.py`,
+> `POST /api/copy-trading/attest-verify/`, flag `COPIER_ATTESTATION_VERIFY_ENABLED` default OFF→503) — signs
+> build/host/account/broker/terminal/bridge identity with the emitter's own `COPIER_INGEST_HMAC_KEY` (login
+> fingerprinted, never raw); backend cross-checks the DB; creates NO lifecycle/MasterEvent/ExecutionJob/alert;
+> full negative-control matrix. **(3) Gated runner** (`emitter/app.py`) — attest/observe-once/run modes, each
+> separately gated (attestation/observation/delivery), all default OFF; reuses ADR-0074 diff + monotonic
+> revisions; retry never re-stamps `open_time` (no late entry); bounded restart-safe spool. **(4) Windows
+> bundle** (`deploy/copier-emitter/`) — launcher + install/uninstall/status/attest PowerShell (ASCII-only,
+> ParseFile-valid, `-Apply` dry-run, reserved-id refusal, safe teardown), a DISABLED/no-trigger/no-auto-restart
+> task template, a secret-free config template, a hash manifest. Adds NO model/migration. ~51 new tests green
+> (incl. emitter→ingest→projection→lifecycle e2e proving stale-OPEN→ENTRY_FAILED_FINAL + 0 ExecutionJob); full
+> `trade_copier` 658 = 27F/33E pre-existing only. DARK: no host access, no credential, no install, no
+> enablement, no broker; execution OFF. HARD STOP before merge + all host/arming gates.
+
 > **2026-11-05 — Copy Trading hybrid COMPLETION — completion increment (Sponsor hold response; same packet
 > GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK; execution OFF; NOT deployed).** On the Sponsor's hold of the
 > first-increment merge, the four previously-deferred capabilities are now IMPLEMENTED and DARK, all additive,

@@ -1,5 +1,33 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0076; repository-only; DARK; PR; NOT merged)
+
+- **Why.** The packet-005 install preflight proved the merged `fb4ee402` carried only the `bridge_emitter.py`
+  signing library — no installable emitter app, Windows service, MT5 read, or attestation mode. This packet
+  builds them, repository-only, synthetic-only, off main `4aef7bba`. No host access, no credential, no install,
+  no enablement, execution OFF.
+- **Added (additive only; NO model/migration).** `backend/trade_copier/emitter/` (Django-free): `config.py`
+  (identity + fail-closed gates), `mt5_adapter.py` (read-only bridge adapter, no order method), `attestation.py`
+  (pure HMAC attestation + negative controls), `app.py` (attest/observe-once/run runner wrapping BridgeEmitter).
+  Backend: `attestation_verify.py` (DB cross-check), `attestation_api.py` (DRF verify, 503 when off), flag
+  `copier_attestation_verify_enabled`, url `attest-verify/`, throttle `copier_attest_verify`. Bundle
+  `deploy/copier-emitter/` (launcher, 4 PowerShell scripts, DISABLED task template, secret-free config template,
+  MANIFEST.json). Docs: ADR-0076, COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md, evidence
+  GFX-EVD-HOST-EMITTER-006. Tests: `emitter/tests_{config,adapter,attestation,app,e2e,bundle,capacity}.py` +
+  `tests_attestation_verify.py`.
+- **Read path.** Reuses `snapshot_transport` `/mt5/positions` (+ `/mt5/snapshots/account` for identity); ADR-0075
+  gateway composed only as an optional readiness gate (DARK/undeployed). `open_time` read from the per-position
+  `time` field → no-late-OPEN admissibility; per-change `broker_event_time` left None (not in the feed).
+- **Verified.** `manage.py check` clean; `makemigrations trade_copier --check` clean (no model/migration); 51
+  new tests green incl. the emitter→ingest→projection→lifecycle e2e (stale OPEN → ENTRY_FAILED_FINAL, 0
+  ExecutionJob); full `trade_copier` 658 = 27F/33E pre-existing only (zero new failures). Bundle hashes match
+  MANIFEST; all artefacts ASCII/no-BOM. Capacity (synthetic, 1 acct): e2e p99 ~0.15 ms (NOT a prod-cadence
+  claim). Independent adversarial review across 14 vectors (CRITICAL/HIGH fixed with regression tests; see the
+  ADR/evidence).
+- **DARK invariants held.** No host access, no credential provisioning, no install, no scheduler/flag
+  enablement, no broker contact, no real MT5, no order surface; the adapter has no order/modify/close method;
+  all gates default OFF; execution OFF. STOP before merge + every host/arming gate.
+
 ## 2026-11-05 — Copy Trading hybrid COMPLETION — completion increment (Sponsor hold response; ADR-0074; DARK; PR #612; NOT deployed)
 
 - **Why.** The Sponsor held the first-increment merge: a `_MERGED` marker would have overstated completion while

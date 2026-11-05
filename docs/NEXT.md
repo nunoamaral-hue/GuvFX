@@ -1,5 +1,17 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPY TRADING HOST EMITTER BUILD (2026-11-05; GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0076; repository-only PR)
+The missing Windows host emitter is built, DARK, off main `4aef7bba`: read-only MT5 adapter (no order surface,
+no broker credential), one-shot identity attestation + gated backend verifier, gated observe/deliver runner
+(reuses ADR-0074 diff + monotonic revisions, no-late-entry via `open_time`), and an account-scoped Windows
+bundle (install/uninstall/status/attest PowerShell, DISABLED task, hash manifest). Adds no model/migration; ~51
+new tests green; full `trade_copier` 27F/33E pre-existing only. **One bounded next action:** governed review +
+(on a NEW Sponsor merge GO) squash-merge of the repository-only PR. SEPARATE / Sponsor-gated, NOT in scope:
+(a) bundle-build + vendoring + `source_sha` stamp; (b) host install + identity attestation on the live host;
+(c) secure provisioning of the emitter auth material; (d) scheduler/continuous-emission enablement; (e)
+ingestion/projection/dispatch/alert flag enablement + a real alert transport; (f) shadow observation; (g) live
+one-order acceptance. No host access, no deploy, no credential, no enablement.
+
 ## ★ COPY TRADING HYBRID COMPLETION — FULL (2026-11-05; GFX-COPIER-HYBRID-COMPLETION-003; ADR-0074; DARK PR #612)
 The full repository-side hybrid chain is now implemented and DARK: signed fast-path ingestion + named change
 taxonomy + **bridge emitter** + **authoritative event→`MasterEvent` projection** (overlay; one ledger, no
