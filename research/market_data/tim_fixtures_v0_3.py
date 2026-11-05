@@ -21,12 +21,14 @@ SYNTH = "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
 SOURCE_ID = "mt5_research_synth"
 SYMBOL = "EURUSD"
 RELEASE_ID = "rel_synth_v3_eurusd_m1_7d"
-REL_DIR = "exchange/releases/" + RELEASE_ID
+# K-5: release paths are release-ROOT-relative (every path begins with "<release_id>/"). The pre-C3 fixtures
+# used a share-relative "exchange/releases/<id>/" base; C3 pins the single canonical base here.
+REL_DIR = RELEASE_ID
 
 # Per-column metadata for the committed canonical_candles_parquet_v1 descriptor (full schema surface).
 _COLUMN_META = {
-    "event_start_utc": ("timestamp_utc", "TIMESTAMP(isAdjustedToUTC=true,unit=MICROS)", "microseconds_utc", None, None, "Half-open bar start (UTC microseconds)."),
-    "event_end_utc": ("timestamp_utc", "TIMESTAMP(isAdjustedToUTC=true,unit=MICROS)", "microseconds_utc", None, None, "Half-open bar end (UTC microseconds)."),
+    "event_start_utc": ("timestamp_utc", "TIMESTAMP(isAdjustedToUTC=false,unit=MICROS)", "microseconds_utc", None, None, "Half-open bar start (UTC microseconds)."),
+    "event_end_utc": ("timestamp_utc", "TIMESTAMP(isAdjustedToUTC=false,unit=MICROS)", "microseconds_utc", None, None, "Half-open bar end (UTC microseconds)."),
     "open": ("decimal", "DECIMAL(38,18)", None, 38, 18, "Open price (bid)."),
     "high": ("decimal", "DECIMAL(38,18)", None, 38, 18, "High price (bid)."),
     "low": ("decimal", "DECIMAL(38,18)", None, 38, 18, "Low price (bid)."),
@@ -35,7 +37,7 @@ _COLUMN_META = {
     "quality_flags": ("uint", "UINT32", None, None, None, "Bitset of per-bar quality flags."),
     "real_volume": ("decimal", "DECIMAL(38,18)", None, 38, 18, "Real volume where available."),
     "spread_points": ("int", "INT32", "points", None, None, "Spread in points where available."),
-    "source_available_at_utc": ("timestamp_utc", "TIMESTAMP(isAdjustedToUTC=true,unit=MICROS)", "microseconds_utc", None, None, "Source availability instant where available."),
+    "source_available_at_utc": ("timestamp_utc", "TIMESTAMP(isAdjustedToUTC=false,unit=MICROS)", "microseconds_utc", None, None, "Source availability instant where available."),
     "source_sequence": ("int", "INT64", None, None, None, "Source sequence/revision where available."),
 }
 
@@ -57,6 +59,31 @@ def canonical_candle_contract_doc():
         "partitioning": {"scheme": "single_file_per_release",
                          "note": "Pilot forbids partial releases; one Parquet file per immutable release."},
         "native_vs_derived": "declared_in_release_manifest",
+        "parquet_isadjustedtoutc": False,
+        "time_semantics": [
+            {"instant": "market_event_time", "carried_by": "candle event_start_utc/event_end_utc",
+             "description": "The UTC half-open interval the bar represents."},
+            {"instant": "source_availability_time", "carried_by": "manifest point_in_time.source_available_at_utc",
+             "description": "When the source first made the bar available (EVIDENCED) or UNKNOWN_RETROSPECTIVE."},
+            {"instant": "collector_observation_time", "carried_by": "manifest point_in_time.collector_observed_at_utc",
+             "description": "When the collector observed the bar."},
+            {"instant": "ingestion_time", "carried_by": "manifest point_in_time.ingested_at_utc",
+             "description": "When the bar was ingested into the pipeline."},
+            {"instant": "validation_time", "carried_by": "manifest point_in_time.validated_at_utc",
+             "description": "When the release was validated."},
+            {"instant": "publication_time", "carried_by": "manifest point_in_time.published_at_utc",
+             "description": "When GuvFX published the release."},
+            {"instant": "tim_import_time", "carried_by": "import receipt imported_at_utc (consumer-side)",
+             "description": "When TIM imported the release; recorded on the consumer-owned receipt, not the row."},
+        ],
+        "quality_flags_semantics": {
+            "type": "uint32_bitset", "clean_value": 0,
+            "bits": [
+                {"bit": 0, "name": "gap_filled", "meaning": "bar synthesised to fill a source gap"},
+                {"bit": 1, "name": "price_suspect", "meaning": "price failed a plausibility heuristic"},
+                {"bit": 2, "name": "volume_suspect", "meaning": "volume failed a plausibility heuristic"},
+            ],
+        },
         "limitations": [SYNTH],
     }
 
@@ -75,6 +102,92 @@ def source_eligibility(**overrides):
         "capacity_certified": True, "capacity_certification_ref": "GFX-CAP-SYNTH-001",
         "synthetic": True, "non_operational": True, "approved_at_utc": "2026-01-12T00:00:01Z",
         "limitations": [SYNTH],
+    }
+    base.update(overrides)
+    return base
+
+
+def _minus_one_minute(iso_minute):
+    dt = datetime.strptime(iso_minute[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc) - timedelta(minutes=1)
+    return dt.strftime("%Y-%m-%dT%H:%M:00Z")
+
+
+def timezone_evidence_v0_3(**overrides):
+    base = {
+        "schema_version": "1.0", "source_id": SOURCE_ID, "issuer": "guvfx_producer_synth",
+        "timezone_status": "VERIFIED", "source_timezone": "Etc/UTC",
+        "observed_at_utc": "2026-01-12T00:00:05Z", "valid_from_utc": "2026-01-05T00:00:00Z",
+        "valid_to_utc": None, "evidence_digest": _d("timezone_evidence_digest"),
+        "synthetic": True, "non_operational": True, "limitations": [SYNTH],
+    }
+    base.update(overrides)
+    return base
+
+
+def broker_server_identity(**overrides):
+    base = {
+        "schema_version": "1.0", "source_id": SOURCE_ID, "issuer": "guvfx_producer_synth",
+        "broker_id": "synthbroker", "server_identity": "SynthBroker-Research", "identity_status": "VERIFIED",
+        "observed_at_utc": "2026-01-12T00:00:05Z", "valid_from_utc": "2026-01-05T00:00:00Z",
+        "valid_to_utc": None, "evidence_digest": _d("broker_identity_digest"),
+        "synthetic": True, "non_operational": True, "limitations": [SYNTH],
+    }
+    base.update(overrides)
+    return base
+
+
+def licensing_evidence(**overrides):
+    base = {
+        "schema_version": "1.0", "source_id": SOURCE_ID, "issuer": "guvfx_producer_synth",
+        "licensing_classification": "internal_research_only", "licensing_reference": "GFX-LIC-SYNTH-001",
+        "permitted_use": "internal_research_only", "valid_from_utc": "2026-01-05T00:00:00Z",
+        "valid_to_utc": None, "evidence_digest": _d("licensing_digest"),
+        "synthetic": True, "non_operational": True, "limitations": [SYNTH],
+    }
+    base.update(overrides)
+    return base
+
+
+def full_coverage_quality_report(expected=10080, start="2026-01-05T00:00:00Z",
+                                 end="2026-01-12T00:00:00Z", **overrides):
+    """A v0.2 market_data_quality_report_v1 covering the WHOLE release (observed==expected==row_count),
+    unlike the committed 3-bar fixture. Validates under the frozen v0.2 validate_quality_report."""
+    base = {
+        "schema_version": "1.0", "source_id": SOURCE_ID, "canonical_symbol": SYMBOL, "timeframe": "M1",
+        "representation": "bid_ohlc", "price_basis": "bid", "provenance": "NATIVE",
+        "range_start_utc": start, "range_end_utc": end, "range_semantics": "[start,end)",
+        "expected_bar_count": expected, "observed_bar_count": expected,
+        "gap_count": 0, "duplicate_count": 0, "overlap_count": 0, "out_of_order_count": 0,
+        "ohlc_violation_count": 0, "non_finite_count": 0,
+        "quality_status": "PASS", "quarantine_reasons": [], "evaluated_at_utc": "2026-01-12T00:03:00Z",
+        "limitations": [SYNTH],
+    }
+    base.update(overrides)
+    return base
+
+
+def release_quality_coverage(manifest=None, **overrides):
+    """A release quality-coverage attestation consistent with a manifest (or the native fixture manifest).
+    Pulls the release id, symbol, timeframe, range, row count, canonical-parquet identity and the quality/
+    gap/watermark evidence refs straight from the manifest, so it passes the C3 coverage consistency check."""
+    m = manifest if manifest is not None else _native_manifest_v3()
+    ev = m["evidence"]
+    cp = [f for f in m["files"] if f["logical_role"] == "canonical_parquet"][0]
+    n = m["row_count"]
+    base = {
+        "schema_version": "1.0", "release_id": m["release_id"], "manifest_digest": None,
+        "canonical_symbol": m["canonical_symbol"], "timeframe": m["timeframe"],
+        "range_start_utc": m["range_start_utc"], "range_end_utc": m["range_end_utc"],
+        "range_semantics": "[start,end)",
+        "first_event_start_utc": m["range_start_utc"], "last_event_start_utc": _minus_one_minute(m["range_end_utc"]),
+        "expected_row_count": n, "observed_row_count": n, "quality_assessed_row_count": n,
+        "partition_coverage": {"scheme": "single_file_per_release", "files_total": 1, "files_assessed": 1},
+        "canonical_file": {"relative_path": cp["relative_path"], "sha256": cp["digest"]["value"]},
+        "quality_report_ref": {"relative_path": ev["quality_report"]["relative_path"],
+                               "sha256": ev["quality_report"]["sha256"]},
+        "gap_report_ref": {"relative_path": ev["gap_report"]["relative_path"], "sha256": ev["gap_report"]["sha256"]},
+        "watermark_ref": {"relative_path": ev["watermark"]["relative_path"], "sha256": ev["watermark"]["sha256"]},
+        "completeness_status": "COMPLETE", "synthetic": True, "limitations": [SYNTH],
     }
     base.update(overrides)
     return base
@@ -111,10 +224,11 @@ _FILES = [
     ("gap_report", "gap.json", "application/json", "1.0", "0.2.0", None),
     ("watermark", "watermark.json", "application/json", "1.0", "0.2.0", None),
     ("source_eligibility", "eligibility.json", "application/json", "1.0", "0.3.0", None),
-    ("broker_server_identity", "broker_server.json", "application/json", "1.0", "0.2.0", None),
+    ("broker_server_identity", "broker_server.json", "application/json", "1.0", "0.3.0", None),
     ("instrument_mapping", "mapping.json", "application/json", "1.0", "0.2.0", None),
-    ("timezone_evidence", "timezone.json", "application/json", "1.0", "0.2.0", None),
+    ("timezone_evidence", "timezone.json", "application/json", "1.0", "0.3.0", None),
     ("licensing", "licensing.json", "application/json", "1.0", "0.3.0", None),
+    ("quality_coverage", "quality_coverage.json", "application/json", "1.0", "0.3.0", None),
 ]
 
 
@@ -228,6 +342,10 @@ def positive_fixtures():
         "release_supersession_v1__partial": release_supersession(
             release_id="rel_synth_v3_eurusd_m1_7d_r3", scope="PARTIAL_WINDOW",
             correction_window={"range_start_utc": "2026-01-10T22:00:00Z", "range_end_utc": "2026-01-10T22:05:00Z"}),
+        "release_quality_coverage_v1": release_quality_coverage(),
+        "timezone_evidence_v1": timezone_evidence_v0_3(),
+        "broker_server_identity_v1": broker_server_identity(),
+        "licensing_v1": licensing_evidence(),
     }
 
 

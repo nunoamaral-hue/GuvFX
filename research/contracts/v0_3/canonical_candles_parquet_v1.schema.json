@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "$id": "https://guvfx.local/schema/canonical_candles_parquet_v1.schema.json",
   "title": "GuvFX Canonical Candles Parquet Column Contract v1",
-  "description": "The canonical analytical candle payload is Parquet (NDJSON is permitted ONLY as optional raw evidence; NDJSON-only canonical releases are not canonical-import eligible). This contract DESCRIBES the mandatory Parquet column surface, logical+physical types, UTC unit, decimal precision, integer widths, nullability and the uniqueness key; the authoritative enforcement is research/market_data/tim_contracts_v0_3.py against a read-back Parquet schema. GFX-PKT-TIM-C2, v0.3. Synthetic/design contract.",
+  "description": "The canonical analytical candle payload is Parquet (NDJSON is permitted ONLY as optional raw evidence; NDJSON-only canonical releases are not canonical-import eligible). This contract DESCRIBES the mandatory Parquet column surface, logical+physical types, UTC unit, decimal precision, integer widths, nullability and the uniqueness key; the authoritative enforcement is research/market_data/tim_contracts_v0_3.py against a read-back Parquet schema. UTC REPRESENTATION (GFX-PKT-TIM-C3 / K-2): timestamps are stored as microsecond-precision UTC-naive values; the Parquet logical type carries isAdjustedToUTC=FALSE (which is what the DuckDB writer emits), and UTC is asserted by THIS CONTRACT and the column naming (every instant column ends _utc), NOT by the Parquet isAdjustedToUTC flag. parquet_isadjustedtoutc records that physical truth so the descriptor and the writer agree. time_semantics names the seven distinct instants the pipeline keeps separate; quality_flags_semantics defines the per-bar quality_flags bitset (K-9). GFX-PKT-TIM-C2, v0.3; corrected by GFX-PKT-TIM-C3. Synthetic/design contract.",
   "version": "1.0",
   "type": "object",
   "additionalProperties": false,
@@ -13,7 +13,7 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 64 },
         "logical_type": { "type": "string", "enum": ["timestamp_utc", "decimal", "int", "uint"] },
-        "parquet_physical_type": { "type": "string", "enum": ["TIMESTAMP(isAdjustedToUTC=true,unit=MICROS)", "DECIMAL(38,18)", "INT64", "INT32", "UINT32"] },
+        "parquet_physical_type": { "type": "string", "enum": ["TIMESTAMP(isAdjustedToUTC=false,unit=MICROS)", "DECIMAL(38,18)", "INT64", "INT32", "UINT32"] },
         "duckdb_type": { "type": "string", "enum": ["TIMESTAMP", "DECIMAL(38,18)", "BIGINT", "INTEGER", "UINTEGER"] },
         "nullable": { "type": "boolean" },
         "unit": { "type": ["string", "null"], "enum": ["microseconds_utc", "points", null] },
@@ -60,11 +60,54 @@
       "enum": ["declared_in_release_manifest"],
       "description": "Native/derived identity is carried by the release manifest provenance/derivation, never inferred from the candle rows."
     },
+    "parquet_isadjustedtoutc": {
+      "const": false,
+      "description": "The physical Parquet timestamp logical-type flag the writer emits. FALSE: timestamps are UTC-naive microseconds; UTC is asserted by this contract and the _utc column naming, not by the flag (GFX-PKT-TIM-C3 / K-2)."
+    },
+    "time_semantics": {
+      "type": "array",
+      "minItems": 7,
+      "description": "The seven distinct instants the pipeline keeps separate (never collapsed). TIM import time is consumer-side (recorded on the import receipt), not in the candle row.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instant": { "type": "string", "enum": ["market_event_time", "source_availability_time", "collector_observation_time", "ingestion_time", "validation_time", "publication_time", "tim_import_time"] },
+          "carried_by": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 }
+        },
+        "required": ["instant", "carried_by", "description"]
+      }
+    },
+    "quality_flags_semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Definition of the per-bar quality_flags UINT32 bitset (GFX-PKT-TIM-C3 / K-9). A row with quality_flags==0 is clean; any non-zero bit records a per-bar quality concern. Validators count non-zero rows and do NOT reinterpret bits beyond this definition.",
+      "properties": {
+        "type": { "const": "uint32_bitset" },
+        "clean_value": { "const": 0 },
+        "bits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "bit": { "type": "integer", "minimum": 0, "maximum": 31 },
+              "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              "meaning": { "type": "string", "minLength": 1 }
+            },
+            "required": ["bit", "name", "meaning"]
+          }
+        }
+      },
+      "required": ["type", "clean_value", "bits"]
+    },
     "limitations": { "type": "array", "items": { "type": "string" } }
   },
   "required": [
     "schema_version", "canonical_format", "timeframe_pilot", "utc_representation",
     "interval_semantics", "row_order", "uniqueness_key", "mandatory_columns",
-    "optional_columns", "partitioning", "native_vs_derived", "limitations"
+    "optional_columns", "partitioning", "native_vs_derived",
+    "parquet_isadjustedtoutc", "time_semantics", "quality_flags_semantics", "limitations"
   ]
 }

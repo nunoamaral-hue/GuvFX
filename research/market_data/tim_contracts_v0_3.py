@@ -15,6 +15,8 @@ network, credential or trading action; the signature boundary is an INJECTED SYN
 """
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -50,11 +52,14 @@ CONTRACT_VERSION = "0.3"
 SYNTHETIC_ALGORITHM_V2 = "synthetic-placeholder-v0"
 SIGNATURE_DOMAIN_SEPARATOR = "GUVFX-TIM-RELEASE-SIGNATURE-v2"
 
-# The 7 additive v0.3 schema files (relative to research/contracts/v0_3/), for the hash-regression evidence.
+# The additive v0.3 schema files (relative to research/contracts/v0_3/), for the hash-regression evidence.
+# The first 7 are the GFX-PKT-TIM-C2 baseline; the final 4 are the GFX-PKT-TIM-C3 corrective additions
+# (release_quality_coverage for K-1, and the three formal evidence schemas for K-3).
 TIM_V0_3_SCHEMA_FILES = (
     "canonical_candles_parquet_v1", "dataset_release_manifest_v3", "dataset_release_signature_v2",
     "dataset_import_receipt_v2", "release_ready_marker_v1", "source_eligibility_v1",
     "release_supersession_v1",
+    "release_quality_coverage_v1", "timezone_evidence_v1", "broker_server_identity_v1", "licensing_v1",
 )
 
 # ==================================================================================================
@@ -85,6 +90,13 @@ _CANDLE_TYPES = {n: t for n, t, _ in (*CANON_CANDLE_MANDATORY, *CANON_CANDLE_OPT
 _UINT32_MAX = 2 ** 32 - 1
 _INT32_MIN, _INT32_MAX = -(2 ** 31), 2 ** 31 - 1
 CANDLE_UNIQUENESS_KEY = ("event_start_utc",)
+# K-2: the canonical Parquet timestamp physical type. DuckDB writes a naive TIMESTAMP as isAdjustedToUTC=false;
+# UTC is asserted by this contract and the _utc column naming, NOT by the Parquet logical-type flag.
+_CANON_TS_PHYSICAL = "TIMESTAMP(isAdjustedToUTC=false,unit=MICROS)"
+# Phase 4: the seven distinct instants the pipeline keeps separate (never collapsed). tim_import_time is
+# consumer-side (recorded on the import receipt), the other six are producer-side (manifest point_in_time).
+_SEVEN_TIME_INSTANTS = ("market_event_time", "source_availability_time", "collector_observation_time",
+                        "ingestion_time", "validation_time", "publication_time", "tim_import_time")
 
 
 def validate_canonical_candle_parquet_schema(observed) -> None:
@@ -273,6 +285,47 @@ def validate_canonical_candles_parquet_contract(obj) -> None:
     got_opt = tuple((c.get("name"), str(c.get("duckdb_type")).upper(), c.get("nullable")) for c in opt)
     if got_opt != CANON_CANDLE_OPTIONAL:
         raise ContractError("parquet_contract: optional_columns must match the canonical candle contract exactly")
+    # K-2: the descriptor's physical UTC flag MUST match what the DuckDB writer emits (isAdjustedToUTC=false);
+    # UTC is asserted by this contract + the _utc column naming, not by the Parquet flag.
+    if obj.get("parquet_isadjustedtoutc") is not False:
+        raise ContractError("parquet_contract: parquet_isadjustedtoutc must be false (matches the DuckDB writer)")
+    for c in list(mand) + list(opt):
+        if str(c.get("duckdb_type")).upper() == "TIMESTAMP":
+            if c.get("parquet_physical_type") != _CANON_TS_PHYSICAL:
+                raise ContractError(f"parquet_contract: timestamp column {c.get('name')!r} physical type must be "
+                                    f"{_CANON_TS_PHYSICAL!r} (isAdjustedToUTC=false)")
+    # K-9: the per-bar quality_flags bitset semantics are explicit (uint32; 0 == clean; named bits).
+    qfs = obj.get("quality_flags_semantics")
+    if not isinstance(qfs, dict):
+        raise ContractError("parquet_contract: quality_flags_semantics must be an object")
+    _exact_keys(qfs, ("type", "clean_value", "bits"), "parquet_contract.quality_flags_semantics")
+    _const(qfs, "type", "parquet_contract.quality_flags_semantics", "uint32_bitset")
+    if qfs.get("clean_value") != 0:
+        raise ContractError("parquet_contract.quality_flags_semantics: clean_value must be 0")
+    bits = _array(qfs, "bits", "parquet_contract.quality_flags_semantics")
+    seen_bits = set()
+    for j, b in enumerate(bits):
+        bw = f"parquet_contract.quality_flags_semantics.bits[{j}]"
+        _exact_keys(b, ("bit", "name", "meaning"), bw)
+        _int(b, "bit", bw, minimum=0)
+        if b["bit"] > 31:
+            raise ContractError(f"{bw}: bit must be a uint32 bit index (0-31)")
+        if b["bit"] in seen_bits:
+            raise ContractError(f"{bw}: duplicate bit index {b['bit']}")
+        seen_bits.add(b["bit"])
+        _str(b, "name", bw, max_len=64)
+        _str(b, "meaning", bw, max_len=256)
+    # Phase 4: the seven distinct instants the pipeline keeps separate are declared and never collapsed.
+    ts = _array(obj, "time_semantics", "parquet_contract")
+    got_instants = []
+    for j, t in enumerate(ts):
+        tw = f"parquet_contract.time_semantics[{j}]"
+        _exact_keys(t, ("instant", "carried_by", "description"), tw)
+        got_instants.append(_str(t, "instant", tw, enum=_SEVEN_TIME_INSTANTS))
+        _str(t, "carried_by", tw, max_len=128)
+        _str(t, "description", tw, max_len=256)
+    if set(got_instants) != set(_SEVEN_TIME_INSTANTS) or len(got_instants) != len(_SEVEN_TIME_INSTANTS):
+        raise ContractError("parquet_contract.time_semantics: must declare exactly the seven distinct instants")
     _str_array(obj, "limitations", "parquet_contract")
 
 
@@ -331,12 +384,40 @@ def validate_release_signature_v2(obj) -> None:
     _str_array(obj, "limitations", "signature_v2")
 
 
-def verify_release_signature_v2(signature, manifest_bytes, *, verifier=synthetic_sign_v2) -> bool:
+def validate_manifest_signature_binding(manifest, signature) -> None:
+    """K-7: cross-bind a signature envelope to the manifest it claims to sign. verify_release_signature_v2 (and
+    the v2 envelope) already carry release_id, both bundle digests, the signing key id and algorithm, but a
+    consumer must also confirm those agree with the MANIFEST's own release context rather than trusting the
+    envelope's self-consistency. Raises ContractError on any disagreement (identity_mismatch class)."""
+    pairs = (
+        ("release_id", manifest.get("release_id"), signature.get("release_id")),
+        ("contract_bundle_digest", manifest.get("contract_bundle_digest"), signature.get("contract_bundle_digest")),
+        ("validator_bundle_digest", manifest.get("validator_bundle_digest"), signature.get("validator_bundle_digest")),
+        ("signing_key_id", manifest.get("signing_key_id"), signature.get("signing_key_id")),
+        ("producer_identity", manifest.get("producer_identity"), signature.get("producer_identity")),
+    )
+    for name, m, s in pairs:
+        if m != s:
+            raise ContractError(f"signature_binding: manifest {name}={m!r} != signature {name}={s!r} (identity_mismatch)")
+    smp = str(signature.get("signed_manifest_path", ""))
+    rid = manifest.get("release_id", "")
+    if not (smp.startswith(rid + "/") and smp.rsplit("/", 1)[-1] == "manifest.json"):
+        raise ContractError("signature_binding: signed_manifest_path must reference <release_id>/manifest.json")
+
+
+def verify_release_signature_v2(signature, manifest_bytes, *, verifier=synthetic_sign_v2, manifest=None) -> bool:
     """Structure-validate, bind the manifest digest, and verify the value via an INJECTED verifier (synthetic
-    default). Fail-closed: returns False on any digest/value mismatch; raises on structural error."""
+    default). Fail-closed: returns False on any digest/value mismatch; raises on structural error. When ``manifest``
+    (the parsed manifest dict) is supplied, additionally cross-binds the envelope to the manifest's release
+    context (K-7) and returns False if they disagree. ``manifest`` defaults to None, preserving prior behaviour."""
     validate_release_signature_v2(signature)
     if sha256_hex(bytes(manifest_bytes)) != signature["manifest_digest"]:
         return False
+    if manifest is not None:
+        try:
+            validate_manifest_signature_binding(manifest, signature)
+        except ContractError:
+            return False
     expected = verifier(
         release_id=signature["release_id"], manifest_digest=signature["manifest_digest"],
         contract_bundle_digest=signature["contract_bundle_digest"],
@@ -455,7 +536,7 @@ def validate_release_supersession(obj) -> None:
 # G2/G3/G4/G6/G8 — release manifest v3
 # ==================================================================================================
 _EVIDENCE_ROLES = ("source_eligibility", "broker_server_identity", "instrument_mapping", "timezone_evidence",
-                   "licensing", "quality_report", "gap_report", "watermark")
+                   "licensing", "quality_report", "gap_report", "watermark", "quality_coverage")
 _MEDIA_PARQUET = "application/vnd.apache.parquet"
 _MEDIA_NDJSON = "application/x-ndjson"
 # The signed set. The detached signature and the READY marker are EXTERNAL artefacts written AFTER the manifest
@@ -463,7 +544,7 @@ _MEDIA_NDJSON = "application/x-ndjson"
 # digest (a file hash feeding the very manifest digest the file is derived from).
 _FILE_ROLES = ("canonical_parquet", "raw_ndjson", "quality_report", "gap_report", "watermark",
                "source_eligibility", "broker_server_identity", "instrument_mapping", "timezone_evidence",
-               "licensing", "supersession")
+               "licensing", "quality_coverage", "supersession")
 RELEASE_V3_FIELDS = ("schema_version", "contract_version", "release_id", "supersedes_release_id", "supersession",
                      "source_id", "canonical_symbol", "broker_native_symbol", "asset_class", "timeframe",
                      "representation", "price_basis", "provenance", "derivation", "canonical_format",
@@ -515,6 +596,20 @@ def validate_release_manifest_v3(obj) -> None:
     _const(obj, "schema_version", "release", "3.0")
     _const(obj, "contract_version", "release", CONTRACT_VERSION)
     rid = _str(obj, "release_id", "release", regex=SLUG_RE, max_len=64)
+    # K-5: the single canonical path base. Every release-relative path (files, evidence, signature, READY,
+    # supersession) is resolved from the release ROOT and MUST begin with "<release_id>/". REL_PATH_RE already
+    # blocks absolute paths, backslashes and "." / ".." segments, and _reject_control_strings blocks control
+    # characters; this adds the release-root anchor and a case-collision guard.
+    release_base = rid + "/"
+    _seen_casefold = set()
+
+    def _require_release_rel(p, where):
+        if not p.startswith(release_base):
+            raise ContractError(f"{where}: path {p!r} must be release-root-relative (start with {release_base!r})")
+        cf = p.casefold()
+        if cf in _seen_casefold:
+            raise ContractError(f"{where}: path {p!r} collides (case-insensitively) with another release path")
+        _seen_casefold.add(cf)
     # G5 supersession pairing.
     sup_id = obj["supersedes_release_id"]
     sup = obj["supersession"]
@@ -528,6 +623,7 @@ def validate_release_manifest_v3(obj) -> None:
         _str(sup, "reason", "release.supersession", max_len=512)
         _str(sup, "scope", "release.supersession", enum=("FULL", "PARTIAL_WINDOW", "CORRECTION"))
         _evidence_ref(sup["supersession_ref"], "release.supersession.supersession_ref")
+        _require_release_rel(sup["supersession_ref"]["relative_path"], "release.supersession.supersession_ref")
     elif sup is not None:
         raise ContractError("release: supersession must be null when supersedes_release_id is null")
     _str(obj, "source_id", "release", regex=SLUG_RE, max_len=64)
@@ -609,6 +705,7 @@ def validate_release_manifest_v3(obj) -> None:
         fw = f"release.files[{i}]"
         _exact_keys(f, FILE_FIELDS, fw)
         path = _str(f, "relative_path", fw, regex=REL_PATH_RE, max_len=512)
+        _require_release_rel(path, fw)
         media = _str(f, "media_type", fw, enum=(_MEDIA_PARQUET, _MEDIA_NDJSON, "application/json", "text/plain"))
         _int(f, "byte_size", fw, minimum=0)
         dval = _digest(f["digest"], f"{fw}.digest")
@@ -663,6 +760,7 @@ def validate_release_manifest_v3(obj) -> None:
     _str(obj, "producer_version", "release", max_len=64)
     _str(obj, "signing_key_id", "release", regex=SLUG_RE, max_len=64)
     _str(obj, "signature_path", "release", regex=REL_PATH_RE, max_len=512)
+    _require_release_rel(obj["signature_path"], "release.signature_path")
     _str(obj, "licensing_classification", "release", enum=LICENSING)
     _bool(obj, "synthetic", "release")
     _str_array(obj, "limitations", "release")
@@ -674,6 +772,7 @@ def validate_release_manifest_v3(obj) -> None:
     present = _bool(rm, "present", "release.ready_marker")
     written_last = _bool(rm, "written_last", "release.ready_marker")
     _str(rm, "ready_marker_path", "release.ready_marker", regex=REL_PATH_RE, max_len=512)
+    _require_release_rel(rm["ready_marker_path"], "release.ready_marker.ready_marker_path")
     if completeness == "COMPLETE":
         if not (present and written_last):
             raise ContractError("release: COMPLETE requires a READY marker present AND written last")
@@ -693,11 +792,49 @@ IMPORT_RECEIPT_V2_FIELDS = ("schema_version", "release_id", "source_release_mani
                             "imported_at_utc", "synthetic", "limitations")
 CHECK_FIELDS = ("signature_verified", "manifest_hashes_verified", "parquet_schema_verified", "evidence_complete",
                 "point_in_time_admissible")
-_PERMANENT_REASONS = ("signature_invalid", "manifest_hash_mismatch", "unsupported_validator_version",
-                      "parquet_schema_mismatch", "ndjson_only_not_canonical", "path_traversal",
-                      "supersession_invalid", "duplicate_candle_key")
-_RESOLVABLE_REASONS = ("missing_eligibility_evidence", "missing_quality_evidence", "timezone_ambiguous",
-                       "point_in_time_unavailable", "incomplete_release")
+# Versioned, machine-readable receipt reason-code registry (GFX-PKT-TIM-C3 / K-4). Each code maps to its
+# disposition and a one-line meaning. REJECTED => permanent (not retryable, not admissible); QUARANTINED =>
+# resolvable (retryable, not admissible). The ACCEPTED/QUARANTINED/REJECTED distinction is NEVER collapsed:
+# a quarantine is never reported as a rejection and vice-versa. The receipt enum and validate_import_receipt_v2
+# derive strictly from this registry, so adding a code here (and to the schema enum) is the only way to widen it.
+REASON_CODE_REGISTRY_VERSION = "1.0"
+REASON_CODE_REGISTRY = {
+    # --- permanent (REJECTED) ---
+    "signature_invalid": ("REJECTED", "signature value failed verification"),
+    "invalid_signature_envelope": ("REJECTED", "signature envelope structurally invalid or mis-bound"),
+    "manifest_hash_mismatch": ("REJECTED", "a bound file digest did not match the on-disk bytes"),
+    "unsupported_validator_version": ("REJECTED", "validator id/version/digest outside the pinned range"),
+    "parquet_schema_mismatch": ("REJECTED", "canonical Parquet schema violated the candle contract"),
+    "ndjson_only_not_canonical": ("REJECTED", "no canonical Parquet payload (NDJSON-only is not import-eligible)"),
+    "path_traversal": ("REJECTED", "a release path escaped the release root (symlink/FIFO/.. )"),
+    "unsafe_relative_path": ("REJECTED", "a relative path was absolute, backslashed, control-bearing or not release-root-relative"),
+    "duplicate_candle_key": ("REJECTED", "duplicate candle uniqueness key"),
+    "duplicate_json_key": ("REJECTED", "a signed JSON artefact contained a duplicate object key"),
+    "supersession_invalid": ("REJECTED", "supersession structure invalid or unbound"),
+    "supersession_loop": ("REJECTED", "supersession formed a self- or cyclic reference"),
+    "row_count_mismatch": ("REJECTED", "expected/observed/quality-assessed row counts disagree with the release"),
+    "time_range_mismatch": ("REJECTED", "evidence time range did not match the release range"),
+    "evidence_invalid": ("REJECTED", "a bound evidence artefact failed its contract"),
+    "broker_identity_mismatch": ("REJECTED", "broker/server identity did not match the release source"),
+    "invalid_timestamp_metadata": ("REJECTED", "Parquet timestamp metadata inconsistent with the UTC contract"),
+    "post_ready_mutation": ("REJECTED", "the release changed after READY was published"),
+    "contract_invalid_manifest": ("REJECTED", "the manifest was unparseable or failed its contract"),
+    "identity_mismatch": ("REJECTED", "a cross-bound identity (release/key/producer) disagreed"),
+    "non_synthetic_in_synthetic": ("REJECTED", "a non-synthetic artefact appeared in a synthetic-only release"),
+    "partial_release_forbidden": ("REJECTED", "a partial release was declared (prohibited in the pilot)"),
+    # --- resolvable (QUARANTINED) ---
+    "missing_eligibility_evidence": ("QUARANTINED", "source eligibility evidence missing or not approved"),
+    "missing_quality_evidence": ("QUARANTINED", "quality evidence missing"),
+    "timezone_ambiguous": ("QUARANTINED", "timezone evidence missing, non-VERIFIED or ambiguous"),
+    "point_in_time_unavailable": ("QUARANTINED", "point-in-time availability could not be established"),
+    "incomplete_release": ("QUARANTINED", "release marked INCOMPLETE or empty"),
+    "incomplete_quality_coverage": ("QUARANTINED", "quality/gap/watermark evidence does not cover the whole release"),
+    "licensing_ambiguous": ("QUARANTINED", "licensing missing, ambiguous or unlicensed_quarantine"),
+    "ambiguous_instrument_mapping": ("QUARANTINED", "instrument mapping ambiguous or inconsistent"),
+    "unknown_predecessor": ("QUARANTINED", "a superseded predecessor release is not yet known"),
+}
+_PERMANENT_REASONS = tuple(c for c, (d, _m) in REASON_CODE_REGISTRY.items() if d == "REJECTED")
+_RESOLVABLE_REASONS = tuple(c for c, (d, _m) in REASON_CODE_REGISTRY.items() if d == "QUARANTINED")
 
 
 def validate_import_receipt_v2(obj) -> None:
@@ -781,6 +918,323 @@ def admissible_published(manifest, publication_cutoff_utc, import_cutoff_utc, im
     return parse_canonical_utc_instant(imported_at_utc) <= parse_canonical_utc_instant(import_cutoff_utc)
 
 
+# ==================================================================================================
+# K-8 — strict v0.3 JSON loader that REJECTS duplicate object keys (the stdlib json keeps the last
+# silently). This is a NEW loader on the v0.3 surface; the frozen 006C contracts.strict_json_loads is
+# NOT modified. It is used to parse signed artefacts before validation.
+# ==================================================================================================
+def _reject_non_finite_const(token):
+    raise ContractError(f"strict_json: non-finite constant {token!r} not permitted")
+
+
+def _reject_duplicate_keys(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ContractError(f"strict_json: duplicate object key {key!r} (rejected in signed artefacts)")
+        out[key] = value
+    return out
+
+
+def strict_json_loads_v0_3(text):
+    """Parse a v0.3 signed-artefact JSON text, failing closed on duplicate object keys and NaN/Infinity."""
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8")
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_non_finite_const)
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"strict_json: invalid JSON ({exc})") from exc
+
+
+# ==================================================================================================
+# K-3 — formal v0.3 evidence validators (timezone / broker-server identity / licensing). Additive; the
+# frozen 006C broker_timezone_evidence_v1 / v0.2 contracts are NOT modified.
+# ==================================================================================================
+_IANA_RE = re.compile(r"^(UTC|[A-Za-z][A-Za-z0-9+_-]*(/[A-Za-z0-9+_-]+)+)$")
+
+
+def _is_real_iana_zone(tz) -> bool:
+    """A VERIFIED timezone must name a REAL IANA zone, not merely match the structural pattern (K-3; the
+    regex alone false-accepts e.g. 'Not/AReal/Zone'). Consults the tz database via zoneinfo; if zoneinfo or
+    its database is entirely unavailable, falls back to the structural check so the gate never crashes."""
+    if not isinstance(tz, str) or not _IANA_RE.match(tz):
+        return False
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    except Exception:  # noqa: BLE001 - zoneinfo missing: structural check already passed
+        return True
+    try:
+        ZoneInfo(tz)
+        return True
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return False
+TZ_EVIDENCE_FIELDS = ("schema_version", "source_id", "issuer", "timezone_status", "source_timezone",
+                      "observed_at_utc", "valid_from_utc", "valid_to_utc", "evidence_digest",
+                      "synthetic", "non_operational", "limitations")
+BROKER_IDENTITY_FIELDS = ("schema_version", "source_id", "issuer", "broker_id", "server_identity",
+                          "identity_status", "observed_at_utc", "valid_from_utc", "valid_to_utc",
+                          "evidence_digest", "synthetic", "non_operational", "limitations")
+LICENSING_FIELDS = ("schema_version", "source_id", "issuer", "licensing_classification", "licensing_reference",
+                    "permitted_use", "valid_from_utc", "valid_to_utc", "evidence_digest",
+                    "synthetic", "non_operational", "limitations")
+
+
+def _validity_window(obj, where):
+    vf = _instant(obj["valid_from_utc"], "valid_from_utc", where)
+    if obj["valid_to_utc"] is not None:
+        vt = _instant(obj["valid_to_utc"], "valid_to_utc", where)
+        if vt < vf:
+            raise ContractError(f"{where}: valid_to_utc must be >= valid_from_utc")
+
+
+def _require_synthetic_non_operational(obj, where):
+    if _bool(obj, "synthetic", where) and not obj["non_operational"]:
+        raise ContractError(f"{where}: a synthetic record must be non_operational")
+
+
+def validate_timezone_evidence_v0_3(obj) -> None:
+    """K-3: formal v0.3 timezone evidence. A VERIFIED status requires a real IANA zone; a non-VERIFIED status
+    quarantines the release (timezone_ambiguous)."""
+    _no_prohibited(obj, "timezone_evidence")
+    _reject_control_strings(obj, "timezone_evidence")
+    _exact_keys(obj, TZ_EVIDENCE_FIELDS, "timezone_evidence")
+    _const(obj, "schema_version", "timezone_evidence", "1.0")
+    _str(obj, "source_id", "timezone_evidence", regex=SLUG_RE, max_len=64)
+    _str(obj, "issuer", "timezone_evidence", regex=SLUG_RE, max_len=64)
+    status = _str(obj, "timezone_status", "timezone_evidence", enum=("VERIFIED", "INCONCLUSIVE", "CONFLICT"))
+    tz = _str(obj, "source_timezone", "timezone_evidence", max_len=64)
+    _instant(obj["observed_at_utc"], "observed_at_utc", "timezone_evidence")
+    _validity_window(obj, "timezone_evidence")
+    _str(obj, "evidence_digest", "timezone_evidence", regex=SHA256_RE, min_len=64, max_len=64)
+    _bool(obj, "non_operational", "timezone_evidence")
+    _require_synthetic_non_operational(obj, "timezone_evidence")
+    _str_array(obj, "limitations", "timezone_evidence")
+    if status != "VERIFIED":
+        raise QuarantineRequired(f"timezone_evidence: {status} is not release-eligible -> quarantine (timezone_ambiguous)")
+    if not _is_real_iana_zone(tz):
+        raise QuarantineRequired("timezone_evidence: VERIFIED requires a real IANA zone -> quarantine (timezone_ambiguous)")
+
+
+def validate_broker_server_identity(obj) -> None:
+    """K-3: formal v0.3 broker/server identity. A non-VERIFIED status quarantines the release."""
+    _no_prohibited(obj, "broker_server_identity")
+    _reject_control_strings(obj, "broker_server_identity")
+    _exact_keys(obj, BROKER_IDENTITY_FIELDS, "broker_server_identity")
+    _const(obj, "schema_version", "broker_server_identity", "1.0")
+    _str(obj, "source_id", "broker_server_identity", regex=SLUG_RE, max_len=64)
+    _str(obj, "issuer", "broker_server_identity", regex=SLUG_RE, max_len=64)
+    _str(obj, "broker_id", "broker_server_identity", regex=SLUG_RE, max_len=64)
+    _str(obj, "server_identity", "broker_server_identity", max_len=160)
+    status = _str(obj, "identity_status", "broker_server_identity", enum=("VERIFIED", "INCONCLUSIVE", "CONFLICT"))
+    _instant(obj["observed_at_utc"], "observed_at_utc", "broker_server_identity")
+    _validity_window(obj, "broker_server_identity")
+    _str(obj, "evidence_digest", "broker_server_identity", regex=SHA256_RE, min_len=64, max_len=64)
+    _bool(obj, "non_operational", "broker_server_identity")
+    _require_synthetic_non_operational(obj, "broker_server_identity")
+    _str_array(obj, "limitations", "broker_server_identity")
+    if status != "VERIFIED":
+        raise QuarantineRequired(f"broker_server_identity: {status} is not release-eligible -> quarantine")
+
+
+def validate_licensing_evidence(obj) -> None:
+    """K-3: formal v0.3 licensing/permitted-use. unlicensed_quarantine or a synthetic record that is not
+    internal_research_only quarantines/rejects per the eligibility rule set."""
+    _no_prohibited(obj, "licensing")
+    _reject_control_strings(obj, "licensing")
+    _exact_keys(obj, LICENSING_FIELDS, "licensing")
+    _const(obj, "schema_version", "licensing", "1.0")
+    _str(obj, "source_id", "licensing", regex=SLUG_RE, max_len=64)
+    _str(obj, "issuer", "licensing", regex=SLUG_RE, max_len=64)
+    lic = _str(obj, "licensing_classification", "licensing", enum=LICENSING)
+    if obj["licensing_reference"] is not None:
+        _str(obj, "licensing_reference", "licensing", max_len=512)
+    use = _str(obj, "permitted_use", "licensing", enum=("internal_research_only", "licensed_redistribution"))
+    _validity_window(obj, "licensing")
+    _str(obj, "evidence_digest", "licensing", regex=SHA256_RE, min_len=64, max_len=64)
+    synthetic = _bool(obj, "synthetic", "licensing")
+    _bool(obj, "non_operational", "licensing")
+    _require_synthetic_non_operational(obj, "licensing")
+    _str_array(obj, "limitations", "licensing")
+    if synthetic and (lic != "internal_research_only" or use != "internal_research_only"):
+        raise ContractError("licensing: a synthetic record must be internal_research_only")
+    if lic == "unlicensed_quarantine":
+        raise QuarantineRequired("licensing: unlicensed_quarantine is not release-eligible -> quarantine (licensing_ambiguous)")
+    if lic == "licensed_redistribution" and obj["licensing_reference"] is None:
+        raise QuarantineRequired("licensing: licensed_redistribution requires a licensing_reference -> quarantine (licensing_ambiguous)")
+
+
+# ==================================================================================================
+# K-1 — release-scoped quality-coverage contract + release/report cross-checks. A quality report that
+# covers fewer rows or a narrower range than the release fails CLOSED (never silently accepted).
+# ==================================================================================================
+_COVERAGE_REF_KEYS = ("relative_path", "sha256")
+QUALITY_COVERAGE_FIELDS = ("schema_version", "release_id", "manifest_digest", "canonical_symbol", "timeframe",
+                           "range_start_utc", "range_end_utc", "range_semantics", "first_event_start_utc",
+                           "last_event_start_utc", "expected_row_count", "observed_row_count",
+                           "quality_assessed_row_count", "partition_coverage", "canonical_file",
+                           "quality_report_ref", "gap_report_ref", "watermark_ref", "completeness_status",
+                           "synthetic", "limitations")
+PARTITION_COVERAGE_FIELDS = ("scheme", "files_total", "files_assessed")
+
+
+def _coverage_ref(obj, where):
+    if not isinstance(obj, dict):
+        raise ContractError(f"{where}: must be an object")
+    _exact_keys(obj, _COVERAGE_REF_KEYS, where)
+    _str(obj, "relative_path", where, regex=REL_PATH_RE, max_len=512)
+    _str(obj, "sha256", where, regex=SHA256_RE, min_len=64, max_len=64)
+    return obj
+
+
+def validate_release_quality_coverage(obj) -> None:
+    """K-1: structural validation of a release quality-coverage attestation (release_quality_coverage_v1)."""
+    _no_prohibited(obj, "quality_coverage")
+    _reject_control_strings(obj, "quality_coverage")
+    _exact_keys(obj, QUALITY_COVERAGE_FIELDS, "quality_coverage")
+    _const(obj, "schema_version", "quality_coverage", "1.0")
+    _str(obj, "release_id", "quality_coverage", regex=SLUG_RE, max_len=64)
+    if obj["manifest_digest"] is not None:
+        _str(obj, "manifest_digest", "quality_coverage", regex=SHA256_RE, min_len=64, max_len=64)
+    _str(obj, "canonical_symbol", "quality_coverage", regex=CANONICAL_SYMBOL_RE)
+    _str(obj, "timeframe", "quality_coverage", enum=TIMEFRAMES)
+    rs = _minute_epoch(obj["range_start_utc"], "range_start_utc", "quality_coverage")
+    re_ = _minute_epoch(obj["range_end_utc"], "range_end_utc", "quality_coverage")
+    _const(obj, "range_semantics", "quality_coverage", "[start,end)")
+    if re_ <= rs:
+        raise ContractError("quality_coverage: range_end_utc must be after range_start_utc (half-open)")
+    fs = _minute_epoch(obj["first_event_start_utc"], "first_event_start_utc", "quality_coverage")
+    ls = _minute_epoch(obj["last_event_start_utc"], "last_event_start_utc", "quality_coverage")
+    if ls < fs:
+        raise ContractError("quality_coverage: last_event_start_utc must be >= first_event_start_utc")
+    _int(obj, "expected_row_count", "quality_coverage", minimum=0)
+    _int(obj, "observed_row_count", "quality_coverage", minimum=0)
+    _int(obj, "quality_assessed_row_count", "quality_coverage", minimum=0)
+    pc = obj["partition_coverage"]
+    if not isinstance(pc, dict):
+        raise ContractError("quality_coverage.partition_coverage must be an object")
+    _exact_keys(pc, PARTITION_COVERAGE_FIELDS, "quality_coverage.partition_coverage")
+    _const(pc, "scheme", "quality_coverage.partition_coverage", "single_file_per_release")
+    _int(pc, "files_total", "quality_coverage.partition_coverage", minimum=1)
+    _int(pc, "files_assessed", "quality_coverage.partition_coverage", minimum=0)
+    _coverage_ref(obj["canonical_file"], "quality_coverage.canonical_file")
+    _coverage_ref(obj["quality_report_ref"], "quality_coverage.quality_report_ref")
+    _coverage_ref(obj["gap_report_ref"], "quality_coverage.gap_report_ref")
+    _coverage_ref(obj["watermark_ref"], "quality_coverage.watermark_ref")
+    _str(obj, "completeness_status", "quality_coverage", enum=("COMPLETE", "INCOMPLETE"))
+    _bool(obj, "synthetic", "quality_coverage")
+    _str_array(obj, "limitations", "quality_coverage")
+
+
+def validate_release_coverage_consistency(manifest, coverage) -> None:
+    """K-1: the quality-coverage attestation MUST cover the whole release. Identity/range/count disagreements
+    are permanent (ContractError -> REJECT); an honest shortfall in coverage is resolvable (QuarantineRequired
+    -> QUARANTINE with incomplete_quality_coverage). A 3-row coverage can never validate a 10,080-row release."""
+    validate_release_quality_coverage(coverage)
+    if coverage["release_id"] != manifest["release_id"]:
+        raise ContractError("coverage: release_id does not match the manifest (identity_mismatch)")
+    if coverage["canonical_symbol"] != manifest["canonical_symbol"] or coverage["timeframe"] != manifest["timeframe"]:
+        raise ContractError("coverage: symbol/timeframe do not match the manifest (identity_mismatch)")
+    if (coverage["range_start_utc"], coverage["range_end_utc"]) != (manifest["range_start_utc"], manifest["range_end_utc"]):
+        raise ContractError("coverage: range does not match the manifest range (time_range_mismatch)")
+    row_count = manifest["row_count"]
+    if coverage["expected_row_count"] != row_count:
+        raise ContractError(f"coverage: expected_row_count {coverage['expected_row_count']} != release row_count "
+                            f"{row_count} (row_count_mismatch)")
+    # Evidence refs in the coverage attestation MUST equal the manifest's hash-bound evidence refs.
+    ev = manifest.get("evidence", {})
+    for cov_key, ev_role in (("quality_report_ref", "quality_report"), ("gap_report_ref", "gap_report"),
+                             ("watermark_ref", "watermark")):
+        mev = ev.get(ev_role) or {}
+        cref = coverage[cov_key]
+        if cref["relative_path"] != mev.get("relative_path") or cref["sha256"] != mev.get("sha256"):
+            raise ContractError(f"coverage.{cov_key}: must equal the manifest's {ev_role} evidence ref (identity_mismatch)")
+    # The canonical_file ref MUST equal the manifest's single canonical_parquet file.
+    cp = [f for f in manifest.get("files", []) if f.get("logical_role") == "canonical_parquet"]
+    if len(cp) != 1:
+        raise ContractError("coverage: manifest must carry exactly one canonical_parquet file")
+    if coverage["canonical_file"]["relative_path"] != cp[0]["relative_path"] or \
+            coverage["canonical_file"]["sha256"] != cp[0]["digest"]["value"]:
+        raise ContractError("coverage.canonical_file: must equal the manifest canonical_parquet path+digest (identity_mismatch)")
+    # Resolvable shortfalls -> quarantine.
+    pc = coverage["partition_coverage"]
+    if coverage["completeness_status"] != "COMPLETE":
+        raise QuarantineRequired("coverage: completeness_status != COMPLETE -> quarantine (incomplete_quality_coverage)")
+    if pc["files_assessed"] != pc["files_total"]:
+        raise QuarantineRequired("coverage: partition coverage incomplete -> quarantine (incomplete_quality_coverage)")
+    if coverage["observed_row_count"] < coverage["expected_row_count"]:
+        raise QuarantineRequired("coverage: observed_row_count < expected -> quarantine (incomplete_quality_coverage)")
+    if coverage["quality_assessed_row_count"] < coverage["expected_row_count"]:
+        raise QuarantineRequired("coverage: quality-assessed rows < expected -> quarantine (incomplete_quality_coverage)")
+
+
+def validate_quality_report_covers(coverage, quality_report) -> None:
+    """K-1: the hash-bound v0.2 quality report MUST actually assess the rows the coverage attestation claims.
+    Catches the defect where a 3-bar quality report is bound to a 10,080-bar release: the report's
+    observed/expected bar counts and range must equal the coverage's quality-assessed count and range."""
+    if not isinstance(quality_report, dict):
+        raise ContractError("coverage: quality_report must be an object")
+    observed = quality_report.get("observed_bar_count")
+    expected = quality_report.get("expected_bar_count")
+    if observed != coverage["quality_assessed_row_count"] or expected != coverage["quality_assessed_row_count"]:
+        raise QuarantineRequired("coverage: the bound quality report does not assess the attested row count "
+                                 "-> quarantine (incomplete_quality_coverage)")
+    if (quality_report.get("range_start_utc"), quality_report.get("range_end_utc")) != \
+            (coverage["range_start_utc"], coverage["range_end_utc"]):
+        raise ContractError("coverage: the bound quality report range does not match the coverage range "
+                            "(time_range_mismatch)")
+    if quality_report.get("observed_bar_count", 0) < coverage["expected_row_count"]:
+        raise QuarantineRequired("coverage: quality report covers fewer rows than the release expects "
+                                 "-> quarantine (incomplete_quality_coverage)")
+
+
+def reconcile_physical_rowcount(manifest, coverage, physical_rows) -> None:
+    """K-1 (HIGH, adversarial round): reconcile the DECLARED counts with the ACTUAL canonical Parquet. A
+    consumer that re-hashes the Parquet but never recounts it can be fed a 10,080-row file under a
+    manifest/coverage declaring 3 rows. Asserts the physically-observed row count equals the manifest
+    row_count, the canonical_parquet file-entry row_count, and the coverage expected/observed/quality-assessed
+    counts. Any disagreement is a permanent REJECT (row_count_mismatch)."""
+    if not isinstance(physical_rows, int) or isinstance(physical_rows, bool) or physical_rows < 0:
+        raise ContractError("rowcount: physical_rows must be a non-negative int")
+    declared = manifest.get("row_count")
+    if physical_rows != declared:
+        raise ContractError(
+            f"rowcount: physical parquet rows {physical_rows} != manifest row_count {declared} (row_count_mismatch)")
+    cp = [f for f in manifest.get("files", []) if f.get("logical_role") == "canonical_parquet"]
+    if len(cp) != 1 or cp[0].get("row_count") != physical_rows:
+        raise ContractError(
+            "rowcount: canonical_parquet file row_count != physical parquet rows (row_count_mismatch)")
+    for key in ("expected_row_count", "observed_row_count", "quality_assessed_row_count"):
+        if coverage.get(key) != physical_rows:
+            raise ContractError(
+                f"rowcount: coverage {key}={coverage.get(key)} != physical parquet rows {physical_rows} "
+                f"(row_count_mismatch)")
+
+
+_V0_3_EVIDENCE_VALIDATORS = {
+    "timezone_evidence": validate_timezone_evidence_v0_3,
+    "broker_server_identity": validate_broker_server_identity,
+    "licensing": validate_licensing_evidence,
+    "source_eligibility": validate_source_eligibility,
+}
+
+
+def validate_release_evidence_identity(manifest, evidence_docs) -> None:
+    """K-3 (HIGH, adversarial round): the manifest hash-binds evidence but never runs the evidence validators
+    or checks the evidence belongs to THIS release's source. A consumer must do both, or broker/timezone/
+    licensing identity for a DIFFERENT source can be substituted. For each provided v0.3 evidence doc: run its
+    validator (which quarantines non-VERIFIED/ambiguous content), and assert its source_id equals the release
+    source_id (a mismatch is a permanent identity reject)."""
+    src = manifest.get("source_id")
+    for role, doc in (evidence_docs or {}).items():
+        validator = _V0_3_EVIDENCE_VALIDATORS.get(role)
+        if validator is not None:
+            validator(doc)  # ContractError => reject, QuarantineRequired => quarantine
+        if isinstance(doc, dict) and "source_id" in doc and doc["source_id"] != src:
+            code = "broker_identity_mismatch" if role == "broker_server_identity" else "identity_mismatch"
+            raise ContractError(
+                f"evidence[{role}]: source_id {doc.get('source_id')!r} != release source_id {src!r} ({code})")
+
+
 # Validator registry (name -> callable) for the rule matrix / fixture-driven tests.
 VALIDATORS_V0_3 = {
     "canonical_candles_parquet_v1": validate_canonical_candles_parquet_contract,
@@ -790,6 +1244,10 @@ VALIDATORS_V0_3 = {
     "release_ready_marker_v1": validate_ready_marker,
     "source_eligibility_v1": validate_source_eligibility,
     "release_supersession_v1": validate_release_supersession,
+    "release_quality_coverage_v1": validate_release_quality_coverage,
+    "timezone_evidence_v1": validate_timezone_evidence_v0_3,
+    "broker_server_identity_v1": validate_broker_server_identity,
+    "licensing_v1": validate_licensing_evidence,
 }
 
 __all__ = [
@@ -800,5 +1258,11 @@ __all__ = [
     "verify_release_signature_v2", "validate_ready_marker", "validate_source_eligibility",
     "validate_release_supersession", "validate_release_manifest_v3", "validate_import_receipt_v2",
     "admissible_source_side", "admissible_published", "VALIDATORS_V0_3",
+    "REASON_CODE_REGISTRY", "REASON_CODE_REGISTRY_VERSION",
+    "strict_json_loads_v0_3", "validate_timezone_evidence_v0_3", "validate_broker_server_identity",
+    "validate_licensing_evidence", "validate_release_quality_coverage",
+    "validate_release_coverage_consistency", "validate_quality_report_covers",
+    "reconcile_physical_rowcount", "validate_release_evidence_identity",
+    "validate_manifest_signature_binding",
     "ContractError", "ProhibitedKeyError", "QuarantineRequired",
 ]
