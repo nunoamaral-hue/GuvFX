@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-BROKER-CATALOGUE-READINESS-A",
+  "packet_id": "GFX-BROKER-INTELLIGENCE-FOUNDATION-001",
+  "created_at_utc": "2026-11-05T00:00:00Z",
+  "branch": "feat/broker-catalogue-readiness-streamA",
+  "base_commit": "e8bd9bc2226816ab0810d94f532f489898579b29",
+  "head_commit": null,
+  "environment": {
+    "stream": "A — governed servers.dat catalogue readiness",
+    "mode": "repository-only / synthetic-only / DARK (default-OFF)",
+    "adr": "docs/architecture/ADR-0078-BROKER-CATALOGUE-READINESS.md (0078; 0077 held by open PR #615)",
+    "artefact_capture_or_creation_or_approval": false,
+    "catalogue_build_or_activation_or_staging": false,
+    "terminal_staging_preseed_restart_login": false,
+    "production_or_db_mutation": false,
+    "real_gmail_mt5_broker_nas_wayond_credentials_pii": false,
+    "existing_broker_server_catalogue_or_v1_mechanism_behaviour_changed": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test covers broker_catalogue + approvals + the ADR-governance test)"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_catalogue  (no changes in broker_catalogue)",
+    "cd backend && .venv/bin/python manage.py test broker_catalogue approvals --parallel 1",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance --parallel 1",
+    "cd backend && .venv/bin/python manage.py report_catalogue_readiness --broker ... (READ-ONLY; proven in tests against a migrated DB)",
+    "cd backend && .venv/bin/python manage.py register_capture_candidate --broker-id dominion_markets ... (DRY-RUN; writes nothing without --commit + flag)",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py'"
+  ],
+  "expected_results": [
+    "A DB-level BEFORE UPDATE trigger prevents mutating a CatalogueArtefact whose version is not DRAFT via ORM save, raw QuerySet.update() and bulk_update, mirroring the ORM save-guard and closing the raw-UPDATE bypass.",
+    "A read-only readiness evaluator reports stable per-broker eligibility + reason codes (ELIGIBLE / ALREADY_ACTIVE / SANITISER_NOT_PASS / NO_APPROVED_ARTEFACT / NEEDS_CAPTURE / NOT_CAPTURED / DUPLICATE_SERVER_CONFLICT) without mutating anything.",
+    "A governed NEEDS_CAPTURE candidate workflow records a Dominion-style placeholder (identity + non-PII server hint only), DARK/default-OFF, and NEVER creates an artefact/approval/SHA/version; STOP at NEEDS_CAPTURE.",
+    "006C v1, v0.2 and the existing Broker Catalogue V1 mechanism behaviour are unchanged; the ADR-governance uniqueness test passes with 0078; secret scan clean; no PII in the diff."
+  ],
+  "actual_results": [
+    "broker_catalogue + approvals suite: Ran 111 tests OK (86 pre-existing + 25 new Stream A). makemigrations --check: no changes detected in broker_catalogue (the unrelated strategies index-rename diffs are a pre-existing local Django-version naming artefact, not from this change).",
+    "Immutability (tests_immutability_trigger, 6 tests): DRAFT artefact mutable via ORM + raw update; once ACTIVE/RETIRED the ORM save raises ValidationError and the raw update()/bulk_update()/version-repoint raise a DB error (trigger), bytes-pin intact. Trigger is PostgreSQL-only (ORM guard covers other backends); the raw-SQL assertions skip on non-PostgreSQL.",
+    "Readiness evaluator (tests_readiness_evaluator, 11 tests): every reason code exercised; a PENDING approval is never ELIGIBLE; duplicate server names flip both brokers to DUPLICATE_SERVER_CONFLICT; evaluation creates/deletes nothing (read-only proven by before==after counts).",
+    "Capture candidate (tests_capture_candidate, 8 tests): dry-run default and commit-without-flag write nothing; commit+flag creates NEEDS_CAPTURE only; re-register refreshes descriptive fields but never regresses a CAPTURED status; the workflow NEVER creates an artefact/approval/version (asserted). Command dry-run and read-only report verified.",
+    "ADR governance: core.tests_adr_governance 3 tests OK — ADR-0078 introduces no cross-directory duplicate. secret scan: no findings; test_no_secrets OK. One existing test renamed detect->prevent (see limitations).",
+    "Command smoke against the DEV DB was not exercised because the dev DB is not migrated for broker_catalogue and the no-DB-mutation hard stop forbids migrating it; the commands are proven against a migrated test DB by the unit tests."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / synthetic-only / DARK: no artefact capture/creation/approval, no catalogue build/activation/staging, no terminal staging/preseed/restart/login, no host/NAS/Wayond contact, no real Gmail/MT5/broker/credentials/PII, no deployment, no public publication. The PR is auto-merge OFF and is NOT merged without a new Sponsor authorisation.",
+    "One EXISTING test changed (called out): broker_catalogue/tests.py test_byte_mutation_after_activation_detected -> test_byte_mutation_after_activation_prevented. Its former mechanism (a raw update() simulating a post-activation DB tamper) is now refused by the DB trigger (a strictly stronger guarantee); the test now asserts prevention. Out-of-band host-byte drift detection remains covered by test_manifest_field_tamper_detected and preseed-time re-hashing.",
+    "The DB immutability trigger is PostgreSQL-only; on other backends the ORM save-guard is the sole enforcement (the migration is a vendor-guarded no-op there). CI + prod are PostgreSQL.",
+    "Artefact-approval state is prod-DB/VPS/Notion (not committed to the repo), so on a fresh DB the readiness evaluator honestly reports NOT_CAPTURED / NO_APPROVED_ARTEFACT for the four brokers; it does not and cannot assert prod approval state.",
+    "Dominion Markets remains NEEDS_CAPTURE: no authoritative servers.dat/server id is captured; only the governed candidate workflow is scaffolded here. Artefact capture/approval for Dominion (and the DARK v3 carry-forward that would activate the approved TradersWay/Vantage artefacts) are separate, Sponsor/host-gated steps, NOT in this packet.",
+    "Streams B (withdrawal adapters), C (public privacy) and D (MT5 telemetry + Wayond export) are separate PRs and are NOT begun; per the Sponsor they await review of this Stream A response."
+  ],
+  "artefact_locations": [
+    "backend/broker_catalogue/migrations/0005_catalogue_artefact_immutable_trigger.py (DB immutability trigger, reversible, vendor-guarded)",
+    "backend/broker_catalogue/migrations/0004_catalogue_capture_candidate.py + models.py CatalogueCaptureCandidate (NEEDS_CAPTURE model)",
+    "backend/broker_catalogue/readiness.py + management/commands/report_catalogue_readiness.py (read-only evaluator + report)",
+    "backend/broker_catalogue/capture.py + management/commands/register_capture_candidate.py + flags.py (governed NEEDS_CAPTURE workflow, DARK)",
+    "backend/broker_catalogue/tests_immutability_trigger.py, tests_readiness_evaluator.py, tests_capture_candidate.py (25 tests); tests.py (one adapted test)",
+    "docs/architecture/ADR-0078-BROKER-CATALOGUE-READINESS.md"
+  ],
+  "checksums": {
+    "backend/broker_catalogue/models.py": "sha256:e138750096163369243bee4d9fae87c5437dcd5a748a819a30c3475ccdcfbd50",
+    "backend/broker_catalogue/readiness.py": "sha256:c14001b93b3f05ee7bbc5439e53cff8a10774c4427912aa762f1f93e7319bcf1",
+    "backend/broker_catalogue/capture.py": "sha256:7b256cbca7016b1a782bf22531f62d8117595fc8d19ee2af688cc59baa95b3c9",
+    "backend/broker_catalogue/flags.py": "sha256:9ef32a72705dd739065adc36456a9cafe98892b50f57fe2b31f0544fa36a3b8d",
+    "backend/broker_catalogue/migrations/0004_catalogue_capture_candidate.py": "sha256:4d473e23517d3ea34fbfa3f19621852f0a72c716e58ad78e5b0abea2888e7441",
+    "backend/broker_catalogue/migrations/0005_catalogue_artefact_immutable_trigger.py": "sha256:e70518dc1db307ff352d531d1865445c8f8b2637554b18802cf7b0c2291e46e3",
+    "backend/broker_catalogue/management/commands/report_catalogue_readiness.py": "sha256:ba4db44ddcc5416b0b315367ad03d3bb5b46d81f7b51303fbe9766b529bdc9fa",
+    "backend/broker_catalogue/management/commands/register_capture_candidate.py": "sha256:50579a10dcd3b508d8028089cc3aa9f2ce8617e884abc258b865a531b89eb577",
+    "backend/broker_catalogue/tests_immutability_trigger.py": "sha256:9ea2a6665100e75c925b8525b0a30144235e1562bb954427f53a3d25f84f9bfd",
+    "backend/broker_catalogue/tests_readiness_evaluator.py": "sha256:8a90101519212334da3cf3e5e2c6a57df7baf3e89c1b628d3371716411f03fdc",
+    "backend/broker_catalogue/tests_capture_candidate.py": "sha256:573fdca2b1913594f58c5376ce033f4117d6e6042dc4b9cda53027301e9c39d9",
+    "docs/architecture/ADR-0078-BROKER-CATALOGUE-READINESS.md": "sha256:e0905e57e6c46f2d528c55cd790f061e1c68fb06c4b3c72f832ef3bfd77e679b"
+  },
+  "reviewer": "GFX-BROKER-INTELLIGENCE-FOUNDATION-001 Stream A author self-review + focused adversarial tests (raw-update/bulk_update/version-repoint bypass of the immutability trigger; PENDING-approval never eligible; duplicate-server collision; dry-run/flag-off writes nothing; workflow never creates an artefact). Remaining broader adversarial pass (email spoofing, public re-identification, etc.) belongs to Streams B-D."
+}

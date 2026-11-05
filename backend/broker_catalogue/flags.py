@@ -22,3 +22,13 @@ def _flag(name: str, default: str = "") -> bool:
 def hosted_broker_catalogue_enabled() -> bool:
     """Master gate for Broker Catalogue V1 provisioning consumption. DEFAULT OFF."""
     return _flag("HOSTED_BROKER_CATALOGUE_ENABLED")
+
+
+def capture_workflow_enabled() -> bool:
+    """DARK gate (DEFAULT OFF) for WRITING a NEEDS_CAPTURE CatalogueCaptureCandidate (Stream A / ADR-0078).
+
+    While off, the register command is read-only/dry-run (reports what it WOULD record, writes nothing). Arming
+    it only permits creating/updating a governance placeholder recording that a broker's servers.dat is not yet
+    captured; it NEVER creates an artefact, an approval, or any production/catalogue state. The read-only
+    catalogue-readiness evaluator does not consult this flag."""
+    return _flag("BROKER_CATALOGUE_CAPTURE_WORKFLOW_ENABLED")
