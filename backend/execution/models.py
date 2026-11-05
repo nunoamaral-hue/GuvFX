@@ -1606,3 +1606,14 @@ class LiveExecutionAuthorization(models.Model):
     def __str__(self) -> str:
         state = "active" if (self.is_active and self.revoked_at is None) else "revoked"
         return f"LiveExecutionAuthorization(acct={self.trading_account_id}, v{self.authorization_version}, {state})"
+
+
+# ── GFX-MT5-BRIDGE-SCALE-001 / ADR-0075 — Monitoring Gateway (DARK) ──
+# Deterministic per-host monitoring-route ownership models. Defined in a sibling module (explicit
+# app_label="execution") and re-exported here so Django registers them under the execution app without
+# bloating this file. Additive; nothing reads these rows until monitoring_flags.monitoring_gateway_enabled().
+from execution.monitoring_models import (  # noqa: E402,F401
+    PhysicalHostGateway,
+    MonitoringRoute,
+    MonitoringRouteAudit,
+)
