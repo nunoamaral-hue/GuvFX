@@ -54,23 +54,62 @@
     "Per-change broker_event_time is not in the positions feed and is left None; open_time (no-late-OPEN) IS carried from the per-position time field.",
     "No production data mutated; no DB model/migration added."
   ],
+  "artefact_locations": [
+    "backend/trade_copier/emitter/{config,mt5_adapter,attestation,app}.py",
+    "backend/trade_copier/attestation_verify.py",
+    "backend/trade_copier/attestation_api.py",
+    "backend/trade_copier/flags.py (copier_attestation_verify_enabled)",
+    "backend/trade_copier/urls.py (attest-verify/)",
+    "backend/trade_copier/bridge_emitter.py (corrupt-spool quarantine)",
+    "deploy/copier-emitter/ (launcher, Install/Uninstall/Status/Attest .ps1, task template, config template, MANIFEST.json, README.md)",
+    "docs/architecture/ADR-0076-COPIER-HOST-EMITTER.md",
+    "docs/COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md",
+    "backend/trade_copier/emitter/tests_{config,adapter,attestation,app,e2e,bundle,capacity}.py",
+    "backend/trade_copier/tests_attestation_verify.py"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/run_emitter.py": "sha256:e9b6eeb548b1edbc468c6e1b5191e49e702fdb0f9bb91f15a664c0825e72b268",
+    "deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1": "sha256:e4be6f72c6acfdc3b9532786377d3086617091f4dab263ff2b3f2dba3ee275f1",
+    "deploy/copier-emitter/Uninstall-GuvfxCopierEmitter.ps1": "sha256:6f091ec86a51df6463ab6dedbb37eb361b6b2dd1f2cc0bf3f8c0d2d4fcf643f4",
+    "deploy/copier-emitter/Status-GuvfxCopierEmitter.ps1": "sha256:e17071528e7e9c078ceadb7238726ef57ea6bbb4bc2b4452dc256b8397879b4b",
+    "deploy/copier-emitter/Attest-GuvfxCopierEmitter.ps1": "sha256:5d0f2d5998eda37c42846b8203b0f571bf3e00102167882750d119fd8d990615",
+    "deploy/copier-emitter/emitter_task_template.xml": "sha256:985cc038a98b99889463e84e29148d444cf09c4f29fc252cb7e1da7652d79016",
+    "deploy/copier-emitter/config.template.json": "sha256:1a20ac8a036336186fe22b28c6bdd1c782e697e906502b4a5a458bc1466f6782",
+    "deploy/copier-emitter/README.md": "sha256:90c51f2441620cbcbe77c65427d592e55b68d63074fd31945935ba7ee8249d32"
+  },
+  "reviewer": "Independent adversarial review (14 vectors) + single-agent fix verification; no CRITICAL/HIGH",
   "adversarial_review": {
     "status": "complete",
     "critical": 0,
     "high": 0,
-    "vectors": ["cross-tenant identity substitution", "broker/server spoofing", "service-path hijack",
-      "secret leakage", "nonce/revision reset", "restart/replay", "stale OPEN delivery",
-      "close/modify reordering", "spool corruption", "disk exhaustion", "bridge impersonation",
-      "unsafe installer rollback", "accidental execution capability", "DoS via rapid changes"],
+    "vectors": [
+      "cross-tenant identity substitution",
+      "broker/server spoofing",
+      "service-path hijack",
+      "secret leakage",
+      "nonce/revision reset",
+      "restart/replay",
+      "stale OPEN delivery",
+      "close/modify reordering",
+      "spool corruption",
+      "disk exhaustion",
+      "bridge impersonation",
+      "unsafe installer rollback",
+      "accidental execution capability",
+      "DoS via rapid changes"
+    ],
     "fixed_with_regression_tests": [
       "M1 backend cross-checks observed login + claims corrected (host/build signature-bound not DB-checked)",
       "M4 attest fails closed on observed-identity mismatch (no usable envelope)",
       "M2 corrupt spool quarantined + fail-closed (not silent revision-ledger reset) + surfaced",
       "M3 installer restore-on-failed-apply + locale-independent DISABLED verify (task XML)",
-      "L2 key_id only (no secret-derived fingerprint)", "L3 installer XML interpolation escaped"],
+      "L2 key_id only (no secret-derived fingerprint)",
+      "L3 installer XML interpolation escaped"
+    ],
     "accepted_recorded": [
       "L1 verify endpoint reveals account existence + pre-auth DB lookup (throttled 60/min + gated OFF; signature-first reorder = follow-up)",
-      "redundant account_id equality check (harmless; login/server cross-check enforces the real account binding)"]
+      "redundant account_id equality check (harmless; login/server cross-check enforces the real account binding)"
+    ]
   },
   "separate_gates": [
     "host emitter installation + identity attestation on the live host",
