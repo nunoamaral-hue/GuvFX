@@ -704,6 +704,50 @@ def _session_recovery_block(now):
         return {"status": "UNKNOWN", "error": "unavailable"}
 
 
+def _copier_block(now):
+    """ADR-0074 read-only copy-trading health rollup. Counts OPEN copier operator alerts (``dedup_key``
+    prefix ``copier:``) and terminal lifecycle rows (CONTAINED_FAILURE / ENTRY_FAILED_FINAL), and reports the
+    DARK gates for transparency. WARNING when any OPEN copier alert exists. Read-only; internal counts only,
+    never secrets. NEVER triggers recovery and never contacts a broker — the copier stays execution-OFF."""
+    try:
+        from reliability.models import AlertEvent
+        from trade_copier.alert_delivery import delivery_backlog
+        from trade_copier.flags import (
+            copier_alert_dispatch_enabled, copier_alerts_enabled, copier_enabled,
+            copier_event_ingestion_enabled, copier_event_projection_enabled,
+            copier_lifecycle_dispatch_enabled, copier_lifecycle_enabled,
+        )
+        from trade_copier.lifecycle import LifecycleState
+        from trade_copier.models import CopierPositionLifecycle
+
+        open_alerts = AlertEvent.objects.filter(
+            dedup_key__startswith="copier:", status=AlertEvent.Status.OPEN).count()
+        contained = CopierPositionLifecycle.objects.filter(
+            is_terminal=True, state=LifecycleState.CONTAINED_FAILURE.value).count()
+        entry_failed = CopierPositionLifecycle.objects.filter(
+            is_terminal=True, state=LifecycleState.ENTRY_FAILED_FINAL.value).count()
+        # Operator-visible DELIVERY status (ADR-0074 Phase-9): a disabled dispatcher leaves rows PENDING; a
+        # failed/dead delivery is surfaced here so an unsuccessful or unconfigured delivery is never silent.
+        backlog = delivery_backlog()
+        undelivered = backlog["pending"] + backlog["failed"] + backlog["dead"]
+        return {
+            "copier_enabled": copier_enabled(),
+            "event_ingestion_enabled": copier_event_ingestion_enabled(),
+            "event_projection_enabled": copier_event_projection_enabled(),
+            "lifecycle_enabled": copier_lifecycle_enabled(),
+            "lifecycle_dispatch_enabled": copier_lifecycle_dispatch_enabled(),
+            "alerts_enabled": copier_alerts_enabled(),
+            "alert_dispatch_enabled": copier_alert_dispatch_enabled(),
+            "open_copier_alerts": open_alerts,
+            "contained_failures": contained,
+            "entry_failed_final": entry_failed,
+            "alert_delivery": backlog,
+            "status": "WARNING" if (open_alerts or undelivered) else "HEALTHY",
+        }
+    except Exception:  # pragma: no cover — read-only; the status page must never 500 on this block
+        return {"status": "UNKNOWN", "error": "unavailable"}
+
+
 def build_operations_summary() -> dict:
     """The full read-only operational summary for the status page (and alert enrichment)."""
     from reliability.models import ComponentHealth, Heartbeat, AlertEvent
@@ -817,6 +861,8 @@ def build_operations_summary() -> dict:
     states.append(sync_freshness.get("status", "HEALTHY"))
     session_recovery = _session_recovery_block(now)
     states.append(session_recovery.get("status", "HEALTHY"))
+    copier = _copier_block(now)
+    states.append(copier.get("status", "HEALTHY"))
 
     overall = max(states, key=lambda s: _RANK.get(s, 0))
     return {
@@ -838,6 +884,7 @@ def build_operations_summary() -> dict:
         "capacity": capacity,
         "sync_freshness": sync_freshness,
         "session_recovery": session_recovery,
+        "copier": copier,
         "strategies": strategies,
         "positions": {"open": open_positions, "promoted_plans": promoted,
                       "pending_candidates": pending_cand, "failed_candidates": failed_cand},
