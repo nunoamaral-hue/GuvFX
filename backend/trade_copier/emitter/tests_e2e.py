@@ -1,4 +1,4 @@
-"""ADR-0076 — emitter end-to-end (synthetic): EmitterApp.observe_once → signed envelope → HTTP ingest →
+"""ADR-0077 — emitter end-to-end (synthetic): EmitterApp.observe_once → signed envelope → HTTP ingest →
 immutable revision → event projection → authoritative MasterEvent → lifecycle. Proves a stale OPEN (old
 broker open_time carried by the emitter) is ruled ENTRY_FAILED_FINAL (no late entry), and ZERO ExecutionJob is
 created throughout. No broker, no real MT5 — the transport posts to the Django test client."""

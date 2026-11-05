@@ -1,4 +1,4 @@
-"""ADR-0076 — read-only MT5 adapter: no order surface, missing SL/TP preserved, open_time from `time`,
+"""ADR-0077 — read-only MT5 adapter: no order surface, missing SL/TP preserved, open_time from `time`,
 reason codes, no network (injected opener). Synthetic only."""
 import json
 

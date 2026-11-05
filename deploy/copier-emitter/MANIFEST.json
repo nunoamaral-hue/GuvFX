@@ -1,9 +1,12 @@
 {
   "bundle": "guvfx-copier-emitter",
-  "adr": "ADR-0076",
+  "adr": "ADR-0077",
   "packet": "GFX-COPIER-HOST-EMITTER-BUILD-006",
   "source_sha": "STAMP_AT_PACKAGE_TIME",
-  "runtime": {"python": ">=3.11", "dependencies": []},
+  "runtime": {
+    "python": ">=3.11",
+    "dependencies": []
+  },
   "defaults": {
     "attestation_allowed": false,
     "observation_allowed": false,
@@ -13,14 +16,14 @@
     "auto_restart": false
   },
   "files": {
-    "run_emitter.py": "e9b6eeb548b1edbc468c6e1b5191e49e702fdb0f9bb91f15a664c0825e72b268",
-    "Install-GuvfxCopierEmitter.ps1": "e4be6f72c6acfdc3b9532786377d3086617091f4dab263ff2b3f2dba3ee275f1",
-    "Uninstall-GuvfxCopierEmitter.ps1": "6f091ec86a51df6463ab6dedbb37eb361b6b2dd1f2cc0bf3f8c0d2d4fcf643f4",
-    "Status-GuvfxCopierEmitter.ps1": "e17071528e7e9c078ceadb7238726ef57ea6bbb4bc2b4452dc256b8397879b4b",
-    "Attest-GuvfxCopierEmitter.ps1": "5d0f2d5998eda37c42846b8203b0f571bf3e00102167882750d119fd8d990615",
-    "emitter_task_template.xml": "985cc038a98b99889463e84e29148d444cf09c4f29fc252cb7e1da7652d79016",
-    "config.template.json": "1a20ac8a036336186fe22b28c6bdd1c782e697e906502b4a5a458bc1466f6782",
-    "README.md": "90c51f2441620cbcbe77c65427d592e55b68d63074fd31945935ba7ee8249d32"
+    "run_emitter.py": "10f88be54f407c5f5389042dd63629affae9aca21b60524121e0788b04c5377d",
+    "Install-GuvfxCopierEmitter.ps1": "2940e4dbbedfbfb20eb645a6912b7c9bd24ae4ee46cb92bf12841de8fe061988",
+    "Uninstall-GuvfxCopierEmitter.ps1": "8512ed4147235beb52ec7ebd1fdab4759cdb82c8a53831ffe1c5d31008140570",
+    "Status-GuvfxCopierEmitter.ps1": "8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",
+    "Attest-GuvfxCopierEmitter.ps1": "cccbf1416ed5c798f2c6b62320b588194ee64fdbbfce31fbd99c79ae6cf63378",
+    "emitter_task_template.xml": "51c88ef13790b7ca3ab2c43a14f5ceb0a1f5bc54fb88ab55a1f3300d23ec8ce9",
+    "config.template.json": "56f1bd86e6ba23314b32262b442190e5f998a1cfee6dac0c0ebd9a55f5662d85",
+    "README.md": "c7553625a47bc54f60326abb42ade10d81f2c44000b5beb8b69da1819e04d52f"
   },
   "lib_subset": [
     "backend/trade_copier/__init__.py",

@@ -1,7 +1,7 @@
-# ASCII-only. GuvFX Copy Trading host emitter ONE-SHOT identity attestation (ADR-0076). Repository artifact; DARK.
+# ASCII-only. GuvFX Copy Trading host emitter ONE-SHOT identity attestation (ADR-0077). Repository artifact; DARK.
 # Runs the emitter's one-shot attestation mode (python <EntryPoint> attest --config <cfg>). It does NOT start the
 # task, does NOT begin the observation loop, and reads ONLY account identity (never positions). The emitter's own
-# JSON (the signed attestation envelope + a key FINGERPRINT, never the secret) is passed through as the final
+# JSON (the signed attestation envelope + the key id, never the secret) is passed through as the final
 # line. Attestation is itself gated OFF in the config unless attestation_allowed is set.
 [CmdletBinding()]
 param(

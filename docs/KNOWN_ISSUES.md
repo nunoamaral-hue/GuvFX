@@ -2,7 +2,7 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 Copy Trading host emitter — repository-only, DARK, NOT installed (GFX-COPIER-HOST-EMITTER-BUILD-006 / ADR-0076, 2026-11-05)
+## 🟡 Copy Trading host emitter — repository-only, DARK, NOT installed (GFX-COPIER-HOST-EMITTER-BUILD-006 / ADR-0077, 2026-11-05)
 
 - **Nothing is installed or armed.** The emitter is a repository artefact (`deploy/copier-emitter/` + the
   Django-free `trade_copier/emitter/` modules). No Windows host was touched; no auth material provisioned; the

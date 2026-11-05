@@ -1,6 +1,6 @@
 # GuvFX — Project Status
 
-> **2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0076; repository-only,
+> **2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only,
 > synthetic-only; DARK; governed PR; STOP before merge).** Builds the installable Windows host emitter that the
 > packet-005 install preflight proved was missing (`fb4ee402` had only the `bridge_emitter.py` signing library).
 > Off main `4aef7bba`. **(1) Read-only MT5 adapter** (`emitter/mt5_adapter.py`) — reuses the host bridge's

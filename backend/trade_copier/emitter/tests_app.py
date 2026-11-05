@@ -1,4 +1,4 @@
-"""ADR-0076 — emitter runner: modes, gates, hybrid change detection, restart/idempotency, bounded spool.
+"""ADR-0077 — emitter runner: modes, gates, hybrid change detection, restart/idempotency, bounded spool.
 Synthetic FakeSnapshotAdapter + fake transport; no network; Django-free paths. Zero order surface."""
 import os
 import tempfile

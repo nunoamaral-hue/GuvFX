@@ -1,4 +1,4 @@
-# Copy Trading host emitter — install, attestation, synthetic acceptance & rollback (ADR-0076)
+# Copy Trading host emitter — install, attestation, synthetic acceptance & rollback (ADR-0077)
 
 Packet GFX-COPIER-HOST-EMITTER-BUILD-006. **Repository-only / DARK. Prepared, NOT executed.** Every host step
 below is gated on a separate, explicit Sponsor/operator authorization. Nothing here is run by this packet: no

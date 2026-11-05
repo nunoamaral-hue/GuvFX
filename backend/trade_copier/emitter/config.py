@@ -1,4 +1,4 @@
-"""trade_copier.emitter.config — account-scoped, secret-free emitter configuration + host-side gates (ADR-0076).
+"""trade_copier.emitter.config — account-scoped, secret-free emitter configuration + host-side gates (ADR-0077).
 
 Django-free (host-runnable). The config holds the emitter's IDENTITY and the NAMES of the environment variables
 that carry secrets — never a secret value. Every gate defaults OFF and a missing/malformed value evaluates OFF

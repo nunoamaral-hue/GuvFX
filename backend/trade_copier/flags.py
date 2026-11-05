@@ -204,7 +204,7 @@ def copier_alert_dispatch_enabled() -> bool:
 
 
 def copier_attestation_verify_enabled() -> bool:
-    """Gate for the NON-LIFECYCLE host-emitter identity-ATTESTATION verification surface (ADR-0076). DEFAULT OFF,
+    """Gate for the NON-LIFECYCLE host-emitter identity-ATTESTATION verification surface (ADR-0077). DEFAULT OFF,
     ANDed with the master gate.
 
     The endpoint ``POST /api/copy-trading/attest-verify/`` verifies a signed emitter attestation envelope. It

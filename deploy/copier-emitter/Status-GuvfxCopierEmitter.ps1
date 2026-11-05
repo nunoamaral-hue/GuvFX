@@ -1,4 +1,4 @@
-# ASCII-only. GuvFX Copy Trading host emitter status probe (ADR-0076). Repository artifact; DARK.
+# ASCII-only. GuvFX Copy Trading host emitter status probe (ADR-0077). Repository artifact; DARK.
 # READ-ONLY: reports the account-scoped task's presence and state. Writes nothing, launches nothing, reads no
 # positions. One compact JSON object is the final line.
 [CmdletBinding()]

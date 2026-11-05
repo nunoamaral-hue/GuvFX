@@ -1,4 +1,4 @@
-"""trade_copier.emitter.attestation — one-shot identity-attestation envelope (ADR-0076). Pure, Django-free.
+"""trade_copier.emitter.attestation — one-shot identity-attestation envelope (ADR-0077). Pure, Django-free.
 
 The emitter proves — before observing anything — that it is the right build, on the right host, bound to the
 right GuvFX account/broker-identity/terminal/bridge. It mirrors the audited ``event_ingestion`` HMAC idiom

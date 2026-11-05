@@ -1,6 +1,6 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
-## 2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0076; repository-only; DARK; PR; NOT merged)
+## 2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only; DARK; PR; NOT merged)
 
 - **Why.** The packet-005 install preflight proved the merged `fb4ee402` carried only the `bridge_emitter.py`
   signing library — no installable emitter app, Windows service, MT5 read, or attestation mode. This packet
@@ -12,7 +12,7 @@
   Backend: `attestation_verify.py` (DB cross-check), `attestation_api.py` (DRF verify, 503 when off), flag
   `copier_attestation_verify_enabled`, url `attest-verify/`, throttle `copier_attest_verify`. Bundle
   `deploy/copier-emitter/` (launcher, 4 PowerShell scripts, DISABLED task template, secret-free config template,
-  MANIFEST.json). Docs: ADR-0076, COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md, evidence
+  MANIFEST.json). Docs: ADR-0077, COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md, evidence
   GFX-EVD-HOST-EMITTER-006. Tests: `emitter/tests_{config,adapter,attestation,app,e2e,bundle,capacity}.py` +
   `tests_attestation_verify.py`.
 - **Read path.** Reuses `snapshot_transport` `/mt5/positions` (+ `/mt5/snapshots/account` for identity); ADR-0075

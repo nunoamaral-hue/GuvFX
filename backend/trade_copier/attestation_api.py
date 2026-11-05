@@ -1,4 +1,4 @@
-"""trade_copier.attestation_api — the NON-LIFECYCLE host-emitter attestation verification endpoint (ADR-0076).
+"""trade_copier.attestation_api — the NON-LIFECYCLE host-emitter attestation verification endpoint (ADR-0077).
 
 ``POST /api/copy-trading/attest-verify/``. Machine-to-machine (emitter → backend), ``AllowAny`` + manual HMAC
 verification, DARK + fail-closed: when ``COPIER_ATTESTATION_VERIFY_ENABLED`` is off it returns 503 and verifies

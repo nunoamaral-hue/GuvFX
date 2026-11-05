@@ -1,4 +1,4 @@
-# ADR-0076 — Copy Trading host emitter: read-only MT5 adapter, identity attestation, service bundle
+# ADR-0077 — Copy Trading host emitter: read-only MT5 adapter, identity attestation, service bundle
 
 - **Status:** Accepted (repository-only / DARK, default-OFF). Host installation, credential provisioning,
   attestation on a live host, and any enablement are separate Sponsor gates.
@@ -7,7 +7,10 @@
 - **Builds on:** ADR-0074 (hybrid completion — the signing library `bridge_emitter.py`, the signed ingestion
   envelope + nonce contract, the lifecycle/projection it feeds). **Composes:** ADR-0075 (per-host monitoring
   gateway + readiness — used as an optional readiness gate, not the snapshot source) and ADR-0072 (LIVE
-  read-only positions monitoring gate). Nothing in those ADRs is modified. Next free number after 0075.
+  read-only positions monitoring gate). Nothing in those ADRs is modified. **ADR number:** 0077 — the next free
+  number after ADR-0075 (`docs/architecture/`) and ADR-0076 (`docs/ADRs/0076-guvfx-tim-v0_3-c3-...`, TIM C3,
+  landed by PR #614); this packet originally claimed 0076 and was renumbered to 0077 on reconciliation to avoid
+  colliding with that TIM ADR, which is left unchanged.
 
 ## Context — the proven gap
 

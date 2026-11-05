@@ -1,5 +1,5 @@
 {
-  "_comment": "GuvFX Copy Trading host emitter config template (ADR-0076). Account-scoped. Contains NO secret - only the NAMES of env vars that carry secrets. Every gate defaults false; a missing/malformed value is OFF. Fill account_id/broker_login/broker_server/host_id/bridge_base_url before install; the service refuses to start without a complete identity.",
+  "_comment": "GuvFX Copy Trading host emitter config template (ADR-0077). Account-scoped. Contains NO secret - only the NAMES of env vars that carry secrets. Every gate defaults false; a missing/malformed value is OFF. Fill account_id/broker_login/broker_server/host_id/bridge_base_url before install; the service refuses to start without a complete identity.",
   "account_id": 0,
   "broker_login": "",
   "broker_server": "",

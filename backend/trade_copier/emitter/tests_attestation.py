@@ -1,4 +1,4 @@
-"""ADR-0076 — pure attestation envelope: positive + the full negative-control matrix (synthetic key only)."""
+"""ADR-0077 — pure attestation envelope: positive + the full negative-control matrix (synthetic key only)."""
 import time
 
 from django.test import SimpleTestCase

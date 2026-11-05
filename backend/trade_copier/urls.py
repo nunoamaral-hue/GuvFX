@@ -28,7 +28,7 @@ urlpatterns = [
     # ADR-0074 — SIGNED, account-scoped fast-path event ingestion (bridge → backend). DARK: fails closed with
     # 503 unless COPIER_EVENT_INGESTION_ENABLED is on. Persists immutable observations only; no order, no job.
     path("event-ingest/", SignedEventIngestView.as_view(), name="copy-trading-event-ingest"),
-    # ADR-0076 — NON-LIFECYCLE host-emitter identity-attestation verification (emitter → backend). DARK: 503
+    # ADR-0077 — NON-LIFECYCLE host-emitter identity-attestation verification (emitter → backend). DARK: 503
     # unless COPIER_ATTESTATION_VERIFY_ENABLED is on. Proves identity only; no lifecycle, no order, no job.
     path("attest-verify/", AttestationVerifyView.as_view(), name="copy-trading-attest-verify"),
     # ADR-0056 — dedicated DEMO partial-close consumer (modern worker auth only; DARK, no worker granted

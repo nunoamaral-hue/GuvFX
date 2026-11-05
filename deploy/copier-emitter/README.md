@@ -1,4 +1,4 @@
-# GuvFX Copy Trading host emitter bundle (ADR-0076) - repository artifact, DARK
+# GuvFX Copy Trading host emitter bundle (ADR-0077) - repository artifact, DARK
 
 This is the repository-side account-scoped Windows emitter bundle. It is NOT installed by the build packet
 (GFX-COPIER-HOST-EMITTER-BUILD-006) and performs no host contact. Installation, credential provisioning,

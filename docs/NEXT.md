@@ -1,6 +1,6 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ COPY TRADING HOST EMITTER BUILD (2026-11-05; GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0076; repository-only PR)
+## ★ COPY TRADING HOST EMITTER BUILD (2026-11-05; GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only PR)
 The missing Windows host emitter is built, DARK, off main `4aef7bba`: read-only MT5 adapter (no order surface,
 no broker credential), one-shot identity attestation + gated backend verifier, gated observe/deliver runner
 (reuses ADR-0074 diff + monotonic revisions, no-late-entry via `open_time`), and an account-scoped Windows

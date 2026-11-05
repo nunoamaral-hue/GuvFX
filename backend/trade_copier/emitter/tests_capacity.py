@@ -1,4 +1,4 @@
-"""ADR-0076 Phase-11 — synthetic emitter latency evidence. Per-stage + end-to-end (one account). EVIDENCE only:
+"""ADR-0077 Phase-11 — synthetic emitter latency evidence. Per-stage + end-to-end (one account). EVIDENCE only:
 production cadence is NOT claimed from synthetic numbers; a host measurement is required before any sub-second
 interval (documented in the install/acceptance doc)."""
 import json
@@ -51,6 +51,6 @@ class CapacityTests(SimpleTestCase):
         profile = {k: {"p50": round(_pct(v, 50), 3), "p95": round(_pct(v, 95), 3), "p99": round(_pct(v, 99), 3)}
                    for k, v in (("snapshot_ms", snap), ("classify_sign_spool_deliver_ms", observe),
                                 ("end_to_end_ms", e2e))}
-        print("\nADR-0076 emitter capacity (one account, n=%d): %s" % (N, json.dumps(profile)))
+        print("\nADR-0077 emitter capacity (one account, n=%d): %s" % (N, json.dumps(profile)))
         self.assertTrue(all(x >= 0 for x in e2e))
         self.assertLess(_pct(e2e, 99), 1000.0)   # generous ceiling; NOT a production-cadence claim

@@ -1,4 +1,4 @@
-"""trade_copier.attestation_verify — backend NON-LIFECYCLE verification of a host-emitter attestation (ADR-0076).
+"""trade_copier.attestation_verify — backend NON-LIFECYCLE verification of a host-emitter attestation (ADR-0077).
 
 Verifies a signed emitter attestation envelope (``trade_copier.emitter.attestation``, signed with the emitter's
 own ``COPIER_INGEST_HMAC_KEY``) AND cross-checks the claimed identity against the AUTHORITATIVE database

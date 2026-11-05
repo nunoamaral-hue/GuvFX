@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-16"?>
-<!-- GuvFX Copy Trading host emitter scheduled task - canonical DISABLED/DARK form (ADR-0076).
+<!-- GuvFX Copy Trading host emitter scheduled task - canonical DISABLED/DARK form (ADR-0077).
      The installer produces exactly this shape: Settings.Enabled=false, NO Triggers (never scheduled), no
      RestartOnFailure (never auto-restarts into active emission), LeastPrivilege, start-on-demand only. The
      emitter action runs the gated 'run' mode, which is itself inert unless observation_allowed AND a positive

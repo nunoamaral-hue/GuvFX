@@ -1,4 +1,4 @@
-# ASCII-only. GuvFX Copy Trading host emitter installer (ADR-0076). Repository artifact; DARK.
+# ASCII-only. GuvFX Copy Trading host emitter installer (ADR-0077). Repository artifact; DARK.
 # Registers an account-scoped scheduled task that is DISABLED (no trigger, no watchdog, no auto-restart) so the
 # emitter is installed INERT: it can only run via an explicit, separately-authorised operator start. Dry-run by
 # default (PLAN unless -Apply). Refuses reserved account ids. One compact JSON object is the final line.

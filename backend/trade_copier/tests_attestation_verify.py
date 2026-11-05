@@ -1,4 +1,4 @@
-"""ADR-0076 — backend NON-LIFECYCLE attestation verify: gate-off 503, positive, identity/replay negatives,
+"""ADR-0077 — backend NON-LIFECYCLE attestation verify: gate-off 503, positive, identity/replay negatives,
 and the invariant that verification creates NO lifecycle/MasterEvent/ExecutionJob. Synthetic identities only."""
 import json
 import os

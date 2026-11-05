@@ -1,4 +1,4 @@
-"""trade_copier.emitter.mt5_adapter — a NARROW read-only MT5 position/identity adapter (ADR-0076). Django-free.
+"""trade_copier.emitter.mt5_adapter — a NARROW read-only MT5 position/identity adapter (ADR-0077). Django-free.
 
 The emitter obtains position state ONLY through the host bridge's existing supported READ-ONLY endpoints
 (mirroring the ``execution.snapshot_transport`` contract): ``GET /mt5/positions`` and, for identity without a

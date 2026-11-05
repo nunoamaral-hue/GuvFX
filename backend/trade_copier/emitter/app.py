@@ -1,4 +1,4 @@
-"""trade_copier.emitter.app — the host-side emitter runner + CLI (ADR-0076). Django-free; host-runnable.
+"""trade_copier.emitter.app — the host-side emitter runner + CLI (ADR-0077). Django-free; host-runnable.
 
 Wraps the ADR-0074 signing library (``bridge_emitter.BridgeEmitter``) with the read-only MT5 adapter, a durable
 spool and the attestation envelope into three explicit, separately-gated modes:

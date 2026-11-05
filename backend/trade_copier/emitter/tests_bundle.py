@@ -1,4 +1,4 @@
-"""ADR-0076 — Windows emitter bundle integrity + safety (repository checks; no host).
+"""ADR-0077 — Windows emitter bundle integrity + safety (repository checks; no host).
 
 Validates: manifest hashes match (reproducible), every artefact is ASCII/no-BOM (RULE 9), PowerShell parses
 (ParseFile when pwsh is present, else a structural balance mirror), the service defaults disabled/not-scheduled/

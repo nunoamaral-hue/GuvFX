@@ -1,4 +1,4 @@
-"""ADR-0076 — emitter config + host-side gates. Fail-closed identity + default-OFF gates (synthetic only)."""
+"""ADR-0077 — emitter config + host-side gates. Fail-closed identity + default-OFF gates (synthetic only)."""
 from django.test import SimpleTestCase
 
 from trade_copier.emitter.config import ConfigError, EmitterConfig, load_config

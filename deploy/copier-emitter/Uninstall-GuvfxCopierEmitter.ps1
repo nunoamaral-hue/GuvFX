@@ -1,4 +1,4 @@
-# ASCII-only. GuvFX Copy Trading host emitter uninstaller (ADR-0076). Repository artifact; DARK.
+# ASCII-only. GuvFX Copy Trading host emitter uninstaller (ADR-0077). Repository artifact; DARK.
 # Account-scoped, idempotent, reversible teardown: removes ONLY this account's emitter task (never by image,
 # never a broad recursive delete, never another account's unit). Dry-run by default. One compact JSON final line.
 [CmdletBinding()]
