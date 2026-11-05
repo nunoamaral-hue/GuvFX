@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-C3-coverage-and-evidence-correction",
+  "packet_id": "GFX-PKT-TIM-C3",
+  "created_at_utc": "2026-11-05T00:00:00Z",
+  "branch": "feat/tim-c3-correction",
+  "base_commit": "4aef7bba8c0212078f5cf1800b5c101d85e39803",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only / synthetic-only",
+    "authoritative_decision": "GUVFX-TIM-ALIGN-006 (Notion, PM-owned); ADR-0076 is the repository counterpart",
+    "corrects": "GFX-PKT-TIM-C2 v0.3 contracts per TIM-P5 (GUVFX-TIM-P5-001) section K findings K-1..K-9",
+    "additive_revision": true,
+    "existing_006c_v1_schemas_changed": false,
+    "existing_v0_2_contracts_changed": false,
+    "frozen_py_changed": false,
+    "real_data_or_nas_or_broker_or_mt5": false,
+    "operational_signing_key": false,
+    "deployment_or_production_mutation": false,
+    "trading_or_execution_change": false,
+    "notion_written": false,
+    "duckdb_required_for_market_data_lane": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "market-data-foundation (v0.3 smoke + unit tests) + governance (secret scan + evidence lint)"
+  },
+  "commands": [
+    "python -m venv .venv-research && .venv-research/bin/pip install 'duckdb==1.5.4'  (local run; CI installs duckdb per lane)",
+    ".venv-research/bin/python tools/tim_release_v0_3_synthetic_smoke.py",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_tim_contract_v0_3.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_tim_contract_v0_2.py' -v",
+    ".venv-research/bin/python tools/tim_release_synthetic_smoke.py",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_market_data_foundation.py' -v",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_research_foundation.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v"
+  ],
+  "expected_results": [
+    "The pre-C3 golden release (3-bar quality report bound to a 10,080-bar release) is QUARANTINED/REJECTED; a corrected full-coverage release is ACCEPTED.",
+    "The v0.3 contract suite grows from 32 to 56 tests (20 mandatory C3 regressions + 4 adversarial-round regressions) and passes; the v0.2 suite (12) and both release smokes stay green.",
+    "006C v1 and v0.2 contracts (schemas AND the frozen .py surface) remain byte-identical; the governance secret scan and evidence lint pass.",
+    "No real data, NAS, broker, MT5, deployment, operational signing key, Notion write or trading change."
+  ],
+  "actual_results": [
+    "v0.3 smoke: ok=true, 10080 bars, 9 evidence roles (adds quality_coverage), import_state=ACCEPTED; consumer recounts the physical Parquet (parquet_rows_recounted=10080), reconciles counts, verifies evidence source identity, and the two negative controls fire (a 3-bar report quarantines; an under-declared row_count=3 over the 10,080-row file is rejected row_count_mismatch).",
+    "v0.3 unit suite: Ran 56 tests OK (32 C2 baseline + 20 mandatory C3 + 4 adversarial-round). v0.2 unit suite: Ran 12 tests OK. Both smokes exit 0. market-data-foundation and research-foundation unit suites OK.",
+    "governance: check_no_secrets = no findings; check_evidence_manifests = EVIDENCE-LINT PASS; test_no_secrets / test_evidence_manifests OK.",
+    "Frozen byte-identity VERIFIED (before==after): research/market_data/contracts.py=sha256:5b3ffe72..., tim_contracts.py=sha256:42f8ac50... (== TIM-P5 pinned v0.2 digest), tim_fixtures.py=sha256:eec33611...; the 7 006C v1 *.schema.json unchanged. git diff touches no frozen path.",
+    "Independent 12-class adversarial review (26 agents): 20 candidate findings, 9 refuted, 2 HIGH + 5 MEDIUM + 3 LOW confirmed. Both HIGH fixed with mutation-killing regression tests (physical row-count reconciliation K-1; evidence source-identity cross-check + real-IANA-zone K-3). Consumer disposition no longer collapses REJECT into QUARANTINE (K-4)."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / synthetic-only: no real market data, NAS, broker identity/account, MT5, agent endpoint, acquisition service, deployment, TIM-side code, training, operational signing key, Notion write or trading/execution change. The PR is opened with auto-merge OFF and is NOT merged without a new Sponsor authorisation.",
+    "Versioned additive v0.3 corrective revision (GFX-PKT-TIM-C3 / ADR-0076): three C2 v0.3 schemas were corrected and four added; their mutation-killing SHA pins in tests/test_tim_contract_v0_3.py were updated to the post-C3 bytes. The 006C v1 and v0.2 contracts are unchanged and now additionally hash-guarded in the v0.3 suite (Phase-9 test 20).",
+    "Recorded follow-ups (not in this packet): composing the coverage/evidence content checks into a single manifest-level entrypoint (the manifest validator stays structural + hash-binding by design, with content enforcement in the dependency-free consumer validators per ADR-0070); deep gap/watermark scope verification beyond digest binding; per-bar quality-flag enforcement beyond the documented bitset; operational (non-synthetic) signing. The signature's signed_manifest_path is a convention check, not signed material (near-zero impact; the cross-binding of release id / bundle digests / key / producer identity is signed).",
+    "Adversarial MEDIUM/LOW dispositions: MED (consumer disposition collapse) FIXED; MED (hard-coded consumer checks) FIXED (parquet re-described + recounted, pit computed); MED (regex-only IANA) FIXED (zoneinfo lookup); MED (coverage not composed into manifest validator) RECORDED as a by-design layering follow-up; LOW (negative fixture fails on path not coverage) ADDRESSED by the explicit reconcile/coverage negative tests; LOW (quality_flags enforcement) RECORDED (descriptor-defined, descriptive only); LOW (cross-binding default off) RECORDED (consumer passes manifest=)."
+  ],
+  "artefact_locations": [
+    "research/contracts/v0_3/release_quality_coverage_v1.schema.json, timezone_evidence_v1.schema.json, broker_server_identity_v1.schema.json, licensing_v1.schema.json (NEW)",
+    "research/contracts/v0_3/dataset_release_manifest_v3.schema.json, dataset_import_receipt_v2.schema.json, canonical_candles_parquet_v1.schema.json (corrected)",
+    "research/market_data/tim_contracts_v0_3.py, research/market_data/tim_fixtures_v0_3.py, tools/tim_release_v0_3_synthetic_smoke.py (corrected)",
+    "tests/test_tim_contract_v0_3.py (pins + 24 new tests)",
+    "tests/fixtures/market_data/tim/v0_3/*.json (11 committed fixtures regenerated/added) + tests/fixtures/market_data/tim/v0_3/negative/dataset_release_manifest_v3__incomplete_quality_coverage.json (preserved defective golden)",
+    "docs/ADRs/0076-guvfx-tim-v0_3-c3-coverage-and-evidence-correction.md"
+  ],
+  "checksums": {
+    "research/market_data/tim_contracts_v0_3.py": "sha256:eb487f13b85dca600d76e84bc950d4e28952958850de698f52b1e2e391cf8798",
+    "research/market_data/tim_fixtures_v0_3.py": "sha256:49fb60ba8f268df4fa7fc40ec46010020954fd32500728d3fbe8d2e7dd3431e0",
+    "tools/tim_release_v0_3_synthetic_smoke.py": "sha256:cadc9b87f936aa6f4a1ea4bfd6c1e853045f0ec26b720506fe41d1802157487d",
+    "tests/test_tim_contract_v0_3.py": "sha256:e2fbf4d4f288463d454923ed090d0cdb7527e866c939421acb0122a541f6718e",
+    "docs/ADRs/0076-guvfx-tim-v0_3-c3-coverage-and-evidence-correction.md": "sha256:e75c50a0600758f8cc54f1ae96e0e9ffe6bc3977da99126afa723358f2bae0b5",
+    "research/contracts/v0_3/release_quality_coverage_v1.schema.json": "sha256:f9e7b333c9e4f106294e020cb7bdcd1fdd72943e0fdf6b100309e102cd252f61",
+    "research/contracts/v0_3/timezone_evidence_v1.schema.json": "sha256:5283d0d61d33edb8ccd889d1e4e4ab05ff5d67ab016ae03290d4c76ad22140b9",
+    "research/contracts/v0_3/broker_server_identity_v1.schema.json": "sha256:d301c91db3d83f02abd99226ddc0dc51c69c41f27eea8559bca1b9ae785587ce",
+    "research/contracts/v0_3/licensing_v1.schema.json": "sha256:778fcc6362b7cd1791a2b2a19c7d0ff7fc1eddf2dd5bd3c80b44cadb5f211a1a",
+    "research/contracts/v0_3/dataset_release_manifest_v3.schema.json": "sha256:e5d2a358e84e04471e0abcacb52193a3121b147754d8a5001a3b88ec2d994d8f",
+    "research/contracts/v0_3/dataset_import_receipt_v2.schema.json": "sha256:74711e8ef0aec81ce9e39e7d7f2e882d29b572a4ff8ef2e1460282efb486547b",
+    "research/contracts/v0_3/canonical_candles_parquet_v1.schema.json": "sha256:bd9db7734f0bfe0bbaff7c8ffd9a7597cf343c16177bc3679eb0b775aba62cb9",
+    "tests/fixtures/market_data/tim/v0_3/dataset_release_manifest_v3.json": "sha256:1c89eceb69b6f10b6af90f088b8dc84597c58ca4e5f6624bc6dec47ce3b145a7",
+    "tests/fixtures/market_data/tim/v0_3/release_quality_coverage_v1.json": "sha256:a2b75c1dfba0c28ba86eee78b862a0b8a5eef7af2ab26f411381d4bdb55bdf74",
+    "tests/fixtures/market_data/tim/v0_3/negative/dataset_release_manifest_v3__incomplete_quality_coverage.json": "sha256:3ee0e742b3a2be95b195e836e18ea413846309a918e5b39317c8bb2aff9fdead",
+    "research/market_data/contracts.py": "sha256:5b3ffe7257edb2da0568b8e5756acf358c4a3e36aaaf167a9545a4875aec5cf8",
+    "research/market_data/tim_contracts.py": "sha256:42f8ac50c19916e385fbe5aea831e92fde5b15f8cd9dfa75caadb916426b36ce",
+    "research/market_data/tim_fixtures.py": "sha256:eec336110af66efe9640f87208ebbf63bfd5bd817f1d4801812ca15349f474da"
+  },
+  "reviewer": "GFX-PKT-TIM-C3 author self-review + an independent 12-class adversarial workflow review (incomplete-evidence false acceptance, hash/cross-release substitution, path traversal, READY mutation, timestamp leakage, licensing ambiguity, broker-identity substitution, supersession loops, duplicate JSON keys, validator-version downgrade, signature-envelope confusion). 2 HIGH fixed with regression tests; MEDIUM/LOW recorded with disposition."
+}
