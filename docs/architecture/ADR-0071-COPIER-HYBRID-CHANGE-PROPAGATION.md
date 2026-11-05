@@ -126,6 +126,12 @@ the single-master DARK pilot; the passes run single-threaded under cron.
 
 ## What is NOT in this packet (next governed gates)
 
+> **Update (ADR-0074, DARK):** the signed ingestion endpoint + bridge-contract persistence, the lifecycle→
+> producer SHADOW wiring, governed terminal-failure alerting, and synthetic capacity measurement below are now
+> implemented additively and DARK by **ADR-0074** (GFX-COPIER-HYBRID-COMPLETION-003). Still deferred as its own
+> gate: unifying the EVENT path into the authoritative `MasterEvent` sequence (it mutates shared ordering).
+
+
 - **No bridge emitter and no ingestion endpoint** for the EVENT path. The contract and the pure fold exist;
   wiring a *signed, account-scoped* ingestion endpoint + a bridge emitter touches the API/host surface and
   requires its own decision + ADR. Until then the lifecycle is fed by the authoritative poll path only.

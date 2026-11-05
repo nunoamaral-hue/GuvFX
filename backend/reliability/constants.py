@@ -27,6 +27,10 @@ class Component:
     SCHEDULER_M5 = "SCHEDULER_M5"
     EXECUTION_PIPELINE = "EXECUTION_PIPELINE"
     BACKEND_DB = "BACKEND_DB"
+    # ADR-0074: copy-trading lifecycle terminal-failure alerts. DELIBERATELY NOT a critical or
+    # terminal-scoped component — the DARK copier must never gate can_trade or trading capability; this
+    # component only labels operator alerts raised by the copier failure-alert pass.
+    COPY_TRADING = "COPY_TRADING"
 
     CHOICES = [
         (MT5_TERMINAL, "MT5 terminal"),
@@ -39,6 +43,7 @@ class Component:
         (SCHEDULER_M5, "M5 scheduler"),
         (EXECUTION_PIPELINE, "Execution pipeline"),
         (BACKEND_DB, "Backend database"),
+        (COPY_TRADING, "Copy trading"),
     ]
 
 

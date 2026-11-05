@@ -767,6 +767,64 @@ def admit_partial_close(replication: CopierReplication, *, fetch=None) -> tuple[
     return True, ticket, reduction, remaining, "ok"
 
 
+def model_partial_close(replication: CopierReplication) -> tuple[bool, int, float, float, str]:
+    """DARK, ledger-only SHADOW admission for a partial close (ADR-0074). Returns
+    ``(ok, ticket, modeled_reduction, modeled_remaining, reason)``.
+
+    Identical fail-closed gating to ``admit_partial_close`` EXCEPT it performs NO live follower broker read and
+    creates NO job: it MODELS the reduction against the DURABLE opened follower volume (the matched OPEN
+    replication's ``target_volume``) using the SAME pure proportional calc (``_partial_reduction``) and the SAME
+    durable broker constraints (``_broker_constraints`` — ``BrokerInstrument`` metadata, not a live read). It is
+    an intent model only. The authoritative, execution-time lot (which genuinely needs the fresh live follower
+    volume) is re-derived by ``admit_partial_close`` ONLY on the gated/armed path; this never substitutes for
+    it. The live follower read is therefore NOT an architectural blocker to the SHADOW dispatch — it is required
+    only for the armed execution, which stays gated."""
+    if replication.execution_job_id is not None:
+        return False, 0, 0.0, 0.0, "already_produced"   # parity with admit_partial_close
+    if replication.status != ReplicationStatus.SHADOW_RECORDED:
+        return False, 0, 0.0, 0.0, "not_shadow_intent"
+    if replication.requested_op != "PARTIAL_CLOSE":
+        return False, 0, 0.0, 0.0, "op_not_partial_close"
+    follower = replication.follower
+    if not follower.enabled:
+        return False, 0, 0.0, 0.0, "follower_disabled"
+
+    acct = follower.follower_account
+    try:
+        from trading.account_policy import is_demo_environment
+        if not is_demo_environment(acct):
+            return False, 0, 0.0, 0.0, "follower_not_demo"
+    except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
+        return False, 0, 0.0, 0.0, "environment_unresolved"
+    if not getattr(acct, "is_active", False):
+        return False, 0, 0.0, 0.0, "account_inactive"
+
+    ok, reason = validate_follower_binding(follower)
+    if not ok:
+        return False, 0, 0.0, 0.0, reason
+
+    open_repl = _matched_open_for_close(replication)   # position-keyed (NOT symbol): the matched OPEN ticket
+    if open_repl is None or open_repl.follower_ticket is None:
+        return False, 0, 0.0, 0.0, "no_verified_follower_ticket"
+    ticket = int(open_repl.follower_ticket)
+    if open_repl.target_volume is None:
+        # No durable opened-volume to model against (SHADOW never opened a real follower position). The intent
+        # is recorded, but the reduction cannot be modeled without the armed-path live read — fail closed here.
+        return False, ticket, 0.0, 0.0, "no_modeled_follower_volume"
+    modeled_current = float(open_repl.target_volume)
+
+    constraints = _broker_constraints(acct, replication.follower_symbol or open_repl.follower_symbol or "")
+    if not constraints.authoritative:
+        return False, ticket, 0.0, 0.0, "constraints_not_authoritative"
+
+    event = replication.master_event
+    ok_calc, reduction, remaining, calc_reason = _partial_reduction(
+        event.volume_before, event.volume_after, modeled_current, constraints)
+    if not ok_calc:
+        return False, ticket, 0.0, 0.0, calc_reason
+    return True, ticket, reduction, remaining, "ok"
+
+
 def _partial_close_already_targets(acct_id: int, follower_ticket: int) -> bool:
     """A non-terminal PARTIAL_CLOSE_TRADE already targets this (account, ticket) -> don't duplicate."""
     return ExecutionJob.objects.filter(

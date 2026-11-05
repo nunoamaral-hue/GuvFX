@@ -2,6 +2,38 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading hybrid completion — DARK, chain complete (GFX-COPIER-HYBRID-COMPLETION-003 / ADR-0074, 2026-11-05)
+
+- **RESOLVED — the fast EVENT path now drives the lifecycle.** The gated `event_projection` promotes accepted
+  `CopierIngestedRevision` rows into the authoritative `MasterEvent` ledger via an OVERLAY on the shared
+  `last_poll` baseline (one ledger, one sequence space, no competing event truth); a stale OPEN is ruled
+  `ENTRY_FAILED_FINAL` by the unchanged state machine (true `broker_event_time` threaded) — no late entry. The
+  marker's `_MODELED` now denotes SHADOW (execution OFF), not absent propagation.
+- **RESOLVED — partial-close SHADOW dispatch is modeled, not deferred.** `model_partial_close` models the
+  reduction against the durable opened follower volume (no live read, no job); the live follower read is needed
+  only for the gated/armed execution-time lot (`admit_partial_close`, unchanged).
+- **RESOLVED — `CopierIngestNonce` pruning exists** (`prune_copier_ingest_nonces`, dry-run default, expired-only,
+  unscheduled). (Former adversarial L2.)
+- **RESOLVED — alert DELIVERY is governed** (`alert_delivery`): a raised alert enqueues a durable
+  `CopierAlertDelivery`; a default-OFF dispatcher sends via an inert dry-run transport with NO real destination;
+  backlog/failed/dead counts are on the ops summary.
+- **Nothing is wired to deploy/arm.** All FIVE new flags default OFF; the endpoint is 503 when off; the bridge
+  emitter is default-OFF and NOT installed on Windows; all new commands are UNSCHEDULED. Migrations
+  `trade_copier/0010`+`0011` (+ choices-only `reliability/0005`) are NOT applied in production. Deploy,
+  flag-arming, emitter installation, and a real alert transport are SEPARATE Sponsor/operator gates.
+- **Delayed projection collapses to the net state (by design).** If several changes to one ticket accumulate
+  between projection passes, the fold records the NET change (e.g. the latest SL), not each intermediate — this
+  is correct copy semantics (the follower only needs the current state). Per-change events require the fast-path
+  projection to run promptly.
+- **`MasterEvent.reason` is always blank** (the poll `diff` never observes a broker close reason), so
+  "close by SL/TP vs manual" is NOT distinguishable today — recorded honestly, never guessed.
+- **Pre-existing local test artifact (NOT introduced here):** the full `trade_copier` suite reports 27F/33E in
+  this local environment (APPEND_SLASH / `SECURE_SSL_REDIRECT` 301 in the DRF API test modules) — identical on a
+  pristine `2f859cac` probe; these pass in CI. New view tests set `SECURE_SSL_REDIRECT=False` (test-scoped) to be
+  deterministic in both environments.
+- **Expected doc conflict:** PR #601 (ADR-0049 bridge provisioning, open/CONFLICTING) also edits STATUS/HANDOFF/
+  NEXT/KNOWN_ISSUES — union-resolve on whichever merges second; no code-file overlap.
+
 ## 🟠 Stale/poisoned `BrokerServer` env rows need a governed correction path (GFX-ACCOUNT-ONBOARDING-P0-001, 2026-11-04)
 
 - Prod `BrokerServer "DominionMarkets-Live"` is `environment=demo, source=inferred` (poisoned by tombstoned demo

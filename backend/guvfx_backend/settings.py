@@ -257,6 +257,10 @@ REST_FRAMEWORK = {
         # design; the public surface is DARK (404) until BROKER_PUBLIC_DIRECTORY_ENABLED is armed. The exact value is
         # a governance/capacity decision (Amber) — this is the proposed pre-activation default.
         "public": "60/min",
+        # Per-identity ceiling for the signed copier fast-path event-ingestion endpoint (ADR-0074). The endpoint
+        # is DARK (503) until COPIER_EVENT_INGESTION_ENABLED is armed; this is the proposed pre-activation
+        # default (one account-scoped bridge, bursty on change). Final value is a governance/capacity decision.
+        "copier_event_ingest": "240/min",
     },
 }
 

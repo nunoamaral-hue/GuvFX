@@ -137,6 +137,72 @@ def copier_lifecycle_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_LIFECYCLE_ENABLED")
 
 
+def copier_event_ingestion_enabled() -> bool:
+    """Gate for the SIGNED, account-scoped fast-path event-ingestion endpoint (ADR-0074). DEFAULT OFF,
+    ANDed with the master gate.
+
+    The endpoint only ever VERIFIES a signed bridge emission and PERSISTS normalised position-state
+    observations (immutable ``CopierIngestedRevision``) + a sanitised detection classification. It creates NO
+    ``ExecutionJob``, writes NO ``MasterEvent`` into the authoritative poll ledger, and contacts NO broker: it
+    is the fast half of the hybrid detector, recorded as evidence. When OFF the endpoint fails closed (HTTP
+    503, nothing persisted) so the bridge can never push into a disarmed backend."""
+    return copier_enabled() and _flag("COPIER_EVENT_INGESTION_ENABLED")
+
+
+def copier_lifecycle_dispatch_enabled() -> bool:
+    """Gate for the DARK lifecycle→producer-boundary SHADOW dispatch pass (ADR-0074). DEFAULT OFF, ANDed with
+    the master gate.
+
+    The dispatch pass re-checks the EXISTING producer-boundary authority (``execution_producer.admit_*``,
+    which create nothing) for each actionable lifecycle decision and records a SYNTHETIC, append-only
+    ``CopierLifecycleDispatch`` row (op, deterministic idempotency key, admission verdict, would_execute). It
+    NEVER calls the ``produce_*`` functions and therefore creates NO ``ExecutionJob`` — it proves the wiring
+    is correct and safe without activating execution. It is deliberately SEPARATE from — and never ORs past —
+    the execute/arm gates, which remain the sole authority for any order."""
+    return copier_enabled() and _flag("COPIER_LIFECYCLE_DISPATCH_ENABLED")
+
+
+def copier_alerts_enabled() -> bool:
+    """Gate for routing copier terminal-failure signals to the governed operator alert channel
+    (``reliability.AlertEvent``) — ADR-0074. DEFAULT OFF, ANDed with the master gate.
+
+    When OFF the terminal failure is still durably recorded as append-only lifecycle-transition evidence; the
+    flag only governs whether a de-duplicated operator ``AlertEvent`` is ALSO raised. No new notification
+    channel is created and nothing is pushed outward (a directly-created ``AlertEvent`` is surfaced on the
+    read-only operations summary and the alerts API; it is not auto-delivered to Telegram). Alerting never
+    recovers a trade — it only exposes operator action."""
+    return copier_enabled() and _flag("COPIER_ALERTS_ENABLED")
+
+
+def copier_event_projection_enabled() -> bool:
+    """Gate for promoting accepted fast-path ``CopierIngestedRevision`` evidence into the AUTHORITATIVE
+    ``MasterEvent`` ledger (ADR-0074 Phase-4 completion). DEFAULT OFF, ANDed with the master gate.
+
+    This is the single, deterministic bridge between the fast EVENT path and the ONE authoritative ordering
+    the lifecycle consumes (``MasterEvent.sequence``). The projection folds a master's new ingested revisions,
+    OVERLAYS them onto the shared poll baseline (``CopierMaster.last_poll``), diffs with the EXISTING pure diff
+    engine and appends ``MasterEvent`` rows (``source='EVENT'``, carrying the true ``broker_event_time``) under
+    the SAME per-master row lock + monotone sequence the observer uses — so poll and event share one ledger,
+    one sequence space and one baseline (no competing event truth). It creates NO ``ExecutionJob`` and contacts
+    NO broker; a late/stale OPEN is ruled inadmissible by the UNCHANGED lifecycle state machine (the deadline is
+    measured from ``broker_event_time``), never entered. Separate from — never ORs past — the execute/arm gates."""
+    return copier_enabled() and _flag("COPIER_EVENT_PROJECTION_ENABLED")
+
+
+def copier_alert_dispatch_enabled() -> bool:
+    """Gate for the governed copier alert-DELIVERY dispatcher pass (ADR-0074 Phase-9 completion). DEFAULT OFF,
+    ANDed with the master gate.
+
+    Enqueuing a delivery is governed by ``copier_alerts_enabled`` (an alert row raised while that flag is on
+    also enqueues an immutable ``CopierAlertDelivery`` outbox row). This SEPARATE flag governs whether the
+    dispatcher pass may attempt to SEND a queued delivery through its transport. The transport is selected by
+    ``COPIER_ALERT_TRANSPORT`` and DEFAULTS to an inert dry-run/NULL transport with NO real destination
+    configured, so even an enabled dispatcher sends nowhere real until an operator both arms this flag AND
+    configures a real transport. Delivery state (PENDING/SENT/FAILED/DEAD), the attempt counter and failures are
+    durable and surfaced read-only on the operations summary. Nothing here recovers a trade."""
+    return copier_enabled() and _flag("COPIER_ALERT_DISPATCH_ENABLED")
+
+
 def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:
     """The copier's execution posture for the UI, DERIVED LIVE from the real execute flags — never a
     hardcoded label. While the execute producer is off (the default) this is observation/shadow and reads

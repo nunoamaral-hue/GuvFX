@@ -56,6 +56,11 @@ class DetectionSource(str, Enum):
 # A revision ordinal must be a strictly-positive int; 0/negative are structurally invalid (never "just stale").
 _MIN_REVISION = 1
 
+# Magnitude bounds (fail closed on implausible values; also keeps a persisted value inside its DB column so an
+# oversize emission is REJECTED as structurally invalid rather than dropped by a late DataError — ADR-0074 M1).
+_MAX_VOLUME = 1_000_000.0      # lots; far above any real position, below the numeric(12,3) column limit
+_MAX_PRICE = 10_000_000.0      # price levels; far above any instrument, below the numeric(24,10) column limit
+
 
 @dataclass(frozen=True)
 class PositionRevision:
@@ -75,6 +80,16 @@ class PositionRevision:
     volume: float = 0.0
     sl: Optional[float] = None
     tp: Optional[float] = None
+    # ─── normalized-state carry (ADR-0074 Phase 4) — all optional; the fold ignores them, they are
+    #     persisted/alerted as evidence. None means "the bridge did not supply it" (absent != unset).
+    event_id: str = ""                        # the bridge's unique id for THIS emission (idempotency)
+    payload_digest: str = ""                  # digest of the emission payload (integrity; set at ingestion)
+    price_open: Optional[float] = None        # the position's entry price
+    open_time: Optional[datetime] = None      # broker open time of the position
+    original_volume: Optional[float] = None   # volume at OPEN (so a VOLUME_REDUCED is computable vs current)
+    close_reason: str = ""                     # broker close reason when the bridge can observe it (else blank)
+    broker_login: str = ""                     # observed broker login (identity cross-check, never trusted alone)
+    broker_server: str = ""                    # observed broker server
 
     def structurally_valid(self) -> tuple[bool, str]:
         """Reject a structurally-malformed revision (fail closed — never silently coerce).
@@ -90,10 +105,26 @@ class PositionRevision:
             if self.side not in ("BUY", "SELL"):
                 return False, "bad_side"
             try:
-                if float(self.volume) <= 0:
-                    return False, "non_positive_volume"
+                v = float(self.volume)
             except (TypeError, ValueError):
                 return False, "non_numeric_volume"
+            if v <= 0:
+                return False, "non_positive_volume"
+            if v > _MAX_VOLUME:
+                return False, "volume_out_of_range"
+        # Magnitude-bound the optional numeric fields (fail closed; protects the persisted DB columns so an
+        # oversize value is rejected here, never dropped by a late DataError on persist).
+        for name, cap in (("sl", _MAX_PRICE), ("tp", _MAX_PRICE), ("price_open", _MAX_PRICE),
+                          ("original_volume", _MAX_VOLUME)):
+            val = getattr(self, name)
+            if val is None:
+                continue
+            try:
+                f = abs(float(val))
+            except (TypeError, ValueError):
+                return False, f"non_numeric_{name}"
+            if f > cap:
+                return False, f"{name}_out_of_range"
         return True, "ok"
 
     def to_observed_position(self) -> ObservedPosition:
@@ -110,6 +141,9 @@ class PositionRevision:
             volume=float(self.volume or 0.0),
             sl=_to_level(self.sl),
             tp=_to_level(self.tp),
+            # Carry the entry price so an event-sourced snapshot is equivalent to a poll-sourced one (the
+            # producer's OPEN admission + SL-weakening check read price_open from the same-poll snapshot).
+            price_open=self.price_open,
         )
 
 
