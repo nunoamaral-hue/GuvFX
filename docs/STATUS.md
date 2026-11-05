@@ -1,5 +1,21 @@
 # GuvFX — Project Status
 
+> **2026-11-05 — Copy Trading HOST EMITTER task-XML fix (GFX-COPIER-HOST-EMITTER-TASKXML-FIX-009; ADR-0077
+> reused; repository-only; DARK; PR; STOP before merge).** Corrects the Windows Task Scheduler XML defect found
+> on the real host during packet-008 Option C: `schtasks` rejected
+> `<RestartOnFailure><Interval>PT0M</Interval><Count>0</Count></RestartOnFailure>` (zero interval out of range).
+> Fix = **omit `RestartOnFailure` entirely** (Task Scheduler default is no-restart) in BOTH
+> `deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1` (generated heredoc XML) and
+> `deploy/copier-emitter/emitter_task_template.xml`; two `MANIFEST.json` hashes updated. The task stays DISABLED,
+> triggerless, no-auto-restart, least-privilege, account-scoped. Added regression tests
+> (`TaskXmlRestartOnFailureFixTests`, `BundlePackagingHygieneTests` — reject AppleDouble `._*`/trailing-dot/
+> unlisted files —, `HostParityAssetTests`) and a **Windows host-parity validator**
+> `deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1` that creates/reads-back/deletes a temp DISABLED
+> task from the candidate XML with a parser positive control + a zero-interval negative control (NOT run on the
+> production host in this packet). Verified: emitter package 54 tests OK, secret scan clean, no migration drift,
+> ADR governance OK, evidence lint PASS (45). RULE-9 lineage (ParseFile does not validate the embedded task XML;
+> only `schtasks` does). DARK: no deploy, no host write, no migration, no secret, no broker order. STOP before merge.
+
 > **2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only,
 > synthetic-only; DARK; governed PR; STOP before merge).** Builds the installable Windows host emitter that the
 > packet-005 install preflight proved was missing (`fb4ee402` had only the `bridge_emitter.py` signing library).

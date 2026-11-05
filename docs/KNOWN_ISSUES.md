@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading host emitter task XML — RestartOnFailure/PT0M defect (FIXED in repo, PR open, NOT yet re-installed) (GFX-COPIER-HOST-EMITTER-TASKXML-FIX-009 / ADR-0077, 2026-11-05)
+
+- **Symptom (packet-008 Option C, on the real Windows host):** `schtasks /create` rejected the emitter task XML
+  with `(11,40):Interval:PT0M — The task XML contains a value which is incorrectly formatted or out of range`.
+  Cause: `<RestartOnFailure><Interval>PT0M</Interval><Count>0</Count></RestartOnFailure>` — a zero `Interval` is
+  out of range. The installer fail-closed (no task registered) and the host was fully restored.
+- **Fix (this packet, repository-only):** omit the `RestartOnFailure` element entirely (Task Scheduler default is
+  no-restart) in `deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1` and `emitter_task_template.xml`; updated
+  the two `MANIFEST.json` hashes; added regression + a Windows `schtasks` host-parity validator under
+  `deploy/copier-emitter/tests/`.
+- **RULE-9 lineage:** source review + PowerShell `ParseFile` both passed because `ParseFile` does NOT validate the
+  embedded Task Scheduler XML — only the real `schtasks` validator rejects it. The host-parity validator closes
+  that gap and MUST be run on a scratch Windows box / CI Windows runner before the next install attempt.
+- **Still open / NOT done:** the corrected bundle has NOT been re-vendored or re-installed; the PR is open with
+  auto-merge OFF, STOP before merge. Re-running the DARK Option-C disabled install is a separate packet-008
+  follow-up (Sponsor-gated). Deployed backend unchanged at `fb4ee402`.
+
 ## 🟡 Copy Trading host emitter — repository-only, DARK, NOT installed (GFX-COPIER-HOST-EMITTER-BUILD-006 / ADR-0077, 2026-11-05)
 
 - **Nothing is installed or armed.** The emitter is a repository artefact (`deploy/copier-emitter/` + the

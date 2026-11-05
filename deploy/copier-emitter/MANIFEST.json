@@ -17,11 +17,11 @@
   },
   "files": {
     "run_emitter.py": "10f88be54f407c5f5389042dd63629affae9aca21b60524121e0788b04c5377d",
-    "Install-GuvfxCopierEmitter.ps1": "2940e4dbbedfbfb20eb645a6912b7c9bd24ae4ee46cb92bf12841de8fe061988",
+    "Install-GuvfxCopierEmitter.ps1": "87023dc2148e0db4b93ec6635c27681188422d89506d111e983c5d7437ca29f0",
     "Uninstall-GuvfxCopierEmitter.ps1": "8512ed4147235beb52ec7ebd1fdab4759cdb82c8a53831ffe1c5d31008140570",
     "Status-GuvfxCopierEmitter.ps1": "8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",
     "Attest-GuvfxCopierEmitter.ps1": "cccbf1416ed5c798f2c6b62320b588194ee64fdbbfce31fbd99c79ae6cf63378",
-    "emitter_task_template.xml": "51c88ef13790b7ca3ab2c43a14f5ceb0a1f5bc54fb88ab55a1f3300d23ec8ce9",
+    "emitter_task_template.xml": "76f2eec7b7fedf13ae1b407b6177a99a3220055504d0a804404260a78130a724",
     "config.template.json": "56f1bd86e6ba23314b32262b442190e5f998a1cfee6dac0c0ebd9a55f5662d85",
     "README.md": "c7553625a47bc54f60326abb42ade10d81f2c44000b5beb8b69da1819e04d52f"
   },
