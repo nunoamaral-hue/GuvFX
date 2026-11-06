@@ -2,6 +2,25 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading one-shot attestation — operator wrapper prepared, NOT executed (GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021 / ADR-0077, 2026-11-06)
+
+- **Why it exists.** Packet-020 (the one-shot attestation) halted at preflight: the emitter's `COPIER_INGEST_HMAC_KEY`
+  and `GUVFX_AGENT_TOKEN` are not provisioned on the host, and an agent must not provision/handle production secrets.
+  This wrapper lets a HUMAN operator enter the secrets locally over RDP so the attestation can run without any agent
+  touching a secret.
+- **Still PENDING.** The wrapper is repository tooling only — not executed, not run against production. Running it is a
+  separate Sponsor-gated step (the attestation packet) using `docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md`. The
+  operator must have the emitter credentials to enter (the `COPIER_INGEST_HMAC_KEY` value must match the backend's, or
+  verification returns 401 bad_signature).
+- **Numeric-fidelity caveat.** The wrapper parses the emitter's attest output and re-serializes the `envelope` for the
+  POST; a JSON round-trip that alters a signed numeric value (e.g. the float timestamp) would cause a `bad_signature`
+  rejection. Validate `verified`=200 on the Windows Pester mock and on the real run; fallback is a restricted-ACL
+  temp-file verbatim read (never printed). Behavioural Pester test + mock emitter/verifier require a Windows + Pester
+  runner (not CI); CI runs the Python static/mutation-killing assertions only.
+- **Durable follow-up.** Production-grade continuous operation must use an approved secret store (Windows Credential
+  Manager / DPAPI or a governed service identity), not interactive entry. `GUVFX_AGENT_TOKEN` remains scheduled for
+  project-closure rotation and must never be displayed or copied.
+
 ## 🟡 Broker-Intelligence Stream C — public withdrawal intelligence repository-only, DARK, UNCERTIFIED (GFX-BROKER-INTELLIGENCE-STREAM-C-004 / ADR-0080, 2026-11-06)
 
 - **The whole public surface is DARK and UNPOPULATED.** The endpoint 404s until

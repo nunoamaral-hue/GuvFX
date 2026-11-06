@@ -18,6 +18,7 @@ _ROOT = Path(__file__).resolve().parents[3]
 _BUNDLE = _ROOT / "deploy" / "copier-emitter"
 _PS1 = sorted(_BUNDLE.glob("*.ps1"))
 _PARITY = _BUNDLE / "tests" / "Test-TaskXmlSchtasksParity.ps1"
+_OPWRAP = _BUNDLE / "operator" / "Invoke-GuvfxCopierOneShotAttestation.ps1"
 _ORDER_VERBS = ("order_send", "place_order", "ordersend", "broker_order", "close_position", "modify_position")
 _SECRET_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
 
@@ -260,3 +261,123 @@ class ParityValidatorPs51FixTests(SimpleTestCase):
         self.assertNotIn("PT0M", t)                                  # the literal never appears in the asset
         self.assertIn("finally", t)                                  # self-clean on success and failure
         self.assertIn("PARITYTEST", t)                               # non-production task name
+
+
+class OperatorWrapperTests(SimpleTestCase):
+    """GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021 - the human-operated one-shot attestation wrapper must enter
+    secrets interactively (never as arguments), expose them to the child emitter process ONLY, submit exactly one
+    envelope with no retry, never print the envelope/signature, always clean up, and never touch the scheduled
+    task. These are source-level (mutation-killing) assertions; the behavioural mock test runs on a Windows runner."""
+
+    def _t(self):
+        return _OPWRAP.read_text()
+
+    def test_present_ascii_no_bom_ps51(self):
+        self.assertTrue(_OPWRAP.exists(), "operator wrapper missing")
+        data = _OPWRAP.read_bytes()
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf"), "BOM in operator wrapper")
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII byte in operator wrapper")
+        self.assertIn("#Requires -Version 5.1", self._t())
+        self.assertFalse(_SECRET_RE.search(self._t()), "secret-looking literal in operator wrapper")
+
+    def test_no_secret_parameters(self):
+        t = self._t()
+        # the param() block must not accept a secret/key/token/password as an argument
+        head = t.split("$ErrorActionPreference", 1)[0]
+        for bad in ("$IngestKey", "$HmacKey", "$Secret", "$Token", "$AgentToken", "$Password", "$ApiKey"):
+            self.assertNotIn(bad, head, f"operator wrapper must not take {bad} as a parameter")
+
+    def test_secrets_entered_non_echoing(self):
+        t = self._t()
+        self.assertGreaterEqual(t.count("Read-Host -AsSecureString"), 2, "both secrets must use non-echoing prompts")
+        self.assertIn("SecureStringToBSTR", t)   # SecureString -> plaintext only for child env injection
+        self.assertIn("ZeroFreeBSTR", t)         # BSTR zeroed after use
+
+    def test_secret_injected_into_child_env_only_not_persisted(self):
+        t = self._t()
+        self.assertIn("$psi.EnvironmentVariables.Add($ingestEnvName, $plainKey)", t)
+        self.assertIn("$psi.EnvironmentVariables.Add($agentEnvName, $plainToken)", t)
+        self.assertIn("$psi.UseShellExecute = $false", t)
+        # must NOT persist a secret anywhere
+        self.assertNotIn("[Environment]::SetEnvironmentVariable", t, "must not write persistent env")
+        self.assertNotIn("Set-ItemProperty", t, "must not write the registry")
+        self.assertNotIn("Out-File", t)
+        self.assertNotIn("Set-Content", t)
+        self.assertNotIn("Export-Clixml", t)
+
+    def test_secret_never_in_process_arguments(self):
+        t = self._t()
+        # the child Arguments line carries only the entrypoint + config path, never a secret variable
+        arg_lines = [ln for ln in t.splitlines() if "$psi.Arguments" in ln]
+        self.assertTrue(arg_lines, "no Arguments assignment found")
+        for ln in arg_lines:
+            self.assertNotIn("$plainKey", ln)
+            self.assertNotIn("$plainToken", ln)
+
+    def test_exactly_one_emitter_invocation_and_one_post_no_retry(self):
+        t = self._t()
+        self.assertEqual(t.count("[System.Diagnostics.Process]::Start("), 1, "exactly one emitter invocation")
+        self.assertEqual(t.count("Invoke-WebRequest"), 1, "exactly one HTTP submission")
+        # the actual emitter invocation (the $psi.Arguments assignment) uses attest mode ONLY - checked on the
+        # invocation line, not the whole file (the header comment legitimately names the forbidden modes)
+        arg_lines = [ln for ln in t.splitlines() if "$psi.Arguments" in ln]
+        self.assertTrue(arg_lines, "no $psi.Arguments assignment found")
+        for ln in arg_lines:
+            self.assertIn("attest --config", ln)
+            self.assertNotIn("observe", ln)
+            self.assertNotIn("run --config", ln)
+            self.assertNotIn("delivery", ln)
+        # no retry loop around the submission
+        post_idx = t.index("Invoke-WebRequest")
+        window = t[max(0, post_idx - 400):post_idx]
+        self.assertNotRegex(window, r"\b(for|foreach|while|do)\b", "no retry loop around the single POST")
+
+    def test_envelope_and_secrets_never_printed(self):
+        t = self._t()
+        self.assertNotIn("Write-Output $envelopeJson", t)
+        self.assertNotIn("Write-Host", t)
+        self.assertNotIn("Write-Output $stdout", t)
+        # the envelope is explicitly kept in-memory only
+        self.assertIn("NEVER printed", t)
+        # the only structured result is the redacted ordered dict
+        self.assertIn("Write-RedactedResult", t)
+        self.assertIn("reason_code", t)
+        # the signature is read only to validate presence, never emitted to output
+        self.assertNotIn("Write-RedactedResult $result", t)
+        self.assertNotIn("$envelopeJson }", t.split("Write-RedactedResult", 1)[0])
+
+    def test_transcription_and_tracing_guards(self):
+        t = self._t()
+        self.assertIn("EnableTranscripting", t)
+        self.assertIn("Stop-Transcript", t)
+        self.assertIn("Set-PSDebug -Off", t)
+        self.assertIn("VerbosePreference", t)
+        self.assertIn("DebugPreference", t)
+
+    def test_finally_cleanup_and_task_untouched(self):
+        t = self._t()
+        self.assertIn("finally", t)
+        tail = t.rsplit("finally", 1)[1]
+        self.assertIn("$plainKey = $null", tail)
+        self.assertIn("$plainToken = $null", tail)
+        self.assertIn("Dispose", tail)
+        # the wrapper never invokes schtasks or any scheduled-task cmdlet (real calls, not comment mentions)
+        self.assertNotIn("schtasks", t, "wrapper must not invoke schtasks")
+        for cmd in ("Register-ScheduledTask", "Start-ScheduledTask", "Enable-ScheduledTask", "Set-ScheduledTask"):
+            self.assertNotIn(cmd, t, f"wrapper must not touch the scheduled task ({cmd})")
+
+    def test_mock_assets_present_ascii_and_synthetic(self):
+        me = _BUNDLE / "operator" / "tests" / "mock_emitter.py"
+        pe = _BUNDLE / "operator" / "tests" / "Test-OperatorWrapper.Tests.ps1"
+        for f in (me, pe):
+            self.assertTrue(f.exists(), f"mock asset missing: {f.name}")
+            data = f.read_bytes()
+            self.assertFalse(data.startswith(b"\xef\xbb\xbf"), f"BOM in {f.name}")
+            self.assertTrue(all(b <= 0x7F for b in data), f"non-ASCII in {f.name}")
+            text = f.read_text()
+            self.assertFalse(_SECRET_RE.search(text), f"secret-looking literal in {f.name}")
+            self.assertIn("SYNTHETIC", text.upper())                 # explicitly synthetic
+            self.assertNotIn("api.guvfx.com", text, f"{f.name} must not reference a real endpoint")
+            self.assertNotIn("100.79.101.19", text)                  # no real host
+        # the mock verifier is loopback-only
+        self.assertIn("127.0.0.1", pe.read_text())
