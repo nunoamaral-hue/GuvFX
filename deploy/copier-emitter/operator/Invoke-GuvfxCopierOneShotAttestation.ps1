@@ -1,14 +1,15 @@
 #Requires -Version 5.1
 # ASCII-only. GuvFX Copy Trading - secure HUMAN-OPERATED one-shot IDENTITY-attestation wrapper (ADR-0077;
-# GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021). Repository tooling: NOT installed, NOT scheduled, NOT run by any
+# GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021/022). Repository tooling: NOT installed, NOT scheduled, NOT run by any
 # agent. A human operator runs it locally over RDP during the verifier's temporary ON window.
 #
 # It: (1) refuses to run under active/forced PowerShell transcription or Verbose/Debug tracing; (2) prompts for the
 # emitter secrets with NON-ECHOING secure prompts (never as arguments); (3) invokes `run_emitter.py attest` EXACTLY
 # ONCE, injecting the secrets into the CHILD PROCESS ENVIRONMENT ONLY (never Machine/User env, registry, task XML,
-# config, disk, history or logs), capturing the envelope INTERNALLY; (4) validates exactly one well-formed envelope,
-# then POSTs it to the verifier ONCE (in-memory body, no retry); (5) prints ONLY a redacted result; (6) ALWAYS clears
-# secrets in a finally block and leaves the scheduled task unchanged/disabled.
+# config, disk, history or logs), capturing stdout INTERNALLY; (4) validates on a SEPARATE in-memory parse that the
+# output is exactly one well-formed attest envelope (account 46, expected server), then submits the emitter's ORIGINAL
+# envelope bytes VERBATIM (no deserialize/re-serialize) in one in-memory POST, NO retry; (5) prints ONLY a redacted
+# result; (6) ALWAYS clears secrets + the envelope in a finally block and leaves the scheduled task unchanged/disabled.
 #
 # It NEVER enables/runs the scheduled task, runs observe/observe-once/run/delivery modes, or prints the envelope,
 # HMAC signature, agent token or broker login.
@@ -30,6 +31,32 @@ if ($VerbosePreference -ne 'SilentlyContinue' -or $DebugPreference -ne 'Silently
 }
 
 function Write-RedactedResult($obj) { $obj | ConvertTo-Json -Compress }
+
+# Return the EXACT bytes of the top-level "envelope" object value, verbatim as the emitter serialized it (brace scan
+# that respects JSON string literals + escapes). We submit THIS verbatim - never a deserialize/re-serialize, so
+# formatting, property order and large integers survive byte-for-byte and the HMAC signature always verifies.
+function Get-EnvelopeSubstring([string]$raw) {
+    $marker = '"envelope"'
+    $mi = $raw.IndexOf($marker)
+    if ($mi -lt 0) { throw 'emitter output has no envelope (no POST).' }
+    $bi = $raw.IndexOf('{', $mi + $marker.Length)
+    if ($bi -lt 0) { throw 'emitter envelope is not an object (no POST).' }
+    $depth = 0; $inStr = $false; $esc = $false; $end = -1
+    for ($i = $bi; $i -lt $raw.Length; $i++) {
+        $ch = $raw[$i]
+        if ($inStr) {
+            if ($esc) { $esc = $false }
+            elseif ($ch -eq '\') { $esc = $true }
+            elseif ($ch -eq '"') { $inStr = $false }
+        } else {
+            if ($ch -eq '"') { $inStr = $true }
+            elseif ($ch -eq '{') { $depth++ }
+            elseif ($ch -eq '}') { $depth--; if ($depth -eq 0) { $end = $i; break } }
+        }
+    }
+    if ($end -lt 0) { throw 'emitter envelope braces unbalanced (no POST).' }
+    return $raw.Substring($bi, $end - $bi + 1)
+}
 
 # --- transcription guard: fail closed if a transcript could capture secrets ---
 $txPolicy = $null
@@ -62,7 +89,7 @@ if (-not $AssumeYes) {
 }
 
 # --- cleanup-tracked state (initialised before the try so the finally is StrictMode-safe) ---
-$plainKey = $null; $plainToken = $null; $envelopeJson = $null
+$plainKey = $null; $plainToken = $null; $envelopeRaw = $null; $bodyBytes = $null
 $keySS = $null; $tokenSS = $null; $proc = $null; $stdout = $null; $stderr = $null
 try {
     # non-echoing secret entry; never as arguments, never echoed
@@ -95,22 +122,34 @@ try {
     $plainKey = $null; $plainToken = $null   # child has them; drop the parent copies immediately
 
     if ($proc.ExitCode -ne 0) { throw ('emitter attest exited ' + $proc.ExitCode + ' (no POST).') }
-    # parse EXACTLY ONE well-formed attest result; the envelope is NEVER written to output
+
+    # VALIDATION on a SEPARATE in-memory parse (never used as the request body). The stdout must be EXACTLY one
+    # JSON object - reject multiple/prefixed/suffixed output before any POST.
+    $trimmed = $stdout.Trim()
+    if ($trimmed.Length -lt 2 -or $trimmed[0] -ne '{' -or $trimmed[$trimmed.Length - 1] -ne '}') {
+        throw 'emitter stdout is not a single JSON object (no POST).'
+    }
     $result = $null
-    try { $result = $stdout | ConvertFrom-Json } catch { throw 'emitter output was not a single valid JSON object (no POST).' }
-    if ($null -eq $result) { throw 'empty emitter output (no POST).' }
+    try { $result = $trimmed | ConvertFrom-Json } catch { throw 'emitter output was not a single valid JSON object (no POST).' }
+    if ($null -eq $result -or ($result -is [array])) { throw 'emitter output was not a single JSON object (no POST).' }
     if (-not $result.ok -or [string]$result.mode -ne 'attest') { throw 'emitter did not produce an ok attest result (no POST).' }
     if ($null -eq $result.envelope -or $null -eq $result.envelope.signed -or $null -eq $result.envelope.signature) {
         throw 'emitter output missing envelope/signed/signature (no POST).'
     }
     if ([int]$result.envelope.signed.account_id -ne 46) { throw 'envelope account_id mismatch (no POST).' }
-    $envelopeJson = ($result.envelope | ConvertTo-Json -Depth 8 -Compress)   # in-memory only; NEVER printed
+    if (@('Tradersway-Live', 'TradersWay-Live') -notcontains [string]$result.envelope.signed.broker_server) {
+        throw 'envelope broker_server mismatch (no POST).'
+    }
+
+    # VERBATIM body: extract the emitter's original envelope bytes; do NOT deserialize/re-serialize. Never printed.
+    $envelopeRaw = Get-EnvelopeSubstring $stdout
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($envelopeRaw)
 
     # submit EXACTLY ONCE; in-memory body; NO automatic retry
     $reqTs = (Get-Date).ToUniversalTime().ToString('o')
     $httpStatus = 0; $verified = $false; $reasonCode = 'no_response'; $corr = ''
     try {
-        $resp = Invoke-WebRequest -Uri $VerifierUrl -Method Post -Body $envelopeJson -ContentType 'application/json' `
+        $resp = Invoke-WebRequest -Uri $VerifierUrl -Method Post -Body $bodyBytes -ContentType 'application/json' `
             -TimeoutSec $TimeoutSeconds -UseBasicParsing
         $httpStatus = [int]$resp.StatusCode
         $rj = $null; try { $rj = $resp.Content | ConvertFrom-Json } catch { $rj = $null }
@@ -120,13 +159,13 @@ try {
         if ($wr) { $httpStatus = [int]([int]$wr.StatusCode); $reasonCode = ('http_' + $httpStatus) }
         else { $reasonCode = 'network_error' }
     }
-    $envelopeJson = $null
+    $envelopeRaw = $null; $bodyBytes = $null
     Write-RedactedResult ([ordered]@{ account_id = 46; http_status = $httpStatus; verified = $verified;
             reason_code = $reasonCode; request_ts = $reqTs; correlation_id = $corr })
 }
 finally {
     # ALWAYS: clear secrets + in-memory copies; dispose; leave the scheduled task untouched; no temp file was created
-    $plainKey = $null; $plainToken = $null; $envelopeJson = $null; $stdout = $null; $stderr = $null
+    $plainKey = $null; $plainToken = $null; $envelopeRaw = $null; $bodyBytes = $null; $stdout = $null; $stderr = $null
     if ($keySS) { try { $keySS.Dispose() } catch { } }
     if ($tokenSS) { try { $tokenSS.Dispose() } catch { } }
     if ($proc) {

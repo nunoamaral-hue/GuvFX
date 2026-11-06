@@ -67,6 +67,13 @@ Describe 'operator one-shot attestation wrapper (synthetic)' {
         # exactly one request reached the verifier, and it carried the envelope (not on a command line)
         @($body).Count | Should -Be 1
         $body | Should -Match 'signed'
+        # BYTE-PRESERVATION: the large integer survives verbatim (a deserialize/re-serialize would have turned
+        # 9007199254740993 into a float / scientific notation and broken the HMAC signature).
+        $body | Should -Match '9007199254740993'
+        $body | Should -Match 'SYNTHETIC_SIGNATURE_NOT_A_REAL_HMAC'   # signature byte-identical in the submitted body
+        # the submitted body is exactly one envelope object (no parent result wrapper, no prefix/suffix)
+        $body.Trim().StartsWith('{') | Should -BeTrue
+        $body | Should -Not -Match '"ok"'   # the parent result's fields are NOT in the submitted body
     }
 
     It 'does NOT POST when the emitter output is malformed (fail before submission)' {

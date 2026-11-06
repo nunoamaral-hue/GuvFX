@@ -49,6 +49,7 @@ def main(argv=None):
             "terminal_fp": "synthetic_terminal_fp", "bridge_id": "synthetic_bridge",
             "config_digest": "synthetic_digest", "observed_login_fp": "", "nonce": "synthetic_nonce_0001",
             "timestamp": 1.0, "expiry": 2.0,
+            "synthetic_big_int": 9007199254740993,
         },
         "signature": "SYNTHETIC_SIGNATURE_NOT_A_REAL_HMAC",
     }

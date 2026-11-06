@@ -12,11 +12,12 @@ List active problems with reproduction steps and workarounds.
   separate Sponsor-gated step (the attestation packet) using `docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md`. The
   operator must have the emitter credentials to enter (the `COPIER_INGEST_HMAC_KEY` value must match the backend's, or
   verification returns 401 bad_signature).
-- **Numeric-fidelity caveat.** The wrapper parses the emitter's attest output and re-serializes the `envelope` for the
-  POST; a JSON round-trip that alters a signed numeric value (e.g. the float timestamp) would cause a `bad_signature`
-  rejection. Validate `verified`=200 on the Windows Pester mock and on the real run; fallback is a restricted-ACL
-  temp-file verbatim read (never printed). Behavioural Pester test + mock emitter/verifier require a Windows + Pester
-  runner (not CI); CI runs the Python static/mutation-killing assertions only.
+- **Byte-preservation (hardened, packet-022).** The wrapper now submits the emitter's ORIGINAL envelope bytes
+  VERBATIM (a brace-scan extraction of the `envelope` object from stdout) and parses only a SEPARATE copy to validate;
+  it does NOT deserialize/re-serialize the request body, so formatting, property order and large integers survive
+  byte-for-byte and the HMAC signature always verifies. Still confirm `verified` (HTTP 200) on the Windows Pester mock
+  and on the real run. The behavioural Pester test + mock emitter/verifier require a Windows + Pester runner (not CI);
+  CI runs the Python static/mutation-killing assertions only.
 - **Durable follow-up.** Production-grade continuous operation must use an approved secret store (Windows Credential
   Manager / DPAPI or a governed service identity), not interactive entry. `GUVFX_AGENT_TOKEN` remains scheduled for
   project-closure rotation and must never be displayed or copied.

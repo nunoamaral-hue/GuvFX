@@ -330,21 +330,34 @@ class OperatorWrapperTests(SimpleTestCase):
         # no retry loop around the submission
         post_idx = t.index("Invoke-WebRequest")
         window = t[max(0, post_idx - 400):post_idx]
-        self.assertNotRegex(window, r"\b(for|foreach|while|do)\b", "no retry loop around the single POST")
+        # actual loop SYNTAX (not the English word "do" in a comment) around the single POST
+        self.assertNotRegex(window, r"(for|foreach|while)\s*\(|\bdo\s*\{", "no retry loop around the single POST")
 
     def test_envelope_and_secrets_never_printed(self):
         t = self._t()
-        self.assertNotIn("Write-Output $envelopeJson", t)
         self.assertNotIn("Write-Host", t)
         self.assertNotIn("Write-Output $stdout", t)
-        # the envelope is explicitly kept in-memory only
-        self.assertIn("NEVER printed", t)
-        # the only structured result is the redacted ordered dict
+        self.assertNotIn("Write-Output $envelopeRaw", t)
+        self.assertNotIn("Write-Output $result", t)
+        # the only structured output is the redacted ordered dict (no sensitive field in it)
         self.assertIn("Write-RedactedResult", t)
         self.assertIn("reason_code", t)
-        # the signature is read only to validate presence, never emitted to output
         self.assertNotIn("Write-RedactedResult $result", t)
-        self.assertNotIn("$envelopeJson }", t.split("Write-RedactedResult", 1)[0])
+
+    def test_verbatim_envelope_post_no_reserialize(self):
+        t = self._t()
+        # body = the emitter's ORIGINAL envelope bytes, extracted verbatim - never a deserialize/re-serialize
+        self.assertIn("function Get-EnvelopeSubstring", t)
+        self.assertIn("$envelopeRaw = Get-EnvelopeSubstring $stdout", t)
+        self.assertIn("[System.Text.Encoding]::UTF8.GetBytes($envelopeRaw)", t)
+        self.assertIn("-Body $bodyBytes", t)
+        self.assertNotIn("$result.envelope | ConvertTo-Json", t, "must not re-serialize the envelope for the body")
+        self.assertNotIn("$envelopeJson", t, "the re-serialized body variable must be gone")
+        # validation parses a SEPARATE copy (the trimmed stdout), not the submitted body
+        self.assertIn("$trimmed | ConvertFrom-Json", t)
+        # single-object / no-extra-content guard: reject multiple / prefixed / suffixed stdout before POST
+        self.assertIn("single JSON object", t)
+        self.assertIn("-is [array]", t)
 
     def test_transcription_and_tracing_guards(self):
         t = self._t()
