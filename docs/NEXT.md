@@ -1,6 +1,27 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ BROKER-INTELLIGENCE STREAM B (2026-11-06; GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only PR)
+## ★ BROKER-INTELLIGENCE STREAM C (2026-11-06; GFX-BROKER-INTELLIGENCE-STREAM-C-004; ADR-0080; repository-only PR)
+Privacy-safe PUBLIC broker withdrawal intelligence, built ADDITIVELY on the `broker_public` engine, off main
+`4408241733` (Stream B). A central disclosure layer (reason codes, complete 11-status lifecycle map, text/URL safety,
+date coarsening, stage-interval chokepoint, k-anon cohort gate), a live read-only aggregation contract (three SEPARATE
+lifecycle-stage durations never combined, per-stage winsorise + distinct-contributor floor, outcome rates over an
+explicit terminal denominator with the rate groups k-anonymised, unconditional small-bucket suppression), a DARK
+endpoint + DARK-graceful page + `robots.ts`, hardened `_broker_json`, and an idempotent `seed_public_broker_pages`
+command (Pepperstone/Dominion Markets/Vantage/TradersWay, `is_published=False`). NO migration. `broker_public` 64
+tests OK; full backend 881 OK; frontend eslint/build OK + vitest 3/3; 12-lens adversarial review ⇒ 11 CONFIRMED
+findings all fixed + regression-pinned. DARK/default-OFF; nothing certified/published/deployed; no real
+withdrawal/Gmail/broker/MT5/NAS/Wayond; no prod/dev-DB mutation.
+**One bounded next action:** governed review and, on a NEW Sponsor merge GO, the pinned squash-merge of the
+repository-only PR. SEPARATE / Sponsor-gated, NOT in scope: broker certification (governance path) + editorial
+publication + arming `BROKER_PUBLIC_WITHDRAWAL_INTELLIGENCE_ENABLED`; and Stream D (ADR-0081).
+
+## ★ BROKER-INTELLIGENCE STREAM B — MERGED 2026-11-06 (PR #618 squash `4408241733`; GFX-...-STREAM-B-002; ADR-0079)
+Explicit withdrawal lifecycle (CONFIRMATION_REQUIRED/CONFIRMED/EXPIRED/FAILED + stage timestamps; migrations
+0025/0026), a neutral advance-only correlation pass (2b), and three DARK deterministic adapters (Pepperstone,
+Dominion Markets, Vantage). Repository-only, DARK; now the base for Stream C. SEPARATE / Sponsor-gated, NOT done:
+operator verification + activation (`is_active=True`) of the three broker-config rows against genuine broker email.
+
+## ★ BROKER-INTELLIGENCE STREAM B (superseded entry — see MERGED above; GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only PR)
 Explicit withdrawal lifecycle (CONFIRMATION_REQUIRED/CONFIRMED/EXPIRED/FAILED + stage timestamps; migrations
 0025/0026), a neutral advance-only correlation pass (2b), and three DARK deterministic adapters (Pepperstone,
 Dominion Markets, Vantage) with a PII-free Pepperstone GBP-15 confirmation-required scenario. Off main `687bcbb3`;

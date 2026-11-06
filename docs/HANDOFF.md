@@ -1,5 +1,64 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-06 — Broker-Intelligence Stream C: privacy-safe public withdrawal intelligence (GFX-BROKER-INTELLIGENCE-STREAM-C-004; ADR-0080; repository-only; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-BROKER-INTELLIGENCE-STREAM-C
+Packet ID: GFX-BROKER-INTELLIGENCE-STREAM-C-004
+Status: PASS (PR ready; auto-merge OFF; CI monitor + scoped auto-fix ON; STOP before merge)
+
+Initial branch/HEAD/status: feat/broker-intelligence-stream-c off main 4408241733 (Stream B merge #618); clean worktree
+Convergence base: 4408241733 (current main = Stream B merge #618)
+Convergence branch: feat/broker-intelligence-stream-c
+Preservation cherry-pick commit: None (additive branch; no history rewrite)
+Governance commit: see PR
+
+Verified facts (observed):
+- Canonical main = 4408241733ab069bee43d856a8fe50bcbf2a7d84 (Stream A ADR-0078 + Stream B ADR-0079 present).
+- ADR-0080 free in BOTH docs/ADRs/ and docs/architecture/; no competing Stream C branch.
+- NO schema change / NO migration (makemigrations --check clean for broker_public + broker_intelligence).
+- broker_public 64 tests OK (28 pre-existing preserved + new); full backend 881 OK (skipped 14); ADR governance 3 OK
+  (ADR-0080 unique). Frontend: eslint 0 errors; next build exit 0 (parity OK, /robots.txt + new route emitted);
+  Stream C vitest 3/3. (Full frontend vitest suite has a LOCAL Node-25 jsdom/localStorage incompatibility on
+  UNRELATED dashboard tests — runs green on CI's LTS Node; the sibling Stream B passed CI.)
+- 12-lens adversarial review (Workflow, 26 agents): 11 CONFIRMED findings, ALL fixed + regression-pinned.
+
+Files added:
+  backend/broker_public/disclosure.py; withdrawal_intelligence.py;
+  management/__init__.py, management/commands/__init__.py, management/commands/seed_public_broker_pages.py;
+  tests_withdrawal_intelligence.py, tests_public_withdrawal_intelligence_api.py, tests_seed_public_broker_pages.py;
+  frontend/src/app/robots.ts; frontend/src/app/(public)/brokers/[slug]/withdrawal-intelligence/page.tsx + page.test.tsx;
+  docs/ADRs/0080-public-withdrawal-intelligence-aggregates.md; evidence/manifests/GFX-EVD-BROKER-INTELLIGENCE-STREAM-C.json
+Files modified:
+  backend/broker_public/flags.py (new DARK flag), views.py (new DARK view + _broker_json text hardening),
+  urls.py (new route); frontend/parity/routes.json (register new route);
+  docs/STATUS.md, HANDOFF.md, NEXT.md, KNOWN_ISSUES.md
+
+Assumptions / deviations (flagged):
+- Live compute-on-read for the new endpoint (not stored BrokerMetricAggregate) — read-only, no write path / scheduler;
+  throttled; acceptable while DARK (ADR-0080 §Deviations).
+- Small-bucket k-anon made UNCONDITIONAL in Stream C (independent of BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED), so the
+  page's privacy claim is always true (review fix for findings #2/#5).
+- NOT changed (recommended follow-ups): the EXISTING WITHDRAWAL_PROCESSING _aggregate_json still emits exact
+  last_update/window_end timestamps (behaviour-preserving; coarsening it is a separate change). Arming the minority
+  flag by default is a PM/Sponsor (Amber) decision, not flipped here.
+
+Exact tests/validation run:
+  cd backend && .venv/bin/python manage.py test broker_public            -> 64 OK
+  cd backend && .venv/bin/python manage.py test broker_public broker_intelligence core.tests_adr_governance -> 881 OK (skipped 14)
+  cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_public broker_intelligence -> No changes
+  frontend: npx eslint .        -> 0 errors (18 pre-existing warnings, none in Stream C files)
+  frontend: npm run build       -> exit 0 (WP4.1 parity OK; /robots.txt + /brokers/[slug]/withdrawal-intelligence emitted)
+  frontend: npx vitest run <withdrawal-intelligence page.test.tsx> -> 3/3
+  Adversarial review: Workflow stream-c-adversarial-review (12 lenses, each finding adversarially verified)
+
+One bounded next action: governed review and, on a NEW Sponsor merge GO, the pinned squash-merge of the
+  repository-only PR. SEPARATE / Sponsor-gated, NOT in scope: broker certification (governance) + editorial
+  publication + arming the flag; and Stream D (ADR-0081).
+```
+
 ## 2026-11-06 — Broker-Intelligence Stream B: explicit withdrawal lifecycle + 3 adapters (GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only; DARK; PR; NOT merged)
 
 ```

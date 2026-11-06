@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-BROKER-INTELLIGENCE-STREAM-C",
+  "packet_id": "GFX-BROKER-INTELLIGENCE-STREAM-C-004",
+  "created_at_utc": "2026-11-06T08:00:00Z",
+  "branch": "feat/broker-intelligence-stream-c",
+  "base_commit": "4408241733ab069bee43d856a8fe50bcbf2a7d84",
+  "head_commit": null,
+  "environment": {
+    "stream": "C — privacy-safe public broker withdrawal intelligence (aggregated evidence)",
+    "mode": "repository-only / synthetic-only / DARK (default-OFF)",
+    "adr": "docs/ADRs/0080-public-withdrawal-intelligence-aggregates.md (0080; free in both ADR dirs)",
+    "schema_change_or_migration": false,
+    "real_withdrawal_ingestion_or_action": false,
+    "gmail_or_mailbox_access": false,
+    "broker_portal_or_account_access": false,
+    "broker_certification_or_publication": false,
+    "credentials_tokens_or_personal_identifiers": false,
+    "production_or_dev_db_mutation": false,
+    "deployment_or_service_restart": false,
+    "public_pages_or_api_published": false,
+    "wayond_mt5_nas_tailscale_change": false,
+    "stream_d_begun": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test covers broker_public + broker_intelligence + ADR governance) + frontend (lint/build/vitest)"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test broker_public -v1",
+    "cd backend && .venv/bin/python manage.py test broker_public broker_intelligence core.tests_adr_governance -v1",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_public broker_intelligence",
+    "cd frontend && npx eslint .",
+    "cd frontend && npm run build",
+    "cd frontend && npx vitest run 'src/app/(public)/brokers/[slug]/withdrawal-intelligence/page.test.tsx'",
+    "python3 scripts/check_no_secrets.py",
+    "Workflow stream-c-adversarial-review (12 lenses over the full diff, each finding adversarially verified)"
+  ],
+  "expected_results": [
+    "A PUBLIC broker withdrawal-intelligence contract exposes ONLY aggregate-only, reason-coded evidence (three SEPARATE lifecycle-stage durations never combined; lifecycle outcome rates over an explicit terminal denominator; sample sufficiency; methodology; limitations) and NEVER a member identity, owner/user id, account number, withdrawal reference, message id, raw amount, exact (sub-day) timestamp, or unsanitised free text.",
+    "Fail-closed on every axis: an unkeyed/ambiguous or uncertified broker is UNAVAILABLE; a cohort below the floors (>= 3 distinct contributors, >= 5 observations, >= 5 completed for a speed figure) returns SUPPRESSED/PARTIAL/UNAVAILABLE with a reason code, never zero or fabricated data; every new surface is DARK/default-OFF (404 until the flag AND editorial publication), and empty CERTIFIED_BROKERS in production means nothing publishes.",
+    "Privacy/attack resistance: a central disclosure layer provides k-anonymity (cohort AND small-bucket, applied UNCONDITIONALLY), single-account-dominance winsorisation at BOTH cohort and per-stage level, a per-stage distinct-contributor floor (a stage figure can never be one member's durations), rate-group k-anonymity (a rounded rate + published denominator cannot be inverted to a rare count), date-granular timestamps (no differencing on exact instants), a differencing-safe number-free stub for withheld cohorts, a complete 11-status lifecycle vocabulary (no silent 'unresolved' collapse), and text/URL safety (redact + HTML-escape + http(s) allow-list) on the new AND existing public broker fields.",
+    "No schema change / no migration; the foundation broker pages (Pepperstone, Dominion Markets, Vantage, TradersWay) and the WITHDRAWAL_INTELLIGENCE category are seeded DARK (is_published=False) by an idempotent management command that certifies/publishes nothing; a robots.ts prevents indexing while DARK; existing broker_public behaviour and tests are preserved.",
+    "Streams D (ADR-0081) is NOT begun."
+  ],
+  "actual_results": [
+    "broker_public suite: Ran 64 tests OK (28 pre-existing preserved + 36 new/updated across disclosure, aggregation, the adversarial fixture matrix, the API DARK/armed/certified paths, and the seed command). Full backend (broker_public + broker_intelligence + core.tests_adr_governance): Ran 881 tests OK (skipped 14). makemigrations --check: No changes detected in broker_public, broker_intelligence. core.tests_adr_governance: OK — ADR-0080 introduces no cross-directory duplicate.",
+    "Frontend: npx eslint . -> 0 errors (18 pre-existing warnings, none in Stream C files). npm run build -> exit 0 (WP4.1 parity OK after registering the new route in frontend/parity/routes.json; /robots.txt and /brokers/[slug]/withdrawal-intelligence emitted). Stream C vitest page.test.tsx -> 3/3.",
+    "Adversarial review (Workflow, 12 lenses, 26 agents, Ultracode): 11 unique findings, all CONFIRMED on verification, ALL fixed and each regression-pinned. Clusters: (HIGH) per-stage speed figure had no distinct-contributor floor (a stage median/count could be ONE member's exact durations) -> per-stage winsorisation + distinct-contributor floor added; (HIGH) small-bucket k-anon was gated behind a default-OFF flag while the page claimed it unconditionally -> Stream C suppression made UNCONDITIONAL; (HIGH) the outcome-rates channel (exact denominator + rounded pct) re-revealed k-anon-suppressed small terminal counts -> rate GROUPS now k-anonymised before any percentage is published; (MEDIUM) frontend rates card omitted the denominator/in-flight caveat -> denominator + caveat rendered; (LOW) fmtDuration rendered a real sub-minute median as '0m' -> now shows seconds. The one lens with no finding returned empty.",
+    "PII self-scan of the new output: the aggregate DTO contains no member identity/owner id/account/reference/amount key and no exact timestamp (window/freshness are date-granular 'YYYY-MM-DD'); asserted by tests_withdrawal_intelligence.test_output_is_pii_free_and_has_no_exact_timestamps and tests_public_withdrawal_intelligence_api.test_certified_published_path_is_aggregate_only. Secret scan: check_no_secrets -> no findings.",
+    "Containment: Stream C lives in broker_public (+ its ADR, evidence, docs, and the two frontend files + the parity manifest). It reuses broker_intelligence read-only (CERTIFIED_BROKERS, Provenance, Withdrawal, the aggregation engine) and changes no broker_intelligence code; it adds no model field and no migration."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / synthetic-only / DARK: no real withdrawal ingestion or action, no Gmail/mailbox access, no broker portal/account access, no broker certification or publication, no credentials/tokens/personal identifiers, no production or dev-DB mutation, no deployment/service restart, no public pages/API published. PR auto-merge OFF; NOT merged without a separate Sponsor merge GO.",
+    "The public surface is UNPOPULATED and fully DARK: the endpoint 404s until BROKER_PUBLIC_WITHDRAWAL_INTELLIGENCE_ENABLED is armed AND the broker is is_published, and with CERTIFIED_BROKERS empty (production default) every broker reports UNAVAILABLE/NOT_CERTIFIED. Broker certification (governance path), editorial publication, and arming the flag are separate, Sponsor/host-gated steps NOT in this packet.",
+    "Live compute-on-read for the new endpoint (no stored aggregate, no recompute scheduler, no cache) — read-only and always-fresh, throttled, acceptable while DARK; a cached/recompute path is a future step if armed at scale.",
+    "The EXISTING WITHDRAWAL_PROCESSING _aggregate_json still emits exact last_update/window_end timestamps (behaviour-preserved); only the NEW Stream C contract coarsens all timestamps. Arming BROKER_PUBLIC_MINORITY_SUPPRESSION_ENABLED by default is a PM/Sponsor (Amber) decision and is not flipped here (Stream C's own surface k-anonymises unconditionally regardless).",
+    "The full frontend vitest suite was NOT run to green locally: this host runs Node v25.2.1, whose Web Storage globals break jsdom's localStorage under vitest and fail UNRELATED dashboard tests (localization.test.tsx) on unchanged files. Stream C's own eslint, build, and vitest page tests are green locally; the full frontend suite is validated by CI (LTS Node). This is recorded rather than asserted as locally green.",
+    "Stream D (MT5 broker-quality telemetry + Wayond export, ADR-0081) is a separate PR and is NOT begun."
+  ],
+  "artefact_locations": [
+    "backend/broker_public/disclosure.py (central disclosure-control layer: reason codes, complete lifecycle vocab, text/URL safety, timestamp coarsening, stage-interval chokepoint, cohort k-anon gate, re-exported winsorise/suppress)",
+    "backend/broker_public/withdrawal_intelligence.py (live read-only aggregate: 3 separate stage durations with per-stage winsorise + distinct-contributor floor; k-anonymised outcome rates; unconditional small-bucket suppression; reason-coded states)",
+    "backend/broker_public/views.py (DARK PublicBrokerWithdrawalIntelligenceView; _broker_json free-text/URL hardening)",
+    "backend/broker_public/flags.py (new DARK flag broker_public_withdrawal_intelligence_enabled)",
+    "backend/broker_public/urls.py (new /api/public/brokers/<slug>/withdrawal-intelligence/ route)",
+    "backend/broker_public/management/commands/seed_public_broker_pages.py (idempotent DARK seed; certifies/publishes nothing)",
+    "backend/broker_public/tests_withdrawal_intelligence.py, tests_public_withdrawal_intelligence_api.py, tests_seed_public_broker_pages.py (new tests; adversarial fixture matrix + review regressions)",
+    "frontend/src/app/robots.ts (no-indexing of the DARK broker surface)",
+    "frontend/src/app/(public)/brokers/[slug]/withdrawal-intelligence/page.tsx + page.test.tsx (DARK-graceful page)",
+    "docs/ADRs/0080-public-withdrawal-intelligence-aggregates.md"
+  ],
+  "checksums": {
+    "backend/broker_public/disclosure.py": "sha256:12e120d7ccfc254b360856e1d4f4fcf2f3ee7f2563578e02212335f05bbdfb64",
+    "backend/broker_public/withdrawal_intelligence.py": "sha256:1a9ea75a00db98b4c9b2fe41f7259b8047e9b83be6d38272e4a2a19d41e1e00a",
+    "backend/broker_public/views.py": "sha256:1cdafb56a4e6bdcab1fd0cc4a35df008cfa28846832c653b3059ee68c11922ac",
+    "backend/broker_public/flags.py": "sha256:cf8da65c45c145db35675e0e67471ad692e19965e6eb2558fd30f578671ddd22",
+    "backend/broker_public/urls.py": "sha256:eb5e1c01596be662491fe26aea2058cbe8d02db9582fa5493049dbd64c7d3699",
+    "backend/broker_public/management/commands/seed_public_broker_pages.py": "sha256:db4772bb28ac63eed630150192ee64b993f59dd10775e7c5367eb6cb425d356e",
+    "backend/broker_public/tests_withdrawal_intelligence.py": "sha256:9caa0de0ee3803b5cad82cf278f9249a4fee36ee3260c62214ea06fcbd29747f",
+    "backend/broker_public/tests_public_withdrawal_intelligence_api.py": "sha256:2d8ffb1557c375f8c4d0ebf473c895b3d3f3ef8df918b48e0b27f8e81dc35b37",
+    "backend/broker_public/tests_seed_public_broker_pages.py": "sha256:e2060ed81ca9665e3741183562aa67ee9b627f4eff6232347d754a7b8f560cbc",
+    "frontend/src/app/robots.ts": "sha256:8d7f4b04b848a3b8ae1ac80cdf6050ad21faf8d91e7dedb394429a6b7ec26e3c",
+    "frontend/src/app/(public)/brokers/[slug]/withdrawal-intelligence/page.tsx": "sha256:6f0df4e601b955147b3a0d6397c53ef3fadbea02a49070550f87c88c080cc5e2",
+    "frontend/src/app/(public)/brokers/[slug]/withdrawal-intelligence/page.test.tsx": "sha256:e9e09f3fbf37fdfae7046f0edb997e6933e32a13110dbf7ba405e5823baa7a7d",
+    "docs/ADRs/0080-public-withdrawal-intelligence-aggregates.md": "sha256:a5bfd3726716ec55f476c521dc725db03494210bcd6541f0e8375a8e112be714"
+  },
+  "reviewer": "GFX-BROKER-INTELLIGENCE-STREAM-C-004 author self-review + a 12-lens adversarial Workflow review (privacy-leakage, small-cohort inference, differencing, cross-tenant isolation, timestamp semantics, lifecycle/denominator correctness, fabricated/misleading metrics, broker identity ambiguity, correction/supersession, API bypass, feature-flag bypass, migration/rollback/seed safety), every finding adversarially verified. 11 CONFIRMED findings (incl. 2 HIGH-bearing clusters) all fixed and regression-pinned. Broker certification against a genuine sample + arming the flag remain separate, Sponsor/host-gated steps."
+}
