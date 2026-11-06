@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-NODE-CAPACITY-PRIMITIVE-001",
+  "packet_id": "GFX-NODE-CAPACITY-PRIMITIVE-001",
+  "created_at_utc": "2026-11-06T11:35:20Z",
+  "branch": "feat/set-node-capacity",
+  "base_commit": "ec257ba49cd210582356c55ea4a477ecba36a5c4",
+  "head_commit": null,
+  "commands": [
+    "cd backend && .venv/bin/python manage.py makemigrations execution --name node_capacity_audit",
+    "cd backend && .venv/bin/python manage.py makemigrations execution --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test execution.tests_set_node_capacity -v1",
+    "cd backend && .venv/bin/python manage.py test execution hosted_workspace.tests_host_capacity_guard hosted_workspace.tests_capacity_reclaim hosted_workspace.tests_provisioning_runner -v1",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance -v1",
+    "python3 scripts/check_no_secrets.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py'",
+    "python3 -m unittest discover -s tests -p 'test_data_root.py'",
+    "python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "migration 0038_node_capacity_audit created (CreateModel NodeCapacityAudit; depends on 0037)",
+    "makemigrations execution --check: No changes detected",
+    "execution.tests_set_node_capacity: 23 tests OK (positive + adversarial + real-path concurrency)",
+    "execution + relevant hosted capacity/provisioning suites: all OK, no regressions",
+    "core.tests_adr_governance: OK (ADR-0082 unique)",
+    "secret scan: no findings; governance discovers OK; evidence lint PASS"
+  ],
+  "actual_results": [
+    "0038_node_capacity_audit.py generated (single CreateModel, dependency 0037_monitoring_gateway)",
+    "makemigrations execution --check: 'No changes detected in app execution' (exit 0)",
+    "execution.tests_set_node_capacity: Ran 23 tests OK",
+    "execution + hosted_workspace.{tests_host_capacity_guard,tests_capacity_reclaim,tests_provisioning_runner}: Ran 1547 tests OK (pre-review run; review fixes are confined to the new node_capacity.py/command/tests, re-validated by the 23-test module)",
+    "core.tests_adr_governance: Ran 3 tests OK",
+    "check_no_secrets: no findings; tests/test_no_secrets.py 18 OK; tests/test_data_root.py 7 OK; evidence lint PASS"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "head_commit is null: the manifest is committed WITH the change, so the head SHA is the resulting commit / PR head (recorded in the PR and the handoff, not here).",
+    "Repository-only: NO production deploy, NO host/DB contact, NO node-capacity mutation, NO Taurex recovery were performed by this packet.",
+    "certified_safe is enforced by this primitive for RAISES only; the runtime allocator (ADR-0069) still enforces max_total_occupants \u2014 unchanged. certified_safe is not retrofitted onto live allocation.",
+    "The host-safe guard is point-in-time against current co-resident occupancy; it does not bound the sum of co-resident ceilings (durable occupancy stays governed by the runtime guard + operator discipline).",
+    "The 1547-test regression run predates the adversarial-review fixes; those fixes touch only the new (untracked-before-this-packet) node_capacity.py / command / tests, which the 23-test module re-validates. No pre-existing file's behaviour was changed.",
+    "The whitespace-robust co-resident resolution makes THIS primitive's host accounting stricter than the ADR-0069 allocator's rdp_host__iexact grouping; the allocator was intentionally NOT modified in this packet."
+  ],
+  "artefact_locations": [
+    "backend/execution/node_capacity.py (service: evaluate + locked/audited apply)",
+    "backend/execution/management/commands/set_node_capacity.py (command)",
+    "backend/execution/models.py (NodeCapacityAudit)",
+    "backend/execution/migrations/0038_node_capacity_audit.py",
+    "backend/execution/tests_set_node_capacity.py (23 tests)",
+    "docs/architecture/ADR-0082-NODE-CAPACITY-PRIMITIVE.md",
+    "docs/STATUS.md, docs/KNOWN_ISSUES.md (entries)"
+  ],
+  "checksums": {
+    "backend/execution/node_capacity.py": "sha256:0020e76e88314183b3a2d194540bdf31b65c8c1ae22991af1f32c82d0a2783a9",
+    "backend/execution/management/commands/set_node_capacity.py": "sha256:fd79c6f46bc34a196290d003b7aad3fa3a210cf11a4be3a9d7ded3e76224f6f2",
+    "backend/execution/models.py": "sha256:b9b90c0bba0a9e6dbdaa3928608a467a66da1e96ed43862db15fee9da083ff56",
+    "backend/execution/migrations/0038_node_capacity_audit.py": "sha256:721e04ecf77beacb14c4a5cdf6e4f9ecfd4b967364cc1d2ac937efdb91523d00",
+    "backend/execution/tests_set_node_capacity.py": "sha256:edc96399d4320659b43de9aeb71046969f2d33e830ccd46bbb3c74d5b8ea603b",
+    "docs/architecture/ADR-0082-NODE-CAPACITY-PRIMITIVE.md": "sha256:79dbc43a4b8bd6bf6c13d3296da7caba261cbbbd6e32bd2543f06a4c10f495a8"
+  },
+  "reviewer": "6-lens adversarial Workflow review (16 agents, 2.1M tokens): 10 candidate findings, 9 CONFIRMED, all 9 addressed (2 medium code fixes: raises-only certified-safe gating + whitespace-robust co-resident counting; 1 medium + 4 low: non-zero exit on refused apply, ADR/docstring point-in-time correction, and added tests for blank-rdp_host, service-level reason, isolation rollback, lowering-when-over-safe)."
+}

@@ -1,5 +1,23 @@
 # GuvFX — Project Status
 
+> **2026-11-06 — Node-capacity primitive `set_node_capacity` (GFX-NODE-CAPACITY-PRIMITIVE-001; ADR-0082;
+> repository-only; governed PR; auto-merge OFF; STOP before merge).** Off main `ec257ba4`. Adds the supported,
+> audited, fail-closed operational primitive to change `TerminalNode.max_accounts` — the per-node analogue of
+> `set_host_capacity` (ADR-0069), replacing unaudited Django-admin/ORM/raw-SQL field edits. **Prerequisite** for
+> the bounded Taurex recovery (`GFX-TAUREX-CAPACITY-REPAIR-002`, which correctly STOPPED because no such primitive
+> existed). New `execution/node_capacity.py` (pure `evaluate` + locked/audited `apply`), command
+> `execution/management/commands/set_node_capacity.py` (dry-run default; `--apply` requires `--reason`), append-only
+> `execution.NodeCapacityAudit` + migration `0038` (additive; no change to existing tables). Occupancy-based
+> host-safe guard (`proposed_max + other_co-resident_occupancy ≤ certified_safe`) reusing the authoritative
+> `host_occupant_count`/`node_occupant_count` (counts ALL co-resident nodes of any status — no undercount);
+> fail-closed on below-occupancy / out-of-range / missing certification / host-over-safe / would-exceed-safe /
+> inactive/unknown/ambiguous node; `select_for_update` on all co-resident node rows + the `HostCapacity` row with
+> the guard re-evaluated under the lock; atomic audit (rolls back the field write if the audit cannot be written).
+> Changes ONLY `max_accounts`: never touches `HostCapacity`, workspace assignments, tenant isolation, or execution
+> controls; places no order; contacts no host. 18 focused tests (incl. a real-path Postgres concurrency test) pass;
+> `makemigrations execution --check` clean. Repository-only: NO deploy, NO capacity mutation, NO Taurex recovery in
+> this packet; the runtime allocator (ADR-0069, `max_total_occupants`) is unchanged.
+
 > **2026-11-06 — Broker-Intelligence Stream C — privacy-safe public withdrawal intelligence
 > (GFX-BROKER-INTELLIGENCE-STREAM-C-004; ADR-0080; repository-only, synthetic-only; DARK/default-OFF; governed PR;
 > auto-merge OFF; CI monitor + scoped auto-fix ON; STOP before merge).** Off main `4408241733` (Stream B). Builds
