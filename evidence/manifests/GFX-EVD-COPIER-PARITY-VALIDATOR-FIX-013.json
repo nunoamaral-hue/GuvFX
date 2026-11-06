@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-PARITY-VALIDATOR-FIX-013",
+  "packet_id": "GFX-COPIER-PARITY-VALIDATOR-FIX-013 (ADR-0077, reused)",
+  "created_at_utc": "2026-11-06T08:20:00Z",
+  "branch": "fix/copier-parity-validator-ps51",
+  "base_commit": "3191b5f445815bad5ec21487f9abaf35b7474394",
+  "head_commit": "f5a59ac24943f8c2a6a0512f765a27c727cdfe85",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle",
+    "cd backend && .venv/bin/python manage.py test trade_copier",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py",
+    "sha256 of the two changed files; git diff --name-only -- deploy/copier-emitter/MANIFEST.json (empty)"
+  ],
+  "expected_results": [
+    "emitter bundle tests green incl. the new ParityValidatorPs51FixTests mutation-killing regressions",
+    "full trade_copier suite green",
+    "ADR governance green (ADR-0077 reused; no new ADR)",
+    "no trade_copier model/migration drift (this packet adds NO model/migration)",
+    "secret scan: no findings",
+    "evidence lint: all manifests schema-valid incl. this one",
+    "bundle MANIFEST.json unchanged (the parity validator is test tooling, not a vendored/hashed bundle file)"
+  ],
+  "actual_results": [
+    "PASS - emitter bundle: Ran 22 tests, OK (incl. 6 new ParityValidatorPs51FixTests + existing HostParityAssetTests/TaskXmlRestartOnFailureFix/PackagingHygiene)",
+    "PASS - full trade_copier: Ran 676 tests, OK (0 failures; +6 vs prior 670)",
+    "PASS - core.tests_adr_governance: 3 tests OK (ADR-0077 reused; no duplicate ADR number)",
+    "PASS - makemigrations trade_copier --check: No changes detected (no model/migration)",
+    "PASS - check_no_secrets: no findings",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest",
+    "PASS - git diff of deploy/copier-emitter/MANIFEST.json is empty; only 2 files changed (validator + tests_bundle.py) plus docs",
+    "PENDING - Windows PowerShell 5.1 runtime / ParseFile execution of the corrected validator: NOT run (see limitations). Static repo checks only; this is NOT Windows runtime acceptance."
+  ],
+  "status": "PARTIAL",
+  "fix_summary": {
+    "defect_1_native_exit_handling": "schtasks /delete of a not-yet-existent temp task under $ErrorActionPreference='Stop' is promoted to a terminating error on Windows PowerShell 5.1; the $PSNativeCommandUseErrorActionPreference guard is PS7.3+-only and inert on 5.1. Fix: every schtasks call routes through Invoke-Schtasks, which scopes $ErrorActionPreference='Continue' and reads $LASTEXITCODE (robust on 5.1 and 7.4+); Remove-TempTask makes missing-task cleanup a no-op; no 2>$null remains.",
+    "defect_2_principal_derivation": "The principal was derived from the current user's domain/name, which over SSH was WORKGROUP\\administrator - unmappable to a SID, so schtasks rejected otherwise-valid XML. Fix: an explicit -Principal parameter is REQUIRED and SID-verified via NTAccount.Translate BEFORE any task is created; fail closed (exit 2) with NO current-user fallback.",
+    "proof_sequence": "ParseFile all reviewed .ps1 + positive control; corrected template XML accepted; installer-generated XML accepted; readback disabled + triggerless + no RestartOnFailure + no HighestAvailable; PT0M rejected (negative control); temp task deleted and absent. Non-production task name; self-cleans on success and failure.",
+    "manifest_impact": "None. The validator is under deploy/copier-emitter/tests/ and is NOT a vendored bundle file in MANIFEST.json; no bundle hash changed."
+  },
+  "adversarial_review": "Independent review of 12 vectors (PS5.1 vs 7.x native semantics; task-existence race; SID/name resolution; quoting/injection; temp-task collision; cleanup after partial failure; accidental enablement/trigger; privilege escalation; secret leakage; production task-name collision; vacuous tests; bundle/manifest drift): NO CRITICAL, NO HIGH. LOW (recorded, not blocking): (a) the operator-supplied -Principal is not XML-escaped in the installer-shape builder/template substitution, but a non-wellformed or unmappable principal fails closed at the SID gate BEFORE any XML is built, so no malformed task XML is produced; (b) the installer-generated XML shape is duplicated inside the validator (drift risk), mitigated by TaskXmlRestartOnFailureFixTests which guard the installer's actual generated XML.",
+  "limitations": [
+    "Repository-only / test-tooling: no production deployment, no production-host contact, no install, no scheduled-task creation, no backend/DB mutation, no migration, no secret handled, no MT5/bridge/broker contact, no broker order.",
+    "WINDOWS RUNTIME / ParseFile VALIDATION IS PENDING. The corrected validator has NOT been executed on a real Windows PowerShell 5.1 (or 7.4+) runtime: there is no safe non-production Windows runner in this environment, and the production host (WIN-RD8VDS93DK7) is explicitly out of scope for this packet. pwsh is not installed on the macOS authoring host. Static repo checks are NOT Windows runtime acceptance (RULE 11). This remains a MANDATORY pre-install gate: run deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1 on a scratch Windows box / CI Windows runner with an explicit resolvable local principal (e.g. WIN-RD8VDS93DK7\\guvfx_u_46) BEFORE any re-attempt of packet 012.",
+    "The corrected task XML itself (template and installer-generated shape) was already proven schtasks-valid in packet 012 via a RULE-11 manual control with the real principal (create exit 0, disabled, triggerless, no RestartOnFailure; PT0M rejected). This packet repairs the validator tooling, not the XML.",
+    "No production data mutated; deployed backend remains fb4ee402; prod DB remains execution/0036 + trade_copier/0011; execution and copier authorization remain OFF."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1 (rewritten: Invoke-Schtasks EAP-scoped helper, Remove-TempTask no-op, explicit SID-verified -Principal, no-HighestAvailable + installer-shape checks)",
+    "backend/trade_copier/emitter/tests_bundle.py (new ParityValidatorPs51FixTests mutation-killing regressions)",
+    "docs/STATUS.md, docs/KNOWN_ISSUES.md",
+    "evidence/manifests/GFX-EVD-COPIER-PARITY-VALIDATOR-FIX-013.json"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1": "sha256:591c8a21a6feb151b863a080a97a629c9600296b3cd4525fd2c09880974b3f1c",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:64d0a638dc8adcb57205b978fa8530f295e01065e2b555ff79d4175d73651edb"
+  },
+  "reviewer": "Independent adversarial review (12 vectors): NO CRITICAL, NO HIGH; 2 LOW recorded (principal XML-escaping mitigated by fail-closed SID gate; installer-shape duplication guarded by installer tests). Windows runtime validation PENDING on a Windows runner.",
+  "separate_gates": [
+    "MANDATORY: run the corrected validator on a scratch/CI Windows PowerShell 5.1 runner with an explicit resolvable local principal, and record a known positive + the PT0M negative (RULE 11), BEFORE re-attempting the packet-012 disabled install.",
+    "re-run packet 012 (DARK Option-C disabled install for account 46) only after Windows runtime parity passes - Sponsor-gated.",
+    "backend deploy + attestation (packet-008 Phases 3/5/6) remain separately deferred."
+  ],
+  "production_unchanged": "no deploy, no migration, no host contact, no secret, no broker order; deployed backend fb4ee402; prod DB execution/0036 + trade_copier/0011; execution + copier authorization OFF"
+}
