@@ -23,10 +23,15 @@ from django.db.models import Q
 
 from .models import Provenance, Withdrawal
 
-# In-flight (requested, completion not yet observed) — explicitly NOT failed.
-_PENDING = (Withdrawal.Status.REQUESTED, Withdrawal.Status.PROCESSING, Withdrawal.Status.PENDING)
-# Terminal non-completion — distinct from pending.
-_FAILED = (Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED)
+# In-flight (requested, completion not yet observed) — explicitly NOT failed. The Stream B explicit lifecycle
+# (ADR-0079) adds CONFIRMATION_REQUIRED + CONFIRMED as in-flight pre-completion stages; the production TradersWay
+# parser already emits those event types, so they MUST be bucketed as pending (previously they mapped to REQUESTED).
+_PENDING = (Withdrawal.Status.REQUESTED, Withdrawal.Status.CONFIRMATION_REQUIRED, Withdrawal.Status.CONFIRMED,
+            Withdrawal.Status.PROCESSING, Withdrawal.Status.PENDING)
+# Terminal non-completion — distinct from pending. EXPIRED (confirmation lapsed) and FAILED (payout failed) are
+# Stream B terminals and belong here with REJECTED/CANCELLED (never folded into completed or pending).
+_FAILED = (Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED, Withdrawal.Status.EXPIRED,
+           Withdrawal.Status.FAILED)
 
 # Member-facing lifecycle STATE (coarse, truthful): in-flight is NEVER folded into failed; UNRESOLVED is its own
 # visible state (never hidden, never counted as failed or completed).

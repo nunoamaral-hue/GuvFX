@@ -1,5 +1,61 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-06 — Broker-Intelligence Stream B: explicit withdrawal lifecycle + 3 adapters (GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-BROKER-INTELLIGENCE-STREAM-B
+Packet ID: GFX-BROKER-INTELLIGENCE-STREAM-B-002
+Status: PASS (PR ready; auto-merge OFF; STOP before merge)
+
+Initial branch/HEAD/status: feat/broker-intelligence-stream-b off main 687bcbb3 (Stream A); clean worktree
+Convergence base: 687bcbb3 (current main = Stream A merge #616)
+Convergence branch: feat/broker-intelligence-stream-b
+Preservation cherry-pick commit: None (additive branch; no history rewrite)
+Governance commit: see PR
+Files added: broker_intelligence/parsers_stream_b.py; migrations 0025_withdrawal_lifecycle_stream_b.py,
+  0026_stream_b_broker_profiles.py; tests_parsers_stream_b.py, tests_stream_b_scenario.py,
+  tests_stream_b_review_regressions.py; docs/ADRs/0079-...md; evidence/manifests/GFX-EVD-...STREAM-B.json
+Files modified: broker_intelligence/models.py, correlation.py, parsers_tradersway.py, metrics.py,
+  withdrawal_speed.py; tests_correlation_lifecycle.py, tests_owner_attributed_withdrawal.py; docs handoff set
+Exact ignored local .claude files: None
+Original draft hash verification: N/A (no supplied draft)
+Scoped rules verification: architecture (small additive, separation, no LLM authority), data (immutable evidence,
+  point-in-time), research (N/A), security (no secrets/PII; external identifiers never captured), evidence, handoff,
+  notion (NOT touched — packet did not grant Stream B Notion authority)
+Secret-scan result: check_no_secrets — no findings
+Unit-test result: broker_intelligence — 816 tests OK (skipped 14); makemigrations --check clean; ADR governance OK
+Make governance-check result: PASS (secret-scan, test_no_secrets, test_data_root, evidence lint 45 manifests,
+  test_evidence_manifests, test_evidence_factuality — all OK)
+Make check result: governance-check PASS + broker_intelligence backend suite PASS (816) run locally via the repo
+  venv against the worktree; the FULL `make check` (entire backend suite + frontend parity/lint/build) runs in CI on
+  the PR — the worktree has no backend/.venv or frontend/node_modules, and this change touches zero frontend files.
+Evidence/privacy validation: synthetic/PII-free fixtures; no real withdrawal/Gmail/broker/credentials
+Commit identity/message validation: Co-Authored-By trailer; conventional commit
+Final branch/HEAD/status: see PR
+Flow A ref unchanged: Yes
+Branch pushed: see PR
+
+Commands executed: manage.py test broker_intelligence; makemigrations --check --dry-run broker_intelligence;
+  test core.tests_adr_governance; scripts/check_no_secrets.py; Workflow adversarial review (12 lenses)
+Verified facts: 816 tests green with the lifecycle + pass 2b + adapters; 6 review findings all CONFIRMED and fixed,
+  each pinned by a regression test; change is contained to broker_intelligence (only cross-app importers use
+  broker_intelligence.services alias helpers, untouched).
+Assumptions made: the three brokers' public brand domains are PROVISIONAL (unverified against real mail) — held DARK
+  (is_active=False) until operator verification; adapters are SYNTHETIC-calibrated.
+Deviations from packet: added a new advance-only correlation pass (2b) — necessary so the new intermediate/terminal
+  states are reachable from realistic rail-less follow-up emails (Amber; preserves all safety invariants).
+Amber decisions proposed: (1) pass 2b extends the correlation scan surface (UNKNOWN-only, advance-only);
+  (2) widened member-facing withdrawal buckets for the new statuses (live read-model, fixes a regression).
+Red decisions requiring Nuno: the separate merge GO; later operator verification + activation of the 3 profiles.
+Risks discovered: (pre-fix) a live metrics regression and a PII-capture path — both fixed before PR.
+Out-of-scope access performed: No
+Rollback/recovery: branch-only; migrations 0025/0026 additive + reversible (0026 reverse refuses to destroy
+  activated/edited profiles). No deploy, no DB mutation.
+Recommended next packet: Sponsor review of this Stream B PR; then (separately) Stream C or Stream D.
+```
+
 ## 2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only; DARK; PR; NOT merged)
 
 - **Why.** The packet-005 install preflight proved the merged `fb4ee402` carried only the `bridge_emitter.py`

@@ -287,10 +287,14 @@ def register_default_parsers() -> None:
     """Register the production parsers (the single canonical entry point). Called by the WP3b ingestion worker at
     start-up — NOT at import, so the registry stays empty (DARK) until the worker is armed. Registers every supported
     broker: TradersWay (#1) and IS6 (#2, PR-B); both share one mailbox but stay independently authenticated +
-    attributed. ``register_parser`` is idempotent by (name, version), so re-registration is a no-op."""
+    attributed. Stream B (ADR-0079) adds Pepperstone, Dominion Markets and Vantage withdrawal adapters (their
+    BrokerProfile rows ship DARK/is_active=False, so they never widen the live sender allowlist until an operator
+    verifies the real domains). ``register_parser`` is idempotent by (name, version), so re-registration is a no-op."""
     from .parsers_is6 import IS6Parser
+    from .parsers_stream_b import register_stream_b_parsers
     register_parser(TradersWayParser())
     register_parser(IS6Parser())
+    register_stream_b_parsers()
 
 
 # Static assertion the class satisfies the Protocol (cheap guard; no runtime effect).

@@ -2,6 +2,28 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Broker-Intelligence Stream B — adapters & lifecycle repository-only, DARK (GFX-BROKER-INTELLIGENCE-STREAM-B-002 / ADR-0079, 2026-11-06)
+
+- **The three adapters are SYNTHETIC-calibrated and the sender domains are UNVERIFIED.** Pepperstone / Dominion
+  Markets / Vantage parsers are validated only against committed synthetic fixtures, not a genuine broker sample;
+  migration `0026` seeds their broker-config rows `is_active=False` (PROVISIONAL domains). They do NOT widen the live
+  sender allowlist / authserv trust set / catalogue reconciliation until an operator verifies the real notification
+  domain + auth posture against genuine email and flips `is_active=True` (recording provenance `OPERATOR_VERIFIED`).
+  Parsers register only via the worker-only `register_default_parsers`, so nothing is active on import.
+- **Correlation scan surface extended (pass 2b).** A rail-less neutral (effective category UNKNOWN) non-completion
+  lifecycle follow-up now ADVANCES — never creates — the existing external withdrawal it references. Restricted to
+  UNKNOWN so an internal-transfer/deposit is never scanned; runs before the completion pass. Externality is still
+  asserted only by the opening event's positive rail evidence, so no advance can create or inflate a withdrawal.
+- **External destination identifiers are deliberately not captured.** The adapters extract only an internal
+  trading-account number into `source/destination_account`; an external card PAN / bank / wallet number is never
+  stored (it would be an unredactable PII leak into the write-once `BrokerEvent`). An external-rail withdrawal
+  therefore records no destination account — by design.
+- **Member-facing buckets updated.** `metrics.py` / `withdrawal_speed.py` now bucket CONFIRMATION_REQUIRED/CONFIRMED
+  as in-flight and EXPIRED/FAILED as terminal; a coverage test asserts every status maps to exactly one bucket. If a
+  future status is added, update both tuples or that test fails.
+- **Not merged / not deployed.** Repository-only PR, auto-merge OFF, STOP before merge. No real withdrawal, Gmail,
+  broker/MT5/NAS/Wayond, production or dev-DB mutation.
+
 ## 🟡 Copy Trading host emitter — repository-only, DARK, NOT installed (GFX-COPIER-HOST-EMITTER-BUILD-006 / ADR-0077, 2026-11-05)
 
 - **Nothing is installed or armed.** The emitter is a repository artefact (`deploy/copier-emitter/` + the
