@@ -20,10 +20,14 @@ from rest_framework.views import APIView
 # BROKER_PUBLIC_DIRECTORY_ENABLED).
 from core.throttling import GuvFXPublicAnonRateThrottle
 
+from broker_intelligence import external_withdrawal_classifier as _certification
+
 from .case_study import case_study_payload
+from .disclosure import safe_public_text, safe_public_url
 from .flags import (broker_public_case_study_enabled, broker_public_directory_enabled,
-                    broker_public_wtm_preview_enabled)
+                    broker_public_withdrawal_intelligence_enabled, broker_public_wtm_preview_enabled)
 from .models import BrokerMetricAggregate, PublicBroker
+from .withdrawal_intelligence import compute_withdrawal_intelligence
 from .wtm_preview import wtm_preview_payload
 
 
@@ -56,7 +60,11 @@ def _aggregate_json(agg: BrokerMetricAggregate) -> dict:
 
 
 def _broker_json(b: PublicBroker, *, include_metrics: bool) -> dict:
-    out = {"slug": b.slug, "display_name": b.display_name, "summary": b.summary, "website": b.website}
+    # Editorial free-text fields pass through the central disclosure layer before public emission: display_name and
+    # summary are redacted (URL/token) + HTML-escaped so a malicious broker name or injected markup cannot reach a
+    # browser; website is accepted only if it is an http/https URL (else ''). A clean name is unchanged.
+    out = {"slug": b.slug, "display_name": safe_public_text(b.display_name),
+           "summary": safe_public_text(b.summary), "website": safe_public_url(b.website)}
     if include_metrics:
         out["metrics"] = [_aggregate_json(a) for a in b.aggregates.all().order_by("category_key")]
     return out
@@ -89,6 +97,30 @@ class PublicBrokerProfileView(APIView):
         if b is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(_broker_json(b, include_metrics=True))
+
+
+class PublicBrokerWithdrawalIntelligenceView(APIView):
+    """GET /api/public/brokers/<slug>/withdrawal-intelligence/ — the Stream C aggregate-only, reason-coded broker
+    withdrawal-intelligence page contract (ADR-0080).
+
+    DARK: 404 until ``broker_public_withdrawal_intelligence_enabled`` AND the broker is ``is_published`` (an unknown,
+    unpublished, or flag-off request is indistinguishable — all return the same {"detail":"Not found."}). For a
+    published broker that is not certified or has no eligible evidence it returns an UNAVAILABLE/SUPPRESSED/PARTIAL
+    reason code, NEVER zero or fabricated data. Computed live, read-only; returns ONLY aggregate statistics — never a
+    member identity, owner id, amount, exact timestamp, account number, reference, or unsanitised free text."""
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+    throttle_classes = [GuvFXPublicAnonRateThrottle]
+
+    def get(self, request, slug):
+        if not broker_public_withdrawal_intelligence_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        b = PublicBroker.objects.filter(slug=slug, is_published=True).first()
+        if b is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        # Read the LIVE certified-broker set (empty in prod ⇒ UNAVAILABLE/NOT_CERTIFIED) so a future certification
+        # through the governance path takes effect without a code change, and so the DARK posture is explicit here.
+        return Response(compute_withdrawal_intelligence(b, certified_brokers=_certification.CERTIFIED_BROKERS))
 
 
 class PublicWtmPreviewView(APIView):

@@ -1,5 +1,31 @@
 # GuvFX — Project Status
 
+> **2026-11-06 — Broker-Intelligence Stream C — privacy-safe public withdrawal intelligence
+> (GFX-BROKER-INTELLIGENCE-STREAM-C-004; ADR-0080; repository-only, synthetic-only; DARK/default-OFF; governed PR;
+> auto-merge OFF; CI monitor + scoped auto-fix ON; STOP before merge).** Off main `4408241733` (Stream B). Builds
+> ADDITIVELY on the existing `broker_public` privacy engine; **no schema change / no migration**. **(1) Central
+> disclosure layer** (`disclosure.py`) — reason codes (State/Reason), a COMPLETE 11-status public lifecycle map
+> (import-time completeness assert), `safe_public_text`/`safe_public_url` (redact+escape+http(s) allow-list),
+> `coarsen_to_date` (date granularity), `stage_seconds` (stage-interval chokepoint mirroring `duration_seconds`'
+> impossible-interval guard), `cohort_state` (k-anon gate), and re-exported winsorise/suppress primitives. **(2)
+> Aggregation contract** (`withdrawal_intelligence.py`) — live read-only `compute_withdrawal_intelligence` reusing
+> `_eligible_withdrawals` (certified∩genuine∩account-resolved∩consenting) + winsorisation; three SEPARATE stage
+> durations (request→confirmation, confirmation→completion, total) each per-stage winsorised with a distinct-contributor
+> floor and NEVER combined; outcome rates over an explicit terminal denominator with the rate groups themselves
+> k-anonymised (no rate-inversion); confirmation-required incidence + per-currency counts; small-bucket k-anon applied
+> UNCONDITIONALLY. ≥3 contributors / ≥5 observations / ≥5 completed for a speed figure, else reason-coded
+> SUPPRESSED/PARTIAL/UNAVAILABLE (never zero/fabricated). **(3) DARK endpoint** `GET
+> /api/public/brokers/<slug>/withdrawal-intelligence/` (flag `BROKER_PUBLIC_WITHDRAWAL_INTELLIGENCE_ENABLED`, default
+> OFF; also requires `is_published`; empty `CERTIFIED_BROKERS` ⇒ UNAVAILABLE/NOT_CERTIFIED) + DARK-graceful frontend
+> page + `robots.ts` (no indexing while DARK). **(4) `_broker_json` hardened** (safe text/url on the existing
+> directory/profile too — behaviour-preserving). **(5) Seed command** `seed_public_broker_pages` (Pepperstone/Dominion
+> Markets/Vantage/TradersWay `is_published=False`; the WITHDRAWAL_INTELLIGENCE category; idempotent; certifies/publishes
+> nothing). 12-lens adversarial review ⇒ **11 CONFIRMED findings, all fixed + regression-pinned** (2 HIGH-bearing
+> clusters: per-stage single-contributor leakage; k-anon default-OFF + rate-inversion). `broker_public` **64 tests OK**;
+> full backend **881 OK**; makemigrations clean; ADR-0080 governance-unique; frontend eslint 0 errors + build OK +
+> Stream C vitest 3/3. No real withdrawal/Gmail/broker/MT5/NAS/Wayond; no prod/dev-DB mutation; no deploy; no
+> publication; no certification. Streams C **(this)** done repo-only; Stream D (ADR-0081) NOT begun.
+
 > **2026-11-06 — Broker-Intelligence Stream B — explicit withdrawal lifecycle + 3 adapters
 > (GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only, synthetic-only; DARK/default-OFF; governed PR;
 > auto-merge OFF; STOP before merge).** Off main `687bcbb3` (Stream A). **(1) Explicit lifecycle** — `Withdrawal`

@@ -2,6 +2,31 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Broker-Intelligence Stream C — public withdrawal intelligence repository-only, DARK, UNCERTIFIED (GFX-BROKER-INTELLIGENCE-STREAM-C-004 / ADR-0080, 2026-11-06)
+
+- **The whole public surface is DARK and UNPOPULATED.** The endpoint 404s until
+  `BROKER_PUBLIC_WITHDRAWAL_INTELLIGENCE_ENABLED` is armed AND the broker is `is_published`; even then, with
+  `CERTIFIED_BROKERS` empty (production default) every broker reports `UNAVAILABLE`/`NOT_CERTIFIED`. Nothing is
+  certified, published, or served until an operator certifies a broker through the governance path (RED) and publishes
+  it (editorial). The seed command (`seed_public_broker_pages`) only creates `is_published=False` rows + the metric
+  category; it certifies/publishes nothing and is NOT auto-run (no migration, no cron, no deploy).
+- **Live compute-on-read (no recompute/caching).** The endpoint computes the aggregate per request (read-only, never
+  persisted), so there is no stale state but also no caching; it is throttled (`public` scope, 60/min) and acceptable
+  only while DARK/unpopulated. If ever armed at scale, a cached/recomputed path should be added (Amber).
+- **Conservative floors can make figures UNAVAILABLE/SUPPRESSED.** With the seeded thresholds (≥3 contributors, ≥5
+  observations, ≥5 completed; min_bucket 5) a small cohort yields reason-coded SUPPRESSED/PARTIAL/UNAVAILABLE rather
+  than numbers — by design (truthful, never zero/fabricated). Outcome rates publish per-group percentages only when a
+  group clears the k-anon floor; otherwise they fold into a `suppressed_pct`.
+- **EXISTING WITHDRAWAL_PROCESSING timestamps not coarsened (flagged, not changed).** The pre-existing
+  `_aggregate_json` still emits exact `last_update`/`window_end` on its PUBLISHED path. Stream C's NEW contract emits
+  only date-granular timestamps; coarsening the old projection is a behaviour-affecting follow-up left undone to
+  preserve its tests.
+- **Frontend full vitest suite fails LOCALLY on Node 25.** `npm run lint`'s `prelint` (full vitest) fails on this
+  machine's Node v25.2.1 with `window.localStorage.clear is not a function` on UNRELATED dashboard
+  (`localization.test.tsx`) tests — a Node-25 jsdom/Web-Storage incompatibility, reproduced on unchanged files. CI
+  runs an LTS Node where it passes (sibling Stream B passed CI). Stream C's own vitest + eslint + build are green
+  locally. Workaround: run under Node LTS, or rely on CI for the full suite.
+
 ## 🟡 Broker-Intelligence Stream B — adapters & lifecycle repository-only, DARK (GFX-BROKER-INTELLIGENCE-STREAM-B-002 / ADR-0079, 2026-11-06)
 
 - **The three adapters are SYNTHETIC-calibrated and the sender domains are UNVERIFIED.** Pepperstone / Dominion

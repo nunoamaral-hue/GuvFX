@@ -46,6 +46,17 @@ def broker_public_case_study_enabled() -> bool:
     return _flag("BROKER_PUBLIC_CASE_STUDY_ENABLED")
 
 
+def broker_public_withdrawal_intelligence_enabled() -> bool:
+    """Gate for the PUBLIC broker withdrawal-intelligence page contract (Stream C / ADR-0080). DEFAULT OFF -> 404, so
+    the whole withdrawal-intelligence surface ships DARK and is armed deliberately. Returns ONLY privacy-safe,
+    reason-coded, aggregate-only withdrawal-performance evidence (three separate lifecycle-stage durations, lifecycle
+    outcome rates, sample sufficiency) for a CERTIFIED, published broker; NEVER a member identity, owner id, amount,
+    exact timestamp, account number, reference or unsanitised free text. Independent of the directory flag; the broker
+    must ALSO be ``is_published`` (editorial) and certified (empty CERTIFIED_BROKERS in prod -> UNAVAILABLE). Armed
+    only in an isolated env, never prod."""
+    return _flag("BROKER_PUBLIC_WITHDRAWAL_INTELLIGENCE_ENABLED")
+
+
 def broker_public_consent_required() -> bool:
     """Gate for the participation/consent contract: when ON, only members with an ACTIVE
     ``MetricParticipationConsent`` for the broker scope contribute to a public aggregate (fail-closed -- no row ->
