@@ -1,5 +1,21 @@
 # GuvFX — Project Status
 
+> **2026-11-06 — Copy Trading parity-validator PowerShell 5.1 fix (GFX-COPIER-PARITY-VALIDATOR-FIX-013; ADR-0077
+> reused; repository-only; test-tooling only; governed PR; auto-merge OFF; STOP before merge).** Repairs the Windows
+> `schtasks` host-parity validator `deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1` after packet-012's
+> contained STOP found it could not complete on the host's Windows PowerShell 5.1. **Defect 1** — native `schtasks`
+> non-zero exits now route through an `Invoke-Schtasks` helper that scopes `$ErrorActionPreference='Continue'` so an
+> expected non-zero exit is never a terminating error on 5.1 or 7.4+, and missing-task cleanup is a no-op (the old
+> `2>$null` under EAP=Stop threw on 5.1; its PS7.3+ `$PSNativeCommandUseErrorActionPreference` guard was inert).
+> **Defect 2** — an explicit `-Principal` parameter is now REQUIRED and SID-verified (`NTAccount.Translate`) BEFORE
+> any task is created, failing closed (`exit 2`) with NO fallback to the current user's domain/name (over SSH that
+> resolved to the unmappable `WORKGROUP\administrator`). Adds no-`HighestAvailable` readback + installer-shape
+> acceptance to the proof sequence; preserves DISABLED/triggerless/least-privilege semantics and the PT0M negative
+> control. New mutation-killing regression tests (`ParityValidatorPs51FixTests`). **Windows runtime/ParseFile
+> validation is PENDING** (no safe non-production Windows runner; the production host is out of scope this packet) and
+> remains a mandatory pre-install gate. No vendored-bundle hash change (the validator is test tooling, not in
+> `MANIFEST.json`). Repository-only: no deploy, no host contact, no install, no migration, no secret, no broker order.
+
 > **2026-11-06 — Broker-Intelligence Stream B — explicit withdrawal lifecycle + 3 adapters
 > (GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only, synthetic-only; DARK/default-OFF; governed PR;
 > auto-merge OFF; STOP before merge).** Off main `687bcbb3` (Stream A). **(1) Explicit lifecycle** — `Withdrawal`

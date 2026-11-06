@@ -2,6 +2,25 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading host-emitter parity validator — Windows runtime PENDING after PS 5.1 fix (GFX-COPIER-PARITY-VALIDATOR-FIX-013 / ADR-0077, 2026-11-06)
+
+- **Context.** Packet 012 (the DARK reinstall for account 46) STOPPED safely at Phase 2 with NO install: the reviewed
+  `deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1` could not complete on the host's Windows PowerShell 5.1.
+  Two defects, both now fixed in the repo (this PR): (1) `$ErrorActionPreference='Stop'` + `schtasks /delete …2>$null`
+  of a non-existent temp task **throws** on PS 5.1 (its `$PSNativeCommandUseErrorActionPreference` guard is PS7.3+-only,
+  inert on 5.1); (2) the principal was derived from the current-user domain/name, which over SSH was `WORKGROUP\
+  administrator` → schtasks "No mapping between account names and security IDs".
+- **Fix (repository-only, test tooling).** Native `schtasks` calls route through an `Invoke-Schtasks` helper scoping
+  EAP to `Continue` (safe on 5.1 and 7.4+); missing-task cleanup is a no-op; an explicit `-Principal` is REQUIRED and
+  SID-verified before any task is created (fail-closed `exit 2`, no current-user fallback). No vendored-bundle hash
+  change (the validator is not in `MANIFEST.json`).
+- **STILL PENDING (mandatory pre-install gate).** The corrected validator has **not** been executed on a real Windows
+  PowerShell 5.1 runtime. There is no safe non-production Windows runner in this environment and the production host is
+  out of scope for this packet, so ParseFile/runtime acceptance is **PENDING** — it must be run on a scratch Windows box
+  or CI Windows runner, with an explicit resolvable local principal (e.g. `WIN-RD8VDS93DK7\guvfx_u_46`), **before** any
+  re-attempt of the packet-012 disabled install. Static testing is NOT Windows runtime acceptance. The corrected task XML
+  itself was already proven schtasks-valid in packet 012 via a RULE-11 manual control with the real principal.
+
 ## 🟡 Broker-Intelligence Stream B — adapters & lifecycle repository-only, DARK (GFX-BROKER-INTELLIGENCE-STREAM-B-002 / ADR-0079, 2026-11-06)
 
 - **The three adapters are SYNTHETIC-calibrated and the sender domains are UNVERIFIED.** Pepperstone / Dominion

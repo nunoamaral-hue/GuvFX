@@ -198,3 +198,65 @@ class HostParityAssetTests(SimpleTestCase):
                           "COPIER_INGEST_HMAC_KEY", "GUVFX_AGENT_TOKEN", "api.guvfx.com"):
             self.assertNotIn(forbidden, text, f"parity asset must not reference {forbidden}")
         self.assertFalse(_SECRET_RE.search(text), "secret-looking literal in parity asset")
+
+
+class ParityValidatorPs51FixTests(SimpleTestCase):
+    """GFX-COPIER-PARITY-VALIDATOR-FIX-013 — the host-parity validator must complete on Windows PowerShell 5.1:
+
+    Defect 1 — native schtasks non-zero exits are handled through an ErrorActionPreference='Continue'-scoped helper
+    (never a terminating error on 5.1 or 7.4+), and cleanup of a missing temp task is a no-op.
+    Defect 2 — the principal is an explicit parameter, SID-verified BEFORE any task is created, with NO fallback to
+    the current user's domain/name.
+
+    These are source-level regression (mutation-killing) checks; the live schtasks sequence is exercised on a
+    Windows runner, not here (no Windows in CI)."""
+
+    def _text(self):
+        return _PARITY.read_text()
+
+    # --- Defect 1: native-exit handling; missing-task cleanup must not terminate the validator ---
+    def test_native_schtasks_routed_through_continue_scoped_helper(self):
+        t = self._text()
+        self.assertIn("function Invoke-Schtasks", t, "missing the EAP-scoped schtasks helper")
+        self.assertIn("$ErrorActionPreference = 'Continue'", t, "helper must scope EAP to Continue for native exits")
+        self.assertIn("$LASTEXITCODE", t, "native exit codes must be read, not thrown")
+        self.assertIn("function Remove-TempTask", t, "missing-task cleanup must be a dedicated no-op wrapper")
+        # A 2>$null redirect under EAP=Stop is exactly what threw on PS 5.1 (Defect 1); it must not return.
+        self.assertNotIn("2>$null", t, "2>$null under EAP=Stop reintroduces the PS 5.1 terminating-error (Defect 1)")
+
+    def test_does_not_depend_on_ps73_native_guard(self):
+        # Setting $PSNativeCommandUseErrorActionPreference is inert on PS 5.1; the fix must not RELY on it as the
+        # guard (a comment explaining why the EAP-scoped helper is needed is fine). Kill the old assignment form.
+        t = self._text()
+        self.assertNotIn("$PSNativeCommandUseErrorActionPreference =", t,
+                         "fix must not depend on assigning the PS7.3+-only native guard (inert on 5.1)")
+
+    # --- Defect 2: explicit, SID-verified principal; no current-user fallback ---
+    def test_principal_is_explicit_parameter(self):
+        self.assertRegex(self._text(), r"\[string\]\$Principal", "an explicit -Principal parameter is required")
+
+    def test_no_current_user_principal_fallback(self):
+        t = self._text()
+        self.assertNotIn("$env:USERDOMAIN", t, "must not fall back to the current user's domain (Defect 2)")
+        self.assertNotIn("$env:USERNAME", t, "must not fall back to the current user's name (Defect 2)")
+
+    def test_principal_sid_verified_and_fail_closed_before_create(self):
+        t = self._text()
+        self.assertIn("SecurityIdentifier", t, "principal must be translated to a SID")
+        self.assertIn("Translate", t)
+        self.assertIn("exit 2", t, "omitted/unresolvable principal must fail closed (exit 2)")
+        # the fail-closed principal guard must run before the first task-creating call
+        self.assertLess(t.index("exit 2"), t.index("Create-And-Readback $tplPath"),
+                        "principal SID check + fail-closed must precede any task creation")
+
+    # --- preserved semantics ---
+    def test_preserves_disabled_triggerless_highest_negctl_and_cleanup(self):
+        t = self._text()
+        self.assertIn("<Enabled>false</Enabled>", t)                 # disabled
+        self.assertIn("<Trigger>", t)                                # triggerless readback assertion present
+        self.assertIn("HighestAvailable", t)                         # no-HighestAvailable readback assertion present
+        self.assertIn("RestartOnFailure", t)                         # no-RestartOnFailure readback assertion present
+        self.assertIn("'PT' + '0M'", t)                              # PT0M negative control (constructed, not literal)
+        self.assertNotIn("PT0M", t)                                  # the literal never appears in the asset
+        self.assertIn("finally", t)                                  # self-clean on success and failure
+        self.assertIn("PARITYTEST", t)                               # non-production task name
