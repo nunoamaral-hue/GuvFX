@@ -1,5 +1,29 @@
 # GuvFX — Project Status
 
+> **2026-11-06 — Broker-Intelligence Stream B — explicit withdrawal lifecycle + 3 adapters
+> (GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only, synthetic-only; DARK/default-OFF; governed PR;
+> auto-merge OFF; STOP before merge).** Off main `687bcbb3` (Stream A). **(1) Explicit lifecycle** — `Withdrawal`
+> gains `CONFIRMATION_REQUIRED`/`CONFIRMED`/`EXPIRED`/`FAILED` and stage timestamps
+> (`confirmation_required_at`/`confirmed_at`/`processing_started_at`/`funds_received_at`/`last_status_change_at`);
+> migration `0025` (additive AddField + status width 12→24). Monotonic rank `REQUESTED<CONFIRMATION_REQUIRED<CONFIRMED
+> <PROCESSING<terminals`; the first email of a card confirmation-required withdrawal is `CONFIRMATION_REQUIRED`,
+> never `COMPLETED`; completion anchor only on a real `COMPLETED`. **(2) Neutral advance-only pass 2b** — a rail-less
+> confirmation/processing/expiry/rejection/cancellation/failure follow-up (effective category UNKNOWN) ADVANCES —
+> never creates — the existing external withdrawal it references (sibling of the COMPLETED pass; UNKNOWN-only so an
+> internal-transfer/deposit is never scanned; runs before the completion pass so an explicit negative terminal is not
+> overridden). **(3) Three DARK adapters** — Pepperstone/Dominion Markets/Vantage (`parsers_stream_b.py`): exact
+> registrable-domain sender match, anchored lifecycle phrases, NO prose→external (line-anchored rail field only),
+> never captures a URL/token or an external card PAN/bank number, internal-account extraction only; registered solely
+> via the worker-only `register_default_parsers`. Migration `0026` seeds the three broker-config rows
+> `is_active=False` (PROVISIONAL domains; never widen the live allowlist until operator-verified). **(4) Pepperstone
+> GBP-15 card confirmation-required synthetic scenario** (PII-free) end-to-end through the real parser + engine.
+> Adversarial review (12 lenses, Ultracode): 6 findings, all CONFIRMED, **all fixed** (1 HIGH PII-capture, plus the
+> live metrics-bucket regression, owner-bridge account scoping, COMPLETED-regex over-match, migration-reverse
+> append-only guard); each pinned by a regression test. `broker_intelligence` **816 tests OK (skipped 14)**;
+> `makemigrations --check` clean; secret scan clean; ADR-0079 governance-unique. DARK: no real withdrawal, no Gmail,
+> no broker/MT5/NAS/Wayond, no production/dev-DB mutation, no deployment, no publication. Streams C/D NOT begun.
+> **STOP before merge — awaits a separate Sponsor merge GO.**
+
 > **2026-11-05 — Copy Trading HOST EMITTER build (GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only,
 > synthetic-only; DARK; governed PR; STOP before merge).** Builds the installable Windows host emitter that the
 > packet-005 install preflight proved was missing (`fb4ee402` had only the `bridge_emitter.py` signing library).
