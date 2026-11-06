@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-HOST-EMITTER-TASKXML-FIX-009",
+  "packet_id": "GFX-COPIER-HOST-EMITTER-TASKXML-FIX-009 (ADR-0077, reused)",
+  "created_at_utc": "2026-11-05T23:30:00Z",
+  "branch": "fix/copier-emitter-taskxml-restartonfailure",
+  "base_commit": "687bcbb3",
+  "head_commit": "964db6c8ed1d186490d4f61d201f82a23f7ce5d6",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.emitter  (full emitter package, incl. bundle regression)",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py + manage.py test  (evidence lint)",
+    "sha256 of the two edited bundle artefacts vs MANIFEST.json; ASCII/no-BOM scan; grep for PT0M / <RestartOnFailure in the vendored bundle",
+    "Independent adversarial review of the diff (12 vectors) + fix any CRITICAL/HIGH"
+  ],
+  "expected_results": [
+    "All emitter tests green incl. the new TaskXmlRestartOnFailureFix / PackagingHygiene / HostParityAsset regressions",
+    "No trade_copier model/migration drift (this packet adds NO model/migration)",
+    "ADR governance green (ADR-0077 reused; no new ADR; no duplicate number)",
+    "Secret scan: no findings",
+    "Evidence lint: all manifests schema-valid incl. this one",
+    "Edited artefacts hash-match MANIFEST.json; bundle ASCII/no-BOM; PT0M and <RestartOnFailure absent from the vendored bundle",
+    "No CRITICAL/HIGH adversarial finding left unresolved"
+  ],
+  "actual_results": [
+    "PASS - Ran 54 tests in the emitter package, OK (incl. 16 bundle tests: the corrected template-disabled test + 5 new TaskXmlRestartOnFailureFix + 2 PackagingHygiene + 1 HostParityAsset)",
+    "PASS - No changes detected in app 'trade_copier' (no model/migration)",
+    "PASS - core.tests_adr_governance 3 tests OK (no duplicate ADR; 0076=TIM, 0077=host emitter, 0078=broker catalogue)",
+    "PASS - check_no_secrets: no findings",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS (45 manifests, incl. this one)",
+    "PASS - Install-GuvfxCopierEmitter.ps1 + emitter_task_template.xml sha256 updated in MANIFEST.json and re-verified; both ASCII; grep confirms no 'PT0M' and no '<RestartOnFailure' anywhere in the vendored bundle (the literals exist only in the tests/ host-parity negative control)",
+    "PASS - full trade_copier suite: Ran 670 tests, OK (0 failures; fully green in this worktree with the project .env; the historical 27F/33E were local APPEND_SLASH/SECURE_SSL_REDIRECT artefacts not present here) - zero new failures",
+    "PASS - independent adversarial review (12 vectors): NO CRITICAL, NO HIGH. Fixed with the asset itself: MEDIUM - the host-parity validator relied on native non-zero exits that throw under PowerShell 7.4+ (PSNativeCommandUseErrorActionPreference default true) making a PASS unreachable on a pwsh CI runner; fixed by forcing 5.1 semantics ($PSNativeCommandUseErrorActionPreference=$false), so the controls work identically on 5.1 and 7.4+. Accepted/recorded LOW: (a) pre-existing template-vs-generated ExecutionTimeLimit PT0S divergence (valid, harmless, out of scope - not introduced here); (b) the MANIFEST integrity guard is top-level-only, so deploy/copier-emitter/tests/ is intentionally outside the vendored/hashed set (the vendor step copies only MANIFEST files + lib_subset, never tests/)."
+  ],
+  "status": "PASS",
+  "fix_summary": {
+    "defect": "schtasks rejected the generated task XML: <RestartOnFailure><Interval>PT0M</Interval><Count>0</Count></RestartOnFailure> (zero Interval out of range). Surfaced on the real Windows host during GFX-COPIER-HOST-EMITTER-DARK-INSTALL-008 Option C; the installer fail-closed and the host was fully restored.",
+    "fix": "Omit the RestartOnFailure element entirely (Task Scheduler default = no restart) in BOTH deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1 (generated heredoc XML) and deploy/copier-emitter/emitter_task_template.xml. No zero/empty/ambiguous interval substituted.",
+    "root_cause_class": "RULE-9 lineage: source review + PowerShell ParseFile pass, but ParseFile does not validate the embedded Task Scheduler XML; only the real schtasks validator rejects it. Fixed by adding a Windows schtasks host-parity validation asset (create/read-back/delete a temp DISABLED task) in addition to ParseFile."
+  },
+  "feature_gate_defaults": {
+    "task_state": "DISABLED, triggerless, no auto-restart, least-privilege, account-scoped (unchanged by this fix)",
+    "COPIER_ATTESTATION_VERIFY_ENABLED": "OFF (unchanged)",
+    "config.attestation_allowed/observation_allowed/delivery_allowed": "OFF (unchanged)",
+    "execution": "OFF - no order surface; this packet installs/deploys nothing"
+  },
+  "limitations": [
+    "Repository-only / DARK: no production deployment, no production-host write, no scheduled-task creation on the production host, no backend/DB mutation, no migration, no emitter install or arming, no secret handled, no MT5/bridge/broker contact.",
+    "The Windows schtasks host-parity asset (deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1) is NOT run in this packet (it needs a Windows host and would create a temp scheduled task); it is prepared and statically asserted (present, ASCII, parser positive control, schtasks create/read/delete, self-clean, non-production name, no emitter/secret/broker). It must be executed on a scratch Windows box / CI Windows runner before the next install attempt - NOT on the production host in this packet.",
+    "ParseFile cannot be run on this macOS authoring host (no PowerShell); the repo-side PowerShellParseTests uses a structural-balance + ASCII fallback, and the authoritative schtasks validation is the host-parity asset above.",
+    "No production data mutated; deployed backend remains fb4ee402; prod DB remains execution/0036 + trade_copier/0011."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1 (generated XML: RestartOnFailure removed)",
+    "deploy/copier-emitter/emitter_task_template.xml (RestartOnFailure block removed)",
+    "deploy/copier-emitter/MANIFEST.json (two hashes updated)",
+    "deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1 (new Windows host-parity validator)",
+    "backend/trade_copier/emitter/tests_bundle.py (corrected template test + TaskXmlRestartOnFailureFixTests + BundlePackagingHygieneTests + HostParityAssetTests)",
+    "evidence/manifests/GFX-EVD-HOST-EMITTER-TASKXML-FIX-009.json",
+    "docs/STATUS.md, docs/KNOWN_ISSUES.md"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/Install-GuvfxCopierEmitter.ps1": "sha256:87023dc2148e0db4b93ec6635c27681188422d89506d111e983c5d7437ca29f0",
+    "deploy/copier-emitter/emitter_task_template.xml": "sha256:76f2eec7b7fedf13ae1b407b6177a99a3220055504d0a804404260a78130a724",
+    "deploy/copier-emitter/tests/Test-TaskXmlSchtasksParity.ps1": "sha256:7963c4a2743ae1ab7ebd8d2f6a87dfe1cca138720b2b5c2e64e934a2285a92f3",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:778d343284ef90fc8d48c6f2399c9368e87718bd002ddd90bb25490697ec09a0"
+  },
+  "reviewer": "Independent adversarial review (12 vectors): NO CRITICAL, NO HIGH; 1 MEDIUM fixed in the parity asset (PS 7.4+ edition robustness); 2 LOW recorded (pre-existing ExecutionTimeLimit divergence; manifest guard top-level-only)",
+  "separate_gates": [
+    "re-vendor the corrected bundle and re-run the DARK Option-C disabled install on the Windows host (packet 008 follow-up)",
+    "run the schtasks host-parity validator on a scratch Windows box / CI Windows runner",
+    "backend deploy + attestation (Phases 3/5/6 of packet 008) remain separately deferred",
+    "scheduler/flag enablement, real alert transport, shadow observation, live one-order acceptance"
+  ],
+  "production_unchanged": "no deploy, no migration, no host write, no secret, no broker order; deployed backend fb4ee402; prod DB execution/0036 + trade_copier/0011"
+}

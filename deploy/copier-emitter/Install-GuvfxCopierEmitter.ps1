@@ -33,7 +33,10 @@ if ($planOnly) {
     exit 0
 }
 
-# Build a DISABLED task: a single action, NO <Triggers>, Settings.Enabled=false, no restart-on-failure.
+# Build a DISABLED task: a single action, NO <Triggers>, Settings.Enabled=false, and NO restart-on-failure
+# element at all. Task Scheduler's default is no restart, so omitting that element is the correct way to express
+# "never auto-restart"; a zero-duration restart interval is REJECTED by schtasks (out of range) and must never be
+# reintroduced (ADR-0077; GFX-COPIER-HOST-EMITTER-TASKXML-FIX-009; see tests_bundle TaskXmlRestartOnFailureFixTests).
 # XML-escape every operator-supplied value ('&' '<' '>' are legal in Windows paths and would break the XML).
 function Get-XmlEscaped($s) { return ([string]$s).Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;") }
 $exeEsc = Get-XmlEscaped $PythonExe
@@ -51,7 +54,6 @@ $taskXml = @"
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <RestartOnFailure><Interval>PT0M</Interval><Count>0</Count></RestartOnFailure>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
   </Settings>
   <Actions Context="Author"><Exec><Command>$exeEsc</Command><Arguments>$argsEsc</Arguments></Exec></Actions>

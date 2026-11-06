@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!-- GuvFX Copy Trading host emitter scheduled task - canonical DISABLED/DARK form (ADR-0077).
-     The installer produces exactly this shape: Settings.Enabled=false, NO Triggers (never scheduled), no
-     RestartOnFailure (never auto-restarts into active emission), LeastPrivilege, start-on-demand only. The
+     The installer produces exactly this shape: Settings.Enabled=false, NO Triggers (never scheduled), NO
+     restart-on-failure element at all - its absence IS "never auto-restart" (Task Scheduler default); a
+     zero-duration restart interval is rejected by schtasks and must never be added - LeastPrivilege,
+     start-on-demand only. The
      emitter action runs the gated 'run' mode, which is itself inert unless observation_allowed AND a positive
      fast interval are configured. Placeholders {{...}} are substituted per account at install time. -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -21,10 +23,6 @@
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <RestartOnFailure>
-      <Interval>PT0M</Interval>
-      <Count>0</Count>
-    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>
