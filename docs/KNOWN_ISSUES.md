@@ -2,6 +2,26 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading one-shot attestation — operator wrapper prepared, NOT executed (GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021 / ADR-0077, 2026-11-06)
+
+- **Why it exists.** Packet-020 (the one-shot attestation) halted at preflight: the emitter's `COPIER_INGEST_HMAC_KEY`
+  and `GUVFX_AGENT_TOKEN` are not provisioned on the host, and an agent must not provision/handle production secrets.
+  This wrapper lets a HUMAN operator enter the secrets locally over RDP so the attestation can run without any agent
+  touching a secret.
+- **Still PENDING.** The wrapper is repository tooling only — not executed, not run against production. Running it is a
+  separate Sponsor-gated step (the attestation packet) using `docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md`. The
+  operator must have the emitter credentials to enter (the `COPIER_INGEST_HMAC_KEY` value must match the backend's, or
+  verification returns 401 bad_signature).
+- **Byte-preservation (hardened, packet-022).** The wrapper now submits the emitter's ORIGINAL envelope bytes
+  VERBATIM (a brace-scan extraction of the `envelope` object from stdout) and parses only a SEPARATE copy to validate;
+  it does NOT deserialize/re-serialize the request body, so formatting, property order and large integers survive
+  byte-for-byte and the HMAC signature always verifies. Still confirm `verified` (HTTP 200) on the Windows Pester mock
+  and on the real run. The behavioural Pester test + mock emitter/verifier require a Windows + Pester runner (not CI);
+  CI runs the Python static/mutation-killing assertions only.
+- **Durable follow-up.** Production-grade continuous operation must use an approved secret store (Windows Credential
+  Manager / DPAPI or a governed service identity), not interactive entry. `GUVFX_AGENT_TOKEN` remains scheduled for
+  project-closure rotation and must never be displayed or copied.
+
 ## 🟡 Node-capacity primitive `set_node_capacity` — repository-only, NOT deployed, Taurex NOT recovered (GFX-NODE-CAPACITY-PRIMITIVE-001 / ADR-0082, 2026-11-06)
 
 - **Prerequisite only — recovery still pending.** This PR adds the audited `set_node_capacity` primitive but does

@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-ATTESTATION-OPERATOR-WRAPPER-021",
+  "packet_id": "GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021 (ADR-0077, reused)",
+  "created_at_utc": "2026-11-06T11:40:00Z",
+  "branch": "feat/copier-attestation-operator-wrapper",
+  "base_commit": "ec257ba49cd210582356c55ea4a477ecba36a5c4",
+  "head_commit": "7138619262d04be35b37c1fb693929515ddb9d39",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle",
+    "cd backend && .venv/bin/python manage.py test trade_copier",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "emitter bundle tests green incl. OperatorWrapperTests (10 static mutation-killing assertions)",
+    "full trade_copier suite green",
+    "ADR governance green (ADR-0077 reused; no new ADR)",
+    "no trade_copier model/migration drift",
+    "secret scan: no findings",
+    "evidence lint: all manifests schema-valid incl. this one"
+  ],
+  "actual_results": [
+    "PASS - emitter bundle: Ran 32 tests, OK (incl. 10 OperatorWrapperTests + the prior parity/packaging/restart-fix suites)",
+    "PASS - full trade_copier: Ran 686 tests, OK (0 failures; +10 vs prior 676)",
+    "PASS - core.tests_adr_governance: 3 OK (ADR-0077 reused; no duplicate ADR)",
+    "PASS - makemigrations trade_copier --check: No changes detected (no model/migration)",
+    "PASS - check_no_secrets: no findings (wrapper + mocks hold no secret literal)",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest",
+    "PENDING - Pester behavioural mock test (deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1 + mock_emitter.py): requires a Windows PowerShell 5.1 + Pester runner (not available in CI); NOT run here",
+    "PASS - HARDENING (GFX-COPIER-ATTESTATION-WRAPPER-HARDEN-022): the wrapper now POSTs the emitter's envelope bytes VERBATIM (Get-EnvelopeSubstring brace-scan + UTF-8 bytes) with no deserialize/re-serialize; validation parses a SEPARATE trimmed copy (single-object/array/prefix/suffix rejected before POST). emitter bundle re-run: Ran 33 tests, OK (incl. test_verbatim_envelope_post_no_reserialize). The LOW re numeric fidelity is RESOLVED."
+  ],
+  "status": "PARTIAL",
+  "security_model": {
+    "secret_entry": "non-echoing Read-Host -AsSecureString; secrets NEVER accepted as arguments",
+    "secret_lifetime": "SecureString -> plaintext only to inject into the CHILD emitter process EnvironmentVariables; parent plaintext dropped immediately after Process.Start; cleared + disposed in finally",
+    "no_persistence": "no SetEnvironmentVariable / Set-ItemProperty / Out-File / Set-Content / Export-Clixml; no temp file (in-memory body); no Machine/User env, registry, task XML, config, history, logs, Notion or repo",
+    "output": "only a redacted result (account_id, http_status, verified, reason_code, request_ts, correlation_id); the envelope, HMAC signature, agent token and broker login are never printed",
+    "one_shot": "exactly one [System.Diagnostics.Process]::Start (attest mode only) and exactly one Invoke-WebRequest; no retry loop",
+    "task_untouched": "no schtasks / Register|Start|Enable|Set-ScheduledTask; GuvFX_CopierEmitter_46 stays DISABLED/never-run",
+    "guards": "transcription fail-closed (system-wide EnableTranscripting) + Stop-Transcript for the session; Set-PSDebug -Off; refuses Verbose/Debug"
+  },
+  "adversarial_review": "Self-review, 14 vectors (secret-in-args, secret-persistence, command-line exposure, envelope-to-stdout/stderr, one-invocation, one-POST, no-retry, observe/run/delivery-impossible, malformed/multi-envelope fail-before-POST, cleanup-on-all-paths, task-untouched, temp-file-ACL/none, PS5.1 compat, secret-scan+hygiene): NO CRITICAL, NO HIGH. LOW (recorded): (a) the wrapper re-serializes the parsed envelope for the POST - a JSON round-trip altering a signed numeric value would cause bad_signature; validate verified=200 on the Pester mock and the real run; fallback = restricted-ACL temp-file verbatim read (never printed). (b) StrictMode v2 access to an absent 'ok' property on hostile JSON throws -> fails closed before any POST (acceptable). (c) a non-2xx verifier response is reduced to reason_code http_<code> (redacted), not parsed for its reason body.",
+  "limitations": [
+    "Repository-only tooling: no production host contact, no real secret handled, no verifier enablement, no attestation request, no scheduled-task change, no deployment.",
+    "The Pester behavioural mock test is NOT run here (no Windows PowerShell 5.1 + Pester runner in CI). It uses a SYNTHETIC mock emitter and a loopback mock verifier (no real endpoint/secret) and must be run on a Windows+Pester runner before the real one-shot. Static testing is not behavioural acceptance.",
+    "Running the wrapper against production is a SEPARATE Sponsor-gated step (the attestation packet) via docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md; it requires the operator to hold the emitter credentials (COPIER_INGEST_HMAC_KEY value must match the backend).",
+    "No model/migration; nothing added to deploy/copier-emitter/MANIFEST.json (operator tooling is not a vendored bundle file). Production unchanged: backend remains the temporary release 20f5491b with the verifier flag OFF."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/operator/Invoke-GuvfxCopierOneShotAttestation.ps1",
+    "deploy/copier-emitter/operator/tests/mock_emitter.py",
+    "deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1",
+    "backend/trade_copier/emitter/tests_bundle.py (OperatorWrapperTests)",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md",
+    "docs/STATUS.md, docs/KNOWN_ISSUES.md",
+    "evidence/manifests/GFX-EVD-COPIER-ATTESTATION-OPERATOR-WRAPPER-021.json"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/operator/Invoke-GuvfxCopierOneShotAttestation.ps1": "sha256:f6e9aa78cfb209ae56694b3faa03b352b300746b7e1c2579445c12c3b5b0aaa2",
+    "deploy/copier-emitter/operator/tests/mock_emitter.py": "sha256:2ff95a1f3557b3535900fb41a9002c7bdb4d8df2fb5d18554d4847afa9f48b25",
+    "deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1": "sha256:51adea8977782dd3f2ffc838d46df9607796e0b36eb85b059507ff6dac0bca02",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:3d3d4576152a22bb04de2873db7fa0f07d38d6e4da4b0be46c956c0d38de25d4"
+  },
+  "reviewer": "Self adversarial review (14 vectors): NO CRITICAL, NO HIGH; 3 LOW recorded. Pester behavioural test pending a Windows+Pester runner.",
+  "separate_gates": [
+    "run the Pester behavioural mock test on a Windows PowerShell 5.1 + Pester runner",
+    "Sponsor GO + operator provisions the emitter credentials, then run the one-shot attestation per the runbook (verifier temporarily ON by the Claude operator, restored OFF immediately)",
+    "production-grade secret store (Credential Manager/DPAPI or governed service identity) for any continuous operation",
+    "GUVFX_AGENT_TOKEN project-closure rotation"
+  ],
+  "production_unchanged": "no deploy, no migration, no host contact, no secret, no broker order; backend remains temporary release 20f5491b with COPIER_ATTESTATION_VERIFY_ENABLED OFF"
+}

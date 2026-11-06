@@ -1,5 +1,21 @@
 # GuvFX — Project Status
 
+> **2026-11-06 — Copy Trading one-shot attestation operator wrapper (GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021;
+> ADR-0077 reused; repository-only tooling; governed PR; auto-merge OFF; STOP before merge).** Builds a secure,
+> HUMAN-operated Windows PowerShell wrapper (`deploy/copier-emitter/operator/Invoke-GuvfxCopierOneShotAttestation.ps1`)
+> so a local RDP operator can perform the account-46 identity attestation without any agent handling a secret.
+> Security model: non-echoing `Read-Host -AsSecureString` prompts (never arguments); secrets injected into the CHILD
+> emitter process environment ONLY (never Machine/User env, registry, task XML, config, disk, history, logs, Notion or
+> repo); transcription + Verbose/Debug guards (fail closed); exactly ONE `run_emitter.py attest` invocation and ONE
+> in-memory POST with no retry; the envelope/HMAC signature/token/broker login are NEVER printed (only a redacted
+> result); guaranteed `finally` cleanup; the scheduled task is never touched. Mock emitter + Pester behavioural test
+> (synthetic keys/identities, loopback mock verifier) + Python mutation-killing static tests
+> (`OperatorWrapperTests`, 10). Verified: emitter bundle 32 OK, full trade_copier 686 OK, ADR governance OK, secret
+> scan clean, no migration drift. Adds no model/migration and nothing to `MANIFEST.json` (operator tooling). Runbook
+> `docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md` (two roles + abort path + durable follow-up: production secret store
+> and GUVFX_AGENT_TOKEN rotation). Repository-only: no production contact, no real secret, no verifier enablement, no
+> attestation request, no scheduled-task change, no deployment. STOP before merge.
+
 > **2026-11-06 — Node-capacity primitive `set_node_capacity` (GFX-NODE-CAPACITY-PRIMITIVE-001; ADR-0082;
 > repository-only; governed PR; auto-merge OFF; STOP before merge).** Off main `ec257ba4`. Adds the supported,
 > audited, fail-closed operational primitive to change `TerminalNode.max_accounts` — the per-node analogue of
