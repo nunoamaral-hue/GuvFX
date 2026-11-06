@@ -186,6 +186,43 @@ class HostCapacityAudit(models.Model):
         return f"{self.physical_host_key}: {self.previous_max}->{self.new_max}"
 
 
+class NodeCapacityAudit(models.Model):
+    """ADR-0082 — append-only history of every change to a ``TerminalNode.max_accounts`` (the PER-NODE logical
+    ceiling), made through the governed ``set_node_capacity`` primitive. The per-node analogue of
+    ``HostCapacityAudit``: a node ceiling is never an undocumented constant, and every change carries the actor,
+    a MANDATORY reason, a UTC timestamp, and the node/physical-host occupancy observed at the decision moment
+    (so a later reviewer can reconstruct exactly why the raise was certified safe). A dry-run writes NO row.
+    Secret-free: it records a node hostname and the physical-host key (an rdp_host) only — never a credential,
+    account number or MT5 login."""
+
+    # Nullable FK so audit history survives if the node row is ever removed; the durable identity is the
+    # denormalised hostname + physical_host_key captured at write time.
+    node = models.ForeignKey(
+        TerminalNode, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="capacity_audits",
+    )
+    node_hostname = models.CharField(max_length=128, db_index=True)
+    physical_host_key = models.CharField(max_length=255, db_index=True)
+    previous_max_accounts = models.IntegerField(null=True, blank=True)
+    new_max_accounts = models.IntegerField()
+    node_occupancy_at_decision = models.IntegerField()
+    host_occupancy_at_decision = models.IntegerField()
+    certified_safe = models.IntegerField(null=True, blank=True)
+    ceiling = models.IntegerField(null=True, blank=True)
+    actor = models.CharField(max_length=150, blank=True, default="")
+    reason = models.TextField()
+    correlation_id = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Node Capacity Audit"
+        verbose_name_plural = "Node Capacity Audit"
+
+    def __str__(self) -> str:
+        return f"{self.node_hostname}: {self.previous_max_accounts}->{self.new_max_accounts}"
+
+
 # =============================================================================
 # Demo Trade Safety Constants
 # =============================================================================

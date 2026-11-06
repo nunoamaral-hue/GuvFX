@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Node-capacity primitive `set_node_capacity` — repository-only, NOT deployed, Taurex NOT recovered (GFX-NODE-CAPACITY-PRIMITIVE-001 / ADR-0082, 2026-11-06)
+
+- **Prerequisite only — recovery still pending.** This PR adds the audited `set_node_capacity` primitive but does
+  NOT run it, does NOT deploy, and does NOT recover Taurex account #59. After merge + deploy, re-run
+  `GFX-TAUREX-CAPACITY-REPAIR-002` (node 2 `max_accounts` 16→17 via this command, allocator places workspace #43,
+  verify `WAITING_FOR_LOGIN`, freeze host at 18/18).
+- **`certified_safe` is enforced only for capacity CHANGES here; the runtime allocator still enforces
+  `max_total_occupants` (ADR-0069), unchanged.** So this command can refuse an unsafe ceiling raise, but it does
+  not retrofit a certified-safe cap onto live allocation — a node could still be filled toward the absolute
+  ceiling by the allocator. Tightening the runtime guard to `certified_safe` is a separate, out-of-scope decision.
+- **No staleness window for `HostCapacity`.** Per the existing ADR-0069 contract there is no certification-expiry
+  concept; this primitive requires a present `HostCapacity` row with a non-null `certified_safe` and reads it live,
+  failing closed when either is missing. It does NOT invent a staleness rule.
+- **Single physical host remains near its safe ceiling.** Host `100.79.101.19` is at occupancy 17 / certified-safe
+  18; this primitive lets a raise consume the last safe slot but does not add capacity. Durable expansion still
+  requires a separately certified non-CZ node/host (not in this packet).
+
 ## 🟡 Broker-Intelligence Stream C — public withdrawal intelligence repository-only, DARK, UNCERTIFIED (GFX-BROKER-INTELLIGENCE-STREAM-C-004 / ADR-0080, 2026-11-06)
 
 - **The whole public surface is DARK and UNPOPULATED.** The endpoint 404s until
