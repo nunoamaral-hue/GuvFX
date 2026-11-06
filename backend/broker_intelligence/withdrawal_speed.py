@@ -57,8 +57,13 @@ from .models import Provenance, Withdrawal
 MIN_HEADLINE_SAMPLE = 3
 MIN_BROKER_SAMPLE = 3
 
-_PENDING = (Withdrawal.Status.REQUESTED, Withdrawal.Status.PROCESSING, Withdrawal.Status.PENDING)
-_FAILED = (Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED)
+# Stream B (ADR-0079): CONFIRMATION_REQUIRED + CONFIRMED are in-flight pre-completion stages (the production
+# TradersWay parser emits those events); EXPIRED + FAILED are terminal non-completions. Keep every status bucketed so
+# a withdrawal is never silently dropped from in_progress or the failed count.
+_PENDING = (Withdrawal.Status.REQUESTED, Withdrawal.Status.CONFIRMATION_REQUIRED, Withdrawal.Status.CONFIRMED,
+            Withdrawal.Status.PROCESSING, Withdrawal.Status.PENDING)
+_FAILED = (Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED, Withdrawal.Status.EXPIRED,
+           Withdrawal.Status.FAILED)
 
 
 def _human_en(seconds: Optional[int]) -> Optional[str]:

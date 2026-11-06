@@ -85,17 +85,36 @@ def _with_effective_category(qs):
     return qs.annotate(_eff_category=Coalesce(Subquery(latest), F("transaction_category"), output_field=CharField()))
 _REJECTED_EVENTS = {"WITHDRAWAL_REJECTED"}
 _CANCELLED_EVENTS = {"WITHDRAWAL_CANCELLED"}
+# Stream B (ADR-0079): confirmation-required / confirmed are now DISTINCT statuses (previously both collapsed to
+# REQUESTED); EXPIRED and FAILED are new terminals.
+_CONFIRMATION_REQUIRED_EVENTS = {"WITHDRAWAL_CONFIRMATION_REQUIRED"}
+_CONFIRMED_EVENTS = {"WITHDRAWAL_CONFIRMED"}
+_EXPIRED_EVENTS = {"WITHDRAWAL_EXPIRED"}
+_FAILED_EVENTS = {"WITHDRAWAL_FAILED"}
+# Stream B (ADR-0079): neutral ADVANCING lifecycle events (everything EXCEPT the opening WITHDRAWAL_REQUESTED and
+# WITHDRAWAL_COMPLETED). A broker's confirmation/processing/expiry/rejection/cancellation/failure follow-up email
+# frequently carries no rail field, so its externality cannot be re-asserted from its own text (effective category
+# UNKNOWN). Such an event may ADVANCE — never create — the existing externally-evidenced withdrawal it references
+# (run_correlation pass 2b); COMPLETED has its own advance-only path (pass 2, correlate_completion_event).
+_NEUTRAL_ADVANCE_EVENTS = (_CONFIRMATION_REQUIRED_EVENTS | _CONFIRMED_EVENTS | _PROCESSING_EVENTS
+                           | _EXPIRED_EVENTS | _FAILED_EVENTS | _REJECTED_EVENTS | _CANCELLED_EVENTS)
 
-# Monotonic rank — status only advances to a strictly higher rank. All three terminal states share rank 3 so a
-# terminal withdrawal is never flipped to a different terminal by a later (contradictory) event.
+# Monotonic rank — status only advances to a strictly higher rank. The multi-stage pre-terminal ladder
+# (REQUESTED < CONFIRMATION_REQUIRED < CONFIRMED < PROCESSING) is explicit; ALL terminal states share the top rank
+# so a terminal withdrawal is never flipped to a different terminal by a later (contradictory) event. The relative
+# order of the pre-existing statuses is preserved, so historical records never regress.
 _STATUS_RANK = {
     Withdrawal.Status.UNRESOLVED: 0,
     Withdrawal.Status.PENDING: 1,
     Withdrawal.Status.REQUESTED: 1,
-    Withdrawal.Status.PROCESSING: 2,
-    Withdrawal.Status.COMPLETED: 3,
-    Withdrawal.Status.REJECTED: 3,
-    Withdrawal.Status.CANCELLED: 3,
+    Withdrawal.Status.CONFIRMATION_REQUIRED: 2,
+    Withdrawal.Status.CONFIRMED: 3,
+    Withdrawal.Status.PROCESSING: 4,
+    Withdrawal.Status.COMPLETED: 5,
+    Withdrawal.Status.REJECTED: 5,
+    Withdrawal.Status.CANCELLED: 5,
+    Withdrawal.Status.EXPIRED: 5,
+    Withdrawal.Status.FAILED: 5,
 }
 
 # Bounded fallback window for heuristic matching (account+amount+currency within +/- this of the event time).
@@ -115,6 +134,7 @@ OUT_HEURISTIC = "correlated_heuristic"
 OUT_CROSS_INBOX = "correlated_cross_inbox"   # a duplicate inbox copy of one logical email adopted the sibling withdrawal
 OUT_CREATED = "created"                 # a new withdrawal was started from a requested-class event
 OUT_COMPLETION_ADVANCED = "completion_advanced"   # a neutral completion advanced an EXISTING external withdrawal (never created)
+OUT_ADVANCED = "advanced"               # a neutral NON-completion lifecycle event advanced an EXISTING withdrawal (never created)
 OUT_AMBIGUOUS = "ambiguous"             # >=2 heuristic candidates — never guessed
 OUT_UNRESOLVED = "unresolved"           # a completion with no ref and no match — never fabricated
 OUT_ALREADY = "already_correlated"      # event already CORRELATED (idempotent no-op under re-run/concurrency)
@@ -131,9 +151,17 @@ def _status_for_event(event: BrokerEvent) -> Optional[str]:
         return Withdrawal.Status.REJECTED
     if et in _CANCELLED_EVENTS:
         return Withdrawal.Status.CANCELLED
+    if et in _EXPIRED_EVENTS:
+        return Withdrawal.Status.EXPIRED
+    if et in _FAILED_EVENTS:
+        return Withdrawal.Status.FAILED
     if et in _PROCESSING_EVENTS:
         return Withdrawal.Status.PROCESSING
-    if et in _REQUESTED_EVENTS:
+    if et in _CONFIRMED_EVENTS:
+        return Withdrawal.Status.CONFIRMED
+    if et in _CONFIRMATION_REQUIRED_EVENTS:
+        return Withdrawal.Status.CONFIRMATION_REQUIRED
+    if et in _REQUESTED_EVENTS:   # WITHDRAWAL_REQUESTED (the confirmation-family values are handled above)
         return Withdrawal.Status.REQUESTED
     return None
 
@@ -145,7 +173,30 @@ def _is_completion(status: str) -> bool:
 
 
 def _is_terminal(status: str) -> bool:
-    return status in (Withdrawal.Status.COMPLETED, Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED)
+    return status in (Withdrawal.Status.COMPLETED, Withdrawal.Status.REJECTED, Withdrawal.Status.CANCELLED,
+                      Withdrawal.Status.EXPIRED, Withdrawal.Status.FAILED)
+
+
+# event_type -> the Withdrawal lifecycle-anchor field it stamps (first observation of that stage wins; never
+# overwritten, never fabricated). completed_at is stamped by the completion-anchor block (guarded on the post-advance
+# status), so it is deliberately NOT in this map.
+_STAGE_ANCHOR = {
+    "WITHDRAWAL_CONFIRMATION_REQUIRED": "confirmation_required_at",
+    "WITHDRAWAL_CONFIRMED": "confirmed_at",
+    "WITHDRAWAL_PROCESSING": "processing_started_at",
+    "WITHDRAWAL_APPROVED": "processing_started_at",
+}
+
+
+def _initial_stage_anchors(event: BrokerEvent) -> dict:
+    """Initial lifecycle anchors for a Withdrawal CREATED directly (the create paths build the row inline and so
+    bypass _apply_event). Stamps last_status_change_at (the create IS the first status transition) and this event's
+    stage anchor, if any — keeping the create paths consistent with _apply_event (Stream B / ADR-0079)."""
+    out = {"last_status_change_at": _event_time(event)}
+    af = _STAGE_ANCHOR.get((event.event_type or "").strip())
+    if af is not None:
+        out[af] = _event_time(event)
+    return out
 
 
 def _event_time(event: BrokerEvent):
@@ -158,9 +209,11 @@ def _apply_event(withdrawal: Withdrawal, event: BrokerEvent, target_status: str,
     """Advance ``withdrawal`` from ``event`` (monotonic) and backfill anchors/amount — positive evidence only.
     Persists the withdrawal and marks the event CORRELATED. Never regresses status."""
     dirty = created
-    # Monotonic status advance (never regress; never flip one terminal to another).
+    # Monotonic status advance (never regress; never flip one terminal to another). Stamp the last-status-change
+    # anchor only on an ACTUAL advance (Stream B / ADR-0079).
     if _STATUS_RANK.get(target_status, 0) > _STATUS_RANK.get(withdrawal.status, 0):
         withdrawal.status = target_status
+        withdrawal.last_status_change_at = _event_time(event)
         dirty = True
     # Backfill amount/currency if the record has none and the event supplies it (never overwrite a known value).
     if withdrawal.amount is None and event.amount is not None:
@@ -184,6 +237,14 @@ def _apply_event(withdrawal: Withdrawal, event: BrokerEvent, target_status: str,
         if withdrawal.requested_event_id is None:
             withdrawal.requested_event = event
             dirty = True
+    # Stage anchors (Stream B / ADR-0079): stamp confirmation_required_at / confirmed_at / processing_started_at
+    # from the FIRST observed event of that stage (backfill-once, never overwritten, never fabricated). Independent
+    # of the monotonic headline status, so a late out-of-order stage email still records WHEN that stage's evidence
+    # was observed without regressing the status.
+    _anchor_field = _STAGE_ANCHOR.get((event.event_type or "").strip())
+    if _anchor_field is not None and getattr(withdrawal, _anchor_field) is None:
+        setattr(withdrawal, _anchor_field, _event_time(event))
+        dirty = True
     # Completion anchor: set completed_at/completed_event ONLY when the withdrawal is now actually COMPLETED — i.e. a
     # COMPLETED event that advanced (or already was) the status. A COMPLETED event that hits an already-TERMINAL row
     # (REJECTED/CANCELLED — same rank, so status monotonically stays put) must NOT stamp a completion timestamp or a
@@ -234,7 +295,15 @@ def _find_by_reference(event: BrokerEvent):
                                       broker_reference_id=ref).first()
         if w is not None:
             return w
-    if event.owner_id is not None:   # owner bridge: one real withdrawal, mixed account resolution across its events
+    if event.owner_id is not None:   # owner bridge (ADR-0050): ONE real withdrawal, mixed account resolution across
+        # its events. An account-RESOLVED event may bridge ONLY to an account-UNRESOLVED owner row (its account-less
+        # sibling), NEVER to a DIFFERENT account's row of the same owner: references can legitimately collide across one
+        # owner's accounts (``uniq_withdrawal_account_reference`` is per-account), so an unconstrained ``(owner, ref)``
+        # match would attach account A2's event to account A1's withdrawal (cross-account corruption within one owner).
+        # An account-LESS event keeps the full bridge (it is the documented case that advances an account-resolved row).
+        if event.trading_account_id is not None:
+            return Withdrawal.objects.filter(owner_id=event.owner_id, trading_account__isnull=True,
+                                             broker_reference_id=ref).first()
         return Withdrawal.objects.filter(owner_id=event.owner_id, broker_reference_id=ref).first()
     return None
 
@@ -290,6 +359,7 @@ def _correlate_by_reference(event: BrokerEvent, target_status: str) -> Correlati
                 requested_event=event if not _is_terminal(target_status) else None,
                 completed_at=_event_time(event) if _is_completion(target_status) else None,
                 completed_event=event if _is_completion(target_status) else None,
+                **_initial_stage_anchors(event),
             )
     except IntegrityError:
         withdrawal = _find_by_reference(event)   # lost the create race -> the winner exists; advance against it
@@ -332,6 +402,7 @@ def _create_heuristic(event: BrokerEvent, target_status: str) -> CorrelationResu
         provenance=event.provenance,
         requested_at=_event_time(event),   # broker-stated time else observed email Date (ADR-0061)
         requested_event=event,
+        **_initial_stage_anchors(event),
     )
     _mark_event(event, BrokerEvent.CorrelationStatus.CORRELATED)
     return CorrelationResult(event.id, OUT_CREATED, withdrawal.id)
@@ -473,16 +544,56 @@ def correlate_completion_event(event: BrokerEvent) -> CorrelationResult:
         return CorrelationResult(event.id, OUT_COMPLETION_ADVANCED, withdrawal.id)
 
 
+def correlate_neutral_advance_event(event: BrokerEvent) -> CorrelationResult:
+    """ADVANCE-ONLY by reference for a NEUTRAL (non-external) NON-completion withdrawal-lifecycle event (ADR-0079):
+    confirmation-required / confirmed / processing / approved / expired / failed / rejected / cancelled. A broker's
+    follow-up for any of these frequently carries no rail field, so (like the genuine TradersWay payout COMPLETION)
+    its externality cannot be asserted from its own text — but it carries the shared broker reference, so it ADVANCES
+    the EXISTING external ``Withdrawal`` it matches (monotonic; stamps that stage's anchor). It is the non-COMPLETED
+    sibling of ``correlate_completion_event`` and shares its guarantees: it NEVER creates a withdrawal (externality is
+    only ever asserted by the OPENING request/confirmation that carried positive rail evidence), so metric inflation
+    is structurally impossible; and it is fail-closed + idempotent (event row locked, mutable correlation_status
+    re-read). The opening WITHDRAWAL_REQUESTED and WITHDRAWAL_COMPLETED are deliberately handled elsewhere (pass 1 /
+    pass 2); ``run_correlation`` restricts this pass to EFFECTIVE-category UNKNOWN events so an affirmatively
+    non-withdrawal (INTERNAL_TRANSFER / DEPOSIT) event is never even scanned here."""
+    target_status = _status_for_event(event)
+    if target_status is None:
+        return CorrelationResult(event.id, OUT_SKIP_NOT_LIFECYCLE)
+    if not event.broker_reference_id:
+        return CorrelationResult(event.id, OUT_UNRESOLVED)       # no reference -> cannot link; never fabricated
+    if event.trading_account_id is None and event.owner_id is None:
+        return CorrelationResult(event.id, OUT_SKIP_NO_ACCOUNT)
+    with transaction.atomic():
+        acquire_owner_erasure_lock(event.owner_id)   # P0 (ADR-0054): serialise against governed erasure
+        locked = BrokerEvent.objects.select_for_update().filter(pk=event.pk).first()
+        if locked is None:
+            return CorrelationResult(event.id, OUT_SKIP_NOT_LIFECYCLE)
+        if locked.correlation_status == BrokerEvent.CorrelationStatus.CORRELATED:
+            return CorrelationResult(event.id, OUT_ALREADY)
+        event = locked
+        withdrawal = _find_by_reference(event)                   # owner/account bridge (same finder as pass 1 / 2)
+        if withdrawal is None:
+            return CorrelationResult(event.id, OUT_UNRESOLVED)   # NEVER create a withdrawal from an advancing event
+        _apply_event(withdrawal, event, target_status,
+                     method=withdrawal.correlation_method or Withdrawal.CorrelationMethod.REFERENCE_ID, created=False)
+        return CorrelationResult(event.id, OUT_ADVANCED, withdrawal.id)
+
+
 def run_correlation(*, limit: Optional[int] = None) -> dict:
     """Correlate all not-yet-resolved events in chronological (append-only) order, in TWO passes. Re-entrant and
     idempotent: CORRELATED events are skipped; UNRESOLVED/AMBIGUOUS are re-evaluated (ambiguity/missing-request may
     resolve as more evidence accrues). Returns a secret-free summary counting each outcome. NO flag check here — the
     caller (the DARK worker/command) gates the live run; this stays pure/testable.
 
-    Pass 1 — ``EXTERNAL_WITHDRAWAL`` events (create + advance). Pass 2 — neutral COMPLETED-lifecycle events that are
-    NOT external (category UNKNOWN) and carry a reference: ADVANCE-ONLY by reference (``correlate_completion_event``),
-    run AFTER pass 1 so the request has already created the withdrawal the completion advances. A completion can only
-    ever complete an externally-evidenced withdrawal; it can never create one, so this pass cannot inflate metrics."""
+    Pass 1 — ``EXTERNAL_WITHDRAWAL`` events (create + advance). Pass 2b (ADR-0079) — neutral (effective category
+    UNKNOWN) NON-completion lifecycle events carrying a reference: ADVANCE-ONLY by reference
+    (``correlate_neutral_advance_event``). Pass 2 — neutral COMPLETED events carrying a reference: ADVANCE-ONLY by
+    reference (``correlate_completion_event``). Passes 2b/2 run AFTER pass 1 so the opening request/confirmation has
+    already created the withdrawal they advance; 2b runs BEFORE 2 so an explicit negative terminal
+    (expired/rejected/cancelled/failed) is not overridden by a stray later completion for the same reference. None of
+    the advance passes can create a withdrawal — externality is only ever asserted by the opening event — so they
+    cannot inflate metrics. Each advance pass is restricted to EFFECTIVE-category UNKNOWN so an affirmatively
+    non-withdrawal (INTERNAL_TRANSFER / DEPOSIT) event is never scanned."""
     summary: dict = {"processed": 0}
 
     def _drain(qs, fn):
@@ -500,6 +611,14 @@ def run_correlation(*, limit: Optional[int] = None) -> dict:
                     correlation_status__in=[BrokerEvent.CorrelationStatus.UNRESOLVED,
                                             BrokerEvent.CorrelationStatus.AMBIGUOUS])
             .order_by("id")), correlate_event)
+    # Pass 2b (ADR-0079): neutral (UNKNOWN) NON-completion advancing lifecycle events carrying a reference —
+    # advance-only. Restricted to UNKNOWN so an INTERNAL_TRANSFER / DEPOSIT event is never scanned; runs before pass 2.
+    _drain((_with_effective_category(BrokerEvent.objects)
+            .filter(event_type__in=list(_NEUTRAL_ADVANCE_EVENTS), broker_reference_id__gt="",
+                    correlation_status__in=[BrokerEvent.CorrelationStatus.UNRESOLVED,
+                                            BrokerEvent.CorrelationStatus.AMBIGUOUS],
+                    _eff_category=TransactionCategory.UNKNOWN)
+            .order_by("id")), correlate_neutral_advance_event)
     # Pass 2: neutral (non-external by EFFECTIVE category) completion events carrying a reference — advance-only.
     _drain((_with_effective_category(BrokerEvent.objects)
             .filter(event_type__in=list(_COMPLETED_EVENTS), broker_reference_id__gt="",

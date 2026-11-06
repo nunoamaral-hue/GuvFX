@@ -114,12 +114,18 @@ class LifecycleLadder(TestCase):
         self.assertIsNone(w.completed_at)
         self.assertIsNone(w.duration_seconds())
 
-    def test_confirmation_and_confirmed_map_to_requested(self):
-        for et in ("WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED"):
+    def test_confirmation_and_confirmed_map_to_explicit_states(self):
+        # Stream B / ADR-0079: confirmation-required and confirmed are now DISTINCT lifecycle states (they used to
+        # collapse to REQUESTED), and each stamps its own anchor.
+        for et, expected, anchor in (
+                ("WITHDRAWAL_CONFIRMATION_REQUIRED", Withdrawal.Status.CONFIRMATION_REQUIRED, "confirmation_required_at"),
+                ("WITHDRAWAL_CONFIRMED", Withdrawal.Status.CONFIRMED, "confirmed_at")):
             a = _acct()
             C.correlate_event(_event(a, et, ref="C-%s" % et, occurred_at=timezone.now()))
             w = Withdrawal.objects.get(trading_account=a)
-            self.assertEqual(w.status, Withdrawal.Status.REQUESTED, et)
+            self.assertEqual(w.status, expected, et)
+            self.assertIsNotNone(getattr(w, anchor), et)       # stage anchor stamped
+            self.assertIsNone(w.completed_at, et)              # never completed by a confirmation-stage event
 
     def test_approved_maps_to_processing(self):
         a = _acct()

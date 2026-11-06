@@ -59,7 +59,7 @@ class OwnerAttributedCreation(TestCase):
         w = Withdrawal.objects.get()
         self.assertIsNone(w.trading_account_id)                 # account UNRESOLVED
         self.assertEqual(w.owner_id, u.id)                      # OWNER-attributed
-        self.assertEqual(w.status, Withdrawal.Status.REQUESTED)
+        self.assertEqual(w.status, Withdrawal.Status.CONFIRMATION_REQUIRED)   # Stream B: explicit stage (was REQUESTED)
         self.assertEqual(w.broker_reference_id, "W-1")
 
     def test_owner_scoped_reference_is_idempotent(self):
@@ -130,7 +130,7 @@ class AdvanceOnlyCompletion(TestCase):
                ref="DEPOSIT-1", amount=None, currency="")
         C.run_correlation()
         self.assertEqual(Withdrawal.objects.count(), 1)
-        self.assertEqual(Withdrawal.objects.get().status, Withdrawal.Status.REQUESTED)   # NOT completed by the deposit
+        self.assertEqual(Withdrawal.objects.get().status, Withdrawal.Status.CONFIRMATION_REQUIRED)   # NOT completed by the deposit (Stream B: opened at CONFIRMATION_REQUIRED)
 
     def test_cross_owner_completion_does_not_advance_other_owners_withdrawal(self):
         a, b = _owner(), _owner()
@@ -140,7 +140,7 @@ class AdvanceOnlyCompletion(TestCase):
                ref="SHARED-REF", amount=None, currency="")
         C.run_correlation()
         wa = Withdrawal.objects.get(owner=a)
-        self.assertEqual(wa.status, Withdrawal.Status.REQUESTED)       # untouched by B's completion
+        self.assertEqual(wa.status, Withdrawal.Status.CONFIRMATION_REQUIRED)   # untouched by B's completion (Stream B explicit stage)
         self.assertIsNone(wa.completed_at)
 
     def test_account_resolved_request_then_account_less_completion_advances_by_owner(self):

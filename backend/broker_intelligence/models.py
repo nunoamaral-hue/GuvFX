@@ -134,6 +134,10 @@ BROKER_EVENT_TYPES = (
     "WITHDRAWAL_COMPLETED",
     "WITHDRAWAL_REJECTED",
     "WITHDRAWAL_CANCELLED",
+    # Stream B (ADR-0079) additions: an EXPIRED (a confirmation-required withdrawal that lapsed per EXPLICIT broker
+    # evidence) and a FAILED (processing failed after acceptance — distinct from a broker REJECTED of the request).
+    "WITHDRAWAL_EXPIRED",
+    "WITHDRAWAL_FAILED",
     # Deposit lifecycle (IS6 parser, PR-B). Orthogonal to category: a DEPOSIT_* lifecycle always carries category
     # DEPOSIT, which the withdrawal projection NEVER counts — a deposit can therefore never enter withdrawal metrics.
     "DEPOSIT_REQUESTED",
@@ -350,15 +354,22 @@ class Withdrawal(models.Model):
     evidence links. Idempotent correlation is anchored by a partial-unique ``(trading_account, broker_reference_id)``
     (when a reference id is present) so the same broker withdrawal can never spawn two rows.
 
-    ``status`` semantics: REQUESTED→PROCESSING→COMPLETED/REJECTED/CANCELLED on evidence; **PENDING = requested but
-    completion not yet observed (NOT a failure)**; UNRESOLVED = correlated to an account but otherwise ambiguous."""
+    ``status`` semantics (Stream B / ADR-0079 makes the multi-stage lifecycle EXPLICIT): REQUESTED →
+    CONFIRMATION_REQUIRED → CONFIRMED → PROCESSING → COMPLETED, with terminal REJECTED / CANCELLED / EXPIRED /
+    FAILED. Completion is NEVER inferred from the first email — only a COMPLETED-lifecycle event sets COMPLETED.
+    **PENDING = requested but completion not yet observed (NOT a failure)**; UNRESOLVED = correlated to an account
+    but otherwise ambiguous. Status advances monotonically (the correlation engine never regresses it)."""
 
     class Status(models.TextChoices):
         REQUESTED = "REQUESTED", "Requested"
-        PROCESSING = "PROCESSING", "Processing"
+        CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED", "Confirmation required (not yet confirmed)"
+        CONFIRMED = "CONFIRMED", "Confirmation observed"
+        PROCESSING = "PROCESSING", "Broker processing"
         COMPLETED = "COMPLETED", "Completed"
-        REJECTED = "REJECTED", "Rejected"
+        REJECTED = "REJECTED", "Rejected by the broker"
         CANCELLED = "CANCELLED", "Cancelled"
+        EXPIRED = "EXPIRED", "Confirmation lapsed per explicit broker evidence"
+        FAILED = "FAILED", "Processing failed after acceptance"
         PENDING = "PENDING", "Requested; completion not yet observed"
         UNRESOLVED = "UNRESOLVED", "Ambiguous / not resolvable"
 
@@ -380,8 +391,24 @@ class Withdrawal(models.Model):
     amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=8, blank=True, default="")
     requested_at = models.DateTimeField(null=True, blank=True)
+    # Stream B (ADR-0079): separate lifecycle anchors, each stamped ONCE from the first observed event of that stage
+    # (never overwritten, never fabricated — NULL until the evidence is seen). The event rows additionally carry the
+    # message-created (occurred_at), message-received (received_at) and ingestion (created_at) times, and
+    # funds_received_at is set only from an INDEPENDENT funds-received attestation. Email receipt time is NEVER
+    # substituted for broker processing or payment-completion time.
+    confirmation_required_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(max_length=12, choices=Status.choices, default=Status.REQUESTED)
+    # Independent funds-received attestation (e.g. a bank/settlement confirmation), NOT a broker "completed" email.
+    # Populated only by a future independent-attestation path (outside Stream B's email correlation); NULL otherwise
+    # and never inferred from completion. Kept distinct so a public contract can later distinguish broker-reported
+    # completion from independently-verified receipt.
+    funds_received_at = models.DateTimeField(null=True, blank=True)
+    # Monotonic last-status-change instant (set only when status actually advances) — distinct from updated_at, which
+    # auto-updates on ANY field write. Used by consumers that need the time of the last lifecycle transition.
+    last_status_change_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.REQUESTED)
     requested_event = models.ForeignKey(BrokerEvent, on_delete=models.PROTECT, null=True, blank=True,
                                         related_name="+")
     completed_event = models.ForeignKey(BrokerEvent, on_delete=models.PROTECT, null=True, blank=True,

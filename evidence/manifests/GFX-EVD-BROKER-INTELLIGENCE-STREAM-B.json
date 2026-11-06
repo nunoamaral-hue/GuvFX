@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-BROKER-INTELLIGENCE-STREAM-B",
+  "packet_id": "GFX-BROKER-INTELLIGENCE-STREAM-B-002",
+  "created_at_utc": "2026-11-06T00:00:00Z",
+  "branch": "feat/broker-intelligence-stream-b",
+  "base_commit": "687bcbb300a14fe74500089d87f09f0f6f65e4ca",
+  "head_commit": null,
+  "environment": {
+    "stream": "B — explicit withdrawal lifecycle + Pepperstone/Dominion Markets/Vantage adapters",
+    "mode": "repository-only / synthetic-only / DARK (default-OFF)",
+    "adr": "docs/ADRs/0079-withdrawal-lifecycle-explicit-states-and-adapters.md (0079; free in both ADR dirs)",
+    "real_withdrawal_initiation_or_confirmation_or_modification": false,
+    "gmail_or_mailbox_access": false,
+    "broker_portal_or_account_access": false,
+    "credentials_tokens_or_personal_identifiers": false,
+    "production_or_dev_db_mutation": false,
+    "deployment_or_service_restart": false,
+    "public_broker_pages_or_publication": false,
+    "wayond_mt5_nas_tailscale_change": false,
+    "streams_c_or_d_begun": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test covers broker_intelligence + the ADR-governance test)"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test broker_intelligence -v1",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_intelligence",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance -v1",
+    "python3 scripts/check_no_secrets.py",
+    "Workflow stream-b-adversarial-review (12 lenses over the full diff, each finding adversarially verified)"
+  ],
+  "expected_results": [
+    "The Withdrawal projection carries EXPLICIT lifecycle states (CONFIRMATION_REQUIRED, CONFIRMED, EXPIRED, FAILED) and stage timestamps; the FIRST email of a card confirmation-required withdrawal is CONFIRMATION_REQUIRED, never COMPLETED; status is monotonic and never regresses; a rejected/cancelled/expired withdrawal has no completed_at and no positive duration.",
+    "A rail-less neutral (effective category UNKNOWN) non-completion lifecycle follow-up ADVANCES (never creates) the existing external withdrawal it references (pass 2b), restricted to UNKNOWN so an internal-transfer/deposit is never scanned; externality is asserted only by the opening event, so no advance can create or inflate a withdrawal.",
+    "Three deterministic adapters (Pepperstone, Dominion Markets, Vantage) authenticate the sender by exact registrable-domain match, classify the lifecycle from anchored phrases, never derive EXTERNAL from prose (line-anchored rail field only), never capture a URL/token or an external card PAN/bank number, and register only via the worker-only register_default_parsers; their broker-config rows are seeded DARK (is_active=False).",
+    "A PII-free synthetic Pepperstone GBP-15 card confirmation-required scenario runs end-to-end through the real parser and correlation engine: first email CONFIRMATION_REQUIRED; idempotent confirmation/completion advance; out-of-order and duplicate deliveries produce no duplicate/inflated record; a missing confirmation never auto-completes (expires only on explicit evidence); an unrelated account can never attach.",
+    "Account/owner isolation holds (no cross-account attach); existing records, migrations and TradersWay/IS6 behaviour are preserved; migrations are additive and reversible; ADR-0079 is governance-unique; secret scan clean; no PII in the diff."
+  ],
+  "actual_results": [
+    "broker_intelligence suite: Ran 816 tests OK (skipped 14) — 782 pre-existing + 34 new/updated (adapters, lifecycle, scenario, and the 8 review-regression tests). makemigrations --check: no changes detected in broker_intelligence.",
+    "ADR governance: core.tests_adr_governance 3 tests OK — ADR-0079 introduces no cross-directory duplicate. Secret scan: check_no_secrets — no findings. A PII self-scan of the new files found only the obviously-synthetic test account 70001234 (no real identifier; the Pepperstone scenario fixtures carry no account number at all).",
+    "Adversarial review (Workflow, 12 lenses, Ultracode): 6 unique findings, ALL CONFIRMED on verification; one earlier HIGH (is_active flip emitting an uncertified allowlist) was correctly REJECTED (the DARK is_active=False gate makes it inert). ALL 6 fixed and each pinned by a regression test: (HIGH) _TRANSFER_CLAUSE captured an external card PAN/bank number into the write-once destination_account -> restricted to internal-account-only, PAN-proof; (MEDIUM, LIVE regression) new CONFIRMATION_REQUIRED/CONFIRMED fell out of the metrics/withdrawal_speed pending bucket -> buckets widened + a status-coverage test; (MEDIUM) owner bridge in _find_by_reference could attach an account-resolved event to a DIFFERENT account's withdrawal of the same owner -> bridge account-scoped; (MEDIUM) the COMPLETED regex let a '#?\\w{1,16}' token swallow 'to' and misclassify a confirmation as COMPLETED -> optional token tightened to '#?\\d{1,16}'; (LOW) migration 0026 reverse bulk-deleted append-only audit rows -> reverse refuses to destroy activated/edited profiles.",
+    "Cross-app containment verified: the only non-broker_intelligence importers (trading/account_service.py, trading/account_removal.py) use broker_intelligence.services alias helpers, unrelated to the lifecycle/correlation; no other app consumes Withdrawal.Status or the correlation module.",
+    "Deviation (recorded in ADR-0079 + handoff): implementing the explicit states required a NEW advance-only correlation pass (2b); without it the new intermediate/terminal states are unreachable from realistic rail-less follow-up emails. Amber; preserves every safety invariant."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / synthetic-only / DARK: no real withdrawal initiation/confirmation/modification, no Gmail/mailbox access, no broker portal/account access, no credentials/tokens/personal identifiers, no production or dev-DB mutation, no deployment/service restart, no public broker pages/publication, no Wayond/MT5/NAS/Tailscale change. PR auto-merge OFF; NOT merged without a separate Sponsor merge GO.",
+    "The three adapters are SYNTHETIC-calibrated (validated against committed synthetic fixtures, not a genuine broker sample) and their sender domains are the brokers' public brand domains, UNVERIFIED against real notification mail. Migration 0026 seeds them is_active=False so they never widen the live sender allowlist / authserv trust / catalogue reconciliation until an operator verifies the real domain + auth posture and activates them (provenance OPERATOR_VERIFIED) — a separate, host/Sponsor-gated step NOT in this packet.",
+    "External-rail withdrawals record NO destination account by design (an external card PAN/bank/wallet number is never captured — PII); only an internal trading-account number is extracted into source/destination_account.",
+    "Two EXISTING tests changed (called out): tests_correlation_lifecycle.py (the confirmation/confirmed mapping test rewritten for the explicit states) and tests_owner_attributed_withdrawal.py (three asserts updated from REQUESTED to CONFIRMATION_REQUIRED for the default confirmation-required event). No existing behaviour was weakened; the mapping is now explicit.",
+    "The dev DB was NOT migrated (no-DB-mutation hard stop); migrations 0025/0026 are proven against the migrated test DB by the unit tests. make check / make governance-check are run at finalize before the PR.",
+    "Streams C (public privacy pages) and D (MT5 telemetry + Wayond export) are separate PRs and are NOT begun."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/models.py (Withdrawal.Status + 5 nullable stage timestamps + status width 24)",
+    "backend/broker_intelligence/migrations/0025_withdrawal_lifecycle_stream_b.py (additive AddField/AlterField)",
+    "backend/broker_intelligence/migrations/0026_stream_b_broker_profiles.py (seed 3 DARK broker-config rows; guarded reverse)",
+    "backend/broker_intelligence/correlation.py (monotonic state machine; stage anchors; neutral advance-only pass 2b; account-scoped owner bridge)",
+    "backend/broker_intelligence/parsers_stream_b.py (3 deterministic adapters; internal-account-only, PAN-proof extraction)",
+    "backend/broker_intelligence/parsers_tradersway.py (register_default_parsers also registers the 3 adapters)",
+    "backend/broker_intelligence/metrics.py + withdrawal_speed.py (member-facing buckets widened for the new statuses)",
+    "backend/broker_intelligence/tests_parsers_stream_b.py, tests_stream_b_scenario.py, tests_stream_b_review_regressions.py (new tests)",
+    "docs/ADRs/0079-withdrawal-lifecycle-explicit-states-and-adapters.md"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/models.py": "sha256:521cabbd4c03256e9de3f7255d34bc13cf0ae625923ea9b9b9bfb74e80a2a091",
+    "backend/broker_intelligence/correlation.py": "sha256:0b07d9fd83cd9c0c65530ef40b3f7d88c0771470a131d7b371c0cd35cbf4b77e",
+    "backend/broker_intelligence/parsers_stream_b.py": "sha256:515f56874a09f3bfccd2739d1f104121e9da0e0ab3716df30a6b91a314094ad3",
+    "backend/broker_intelligence/parsers_tradersway.py": "sha256:34b0821d83c1648e9fa2b451e405b7ca49f5da42f0c1c5ec2406470f81eb9a80",
+    "backend/broker_intelligence/metrics.py": "sha256:29709eb63ccb65974afb048d2307fcb99dd5dbeefc8138ddc02d4873b723fb37",
+    "backend/broker_intelligence/withdrawal_speed.py": "sha256:c17facb70757d1d799d57cf7035105defdf080a422e153d83a0166753e46b3c6",
+    "backend/broker_intelligence/migrations/0025_withdrawal_lifecycle_stream_b.py": "sha256:6a8b73b8d050095a8b1eea0ea15d3cc88f3a5c5b34197c735ce9beab1c2bfba9",
+    "backend/broker_intelligence/migrations/0026_stream_b_broker_profiles.py": "sha256:91adbbf8ba6357fa9457de1b7551433088b9871eb85c50f4cc7ad6f1fdbedd6a",
+    "backend/broker_intelligence/tests_parsers_stream_b.py": "sha256:86ed4870b5c360cd852c1a1a3b864d9b7caf0ce07ab188c88a88c28ac2a53db1",
+    "backend/broker_intelligence/tests_stream_b_scenario.py": "sha256:be84b6a637c52f45fd7498ec7327509bedcc3fab5886aae06ef5ea2e289d5349",
+    "backend/broker_intelligence/tests_stream_b_review_regressions.py": "sha256:d6d64592060f552e2d06042ac352165e088e5539df22adf94565d0371b1ae7b3",
+    "docs/ADRs/0079-withdrawal-lifecycle-explicit-states-and-adapters.md": "sha256:68cd63af969537a905682940db4a6901830785eedf2dd1c4be424753946aeb03"
+  },
+  "reviewer": "GFX-BROKER-INTELLIGENCE-STREAM-B-002 author self-review + a 12-lens adversarial Workflow review (overclaim/externality, completion-and-monotonic, cross-account/tenant isolation, idempotency/timestamps, adapter auth/redaction, migrations/DARK), every finding adversarially verified. 6 CONFIRMED findings (1 HIGH, 4 MEDIUM, 1 LOW) all fixed and regression-pinned; 1 proposed finding REJECTED on verification (DARK-gated). Remaining operator-verification of the three brokers' real sender domains is a separate, Sponsor/host-gated step."
+}

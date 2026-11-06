@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ BROKER-INTELLIGENCE STREAM B (2026-11-06; GFX-BROKER-INTELLIGENCE-STREAM-B-002; ADR-0079; repository-only PR)
+Explicit withdrawal lifecycle (CONFIRMATION_REQUIRED/CONFIRMED/EXPIRED/FAILED + stage timestamps; migrations
+0025/0026), a neutral advance-only correlation pass (2b), and three DARK deterministic adapters (Pepperstone,
+Dominion Markets, Vantage) with a PII-free Pepperstone GBP-15 confirmation-required scenario. Off main `687bcbb3`;
+`broker_intelligence` 816 tests OK; 12-lens adversarial review ⇒ 6 CONFIRMED findings all fixed + regression-pinned.
+DARK/default-OFF; no real withdrawal/Gmail/broker/MT5/NAS/Wayond; no prod/dev-DB mutation; no deploy; no publication.
+**One bounded next action:** governed review and, on a NEW Sponsor merge GO, the pinned squash-merge of the
+repository-only PR. SEPARATE / Sponsor-gated, NOT in scope: operator verification + activation (`is_active=True`,
+provenance OPERATOR_VERIFIED) of the three broker-config rows against genuine broker email; and Streams C and D.
+
 ## ★ COPY TRADING HOST EMITTER BUILD (2026-11-05; GFX-COPIER-HOST-EMITTER-BUILD-006; ADR-0077; repository-only PR)
 The missing Windows host emitter is built, DARK, off main `4aef7bba`: read-only MT5 adapter (no order surface,
 no broker credential), one-shot identity attestation + gated backend verifier, gated observe/deliver runner
