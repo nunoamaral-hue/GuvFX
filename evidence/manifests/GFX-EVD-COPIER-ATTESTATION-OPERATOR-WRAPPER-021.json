@@ -5,7 +5,7 @@
   "created_at_utc": "2026-11-06T11:40:00Z",
   "branch": "feat/copier-attestation-operator-wrapper",
   "base_commit": "ec257ba49cd210582356c55ea4a477ecba36a5c4",
-  "head_commit": "499a2ff65bc76a7757fef43b9b28993730c725a1",
+  "head_commit": "7138619262d04be35b37c1fb693929515ddb9d39",
   "commands": [
     "cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle",
     "cd backend && .venv/bin/python manage.py test trade_copier",
@@ -29,7 +29,8 @@
     "PASS - makemigrations trade_copier --check: No changes detected (no model/migration)",
     "PASS - check_no_secrets: no findings (wrapper + mocks hold no secret literal)",
     "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest",
-    "PENDING - Pester behavioural mock test (deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1 + mock_emitter.py): requires a Windows PowerShell 5.1 + Pester runner (not available in CI); NOT run here"
+    "PENDING - Pester behavioural mock test (deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1 + mock_emitter.py): requires a Windows PowerShell 5.1 + Pester runner (not available in CI); NOT run here",
+    "PASS - HARDENING (GFX-COPIER-ATTESTATION-WRAPPER-HARDEN-022): the wrapper now POSTs the emitter's envelope bytes VERBATIM (Get-EnvelopeSubstring brace-scan + UTF-8 bytes) with no deserialize/re-serialize; validation parses a SEPARATE trimmed copy (single-object/array/prefix/suffix rejected before POST). emitter bundle re-run: Ran 33 tests, OK (incl. test_verbatim_envelope_post_no_reserialize). The LOW re numeric fidelity is RESOLVED."
   ],
   "status": "PARTIAL",
   "security_model": {
@@ -58,10 +59,10 @@
     "evidence/manifests/GFX-EVD-COPIER-ATTESTATION-OPERATOR-WRAPPER-021.json"
   ],
   "checksums": {
-    "deploy/copier-emitter/operator/Invoke-GuvfxCopierOneShotAttestation.ps1": "sha256:60900346cec77e8c03a5de4e8edd326c6b41eb9821a08e7b0a92137bdc768404",
-    "deploy/copier-emitter/operator/tests/mock_emitter.py": "sha256:b4f4739d79095553cd482d9f0c6f63b5ed33618fc62f4a29afc4bee034b2cdf2",
-    "deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1": "sha256:e9665f457ff127199189773481a81391c587c90c610083d6a64bb30f56503384",
-    "backend/trade_copier/emitter/tests_bundle.py": "sha256:c94ea44ccda78669b62ee1cf79a77d2fa405912540c4ff4d82b5d9b53f3fbd47"
+    "deploy/copier-emitter/operator/Invoke-GuvfxCopierOneShotAttestation.ps1": "sha256:f6e9aa78cfb209ae56694b3faa03b352b300746b7e1c2579445c12c3b5b0aaa2",
+    "deploy/copier-emitter/operator/tests/mock_emitter.py": "sha256:2ff95a1f3557b3535900fb41a9002c7bdb4d8df2fb5d18554d4847afa9f48b25",
+    "deploy/copier-emitter/operator/tests/Test-OperatorWrapper.Tests.ps1": "sha256:51adea8977782dd3f2ffc838d46df9607796e0b36eb85b059507ff6dac0bca02",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:3d3d4576152a22bb04de2873db7fa0f07d38d6e4da4b0be46c956c0d38de25d4"
   },
   "reviewer": "Self adversarial review (14 vectors): NO CRITICAL, NO HIGH; 3 LOW recorded. Pester behavioural test pending a Windows+Pester runner.",
   "separate_gates": [
