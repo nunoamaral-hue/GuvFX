@@ -19,12 +19,16 @@ class SupportedCategoriesTests(TestCase):
         self.assertEqual(set(tw.supported_category_list()), {"INTERNAL_TRANSFER", "UNKNOWN"})
         self.assertEqual(set(is6.supported_category_list()), {"DEPOSIT", "INTERNAL_TRANSFER", "UNKNOWN"})
 
-    def test_no_active_broker_declares_external_withdrawal(self):
-        # The load-bearing invariant: no pilot broker can surface a withdrawal (neither parser emits
-        # EXTERNAL_WITHDRAWAL, and neither profile declares it) — so no withdrawal is surfaceable yet.
-        for p in BrokerProfile.objects.filter(is_active=True):
-            self.assertNotIn(TransactionCategory.EXTERNAL_WITHDRAWAL, p.supported_category_list(),
-                             f"{p.slug} must not declare EXTERNAL_WITHDRAWAL")
+    def test_only_pepperstone_declares_external_withdrawal_after_activation(self):
+        # After migration 0027 (GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003) the operator-verified Pepperstone profile
+        # DECLARES EXTERNAL_WITHDRAWAL so genuine Pepperstone withdrawal emails surface on the owner-scoped
+        # dashboard. The non-activated pilots (is6, tradersway) still declare none.
+        external = {p.slug for p in BrokerProfile.objects.filter(is_active=True)
+                    if TransactionCategory.EXTERNAL_WITHDRAWAL in p.supported_category_list()}
+        self.assertEqual(external, {"pepperstone"})
+        for slug in ("is6", "tradersway"):
+            self.assertNotIn(TransactionCategory.EXTERNAL_WITHDRAWAL,
+                             BrokerProfile.objects.get(slug=slug).supported_category_list())
 
     def test_declared_categories_must_be_valid(self):
         is6 = BrokerProfile.objects.get(slug="is6")
