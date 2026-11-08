@@ -5,7 +5,7 @@
   "created_at_utc": "2026-11-08T21:30:00Z",
   "branch": "feat/copier-full-lifecycle-foundation",
   "base_commit": "e12a20c9643043bbf6df418f9c2001ea4ec101e8",
-  "head_commit": "PENDING_COMMIT",
+  "head_commit": "8a92a9e6ef2f42a34a396c6554f35b5a64c59f50 (feature commit on feat/copier-full-lifecycle-foundation; this metadata-only update follows it)",
   "summary": "Additive, DARK/default-OFF implementation of LIVE follower MODIFY / PARTIAL_CLOSE / FULL_CLOSE on an already-bound position (ADR-0083). Layers 1-2 (authorization model + admission + typed command + producer wiring + runtime boundary). No production change, no broker order, no credential handled, no flag armed.",
   "commands": [
     "cd backend && .venv/bin/python manage.py check",
