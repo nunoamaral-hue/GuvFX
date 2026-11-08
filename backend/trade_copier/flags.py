@@ -218,6 +218,71 @@ def copier_attestation_verify_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ATTESTATION_VERIFY_ENABLED")
 
 
+# ───────────────────── LIVE lifecycle completion (ADR-0083) — per-operation DARK arms ─────────────────────
+# ADR-0057 implemented the LIVE follower OPEN only; LIVE modify / partial-close / full-close stayed fail-closed.
+# ADR-0083 completes them behind THESE additional, independent, default-OFF arms. Each is ANDed with the whole
+# LIVE stack (``copier_live_execute_enabled`` → ``copier_execute_enabled`` → ``copier_enabled``), so a LIVE
+# lifecycle order is reachable ONLY when the master gate, the execute gate, the LIVE arm AND the specific
+# per-operation arm are all on — never by one flag, and never for a pair without a complete
+# ``CopierLiveAuthorization`` carrying the matching per-operation authority (see ``trade_copier.live_execution``).
+# Arming a per-op flag never ORs past the kill switch, the authorization window, identity pins or the runtime
+# ``MT5_ALLOW_LIVE`` boundary. None of these can OPEN or increase exposure.
+
+
+def copier_live_modify_enabled() -> bool:
+    """DARK arm for LIVE follower SL/TP MODIFY propagation (ADR-0083). DEFAULT OFF.
+
+    ANDed with ``copier_live_execute_enabled`` (hence the whole master stack). A MODIFY only ever changes a
+    LINKED follower position's protection (SL/TP); it can never open or increase exposure, and a stop weaken /
+    removal stays fail-closed independently (``execution_producer._sl_weakening_reason``). Requires the
+    authorization's ``modify_authority`` as well — a separate, auditable grant from the one-shot entry
+    authority."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_MODIFY_ENABLED")
+
+
+def copier_live_partial_close_enabled() -> bool:
+    """DARK arm for LIVE follower PARTIAL-CLOSE propagation (ADR-0083). DEFAULT OFF.
+
+    ANDed with ``copier_live_execute_enabled``. A partial close only ever REDUCES a LINKED follower position's
+    volume (never increases/reopens); the reduction fraction is derived from the master's confirmed
+    before/after volume and normalised to broker min-volume/step, fail-closed on any ambiguity. Requires the
+    authorization's ``partial_close_authority``."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_PARTIAL_CLOSE_ENABLED")
+
+
+def copier_live_full_close_enabled() -> bool:
+    """DARK arm for LIVE follower FULL-CLOSE propagation (ADR-0083). DEFAULT OFF.
+
+    ANDed with ``copier_live_execute_enabled``. A full close only ever CLOSES the one bound follower position
+    (never reopens). Requires the authorization's ``full_close_authority``."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_FULL_CLOSE_ENABLED")
+
+
+def copier_live_close_only_after_expiry_enabled() -> bool:
+    """DARK policy arm for CLOSE-ONLY containment AFTER the authorization entry window expires (ADR-0083). DEFAULT OFF.
+
+    The entry authority always lapses at ``expires_at`` (no new entry may ever follow — ADR-0057). This
+    SEPARATE, explicit, Sponsor-set policy decides whether a SAFETY-REDUCING close/partial-close
+    (``full_close``/``partial_close`` only) may still be propagated to an ALREADY-BOUND follower position after
+    that window, so a master close is not stranded. It can only REDUCE or close existing exposure — never
+    create, reopen or increase it, and never a MODIFY. OFF (the default) means a post-expiry close is NOT
+    auto-propagated and is surfaced for manual containment. Still ANDed with the matching per-op arm +
+    authority."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_CLOSE_ONLY_AFTER_EXPIRY_ENABLED")
+
+
+def copier_live_contain_on_kill_switch_enabled() -> bool:
+    """DARK policy arm for SAFETY-REDUCING close-only containment WHILE a kill switch is engaged (ADR-0083). DEFAULT OFF.
+
+    The kill switch ALWAYS blocks every new entry and every MODIFY. This explicit, documented, default-OFF
+    policy decides the one deliberately-chosen exception: whether an ALREADY-BOUND follower position may still
+    be CLOSED / PARTIALLY CLOSED (exposure strictly reduced) while the switch is engaged — the conservative
+    choice is OFF (freeze everything; the operator closes manually), but an operator may opt into
+    close-to-contain. It can never open, increase or reopen exposure. Chosen rule documented in ADR-0083 and
+    asserted by tests."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_CONTAIN_ON_KILL_SWITCH_ENABLED")
+
+
 def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:
     """The copier's execution posture for the UI, DERIVED LIVE from the real execute flags — never a
     hardcoded label. While the execute producer is off (the default) this is observation/shadow and reads

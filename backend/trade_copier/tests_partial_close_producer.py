@@ -127,7 +127,11 @@ class AdmitPartialTests(PartialFixture):
         f = self._follower(number="2000091", live=True)
         f, rep = self._ready_partial(follower=f)
         ok, ticket, red, rem, reason = admit_partial_close(rep, fetch=_fetch_pos(777, 1.0))
-        self.assertEqual(reason, "follower_not_demo")
+        # ADR-0083: a LIVE follower now routes to the DARK live partial-close admission. With the live arms OFF
+        # (the default) it is rejected fail-closed as live_copier_arm_disabled — no demo path, no order.
+        self.assertFalse(ok)
+        self.assertEqual(reason, "live_copier_arm_disabled")
+        self.assertEqual(ExecutionJob.objects.count(), 0)
 
     def test_happy_admit_proportional(self):
         f, rep = self._ready_partial(before="1.00", after="0.60")   # ratio 0.4

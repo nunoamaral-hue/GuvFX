@@ -134,6 +134,47 @@ def copier_live_execution_authorized(account) -> bool:
         return False
 
 
+def copier_live_lifecycle_authorized(account) -> bool:
+    """ADR-0083 — the runtime ``MT5_ALLOW_LIVE`` boundary for MANAGING an already-bound LIVE follower position
+    (modify / partial-close / full-close), kept SEPARATE from the entry boundary
+    (``copier_live_execution_authorized``). A bound position outlives the one-shot ENTRY allowance — the
+    authorization becomes ``CONSUMED`` — so this recognises an ACTIVE-or-CONSUMED, non-revoked authorization
+    naming THIS account as follower whose pinned identity still matches, but ONLY when at least one lifecycle op
+    is CURRENTLY permissible (its per-op arm AND the authorization's matching authority AND the window /
+    close-only / kill-switch policy all pass — evaluated by the SAME single-source predicates the per-order
+    admission uses). Fully DARK and fail-closed: with every per-op arm OFF (the default) it returns ``False``,
+    so the runtime boundary is UNCHANGED until a Sponsor arms a lifecycle op. It authorizes NO order by itself —
+    the per-order admission + the order-time identity pin remain the money-path authority."""
+    try:
+        from trade_copier.flags import copier_live_execute_enabled
+        if not (copier_live_execute_enabled() and _hosted_live_execution_enabled()):
+            return False
+        from django.utils import timezone
+        from trade_copier.models import CopierLiveAuthorization
+        from trade_copier.live_execution import (
+            OP_MODIFY, OP_PARTIAL_CLOSE, OP_FULL_CLOSE,
+            _per_op_flag_armed, _lifecycle_authority_ok, _lifecycle_window_ok, _kill_switch_policy_ok)
+        acct_id = getattr(account, "id", None) or getattr(account, "pk", None)
+        if acct_id is None:
+            return False
+        now = timezone.now()
+        authz = (CopierLiveAuthorization.objects
+                 .filter(follower_account_id=acct_id, status__in=("ACTIVE", "CONSUMED"), revoked_at__isnull=True)
+                 .order_by("-created_at").first())
+        if authz is None:
+            return False
+        login, server = _current_identity(account)
+        if not login or str(authz.follower_login).strip() != login or str(authz.follower_server).strip() != server:
+            return False
+        for op in (OP_MODIFY, OP_PARTIAL_CLOSE, OP_FULL_CLOSE):
+            if (_per_op_flag_armed(op) and _lifecycle_authority_ok(authz, op)[0]
+                    and _lifecycle_window_ok(authz, op, now)[0] and _kill_switch_policy_ok(op)[0]):
+                return True   # at least one lifecycle op is permissible now ⇒ the runtime may be LIVE to manage it
+        return False
+    except Exception:  # noqa: BLE001 — total fail-closed
+        return False
+
+
 def _material_facts_unchanged(authz, account) -> bool:
     """D4c invalidation: the authorized STRATEGY + SIZING must still match what was authorized. A reassigned,
     removed, deactivated, or resized strategy is a MATERIAL change that makes the authorization stale ⇒ invalid
