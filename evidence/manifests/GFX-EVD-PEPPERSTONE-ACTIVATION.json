@@ -41,7 +41,8 @@
     "broker_intelligence.tests_pepperstone_activation: Ran 10 tests OK (activation active+OPERATOR_VERIFIED+audited; pepperstone.com in allowlist; look-alike/non-broker rejected incl pepperstone.com.evil.example / pepperstone.co / empty / None; CERTIFIED_BROKERS stays empty; dominion+vantage dark; genuine GBP 15 confirmation-required -> EXTERNAL_WITHDRAWAL never completed; processing/completed render own states; URL/token redacted; unknown template -> no event).",
     "Full broker_intelligence: Ran 826 tests OK. Three directly-related existing tests updated to the new truthful invariant (only operator-verified Pepperstone declares EXTERNAL_WITHDRAWAL; the 0026 untouched-seed reverse test restores the pristine seed first because 0027 permanently marks Pepperstone).",
     "make governance-check: PASS (test_data_root 7 OK; evidence-lint PASS 50 manifests; test_evidence_manifests 6 OK; test_evidence_factuality 5 OK; test_no_secrets OK). make secret-scan: no findings.",
-    "PII review of the diff: synthetic only \u2014 role sender no-reply@pepperstone.com (public broker domain), amount GBP 15.00, synthetic reference PSSYNTH-REF-001; no personal name, real email address, full account number, withdrawal reference or email body."
+    "PII review of the diff: synthetic only \u2014 role sender no-reply@pepperstone.com (public broker domain), amount GBP 15.00, synthetic reference PSSYNTH-REF-001; no personal name, real email address, full account number, withdrawal reference or email body.",
+    "Migration-reverse integrity (CI-hang fix): migration 0027's reverse is a TRUE INVERSE (restores is_active=False, provenance=SEED, deletes its own forward audit row) so a graph rewind of 0027->0026 leaves an untouched seed and the 0026 _unseed guard passes. Verified: execution.tests_tb1_migration (2 OK) + signal_intake.tests_migration_source_aware + broker_intelligence (830 OK combined). This fixes a real failure the broker_intelligence-only run missed: the full backend suite's migration-rewind tests reversed 0027 then 0026, and under --parallel the unpicklable guard RuntimeError HUNG the runner (the documented parallel-hang-on-failure mode)."
   ],
   "status": "PASS",
   "limitations": [
@@ -59,7 +60,7 @@
     "backend/broker_intelligence/tests_stream_b_review_regressions.py (untouched-seed reverse precondition restored)"
   ],
   "checksums": {
-    "backend/broker_intelligence/migrations/0027_activate_pepperstone_profile.py": "sha256:e92e3fea61e1db60bc3b724e8794bbaffc35d9d3dd9b403bbd2c647f392b623e",
+    "backend/broker_intelligence/migrations/0027_activate_pepperstone_profile.py": "sha256:a5b4fb6b9a16d7e54bb5b6e3b9429ada63b47d152825a3556d749031000e0937",
     "backend/broker_intelligence/tests_pepperstone_activation.py": "sha256:3f0d105d8fb70d7a32cb303a6509f277857746238223283c53a6f0200c7c7f09",
     "backend/broker_intelligence/tests_capability_guard.py": "sha256:400c6cc7c75039ff307321f12aeb510033b8efd3b5a6d3ce30de4e6c3bf28d7f",
     "backend/broker_intelligence/tests_broker_profile_catalogue.py": "sha256:46af3d88fd3f86caa61b4b8a0be8f64c33c9a83139a176d6e2abf7d0c3593112",

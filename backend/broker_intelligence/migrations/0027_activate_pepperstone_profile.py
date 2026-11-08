@@ -25,14 +25,17 @@ What this migration deliberately does NOT do:
   * It does NOT weaken sender authentication, broaden recognition, or touch Dominion Markets / Vantage (both stay
     DARK). It stores NO secret, account number, reference, or email body.
 
-Reverse RETIRES Pepperstone (``is_active=False``) with its own audit row — non-destructive; accrued append-only
-history is preserved.
+Reverse is the TRUE INVERSE of the activation: it restores the pristine seed state (``is_active=False``,
+``provenance`` back to ``SEED``) and removes the audit row the forward wrote, so a subsequent reverse of migration
+0026 sees an UNTOUCHED seed and its append-only-history guard does not (correctly) refuse. A migration reverse must
+leave no trace of itself. (Operationally RETIRING a live Pepperstone profile — keeping its accrued audit history and
+appending a retire row — is a separate FORWARD operation, e.g. the audited Django admin edit, not a migration
+rollback.)
 """
 from django.db import migrations
 
 SLUG = "pepperstone"
 _FWD = "migration 0027 (GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003: operator-verified activation for genuine capture)"
-_REV = "migration 0027 reverse (retire Pepperstone to is_active=False)"
 
 
 def _activate(apps, schema_editor):
@@ -63,19 +66,21 @@ def _activate(apps, schema_editor):
 
 
 def _retire(apps, schema_editor):
+    # TRUE INVERSE of _activate: restore the pristine seed (is_active=False, provenance=SEED) and delete the audit
+    # row the forward wrote. This leaves the profile exactly as migration 0026 left it, so a subsequent reverse of
+    # 0026 sees an untouched seed and its append-only-history guard passes. No new audit row is written — a reverse
+    # must leave no trace of itself. (This is why rewinding the migration graph, e.g. in execution.tests_tb1_migration,
+    # does not trip the 0026 _unseed guard.)
     BrokerProfile = apps.get_model("broker_intelligence", "BrokerProfile")
     BrokerProfileAudit = apps.get_model("broker_intelligence", "BrokerProfileAudit")
     bp = BrokerProfile.objects.filter(slug=SLUG).first()
-    if bp is None or not bp.is_active:
+    if bp is None:
         return
-    bp.is_active = False
-    bp.save(update_fields=["is_active", "updated_at"])
-    BrokerProfileAudit.objects.create(
-        broker_profile=bp,
-        action="UPDATE",
-        snapshot={"is_active": False, "note": "retired by migration 0027 reverse"},
-        changed_by=_REV,
-    )
+    BrokerProfileAudit.objects.filter(broker_profile=bp, changed_by=_FWD).delete()
+    if bp.is_active or bp.provenance != "SEED":
+        bp.is_active = False
+        bp.provenance = "SEED"
+        bp.save(update_fields=["is_active", "provenance", "updated_at"])
 
 
 class Migration(migrations.Migration):
