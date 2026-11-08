@@ -362,3 +362,493 @@ def create_live_open_job(locked_replication) -> dict:
     return {"replication_id": locked_replication.id, "produced": True, "job_id": job.id,
             "job_type": ExecutionJob.JobType.PLACE_ORDER, "armed": True, "live": True,
             "volume": sr.volume, "status": ReplicationStatus.EXECUTION_REQUESTED}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+# ADR-0083 — LIVE lifecycle completion: MODIFY_PROTECTION / PARTIAL_CLOSE / FULL_CLOSE on a BOUND follower.
+#
+# ADR-0057 admitted a LIVE follower OPEN only; the lifecycle ops stayed fail-closed. These admissions complete
+# them with the SAME fail-closed discipline, plus three invariants that OPEN does not need:
+#   * They act ONLY on an already-LINKED follower position (a VERIFIED, reconciled copier-owned ticket) — never
+#     on a symbol, never creating a position. An unlinked/ambiguous ticket denies.
+#   * They can NEVER increase or reopen exposure: a MODIFY changes only SL/TP, a PARTIAL reduces (rounded DOWN,
+#     never to a full close), a FULL close closes the one bound ticket. No path here produces a PLACE_ORDER.
+#   * They require the SEPARATE, per-op authority on the authorization (modify/partial/full-close), plus the
+#     per-op DARK flag — distinct from the one-shot ENTRY allowance (which they never consume).
+# The authorization that governs a bound position is the one the entry was placed under — which is CONSUMED
+# once the single entry is used. So lifecycle ops look it up ACTIVE-OR-CONSUMED (never REVOKED), and the window
+# / kill-switch policy decides whether a close may still CONTAIN after expiry or under the switch (close-only,
+# exposure-reducing only; a MODIFY never survives expiry or the kill switch). See docs ADR-0083.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+OP_MODIFY = "MODIFY"
+OP_PARTIAL_CLOSE = "PARTIAL_CLOSE"
+OP_FULL_CLOSE = "FULL_CLOSE"
+
+_OP_REQUESTED = {OP_MODIFY: "MODIFY_SLTP", OP_PARTIAL_CLOSE: "PARTIAL_CLOSE", OP_FULL_CLOSE: "CLOSE"}
+_CLOSE_OPS = frozenset({OP_PARTIAL_CLOSE, OP_FULL_CLOSE})
+
+
+def lifecycle_authorization_for(master_account_id: int, follower_account_id: int):
+    """The authorization governing an already-bound position for this exact pair: the most recent
+    non-REVOKED (ACTIVE **or** CONSUMED) ``CopierLiveAuthorization``. The single entry allowance is CONSUMED
+    once the OPEN is placed, but the bound position is still managed under that same reviewed grant; a REVOKED
+    authorization governs nothing (the operator deliberately withdrew it → manual containment). Never raises."""
+    try:
+        return (CopierLiveAuthorization.objects
+                .filter(master_account_id=master_account_id, follower_account_id=follower_account_id,
+                        status__in=(CopierLiveAuthorizationStatus.ACTIVE,
+                                    CopierLiveAuthorizationStatus.CONSUMED),
+                        revoked_at__isnull=True)
+                .order_by("-created_at").first())
+    except Exception:  # noqa: BLE001 — fail closed
+        return None
+
+
+def _lifecycle_authority_ok(authz, op) -> tuple[bool, str]:
+    """The authorization must carry the SEPARATE, auditable per-op authority (default False). Fail-closed."""
+    if op == OP_MODIFY:
+        return (bool(authz.modify_authority), "ok" if authz.modify_authority else "no_modify_authority")
+    if op == OP_PARTIAL_CLOSE:
+        return (bool(authz.partial_close_authority),
+                "ok" if authz.partial_close_authority else "no_partial_close_authority")
+    if op == OP_FULL_CLOSE:
+        return (bool(authz.full_close_authority),
+                "ok" if authz.full_close_authority else "no_full_close_authority")
+    return False, "unknown_op"
+
+
+def _lifecycle_window_ok(authz, op, now) -> tuple[bool, str]:
+    """Window/containment decision. Within [valid_from, expires_at): every authorized op is in-window. After
+    expiry: a MODIFY is NEVER propagated (it does not reduce exposure); a close/partial-close may CONTAIN an
+    already-bound position ONLY when BOTH the authorization's ``close_only_after_expiry`` policy AND the global
+    ``copier_live_close_only_after_expiry_enabled`` arm are set (exposure strictly reduced — never a new entry)."""
+    if authz.status == CopierLiveAuthorizationStatus.REVOKED or authz.revoked_at is not None:
+        return False, "authorization_revoked"
+    if now < authz.valid_from:
+        return False, "authorization_not_yet_valid"
+    if now < authz.expires_at:
+        return True, "ok"
+    # Expired entry window.
+    if op not in _CLOSE_OPS:
+        return False, "authorization_expired"
+    from trade_copier.flags import copier_live_close_only_after_expiry_enabled
+    if authz.close_only_after_expiry and copier_live_close_only_after_expiry_enabled():
+        return True, "close_only_after_expiry"
+    return False, "entry_window_expired_no_close_only"
+
+
+def _kill_switch_policy_ok(op) -> tuple[bool, str]:
+    """Kill-switch policy. Engaged, it ALWAYS blocks a MODIFY (and every new entry). It blocks a
+    close/partial-close too UNLESS the explicit, default-OFF ``copier_live_contain_on_kill_switch_enabled``
+    policy is set, which permits ONLY a safety-reducing close/partial-close of an already-bound position."""
+    if not kill_switch_engaged():
+        return True, "ok"
+    if op not in _CLOSE_OPS:
+        return False, "live_copier_kill_switch_engaged"
+    from trade_copier.flags import copier_live_contain_on_kill_switch_enabled
+    if copier_live_contain_on_kill_switch_enabled():
+        return True, "kill_switch_close_only_containment"
+    return False, "kill_switch_no_close_containment"
+
+
+def _per_op_flag_armed(op) -> bool:
+    from trade_copier.flags import (copier_live_modify_enabled, copier_live_partial_close_enabled,
+                                    copier_live_full_close_enabled)
+    return {OP_MODIFY: copier_live_modify_enabled,
+            OP_PARTIAL_CLOSE: copier_live_partial_close_enabled,
+            OP_FULL_CLOSE: copier_live_full_close_enabled}[op]()
+
+
+def _reducing_op_in_flight(acct_id, ticket) -> bool:
+    """A CLOSE_TRADE or PARTIAL_CLOSE_TRADE already in flight for this (account, ticket). Cross-op idempotency:
+    never emit a second concurrent exposure-reducing command for one position (a redundant/divergent close)."""
+    from trade_copier.execution_producer import _close_already_targets, _partial_close_already_targets
+    return _close_already_targets(acct_id, ticket) or _partial_close_already_targets(acct_id, ticket)
+
+
+def _linked_follower_open(replication):
+    """The matched, reconciled OPEN replication whose follower ticket this lifecycle op may act on
+    (position-keyed, NEVER by symbol). Returns ``(open_repl|None, ticket|None, reason)``."""
+    from trade_copier.execution_producer import _matched_open_for_close
+    open_repl = _matched_open_for_close(replication)
+    if open_repl is None or open_repl.follower_ticket is None:
+        return None, None, "no_verified_follower_ticket"
+    return open_repl, int(open_repl.follower_ticket), "ok"
+
+
+def _governing_authorization(open_repl):
+    """The EXACT authorization the bound position was OPENED under — the ``copier_live_authorization_id`` the
+    LIVE OPEN recorded on its job payload. ADR-0083: a lifecycle op is governed by the position's OWN reviewed
+    grant, NEVER the newest grant for the pair (a later re-grant must not retroactively widen authority or
+    borrow a fresh window for an already-open position). Non-REVOKED only. Returns ``(authz|None, reason)``."""
+    if open_repl is None or open_repl.execution_job_id is None:
+        return None, "open_has_no_live_job"
+    try:
+        payload = open_repl.execution_job.payload or {}
+        aid = payload.get("copier_live_authorization_id")
+        aid = int(aid) if aid is not None else None
+    except Exception:  # noqa: BLE001 — fail closed
+        return None, "governing_authorization_unresolved"
+    if aid is None:
+        return None, "open_not_live_authorized"
+    authz = CopierLiveAuthorization.objects.filter(id=aid, revoked_at__isnull=True).first()
+    if authz is None:
+        return None, "governing_authorization_revoked_or_absent"
+    return authz, "ok"
+
+
+def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int, str]:
+    """Shared fail-closed gate stack for every LIVE lifecycle op. Returns ``(ok, authz, ticket, reason)``.
+
+    Mirrors ``admit_open_live`` for the identity/pair/symbol/runtime gates, but binds to an already-LINKED
+    position, resolves the GOVERNING authorization (the one the OPEN was placed under — not the newest for the
+    pair), and applies the per-op authority + window/containment + kill-switch policy + a stale/superseded guard.
+    Never mutates state."""
+    # 1. The whole LIVE stack AND the specific per-op arm.
+    from trade_copier.flags import copier_live_execute_enabled
+    from trading.account_policy import is_demo_environment
+    if not copier_live_execute_enabled():
+        return False, None, 0, "live_copier_arm_disabled"
+    if not _per_op_flag_armed(op):
+        return False, None, 0, f"live_{op.lower()}_arm_disabled"
+
+    # 2. Generic producibility (self-contained under the lock).
+    if replication.execution_job_id is not None:
+        return False, None, 0, "already_produced"
+    if replication.status != ReplicationStatus.SHADOW_RECORDED:
+        return False, None, 0, "not_shadow_intent"
+    if replication.requested_op != _OP_REQUESTED[op]:
+        return False, None, 0, "op_mismatch"
+    follower = replication.follower
+    if not follower.enabled:
+        return False, None, 0, "follower_disabled"
+
+    facct = follower.follower_account
+    macct = follower.master.trading_account
+
+    # 3. LIVE path only — a demo follower must use the demo producer.
+    try:
+        if is_demo_environment(facct):
+            return False, None, 0, "follower_is_demo_use_demo_path"
+    except Exception:  # noqa: BLE001
+        return False, None, 0, "environment_unresolved"
+    if not getattr(facct, "is_active", False):
+        return False, None, 0, "account_inactive"
+
+    # 4. The VERIFIED, reconciled LINKED follower ticket + its OPEN — the ONLY position this op may act on.
+    open_repl, ticket, reason = _linked_follower_open(replication)
+    if ticket is None:
+        return False, None, 0, reason
+
+    # 5. The GOVERNING authorization — the one THIS position was opened under (by recorded id), never REVOKED.
+    authz, reason = _governing_authorization(open_repl)
+    if authz is None:
+        return False, None, 0, reason
+    if not (authz.user_id == facct.user_id == macct.user_id):
+        return False, None, 0, "user_mismatch"
+    if authz.master_account_id != macct.id or authz.follower_account_id != facct.id:
+        return False, None, 0, "pair_mismatch"
+
+    # 6. The SEPARATE per-op authority, the window/containment policy, and the kill-switch policy.
+    ok, reason = _lifecycle_authority_ok(authz, op)
+    if not ok:
+        return False, None, 0, reason
+    ok, reason = _lifecycle_window_ok(authz, op, now)
+    if not ok:
+        return False, None, 0, reason
+    ok, reason = _kill_switch_policy_ok(op)
+    if not ok:
+        return False, None, 0, reason
+
+    # 7. Exact pinned identities + structural binding (defence against drift/rebind/cross-user).
+    ok, reason = _identities_match(authz, macct, facct)
+    if not ok:
+        return False, None, 0, reason
+    from trade_copier.replication import validate_follower_binding
+    ok, reason = validate_follower_binding(follower)
+    if not ok:
+        return False, None, 0, reason
+
+    # 8. Exact verified symbol map (source + resolved follower symbol must equal the authorization). The intent
+    #    follower symbol is required and must equal the authorization — unconditionally (a blank one denies).
+    event = replication.master_event
+    if event.master_id != follower.master_id:
+        return False, None, 0, "event_master_mismatch"
+    if str(event.symbol) != str(authz.source_symbol):
+        return False, None, 0, "source_symbol_mismatch"
+    from trade_copier.symbols import resolve_follower_symbol
+    sym = resolve_follower_symbol(macct, event.symbol, facct)
+    if not sym.ok or sym.follower_symbol != authz.follower_symbol:
+        return False, None, 0, "symbol_map_unverified_or_changed"
+    if not replication.follower_symbol or replication.follower_symbol != authz.follower_symbol:
+        return False, None, 0, "intent_follower_symbol_mismatch"
+
+    # 9. Ordering / staleness guard (parity with admit_open_live). The lifecycle event must be strictly AFTER
+    #    the OPEN it manages, and a MODIFY/PARTIAL superseded by a later FULL_CLOSE is stale — never applied
+    #    (so two out-of-order SL changes can never net-widen the live stop, and a close-before-modify wins).
+    from trade_copier.execution_producer import _superseded_by_close
+    open_event = getattr(open_repl, "master_event", None)
+    if open_event is not None and int(event.sequence) <= int(open_event.sequence):
+        return False, None, 0, "event_not_after_open"
+    if op != OP_FULL_CLOSE and _superseded_by_close(event):
+        return False, None, 0, "superseded_by_later_close"
+
+    # 10. The runtime LIVE boundary (MT5_ALLOW_LIVE) + no broker runtime pause (same predicates as OPEN).
+    try:
+        from execution.bridge_config import allow_live_for_account
+        if not allow_live_for_account(facct):
+            return False, None, 0, "runtime_live_boundary_denied"
+    except Exception:  # noqa: BLE001
+        return False, None, 0, "runtime_live_boundary_error"
+    try:
+        from execution.models import BrokerRuntimePause
+        if BrokerRuntimePause.objects.filter(account_id=facct.id, paused=True).exists():
+            return False, None, 0, "broker_runtime_paused"
+    except Exception:  # noqa: BLE001
+        return False, None, 0, "broker_pause_unresolved"
+
+    return True, authz, ticket, "ok"
+
+
+def admit_modify_live(replication, *, now=None) -> tuple[bool, int, str]:
+    """Fail-closed admission for a LIVE SL/TP MODIFY of the bound follower position. ``(ok, ticket, reason)``.
+
+    A MODIFY changes only SL/TP (never volume/side → cannot increase exposure); a complete translated SL+TP is
+    required, and an SL removal/weaken fails closed independently."""
+    now = now or timezone.now()
+    ok, _authz, ticket, reason = _live_lifecycle_preamble(replication, OP_MODIFY, now=now)
+    if not ok:
+        return False, 0, reason
+    if not replication.sltp_translation_ok:
+        return False, ticket, "sltp_incomplete"
+    from trade_copier.execution_producer import _sl_weakening_reason, _modify_already_targets
+    wr = _sl_weakening_reason(replication.master_event)
+    if wr is not None:
+        return False, ticket, wr
+    acct_id = replication.follower.follower_account_id
+    if _modify_already_targets(acct_id, ticket):
+        return False, ticket, "modify_already_in_flight"
+    # A close/partial-close already reducing this ticket supersedes a modify (don't modify a closing position).
+    if _reducing_op_in_flight(acct_id, ticket):
+        return False, ticket, "close_in_flight_supersedes_modify"
+    return True, ticket, "ok"
+
+
+def admit_full_close_live(replication, *, now=None) -> tuple[bool, int, str]:
+    """Fail-closed admission for a LIVE FULL CLOSE of the bound follower position. ``(ok, ticket, reason)``."""
+    now = now or timezone.now()
+    ok, _authz, ticket, reason = _live_lifecycle_preamble(replication, OP_FULL_CLOSE, now=now)
+    if not ok:
+        return False, 0, reason
+    if _reducing_op_in_flight(replication.follower.follower_account_id, ticket):
+        return False, ticket, "close_already_in_flight"
+    return True, ticket, "ok"
+
+
+def admit_partial_close_live(replication, *, now=None, fetch=None) -> tuple[bool, int, float, float, str]:
+    """Fail-closed admission for a LIVE PARTIAL CLOSE. ``(ok, ticket, reduction, remaining, reason)``.
+
+    The reduction is derived from the master's confirmed before/after volume applied to the follower's FRESH
+    identity-firewalled CURRENT volume, rounded DOWN, and is rejected if it would be a full close, below the
+    broker minimum, or leave a sub-minimum remainder — so a partial close only ever strictly REDUCES exposure."""
+    now = now or timezone.now()
+    ok, _authz, ticket, reason = _live_lifecycle_preamble(replication, OP_PARTIAL_CLOSE, now=now)
+    if not ok:
+        return False, 0, 0.0, 0.0, reason
+    from trade_copier.execution_producer import _partial_reduction, _broker_constraints
+    from trade_copier.reconcile import read_follower_position, _fetch_account_positions
+    fetch = fetch or _fetch_account_positions
+    follower = replication.follower
+    acct = follower.follower_account
+
+    ok_read, pos, read_reason = read_follower_position(follower, ticket, fetch=fetch)
+    if not ok_read:
+        return False, ticket, 0.0, 0.0, f"follower_read:{read_reason}"
+    if pos is None:
+        return False, ticket, 0.0, 0.0, "follower_ticket_not_open"
+    # The fresh follower position symbol must match the intent (which the preamble already pinned == authz).
+    if not replication.follower_symbol or str(pos.symbol) != str(replication.follower_symbol):
+        return False, ticket, 0.0, 0.0, "symbol_changed"
+
+    constraints = _broker_constraints(acct, replication.follower_symbol or pos.symbol)
+    if not constraints.authoritative:
+        return False, ticket, 0.0, 0.0, "constraints_not_authoritative"
+
+    event = replication.master_event
+    ok_calc, reduction, remaining, calc_reason = _partial_reduction(
+        event.volume_before, event.volume_after, pos.volume, constraints)
+    if not ok_calc:
+        return False, ticket, 0.0, 0.0, calc_reason
+    if _reducing_op_in_flight(acct.id, ticket):
+        return False, ticket, 0.0, 0.0, "partial_close_already_in_flight"
+    return True, ticket, reduction, remaining, "ok"
+
+
+# ─────────────────────────── typed LIVE lifecycle command envelope + job creation ───────────────────────────
+# The ExecutionJob payload IS the typed bridge command. Every LIVE lifecycle command carries: the operation
+# type, the follower binding (verified ticket), the account/server/symbol identity pin, the master revision,
+# the authorization reference + correlation id, an expiry/deadline, an EXPECTED PRE-STATE fingerprint (so the
+# bridge can reject a command whose follower state no longer matches), and the requested POST-STATE. The
+# hosted_idempotency_key is the operation id (unique per op+replication) → a replay is a no-op. No arbitrary
+# order surface is exposed: each command is one of exactly MODIFY_PROTECTION / PARTIAL_CLOSE / FULL_CLOSE and
+# maps to a single fixed ExecutionJob job_type. None of these can OPEN or INCREASE exposure.
+
+_BRIDGE_OP = {OP_MODIFY: "MODIFY_PROTECTION", OP_PARTIAL_CLOSE: "PARTIAL_CLOSE", OP_FULL_CLOSE: "FULL_CLOSE"}
+
+
+def _live_command_envelope(replication, authz, ticket, op, *, pre_state: dict, post_state: dict) -> dict:
+    """The common typed-command fields shared by every LIVE lifecycle command (secret-free)."""
+    event = replication.master_event
+    return {
+        "copier_operation": _BRIDGE_OP[op],               # fixed typed op — never reinterpreted by the bridge
+        "ticket": ticket,                                 # the VERIFIED follower position — never by symbol
+        "symbol": replication.follower_symbol or event.symbol,
+        "is_demo": False,                                 # TRUTHFUL LIVE — never a disguised demo path
+        "execution_mode": "LIVE",
+        "signal_source": "copier",
+        "copier_replication_id": replication.id,
+        "copier_live_authorization_id": authz.id,
+        "correlation_id": authz.correlation_id or "",
+        "master_revision": int(getattr(event, "sequence", 0) or 0),
+        # Expiry/deadline — the bridge must reject a command past this instant (ADR-0083 command contract).
+        "authorization_expires_at": authz.expires_at.isoformat() if authz.expires_at else None,
+        # Expected PRE-state fingerprint + requested POST-state — the bridge verifies pre-state before acting.
+        "expected_pre_state": pre_state,
+        "requested_post_state": post_state,
+        # Order-time bridge identity pin (ADR-0057 §9) — bind the response to the authorized follower identity.
+        "require_identity_pin": True,
+        "expected_login": authz.follower_login,
+        "expected_server": authz.follower_server,
+        "expected_environment": authz.follower_environment,
+    }
+
+
+def _relock_live_authz_for_lifecycle(locked_replication, op, *, now):
+    """Re-resolve the GOVERNING authorization (the one THIS position was opened under — by recorded id, never the
+    newest for the pair) and lock its row, re-applying the window/kill-switch/authority policy under the lock, so
+    a revoke/expiry/kill-switch committed mid-flight is seen and fails closed. ``(authz|None, reason)``."""
+    open_repl, _ticket, reason = _linked_follower_open(locked_replication)
+    if open_repl is None:
+        return None, reason
+    gov, reason = _governing_authorization(open_repl)
+    if gov is None:
+        return None, reason
+    authz = (CopierLiveAuthorization.objects.select_for_update()
+             .filter(id=gov.id, revoked_at__isnull=True).first())
+    if authz is None:
+        return None, "governing_authorization_revoked_or_absent"
+    ok, reason = _lifecycle_authority_ok(authz, op)
+    if not ok:
+        return None, reason
+    ok, reason = _lifecycle_window_ok(authz, op, now)
+    if not ok:
+        return None, reason
+    ok, reason = _kill_switch_policy_ok(op)
+    if not ok:
+        return None, reason
+    return authz, "ok"
+
+
+def create_live_modify_job(locked_replication, ticket) -> dict:
+    """Create exactly one truthful LIVE ``MODIFY_POSITION`` for the bound follower ticket. Called from inside
+    ``produce_modify_one``'s lock with the replication locked. Does NOT consume the entry allowance (a MODIFY is
+    not an entry) and cannot change volume/side → cannot increase exposure."""
+    from execution.models import ExecutionJob
+    follower = locked_replication.follower
+    facct = follower.follower_account
+    macct = follower.master.trading_account
+    now = timezone.now()
+
+    authz, reason = _relock_live_authz_for_lifecycle(locked_replication, OP_MODIFY, now=now)
+    if authz is None:
+        return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
+
+    sl = str(locked_replication.translated_sl) if locked_replication.translated_sl is not None else None
+    tp = str(locked_replication.translated_tp) if locked_replication.translated_tp is not None else None
+    payload = _live_command_envelope(
+        locked_replication, authz, ticket, OP_MODIFY,
+        pre_state={"ticket": ticket, "symbol": locked_replication.follower_symbol, "position_open": True},
+        post_state={"sl": sl, "tp": tp})
+    payload.update({"sl": sl, "tp": tp, "comment": f"CPYM{locked_replication.id}",
+                    "reason": "copier_master_sltp_modify"})
+    job = ExecutionJob.objects.create(
+        account=facct, job_type=ExecutionJob.JobType.MODIFY_POSITION,
+        terminal_node_id=getattr(facct, "terminal_node_id", None),
+        payload=payload, hosted_idempotency_key=f"copier-live-modify:{locked_replication.pk}")
+    locked_replication.execution_job = job
+    locked_replication.follower_ticket = ticket
+    locked_replication.status = ReplicationStatus.EXECUTION_REQUESTED
+    locked_replication.save(update_fields=["execution_job", "follower_ticket", "status", "updated_at"])
+    return {"replication_id": locked_replication.id, "produced": True, "job_id": job.id,
+            "job_type": ExecutionJob.JobType.MODIFY_POSITION, "armed": True, "live": True,
+            "follower_ticket": ticket, "status": ReplicationStatus.EXECUTION_REQUESTED}
+
+
+def create_live_full_close_job(locked_replication, ticket) -> dict:
+    """Create exactly one truthful LIVE ``CLOSE_TRADE`` closing the bound follower ticket. Called from inside
+    ``produce_close_one``'s lock. Does NOT consume the entry allowance; cannot reopen/increase exposure."""
+    from execution.models import ExecutionJob
+    follower = locked_replication.follower
+    facct = follower.follower_account
+    macct = follower.master.trading_account
+    now = timezone.now()
+
+    authz, reason = _relock_live_authz_for_lifecycle(locked_replication, OP_FULL_CLOSE, now=now)
+    if authz is None:
+        return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
+
+    payload = _live_command_envelope(
+        locked_replication, authz, ticket, OP_FULL_CLOSE,
+        pre_state={"ticket": ticket, "symbol": locked_replication.follower_symbol, "position_open": True},
+        post_state={"closed": True})
+    payload.update({"comment": f"CPYC{locked_replication.id}", "reason": "copier_master_full_close"})
+    job = ExecutionJob.objects.create(
+        account=facct, job_type=ExecutionJob.JobType.CLOSE_TRADE,
+        terminal_node_id=getattr(facct, "terminal_node_id", None),
+        payload=payload, hosted_idempotency_key=f"copier-live-close:{locked_replication.pk}")
+    locked_replication.execution_job = job
+    locked_replication.follower_ticket = ticket
+    locked_replication.status = ReplicationStatus.EXECUTION_REQUESTED
+    locked_replication.save(update_fields=["execution_job", "follower_ticket", "status", "updated_at"])
+    return {"replication_id": locked_replication.id, "produced": True, "job_id": job.id,
+            "job_type": ExecutionJob.JobType.CLOSE_TRADE, "armed": True, "live": True,
+            "follower_ticket": ticket, "status": ReplicationStatus.EXECUTION_REQUESTED}
+
+
+def create_live_partial_close_job(locked_replication, ticket, reduction, remaining) -> dict:
+    """Create exactly one truthful LIVE ``PARTIAL_CLOSE_TRADE`` reducing the bound follower ticket by
+    ``reduction`` lots. Called from inside ``produce_partial_close_one``'s lock. Does NOT consume the entry
+    allowance; ``reduction`` is a verified strict reduction (< current volume) → cannot increase/reopen."""
+    from execution.models import ExecutionJob
+    follower = locked_replication.follower
+    facct = follower.follower_account
+    macct = follower.master.trading_account
+    now = timezone.now()
+
+    if not (reduction and float(reduction) > 0):
+        return {"replication_id": locked_replication.id, "produced": False, "reason": "non_positive_reduction"}
+
+    authz, reason = _relock_live_authz_for_lifecycle(locked_replication, OP_PARTIAL_CLOSE, now=now)
+    if authz is None:
+        return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
+
+    payload = _live_command_envelope(
+        locked_replication, authz, ticket, OP_PARTIAL_CLOSE,
+        pre_state={"ticket": ticket, "symbol": locked_replication.follower_symbol,
+                   "position_open": True, "expected_current_volume": str(round(float(reduction) + float(remaining), 8))},
+        post_state={"reduce_by": str(reduction), "expected_remaining": str(remaining)})
+    payload.update({"volume": str(reduction), "expected_remaining": str(remaining),
+                    "comment": f"CPYP{locked_replication.id}", "reason": "copier_master_partial_close"})
+    job = ExecutionJob.objects.create(
+        account=facct, job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE,
+        terminal_node_id=getattr(facct, "terminal_node_id", None),
+        payload=payload, hosted_idempotency_key=f"copier-live-partial:{locked_replication.pk}")
+    locked_replication.execution_job = job
+    locked_replication.follower_ticket = ticket
+    locked_replication.status = ReplicationStatus.EXECUTION_REQUESTED
+    locked_replication.save(update_fields=["execution_job", "follower_ticket", "status", "updated_at"])
+    return {"replication_id": locked_replication.id, "produced": True, "job_id": job.id,
+            "job_type": ExecutionJob.JobType.PARTIAL_CLOSE_TRADE, "armed": True, "live": True,
+            "follower_ticket": ticket, "reduction": reduction, "remaining": remaining,
+            "status": ReplicationStatus.EXECUTION_REQUESTED}

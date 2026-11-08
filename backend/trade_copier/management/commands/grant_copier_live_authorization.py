@@ -45,6 +45,20 @@ class Command(BaseCommand):
         parser.add_argument("--expires-at", default="", help="ISO-8601 expiry (overrides --valid-minutes).")
         parser.add_argument("--approved-by", required=True, help="STAFF user email recording human approval.")
         parser.add_argument("--reason", required=True)
+        # ADR-0083 — separately-auditable LIFECYCLE authority (distinct from the one-shot entry allowance). Each
+        # DEFAULTS OFF: without it the authorization confers NO modify/close authority (fail-closed). Granting one
+        # still does nothing until the matching per-op DARK flag is armed.
+        parser.add_argument("--modify-authority", action="store_true", default=False,
+                            help="ADR-0083: permit LIVE SL/TP MODIFY of the bound follower position (no exposure change).")
+        parser.add_argument("--partial-close-authority", action="store_true", default=False,
+                            help="ADR-0083: permit LIVE PARTIAL CLOSE of the bound follower position (reduce only).")
+        parser.add_argument("--full-close-authority", action="store_true", default=False,
+                            help="ADR-0083: permit LIVE FULL CLOSE of the bound follower position (close only).")
+        parser.add_argument("--close-only-after-expiry", action="store_true", default=False,
+                            help="ADR-0083 policy: after the entry window expires, still propagate a safety-reducing "
+                                 "close/partial-close to the bound position (never a new entry, never a modify).")
+        parser.add_argument("--correlation-id", default="",
+                            help="Optional stable correlation id for audit; auto-generated when omitted.")
 
     def handle(self, *args, **o):
         from trade_copier.models import (
@@ -136,6 +150,9 @@ class Command(BaseCommand):
         m_env = account_environment(macct)
         f_env = account_environment(facct)
 
+        import uuid
+        correlation_id = (o.get("correlation_id") or "").strip() or f"cpylc-{uuid.uuid4().hex[:16]}"
+
         authz = CopierLiveAuthorization.objects.create(
             user=owner, master_account=macct, follower_account=facct,
             master_login=str(macct.account_number or "").strip(),
@@ -149,7 +166,13 @@ class Command(BaseCommand):
             max_orders=int(o["max_orders"]), orders_consumed=0,
             valid_from=now, expires_at=expires_at,
             watermark_at=now, watermark_event_sequence=int(watermark_seq),
-            status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=approver, reason=o["reason"][:256])
+            status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=approver, reason=o["reason"][:256],
+            # ADR-0083 lifecycle authority (default-OFF unless explicitly granted here).
+            modify_authority=bool(o.get("modify_authority")),
+            partial_close_authority=bool(o.get("partial_close_authority")),
+            full_close_authority=bool(o.get("full_close_authority")),
+            close_only_after_expiry=bool(o.get("close_only_after_expiry")),
+            correlation_id=correlation_id)
 
         self.stdout.write(self.style.SUCCESS(
             f"CopierLiveAuthorization id={authz.id} ACTIVE: user={owner.id} "
@@ -158,6 +181,11 @@ class Command(BaseCommand):
             f"{authz.source_symbol}->{authz.follower_symbol} max_vol={max_volume} "
             f"max_concurrent={authz.max_concurrent_positions} max_orders={authz.max_orders} "
             f"window=[{now.isoformat()},{expires_at.isoformat()}) "
-            f"watermark_seq={watermark_seq} approved_by={approver.email}"))
-        self.stdout.write("NOTE: DARK — no flag armed, no order placed. Arming needs COPIER_ENABLED + "
-                          "COPIER_EXECUTE_ENABLED + COPIER_LIVE_EXECUTE_ENABLED and HOSTED_LIVE_EXECUTION_ENABLED.")
+            f"watermark_seq={watermark_seq} approved_by={approver.email} "
+            f"lifecycle_authority[modify={authz.modify_authority},partial={authz.partial_close_authority},"
+            f"full_close={authz.full_close_authority},close_only_after_expiry={authz.close_only_after_expiry}] "
+            f"correlation_id={correlation_id}"))
+        self.stdout.write("NOTE: DARK — no flag armed, no order placed. Entry arming needs COPIER_ENABLED + "
+                          "COPIER_EXECUTE_ENABLED + COPIER_LIVE_EXECUTE_ENABLED + HOSTED_LIVE_EXECUTION_ENABLED; "
+                          "each lifecycle op ALSO needs its own arm (COPIER_LIVE_{MODIFY,PARTIAL_CLOSE,FULL_CLOSE}"
+                          "_ENABLED) AND the matching authority granted above (ADR-0083).")

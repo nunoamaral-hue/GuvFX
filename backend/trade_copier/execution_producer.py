@@ -339,12 +339,17 @@ def admit_close(replication: CopierReplication) -> tuple[bool, int, str]:
         return False, 0, "follower_disabled"
 
     acct = follower.follower_account
+    # FULL CLOSE admission (ADR-0083): a DEMO follower uses the demo gates below; a LIVE (non-demo) follower is
+    # admissible ONLY through the complete fail-closed LIVE lifecycle authorization (full_close_authority +
+    # arm + window/containment policy) — never the blanket ``follower_not_demo`` reject.
     try:
         from trading.account_policy import is_demo_environment
-        if not is_demo_environment(acct):
-            return False, 0, "follower_not_demo"
+        _is_demo = is_demo_environment(acct)
     except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
         return False, 0, "environment_unresolved"
+    if not _is_demo:
+        from trade_copier.live_execution import admit_full_close_live
+        return admit_full_close_live(replication)
     if not getattr(acct, "is_active", False):
         return False, 0, "account_inactive"
 
@@ -411,6 +416,18 @@ def produce_close_one(replication: CopierReplication) -> dict:
             ok, ticket, reason = admit_close(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # LIVE follower (ADR-0083): admit_close already ran the complete LIVE full-close admission. Create
+            # the truthful LIVE CLOSE_TRADE under THIS lock — no entry allowance is consumed (a close is not an
+            # entry), and it cannot reopen/increase exposure. DEMO followers fall through to the path below.
+            from trading.account_policy import is_demo_environment
+            try:
+                _locked_is_demo = is_demo_environment(locked.follower.follower_account)
+            except Exception:  # noqa: BLE001
+                return {"replication_id": replication.id, "produced": False, "reason": "environment_unresolved"}
+            if not _locked_is_demo:
+                from trade_copier.live_execution import create_live_full_close_job
+                return create_live_full_close_job(locked, ticket)
 
             # AUTHORITATIVE in-lock ARM re-read — a flip-off after the preflight yields SHADOW, no real order.
             armed = copier_execute_demo_armed()
@@ -525,12 +542,17 @@ def admit_modify(replication: CopierReplication) -> tuple[bool, int, str]:
         return False, 0, "follower_disabled"
 
     acct = follower.follower_account
+    # MODIFY admission (ADR-0083): a DEMO follower uses the demo gates below; a LIVE (non-demo) follower is
+    # admissible ONLY through the complete fail-closed LIVE lifecycle authorization (modify_authority + arm +
+    # active window; a MODIFY never survives expiry or the kill switch) — never the blanket reject.
     try:
         from trading.account_policy import is_demo_environment
-        if not is_demo_environment(acct):
-            return False, 0, "follower_not_demo"
+        _is_demo = is_demo_environment(acct)
     except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
         return False, 0, "environment_unresolved"
+    if not _is_demo:
+        from trade_copier.live_execution import admit_modify_live
+        return admit_modify_live(replication)
     if not getattr(acct, "is_active", False):
         return False, 0, "account_inactive"
 
@@ -605,6 +627,18 @@ def produce_modify_one(replication: CopierReplication) -> dict:
             ok, ticket, reason = admit_modify(locked)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # LIVE follower (ADR-0083): admit_modify already ran the complete LIVE modify admission. Create the
+            # truthful LIVE MODIFY_POSITION under THIS lock — SL/TP only, never volume/side, so it cannot increase
+            # exposure; no entry allowance is consumed. DEMO followers fall through to the path below.
+            from trading.account_policy import is_demo_environment
+            try:
+                _locked_is_demo = is_demo_environment(locked.follower.follower_account)
+            except Exception:  # noqa: BLE001
+                return {"replication_id": replication.id, "produced": False, "reason": "environment_unresolved"}
+            if not _locked_is_demo:
+                from trade_copier.live_execution import create_live_modify_job
+                return create_live_modify_job(locked, ticket)
 
             # AUTHORITATIVE in-lock ARM re-read — a flip-off after the preflight yields SHADOW, no real order.
             armed = copier_execute_demo_armed()
@@ -725,12 +759,17 @@ def admit_partial_close(replication: CopierReplication, *, fetch=None) -> tuple[
         return False, 0, 0.0, 0.0, "follower_disabled"
 
     acct = follower.follower_account
+    # PARTIAL CLOSE admission (ADR-0083): a DEMO follower uses the demo gates below; a LIVE (non-demo) follower
+    # is admissible ONLY through the complete fail-closed LIVE lifecycle authorization (partial_close_authority
+    # + arm + window/containment). The LIVE admission performs its own fresh follower read + reduction calc.
     try:
         from trading.account_policy import is_demo_environment
-        if not is_demo_environment(acct):
-            return False, 0, 0.0, 0.0, "follower_not_demo"
+        _is_demo = is_demo_environment(acct)
     except Exception:  # noqa: BLE001 — unresolved environment is NOT demo
         return False, 0, 0.0, 0.0, "environment_unresolved"
+    if not _is_demo:
+        from trade_copier.live_execution import admit_partial_close_live
+        return admit_partial_close_live(replication, fetch=fetch)
     if not getattr(acct, "is_active", False):
         return False, 0, 0.0, 0.0, "account_inactive"
 
@@ -885,6 +924,19 @@ def produce_partial_close_one(replication: CopierReplication, *, fetch=None) -> 
             ok, ticket, reduction, remaining, reason = admit_partial_close(locked, fetch=fetch)
             if not ok:
                 return {"replication_id": replication.id, "produced": False, "reason": reason}
+
+            # LIVE follower (ADR-0083): admit_partial_close already ran the complete LIVE partial-close admission
+            # (fresh follower read + proportional reduction). Create the truthful LIVE PARTIAL_CLOSE_TRADE under
+            # THIS lock — a verified strict reduction (< current volume), so it cannot increase/reopen exposure;
+            # no entry allowance is consumed. DEMO followers fall through to the path below.
+            from trading.account_policy import is_demo_environment
+            try:
+                _locked_is_demo = is_demo_environment(locked.follower.follower_account)
+            except Exception:  # noqa: BLE001
+                return {"replication_id": replication.id, "produced": False, "reason": "environment_unresolved"}
+            if not _locked_is_demo:
+                from trade_copier.live_execution import create_live_partial_close_job
+                return create_live_partial_close_job(locked, ticket, reduction, remaining)
 
             # P1 — AUTHORITATIVE ARM re-read INSIDE the lock, immediately before the job decision. If DEMO
             # arming was disabled between the preflight hint and here, record SHADOW only and create NO
