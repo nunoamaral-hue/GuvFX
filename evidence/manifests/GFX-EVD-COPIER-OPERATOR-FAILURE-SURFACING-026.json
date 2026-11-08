@@ -5,7 +5,7 @@
   "created_at_utc": "2026-11-08T23:00:00Z",
   "branch": "feat/copier-operator-failure-surfacing",
   "base_commit": "a0fef1304eb3f39cec8d828a89978c00e18f4c7c",
-  "head_commit": "PENDING_COMMIT",
+  "head_commit": "aaa2322d4acc47f02e33741ce89d15d63e001368 (feature commit on feat/copier-operator-failure-surfacing; this metadata-only update follows it)",
   "summary": "Repository-only, DARK/default-OFF operator failure-surfacing layer on the merged ADR-0083 lifecycle foundation: (1) extended failure-alert contract with the full reason-code set + dedup/reopen; (2) a staff-only read-only operator lifecycle/failure view; (3) a synthetic scenario matrix. NO new migration, no production change, no broker order, no credential handled, no flag armed.",
   "phase1_current_truth": {
     "canonical_main": "a0fef1304eb3f39cec8d828a89978c00e18f4c7c (unchanged; Withdrawal Intelligence had not advanced it at implementation time)",
