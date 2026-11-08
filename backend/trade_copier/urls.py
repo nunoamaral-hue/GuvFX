@@ -10,6 +10,7 @@ from trade_copier.attestation_api import AttestationVerifyView
 from trade_copier.config_api import CopyTradingConfigView
 from trade_copier.event_ingestion_api import SignedEventIngestView
 from trade_copier.matrix_api import InstrumentMatrixView
+from trade_copier.operator_api import OperatorLifecycleView
 from trade_copier.views import (
     CopyTradingMastersView,
     CopyTradingOverviewView,
@@ -37,4 +38,8 @@ urlpatterns = [
     path("partial-close/authorize-send/", PartialCloseAuthorizeSendView.as_view(),
          name="copy-trading-pclose-authorize-send"),
     path("partial-close/complete/", PartialCloseCompleteView.as_view(), name="copy-trading-pclose-complete"),
+    # ADR-0083 Phase-3 — STAFF-ONLY, read-only, redacted, paginated operator lifecycle/failure view. DARK:
+    # reports enabled:false / no rows unless COPIER_OPERATOR_VIEW_ENABLED is on. No mutation surface (GET only),
+    # no order, no job, no arming; non-staff requests are denied (403).
+    path("operator/lifecycles/", OperatorLifecycleView.as_view(), name="copy-trading-operator-lifecycles"),
 ]

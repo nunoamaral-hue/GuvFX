@@ -203,6 +203,17 @@ def copier_alert_dispatch_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ALERT_DISPATCH_ENABLED")
 
 
+def copier_operator_view_enabled() -> bool:
+    """Gate for the READ-ONLY operator lifecycle/failure view (ADR-0083 Phase-3). DEFAULT OFF, ANDed with the
+    master gate.
+
+    The view is staff-only, read-only, redacted and paginated: it surfaces the per-lifecycle state + failure
+    reason + data-quality label for GuvFX operators. It performs NO retry/recover/modify/close/arm/authorization
+    action, exposes NO secret/credential/raw-login, and NEVER converts missing/unreadable data into a zero,
+    closed or successful state. When OFF the endpoint reports ``enabled:false`` and returns no rows."""
+    return copier_enabled() and _flag("COPIER_OPERATOR_VIEW_ENABLED")
+
+
 def copier_attestation_verify_enabled() -> bool:
     """Gate for the NON-LIFECYCLE host-emitter identity-ATTESTATION verification surface (ADR-0077). DEFAULT OFF,
     ANDed with the master gate.

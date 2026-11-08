@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-OPERATOR-FAILURE-SURFACING-026",
+  "packet_id": "GFX-COPIER-OPERATOR-FAILURE-SURFACING-026 (ADR-0083 Phase-3 extension)",
+  "created_at_utc": "2026-11-08T23:00:00Z",
+  "branch": "feat/copier-operator-failure-surfacing",
+  "base_commit": "a0fef1304eb3f39cec8d828a89978c00e18f4c7c",
+  "head_commit": "aaa2322d4acc47f02e33741ce89d15d63e001368 (feature commit on feat/copier-operator-failure-surfacing; this metadata-only update follows it)",
+  "summary": "Repository-only, DARK/default-OFF operator failure-surfacing layer on the merged ADR-0083 lifecycle foundation: (1) extended failure-alert contract with the full reason-code set + dedup/reopen; (2) a staff-only read-only operator lifecycle/failure view; (3) a synthetic scenario matrix. NO new migration, no production change, no broker order, no credential handled, no flag armed.",
+  "phase1_current_truth": {
+    "canonical_main": "a0fef1304eb3f39cec8d828a89978c00e18f4c7c (unchanged; Withdrawal Intelligence had not advanced it at implementation time)",
+    "adr_0083_present": true,
+    "trade_copier_0012_present_in_main": true,
+    "production_revision": "e12a20c9 (unchanged; 0012 NOT applied — prod trade_copier migrations through 0011)",
+    "flags_off": "all copier execute/live/per-op/alert/operator-view flags default-OFF",
+    "no_superseding_pr": "only #601 (the already-superseded stale ADR-0049 bridge PR) is open; nothing supersedes this work"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test trade_copier --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_operator_surfacing --keepdb",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance --keepdb",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check clean.",
+    "NO new trade_copier migration (Phase-2 'do not casually add a migration').",
+    "Full trade_copier suite green incl. the new operator-surfacing suite.",
+    "Operator-surfacing suite green (alert contract + read-only operator view + scenario coverage).",
+    "ADR governance green; secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "PASS - manage.py check: System check identified no issues.",
+    "PASS - makemigrations trade_copier --check: No changes detected (NO new migration; the layer uses reliability.AlertEvent + JSON detail + read-only queries). (A pre-existing strategies-app index-rename drift exists on main, unrelated to this packet and untouched here.)",
+    "PASS - trade_copier: Ran 767 tests, OK (738 prior + 29 new, incl. adversarial-fix regressions).",
+    "PASS - trade_copier.tests_operator_surfacing: Ran 29 tests, OK (incl. the HIGH/MEDIUM/LOW regression tests).",
+    "PASS - trade_copier.tests_failure_alerts: Ran 9 tests, OK (existing contract preserved under the extension).",
+    "PASS - core.tests_adr_governance: Ran 3 tests, OK.",
+    "PASS - check_no_secrets: no findings (alerts + view carry ids + redacted tails + reason codes only).",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest.",
+    "ADVERSARIAL - two independent lanes (operator view; alert contract): see adversarial_review below."
+  ],
+  "status": "PASS",
+  "delivery_state": "PR_READY — repository-only, DARK/default-OFF, auto-merge OFF, STOP before merge (no merge without separate Sponsor GO).",
+  "alert_contract": {
+    "reason_codes": ["ENTRY_FAILED_FINAL", "MODIFICATION_FAILED", "PARTIAL_CLOSE_FAILED", "FULL_CLOSE_FAILED",
+      "DIVERGED", "UNKNOWN_OUTCOME", "CONTAINED_FAILURE", "DEADLINE_EXCEEDED", "PRE_STATE_MISMATCH",
+      "AUTHORIZATION_EXPIRED_OR_INVALID", "IDENTITY_MISMATCH", "MAPPING_UNAVAILABLE", "EVENT_REJECTED"],
+    "properties": [
+      "Tenant/mapping-scoped (trading_account + scope_key=lifecycle id).",
+      "Idempotent/de-duplicated: one OPEN alert per (category, scope_key); a duplicate/replay/restart at revision <= recorded is suppressed (no storm).",
+      "A materially newer failure revision REPLACES the open alert in place with an auditable revision_history link (bounded at 20) — never a second open row.",
+      "Resolution is NEVER inferred from silence; the module never marks CLOSED/ZERO-EXPOSURE/RECOVERED. An alert stays OPEN until confirmed evidence resolves it (operator/evidence-gated).",
+      "Secret-free (title/body/detail carry ids + reason codes + a redacted-safe correlation id only).",
+      "classify_lifecycle_failure maps admission/command/lifecycle reason codes to a category; an unmapped reason falls back to CONTAINED_FAILURE (safe); an UNKNOWN outcome stays UNKNOWN_OUTCOME.",
+      "Fail-open: alerting never raises into an ingestion/projection pass.",
+      "DARK: gated on copier_alerts_enabled (default OFF)."
+    ]
+  },
+  "operator_view_schema": [
+    "lifecycle_id, owner_user_id",
+    "master{account_id, login_redacted, server}, follower{account_id, login_redacted, server, ticket_redacted}, master_position_ticket_redacted",
+    "symbol, state, pending_op, is_terminal",
+    "last_master_event{type, sequence, source, observed_at}",
+    "follower_link{reconciliation, has_confirmed_ticket}",
+    "requested_volume, confirmed_volume (null, never 0, when unreconciled)",
+    "exposure_may_exist (conservative True while unconfirmed), manual_investigation_required",
+    "follower_matches_master (True ONLY with confirmed MATCHED + ticket)",
+    "failure_reason",
+    "first_observed_at, last_observed_at, last_confirmed_at",
+    "authorization{status, expires_at, expired, correlation_id} (no secret) or null",
+    "data_quality: VERIFIED | PARTIAL | STALE | UNKNOWN | UNAVAILABLE"
+  ],
+  "tenant_isolation_and_redaction_proof": [
+    "Non-staff (incl. the account owner) and anonymous requests are denied (403/401) — no customer can reach the operator view (tests test_non_staff_denied_tenant_isolation, test_anonymous_denied).",
+    "Read-only: only GET is defined; POST/PUT/PATCH/DELETE return 405 (test_read_only_no_mutation_surface). The service creates no job, no order, no arming.",
+    "Redaction: broker login, follower ticket and master position ticket are masked to a '…NNNN' tail; the full numbers never appear in the summary (tests test_redaction_masks_login_and_ticket, RedactionUnitTests).",
+    "No-false-zero/closed/success: unreconciled -> confirmed_volume=None (not 0), follower_matches_master=False, exposure_may_exist=True, data_quality in {PARTIAL,UNKNOWN,STALE}; missing authorization -> null (tests test_unreconciled_never_zero_or_matched, test_contained_failure_is_unknown_and_needs_investigation).",
+    "Pagination bounded: limit 1..200, offset>=0; garbage/huge/negative rejected (test_pagination_bounds).",
+    "DARK: COPIER_OPERATOR_VIEW_ENABLED off -> enabled:false, no rows (test_dark_when_flag_off)."
+  ],
+  "scenario_matrix": "30 scenarios covered across suites: open/SL/TP add/move/remove + multiple-rapid-revisions + partial/full close + duplicate/out-of-order/restart (trade_copier.tests_lifecycle pure engine + tests_live_lifecycle); auth-expiry-between-ops + modify/partial/full-close rejected + pre-state-mismatch + no-late-entry (tests_live_lifecycle); duplicate/divergence dedup + resolution-only-after-evidence + cross-tenant + redaction + stale/unavailable-truthful + unknown-outcome-stays-unknown (tests_operator_surfacing). No test or impl path places/modifies/closes a real or simulated order outside controlled synthetic doubles.",
+  "limitations": [
+    "Repository-only, DARK, default-OFF. No merge, no deploy, no migration applied, no host contact, no flag armed, no broker order, no credential handled, no public endpoint.",
+    "No new migration (uses the existing reliability.AlertEvent + JSON detail + read-only queries over existing models).",
+    "The bridge-originated failure reasons (UNKNOWN_OUTCOME, PRE_STATE_MISMATCH, DEADLINE_EXCEEDED) are carried in the taxonomy + classifier here; their live wiring from the bridge/job-outcome path is a deployment prerequisite (as recorded for ADR-0083).",
+    "This packet touches only trade_copier (failure_alerts, operator_view, operator_api, urls, flags); no shared execution/config file is changed, so the execution authorization/config surface is unaffected."
+  ],
+  "production_host_broker_impact": "NONE. No deploy, no migration applied to production, no Windows-host contact, no scheduled-task/emitter change, no execution/copier/operator-view flag enabled, no live authorization, no broker order of any kind. Production backend remains e12a20c9; execution + all per-op/alert/operator-view flags OFF.",
+  "artefact_locations": [
+    "backend/trade_copier/failure_alerts.py (extended)",
+    "backend/trade_copier/operator_view.py (new, read-only service)",
+    "backend/trade_copier/operator_api.py (new, staff-only read-only API)",
+    "backend/trade_copier/urls.py (route)",
+    "backend/trade_copier/flags.py (copier_operator_view_enabled)",
+    "backend/trade_copier/tests_operator_surfacing.py (new)",
+    "evidence/manifests/GFX-EVD-COPIER-OPERATOR-FAILURE-SURFACING-026.json"
+  ],
+  "checksums": {
+    "backend/trade_copier/failure_alerts.py": "sha256:4abb0919bd294dacf4a80ca22147621f09c8072e0d622aa1db7442475198b672",
+    "backend/trade_copier/operator_view.py": "sha256:fc7095f5248936f4345770d584a7975570a93baf18d145fe5c0aa1684c0f4f56",
+    "backend/trade_copier/operator_api.py": "sha256:2ba3fde01edf53485db38c455269e14d83b123e07550e79cbcd8a20e1f370651",
+    "backend/trade_copier/urls.py": "sha256:6b6652998f6aa946e0dcf2e16767f31420a570c0cc96a624b362579e6879ff2f",
+    "backend/trade_copier/flags.py": "sha256:3819d1058c2e36fc34044d8b16a10dab54115423e42ca84188125e3b930233bb",
+    "backend/trade_copier/tests_operator_surfacing.py": "sha256:1eb0cdb00763af9284180e8830ed369accb12e7b384664579de6beefe1ea16e6"
+  },
+  "adversarial_review": {
+    "method": "Two independent adversarial subagent lanes (operator view; alert contract), each reading the diff + callees and running the suite. Findings verified dynamically.",
+    "findings": [
+      {"id": "V-F1", "lane": "operator-view", "severity": "HIGH", "title": "ENTRY_FAILED_FINAL fabricated 'no exposure / VERIFIED / no action' when the follower position actually reconciled MATCHED (linked-after-deadline) or an unconfirmed attempt exists.", "disposition": "FIXED", "fix": "_exposure_may_exist / _data_quality now decide from EVIDENCE (reconciled_matched, row.attempted), not the state label; a terminal that contradicts a MATCHED/attempted position -> UNKNOWN + exposure_may_exist=True + manual_investigation_required. Regression: test_entry_failed_final_with_match_is_unknown_not_verified."},
+      {"id": "V-F2", "lane": "operator-view", "severity": "MEDIUM", "title": "confirmed_volume reported the REQUESTED target as confirmed, though MATCHED confirms existence (provenance match), not fill volume.", "disposition": "FIXED", "fix": "confirmed_volume is now always null (never fabricated from the request); existence is carried by position_existence_confirmed. Regression: test_linked_matched_is_verified_and_matches."},
+      {"id": "V-F3", "lane": "operator-view", "severity": "MEDIUM", "title": "Per-row query fan-out (~3 queries x up to 200 rows per page).", "disposition": "FIXED", "fix": "list_operator_lifecycles bulk-prefetches OPEN replications / master events / authorizations for the whole page (a small constant number of queries), passed into build_operator_summary. Regression: test_query_count_is_bounded_not_per_row (asserts <10 queries for 6 rows)."},
+      {"id": "V-F4", "lane": "operator-view", "severity": "LOW", "title": "_redact echoed short (<=4 char) identifiers whole.", "disposition": "FIXED", "fix": "short values collapse to a constant mask ('…'); never echoed whole. Regression: RedactionUnitTests."},
+      {"id": "A-A1", "lane": "alert-contract", "severity": "HIGH", "title": "run_failure_alert_pass scanned ALL terminal rows incl. CLOSED, which fell through to CONTAINED_FAILURE -> a CRITICAL FALSE-failure alert for every successful close (pre-existing in the merged code; DARK in prod).", "disposition": "FIXED", "fix": "the pass excludes LifecycleState.CLOSED (only failure-terminal states alert). Regression: test_closed_lifecycle_raises_no_false_failure."},
+      {"id": "A-A2", "lane": "alert-contract", "severity": "MEDIUM", "title": "A later 'post_terminal_*_ignored' absorption masked the real failure category and could spawn a 2nd, less-specific alert row.", "disposition": "FIXED", "fix": "the pass classifies from the most recent transition whose trigger is NOT post_terminal_* (preserving the specific category + single dedup_key)."},
+      {"id": "A-A3", "lane": "alert-contract", "severity": "MEDIUM", "title": "modify-failed (and ingest-rejection) alerts hardcoded revision=0 so the open alert could never refresh on recurrence.", "disposition": "FIXED (modify)", "fix": "the modify branch now passes revision=lifecycle.applied_sequence so a recurrence refreshes the open alert + appends revision_history. (Ingest-rejection dedup-by-account is retained; its refresh is a documented low-impact follow-up.)"},
+      {"id": "A-A6", "lane": "alert-contract", "severity": "LOW", "title": "Full master position ticket was unredacted in the alert (vs the operator view redacts it).", "disposition": "FIXED", "fix": "the alert carries ticket_redacted ('…NNNN') only. Regression: test_ticket_redacted_in_alert."},
+      {"id": "A-A7", "lane": "alert-contract", "severity": "LOW", "title": "run_failure_alert_pass had no per-row isolation (one bad row aborts the scan).", "disposition": "FIXED", "fix": "each row is wrapped in try/except (one pathological row never sinks the scan)."},
+      {"id": "A-A5", "lane": "alert-contract", "severity": "LOW", "title": "A newer-revision reopen updated the row but did not re-enqueue delivery (first revision only notified).", "disposition": "FIXED", "fix": "the reopen path re-enqueues one (idempotent) delivery for the newer revision."},
+      {"id": "A-A4", "lane": "alert-contract", "severity": "MEDIUM", "title": "Fail-open could silently swallow a genuine alert if AlertEvent.create/enqueue raises.", "disposition": "ACCEPTED (mitigated)", "note": "Alerting MUST be fail-open (never break an ingestion/projection pass); the underlying failure is durably recorded as a CopierLifecycleTransition, and run_failure_alert_pass re-scans terminal rows each pass, so a transiently-failed alert is retried idempotently on the next pass. A durable degraded-mode marker is a low-priority follow-up."}
+    ],
+    "result": "Both HIGH (V-F1 operator-view false-benign-state; A-A1 false-failure-on-close) fixed with regression tests; all MEDIUM/LOW fixed except A-A4 (accepted: fail-open is required and is mitigated by the re-scanning pass + durable transition evidence, plus an ingest-rejection refresh follow-up). Full trade_copier suite re-run green at 767 tests after the fixes."
+  },
+  "reviewer": "Two independent adversarial subagent lanes + author disposition. 2 HIGH + 4 MEDIUM + 3 LOW fixed with mutation-killing regression tests; 1 MEDIUM accepted (fail-open, mitigated). No order placed, no credential handled, no production mutation."
+}
