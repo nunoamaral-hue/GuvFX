@@ -146,7 +146,12 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
                 return None
             # 5) parse (a RAISING parser is treated as 'declined'; evidence retained, no event, never crash ingest)
             try:
-                parsed = parser.parse(subject=message.subject, body=message.body, from_address=message.from_address)
+                _pk = {"subject": message.subject, "body": message.body, "from_address": message.from_address}
+                if getattr(parser, "WANTS_HTML_BODY", False):
+                    # Additive: an HTML-aware parser receives the raw text/html part (when present) to read structured
+                    # fields a degraded text/plain alternative drops. Parsers without the flag are called unchanged.
+                    _pk["html_body"] = getattr(message, "html_body", "") or ""
+                parsed = parser.parse(**_pk)
             except Exception:  # noqa: BLE001 — a raising parser must never crash ingestion (contract); treat as declined
                 logger.warning("broker_intelligence ingest: parser %s raised (evidence %s retained, no event)",
                                getattr(parser, "name", "?"), blob.sha256[:12])

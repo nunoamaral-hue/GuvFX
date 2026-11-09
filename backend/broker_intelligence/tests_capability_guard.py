@@ -3,7 +3,8 @@
 Three cheap, durable guards, all provable with synthetic / existing seed data (no genuine sample):
   1. The external-withdrawal DECISION CORE is NOT wired into the live parsers (so a positive classification can
      never reach a BrokerEvent before a broker is certified). Verified by import-surface inspection.
-  2. No ACTIVE BrokerProfile declares EXTERNAL_WITHDRAWAL, and CERTIFIED_BROKERS is empty (fail-closed).
+  2. Only the operator-verified Pepperstone profile (migration 0027) declares EXTERNAL_WITHDRAWAL; the other active
+     pilots declare none, and CERTIFIED_BROKERS (the separate PUBLIC-metrics gate) is empty (fail-closed).
   3. Running the REAL parser-selection path over synthetic broker-domain mail (withdrawal/transfer/deposit wording)
      NEVER yields transaction_category == EXTERNAL_WITHDRAWAL, and any emitted category is within that broker's
      declared capability — the "parser-emits ⊆ declared" cross-check the catalogue docstring claims but never ran.
@@ -30,12 +31,16 @@ class ClassifierNotWiredIntoParsers(SimpleTestCase):
 
 
 class FailClosedCapability(TestCase):
-    def test_no_active_profile_declares_external_withdrawal_and_no_broker_certified(self):
+    def test_only_operator_verified_pepperstone_declares_external_and_no_broker_certified(self):
+        # After migration 0027 the operator-verified Pepperstone profile DECLARES EXTERNAL_WITHDRAWAL (it surfaces
+        # genuine Pepperstone withdrawal emails on the owner-scoped member dashboard). The fail-closed guards that
+        # remain: no broker is in CERTIFIED_BROKERS (the separate PUBLIC-metrics certification path stays empty), and
+        # the other active pilots (is6, tradersway) still declare no external-withdrawal capability.
         from broker_intelligence.models import BrokerProfile
         self.assertEqual(CERTIFIED_BROKERS, frozenset())
-        for p in BrokerProfile.objects.filter(is_active=True):
-            self.assertNotIn(TransactionCategory.EXTERNAL_WITHDRAWAL, p.supported_category_list(),
-                             f"{p.slug} must not declare EXTERNAL_WITHDRAWAL")
+        external = {p.slug for p in BrokerProfile.objects.filter(is_active=True)
+                    if TransactionCategory.EXTERNAL_WITHDRAWAL in p.supported_category_list()}
+        self.assertEqual(external, {"pepperstone"})
 
 
 class ParsersNeverEmitExternalWithdrawal(TestCase):

@@ -20,7 +20,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from broker_intelligence import correlation as C, metrics, withdrawal_speed
-from broker_intelligence.models import BrokerEvent, BrokerProfile, Provenance, TransactionCategory, Withdrawal
+from broker_intelligence.models import (BrokerEvent, BrokerProfile, BrokerProfileAudit, Provenance,
+                                        TransactionCategory, Withdrawal)
 from trading.models import TradingAccount
 
 User = get_user_model()
@@ -131,7 +132,13 @@ class MigrationReverseGuard(TestCase):
         self.slugs = ["pepperstone", "dominion_markets", "vantage"]
 
     def test_untouched_seed_reverses_cleanly(self):
-        # The three profiles are seeded by the migration into the test DB (is_active=False, SEED, one CREATE audit).
+        # Migration 0027 (GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003) activates Pepperstone in the migrated test DB. To
+        # exercise 0026's clean reverse of an UNTOUCHED seed (the behaviour under test, which 0027 does not change),
+        # first restore Pepperstone to its pristine seed state — mirroring a world where 0027 was never applied.
+        ps = BrokerProfile.objects.get(slug="pepperstone")
+        BrokerProfileAudit.objects.filter(broker_profile=ps).exclude(changed_by__icontains="0026").delete()
+        BrokerProfile.objects.filter(slug="pepperstone").update(is_active=False, provenance="SEED")
+        # The three profiles are now seeded-untouched in the test DB (is_active=False, SEED, one CREATE audit).
         self.assertEqual(BrokerProfile.objects.filter(slug__in=self.slugs).count(), 3)
         self.mod._unseed(global_apps, None)
         self.assertEqual(BrokerProfile.objects.filter(slug__in=self.slugs).count(), 0)

@@ -37,10 +37,10 @@ def _acct(**kw):
 
 
 def _msg(to_addr, *, subject="Withdrawal request received", body="Ref ABC123 100.50 USD",
-         frm="noreply@tradersway.invalid", raw=None, auth_verdict=None):
+         frm="noreply@tradersway.invalid", raw=None, auth_verdict=None, html=""):
     return MailMessage(
         raw_bytes=raw if raw is not None else ("to=%s|%s|%s" % (to_addr, subject, body)).encode(),
-        to_addresses=(to_addr,), from_address=frm, subject=subject, body=body,
+        to_addresses=(to_addr,), from_address=frm, subject=subject, body=body, html_body=html,
         received_at=timezone.now(), provider_message_id=_uniq(), auth_verdict=auth_verdict)
 
 
@@ -241,3 +241,42 @@ class IsolationTests(TestCase):
             src = inspect.getsource(mod)
             for forbidden in ("import execution", "from execution", "import strategies", "from strategies"):
                 self.assertNotIn(forbidden, src, f"{mod.__name__} must not import trading execution/strategy domains")
+
+
+class HtmlBodyThreadingTests(_TmpEvidence):
+    """Packet 008: the ingestion gate passes ``html_body`` to a parser that opts in (WANTS_HTML_BODY) and calls a
+    plain parser unchanged (backward compatible)."""
+
+    def test_html_body_passed_to_wants_html_parser(self):
+        captured = {}
+
+        class _HtmlParser:
+            name = "htmlrec"
+            version = "v1"
+            WANTS_HTML_BODY = True
+
+            def can_parse(self, *, subject, body, from_address):
+                return "withdrawal" in (subject or "").lower()
+
+            def parse(self, *, subject, body, from_address, html_body=""):
+                captured["html"] = html_body
+                return parsers.ParsedBrokerEvent(event_type="WITHDRAWAL_REQUESTED", broker="X",
+                                                 amount=Decimal("1.00"), currency="USD")
+
+        parsers.register_parser(_HtmlParser())
+        a = _acct()
+        al = mint_alias_for_account(a)
+        ingestion.ingest_message(_msg(al.address(), subject="Withdrawal request", html="<p>THE-HTML</p>"),
+                                 store=self.store)
+        self.assertEqual(captured.get("html"), "<p>THE-HTML</p>")
+
+    def test_plain_parser_called_without_html_body_kwarg(self):
+        # _FakeParser.parse has NO html_body parameter; passing one would raise TypeError -> ingestion would decline.
+        # The event IS created, proving the gate did not pass html_body to a parser that did not ask for it.
+        parsers.register_parser(_FakeParser())
+        a = _acct()
+        al = mint_alias_for_account(a)
+        ev = ingestion.ingest_message(_msg(al.address(), subject="Withdrawal request", html="<p>IGNORED</p>"),
+                                      store=self.store)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.event_type, "WITHDRAWAL_REQUESTED")

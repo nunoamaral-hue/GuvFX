@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-PEPPERSTONE-ACTIVATION",
+  "packet_id": "GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003",
+  "created_at_utc": "2026-11-08T00:00:00Z",
+  "branch": "feat/activate-pepperstone-withdrawal-capture",
+  "base_commit": "e12a20c9643043bbf6df418f9c2001ea4ec101e8",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only \u2014 activate the already-seeded, already-configured Pepperstone BrokerProfile for CAPTURE",
+    "mode": "data migration (is_active False->True) + tests; no schema change; no certification; no public page",
+    "adr": "none required \u2014 activating a pre-configured seeded profile does not materially change architecture or contract semantics (migration 0026 documents is_active as the operator-verification switch)",
+    "production_or_db_mutation": false,
+    "broker_certified_or_CERTIFIED_BROKERS_changed": false,
+    "sender_auth_weakened_or_recognition_broadened": false,
+    "dominion_or_vantage_touched": false,
+    "real_gmail_mt5_broker_credentials_pii_or_email_body": false,
+    "financial_or_oauth_action_by_agent": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test covers broker_intelligence) + governance-check + secret/PII scan"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py makemigrations broker_intelligence --check --dry-run   (No changes detected in app 'broker_intelligence')",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_pepperstone_activation   (10 tests OK)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence   (826 tests OK)",
+    "make governance-check   (check_no_secrets + test_no_secrets + test_data_root + evidence-lint + test_evidence_manifests + test_evidence_factuality)",
+    "make secret-scan   (check_no_secrets: no findings)"
+  ],
+  "expected_results": [
+    "Migration 0027 flips ONLY the Pepperstone BrokerProfile to is_active=True with provenance OPERATOR_VERIFIED and an append-only BrokerProfileAudit UPDATE row; reverse retires it (is_active=False) non-destructively.",
+    "pepperstone.com enters the acquisition filter + retention gate (broker_senders.sender_allowlist), so an authenticated Pepperstone withdrawal email is retained and surfaces; Dominion Markets and Vantage stay DARK; look-alike and non-broker senders stay rejected (fail-closed preserved).",
+    "The activated Pepperstone adapter renders a TRUTHFUL lifecycle for the genuine-shaped GBP 15 message: 'confirm your withdrawal request' -> WITHDRAWAL_CONFIRMATION_REQUIRED, EXTERNAL_WITHDRAWAL, amount 15.00 GBP, never COMPLETED; an unknown template yields no event (quarantine); URLs/tokens never surface.",
+    "Pepperstone is NOT added to CERTIFIED_BROKERS (the separate public-metrics gate stays empty); the member dashboard surfaces REAL EXTERNAL_WITHDRAWAL events on their own merit.",
+    "broker_intelligence suite green; makemigrations --check clean for broker_intelligence; governance + secret + PII scans clean."
+  ],
+  "actual_results": [
+    "makemigrations --check broker_intelligence: No changes detected (0027 is a RunPython data migration).",
+    "broker_intelligence.tests_pepperstone_activation: Ran 10 tests OK (activation active+OPERATOR_VERIFIED+audited; pepperstone.com in allowlist; look-alike/non-broker rejected incl pepperstone.com.evil.example / pepperstone.co / empty / None; CERTIFIED_BROKERS stays empty; dominion+vantage dark; genuine GBP 15 confirmation-required -> EXTERNAL_WITHDRAWAL never completed; processing/completed render own states; URL/token redacted; unknown template -> no event).",
+    "Full broker_intelligence: Ran 826 tests OK. Three directly-related existing tests updated to the new truthful invariant (only operator-verified Pepperstone declares EXTERNAL_WITHDRAWAL; the 0026 untouched-seed reverse test restores the pristine seed first because 0027 permanently marks Pepperstone).",
+    "make governance-check: PASS (test_data_root 7 OK; evidence-lint PASS 50 manifests; test_evidence_manifests 6 OK; test_evidence_factuality 5 OK; test_no_secrets OK). make secret-scan: no findings.",
+    "PII review of the diff: synthetic only \u2014 role sender no-reply@pepperstone.com (public broker domain), amount GBP 15.00, synthetic reference PSSYNTH-REF-001; no personal name, real email address, full account number, withdrawal reference or email body.",
+    "Migration-reverse integrity (CI-hang fix): migration 0027's reverse is a TRUE INVERSE (restores is_active=False, provenance=SEED, deletes its own forward audit row) so a graph rewind of 0027->0026 leaves an untouched seed and the 0026 _unseed guard passes. Verified: execution.tests_tb1_migration (2 OK) + signal_intake.tests_migration_source_aware + broker_intelligence (830 OK combined). This fixes a real failure the broker_intelligence-only run missed: the full backend suite's migration-rewind tests reversed 0027 then 0026, and under --parallel the unpicklable guard RuntimeError HUNG the runner (the documented parallel-hang-on-failure mode)."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged and NOT deployed without a separate explicit Sponsor merge/deploy GO. No production/DB mutation, no financial action, no OAuth/credential action, no mailbox change.",
+    "This PR ENABLES CAPTURE of an authenticated Pepperstone withdrawal email; it does not by itself make the genuine 2026-11-05 email appear. Appearance additionally requires: (a) the mailbox OAuth re-consent the Sponsor performed on 2026-11-08 (done); (b) this PR merged + deployed; (c) the paused ingestion timer (guvfx-broker-ingest.timer, stopped to protect the uncrossed cursor at ~2026-10-31) resumed, so forward catch-up retains the now-allowlisted Pepperstone message; (d) the withdrawal-correlation pass. Until (b)-(d), the genuine email stays protected but uncaptured.",
+    "Three EXISTING tests changed (directly related, called out): tests_capability_guard (test renamed to assert only Pepperstone declares EXTERNAL_WITHDRAWAL + module docstring), tests_broker_profile_catalogue (same), tests_stream_b_review_regressions (the untouched-seed reverse test restores Pepperstone to pristine seed before exercising 0026's reverse, which 0027's activation otherwise and correctly blocks).",
+    "The genuine Pepperstone message is a 'request/confirmation-required' email; the surfaced lifecycle state will be CONFIRMATION_REQUIRED (or REQUESTED), never COMPLETED. No completion/timing is fabricated. If Pepperstone later sends processing/completion emails, the existing parser + correlation advance the single record truthfully.",
+    "The unrelated pre-existing 'strategies' index-rename drift reported by an all-apps makemigrations --check is present on canonical main e12a20c9 and is NOT introduced by this PR."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/migrations/0027_activate_pepperstone_profile.py (RunPython activate/retire; audited; reversible)",
+    "backend/broker_intelligence/tests_pepperstone_activation.py (10 new tests: activation wiring + fail-closed + genuine GBP 15 scenario)",
+    "backend/broker_intelligence/tests_capability_guard.py (updated invariant)",
+    "backend/broker_intelligence/tests_broker_profile_catalogue.py (updated invariant)",
+    "backend/broker_intelligence/tests_stream_b_review_regressions.py (untouched-seed reverse precondition restored)"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/migrations/0027_activate_pepperstone_profile.py": "sha256:a5b4fb6b9a16d7e54bb5b6e3b9429ada63b47d152825a3556d749031000e0937",
+    "backend/broker_intelligence/tests_pepperstone_activation.py": "sha256:3f0d105d8fb70d7a32cb303a6509f277857746238223283c53a6f0200c7c7f09",
+    "backend/broker_intelligence/tests_capability_guard.py": "sha256:400c6cc7c75039ff307321f12aeb510033b8efd3b5a6d3ce30de4e6c3bf28d7f",
+    "backend/broker_intelligence/tests_broker_profile_catalogue.py": "sha256:46af3d88fd3f86caa61b4b8a0be8f64c33c9a83139a176d6e2abf7d0c3593112",
+    "backend/broker_intelligence/tests_stream_b_review_regressions.py": "sha256:e43429274f737af094b122063a2921ccd3e6aa202136738458dadb00b8b7f0f6"
+  },
+  "reviewer": "GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003 author self-review. Narrow, reversible, audited data migration activating a pre-configured seeded profile; the pepperstone parser + lifecycle correlation + member-dashboard surfacing are already adversarially tested (tests_parsers_stream_b, tests_stream_b_scenario, tests_ingestion). New tests assert the activation wiring and that fail-closed sender authentication is preserved (look-alike / non-broker / empty / None rejected), that CERTIFIED_BROKERS stays empty (no certification), that Dominion/Vantage stay DARK, and that the genuine GBP 15 scenario renders CONFIRMATION_REQUIRED and never COMPLETED. Three directly-related existing invariant tests updated. 826 broker_intelligence tests OK; governance + secret + PII scans clean. A deeper multi-lens adversarial review was not separately run; recommended before merge given this flips a production capture capability."
+}

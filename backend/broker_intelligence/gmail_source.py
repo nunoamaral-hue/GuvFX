@@ -97,7 +97,11 @@ def parse_rfc822(raw_bytes: bytes) -> dict:
                        else (msg.get_payload() if isinstance(msg.get_payload(), str) else ""))
         except Exception:  # noqa: BLE001
             decoded = msg.get_payload() if isinstance(msg.get_payload(), str) else ""
-        body = _html_to_text(decoded) if msg.get_content_type() == "text/html" else decoded
+        if msg.get_content_type() == "text/html":
+            html_body = decoded
+            body = _html_to_text(decoded)
+        else:
+            body = decoded
     date = msg.get("Date")
     received_at = None
     if date:
@@ -115,7 +119,7 @@ def parse_rfc822(raw_bytes: bytes) -> dict:
     if message_id.startswith("<") and message_id.endswith(">"):
         message_id = message_id[1:-1].strip()
     return {"to_addresses": to_addresses, "from_address": from_address, "subject": subject,
-            "body": body, "received_at": received_at, "auth_verdict": _auth_verdict(msg),
+            "body": body, "html_body": html_body, "received_at": received_at, "auth_verdict": _auth_verdict(msg),
             "rfc822_message_id": message_id}
 
 
@@ -280,6 +284,7 @@ class GmailMailSource(MailSource):
                 from_address=m.get("from_address", "") or "",
                 subject=m.get("subject", "") or "",
                 body=m.get("body", "") or "",
+                html_body=m.get("html_body", "") or "",
                 received_at=m["received_at"],
                 provider_message_id=str(m.get("provider_message_id", "") or ""),
                 rfc822_message_id=str(m.get("rfc822_message_id", "") or ""),
