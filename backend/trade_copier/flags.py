@@ -174,6 +174,22 @@ def copier_alerts_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ALERTS_ENABLED")
 
 
+def copier_mutation_dispatch_enabled() -> bool:
+    """Gate for the DARK MODIFY/CLOSE lifecycle-mutation DISPATCH pass (ADR-0086). DEFAULT OFF, ANDed with the
+    LIVE-execute master gate (``copier_live_execute_enabled`` -> hence ``copier_execute_enabled`` -> the master
+    gate), so the whole stack must be on before a single mutation is even considered.
+
+    The dispatch pass consumes the typed ``MODIFY_POSITION`` / ``CLOSE_TRADE`` ExecutionJobs the producer already
+    creates, re-checks the governing authority at send time (gate parity), derives the per-ticket revision
+    watermark, SENDS the command through an INJECTABLE transport, and records the outcome onto the EXISTING
+    canonical records (reconciliation_status + governed alert). It is transport-agnostic and ships with an INERT
+    default transport that performs NO network call and contacts NO broker, so even with every gate on the pass
+    cannot reach a broker until a real per-tenant transport is separately provisioned (the arming step). It opens
+    NO position, creates NO new ExecutionJob, and never recovers a late entry. Separate from — never ORs past —
+    the arm gates, which remain the sole authority for any order."""
+    return copier_live_execute_enabled() and _flag("COPIER_MUTATION_DISPATCH_ENABLED")
+
+
 def copier_lifecycle_guard_enabled() -> bool:
     """Backend reflection of the BRIDGE DARK flag ``COPIER_LIFECYCLE_GUARD_ENABLED`` (ADR-0085). DEFAULT OFF,
     ANDed with the master gate.
