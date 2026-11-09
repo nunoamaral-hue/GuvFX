@@ -391,7 +391,7 @@ class GmailApiClient:
     MAX_PAGES = 20
 
     def __init__(self, mailbox, *, client_id: str, client_secret: str, http_get: Optional[HttpGet] = None,
-                 max_messages: int = 50):
+                 max_messages: int = 50, discovery_enabled: bool = False):
         self._mailbox = mailbox
         self._client_id = client_id
         self._client_secret = client_secret
@@ -401,6 +401,11 @@ class GmailApiClient:
         # INGESTION_INCIDENT_R2: count of history ids skipped because the message was DELETED from the mailbox
         # (Gmail 404 on the metadata/raw fetch) between history.list and the fetch. Surfaced to the worker summary.
         self.messages_gone = 0
+        # ADR-0089 (DARK; canary-only): when enabled, NON-allowlisted new ids whose Subject carries a withdrawal
+        # keyword are fetched raw IN MEMORY and collected here for the caller to classify into a REDACTED discovery
+        # candidate. These are NEVER added to the ingest output (never stored as evidence / never an event).
+        self._discovery_enabled = bool(discovery_enabled)
+        self.discovery_raw: List[dict] = []
 
     def _access_token(self) -> str:
         from .credential_store import load_token, store_token
@@ -532,6 +537,31 @@ class GmailApiClient:
                 return None
             raise                                # 401/403/429/5xx etc. -> NOT tolerated, fail closed (cursor held)
 
+    def _acquire_discovery(self, mid: str) -> Optional[dict]:
+        """ADR-0089 discovery (canary-only): for a NON-allowlisted new id, read From+Subject metadata (NO body);
+        ONLY when the Subject carries a withdrawal keyword fetch the raw IN MEMORY for the caller to classify into a
+        REDACTED candidate. Returns the message dict or None (allowlisted → normal path handles it; no keyword → the
+        body is NEVER fetched; 404 gone → skip). The raw is never stored by this path."""
+        from .broker_senders import is_allowlisted_broker_sender
+        from .discovery import subject_has_withdrawal_keyword
+        try:
+            meta = self._get_json(
+                f"{_GMAIL_API}/messages/{urllib.parse.quote(mid)}"
+                "?format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+                operation="messages.metadata")
+            headers = {(h.get("name") or "").lower(): (h.get("value") or "")
+                       for h in ((meta.get("payload") or {}).get("headers") or [])}
+            if is_allowlisted_broker_sender(headers.get("from", "")):
+                return None                               # allowlisted → normal path, never discovery
+            if not subject_has_withdrawal_keyword(headers.get("subject", "")):
+                return None                               # no withdrawal keyword in Subject → raw body NEVER fetched
+            return self._fetch_message(mid)               # raw in memory; the caller classifies + discards it
+        except GmailApiError as e:
+            if getattr(e, "status", None) == 404:
+                self.messages_gone += 1
+                return None
+            raise
+
     def list_new_messages(self, cursor_state: str) -> "Tuple[List[dict], str]":
         """INCREMENTAL when a cursor (historyId) is present — ``history.list`` collects the messages added since the
         cursor and advances to the response's latest historyId, so no message is skipped by the cursor jumping to 'now'.
@@ -551,11 +581,23 @@ class GmailApiClient:
         out: List[dict] = []
         if cursor:
             ids, new_cursor = self._collect_added_ids(cursor)   # always walk (advance cursor) — ids only, no raw
-            if allow:                                           # empty allowlist → acquire nothing
-                for mid in ids:
-                    m = self._acquire_if_broker(mid)            # metadata gate + raw fetch; a 404 (gone) skips, else raises
-                    if m is not None:
-                        out.append(m)
+            for mid in ids:
+                m = self._acquire_if_broker(mid) if allow else None   # metadata gate + raw fetch (allowlisted only)
+                if m is not None:
+                    out.append(m)
+                elif self._discovery_enabled:
+                    # ADR-0089 (DARK; canary-only): a NON-allowlisted, Subject-withdrawal-keyword message is fetched
+                    # raw IN MEMORY for redacted discovery — never added to ``out`` (never ingested / stored).
+                    # ISOLATION: discovery is OBSERVATION-ONLY and must NEVER abort the pass or hold the cursor. Any
+                    # discovery fetch error (429/5xx/timeout/oversize/etc.) is swallowed and the candidate skipped, so
+                    # a message we only wanted to observe can never block real broker-mail ingestion (a persistent
+                    # error would otherwise deadlock the cursor). A 404 (gone) is already handled inside _acquire_discovery.
+                    try:
+                        d = self._acquire_discovery(mid)
+                    except Exception:  # noqa: BLE001 — discovery never affects the main ingest/cursor path
+                        d = None
+                    if d is not None:
+                        self.discovery_raw.append(d)
             return out, new_cursor
         # INITIAL sync (forward-only). Empty allowlist → acquire nothing, just anchor the cursor (fail-closed).
         if not allow:

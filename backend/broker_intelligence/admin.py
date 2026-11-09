@@ -8,7 +8,8 @@ from __future__ import annotations
 from django.contrib import admin
 
 from .models import (BrokerEmailIdentity, BrokerEmailIdentityAudit, BrokerProfile, BrokerProfileAudit,
-                     GenericWithdrawalPattern, ReviewCandidateAction, WithdrawalReviewCandidate)
+                     DiscoveryCandidateAction, GenericWithdrawalPattern, ReviewCandidateAction,
+                     UnknownSenderDiscoveryCandidate, WithdrawalReviewCandidate)
 
 
 @admin.register(BrokerProfile)
@@ -122,6 +123,37 @@ class ReviewCandidateActionAdmin(admin.ModelAdmin):
     list_filter = ("action",)
     search_fields = ("actor", "evidence_sha256")
     readonly_fields = tuple(f.name for f in ReviewCandidateAction._meta.fields)
+
+    def has_add_permission(self, request):          # append-only audit — written by the API, never by hand
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# ADR-0089 — unknown-sender discovery: redacted candidates + append-only audit (read-only; staff-only).
+
+@admin.register(UnknownSenderDiscoveryCandidate)
+class UnknownSenderDiscoveryCandidateAdmin(admin.ModelAdmin):
+    list_display = ("id", "owner", "review_state", "lifecycle_class", "confidence_band", "registrable_domain",
+                    "auth_policy_passed", "detector_version", "observed_at")
+    list_filter = ("review_state", "lifecycle_class", "confidence_band", "auth_policy_passed")
+    search_fields = ("registrable_domain", "sender_domain_hash", "message_sha256")
+    readonly_fields = tuple(f.name for f in UnknownSenderDiscoveryCandidate._meta.fields)
+
+    def has_add_permission(self, request):          # written by the discovery pass, never by hand
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(DiscoveryCandidateAction)
+class DiscoveryCandidateActionAdmin(admin.ModelAdmin):
+    list_display = ("id", "candidate", "action", "actor", "reason", "created_at")
+    list_filter = ("action",)
+    search_fields = ("actor", "message_sha256")
+    readonly_fields = tuple(f.name for f in DiscoveryCandidateAction._meta.fields)
 
     def has_add_permission(self, request):          # append-only audit — written by the API, never by hand
         return False

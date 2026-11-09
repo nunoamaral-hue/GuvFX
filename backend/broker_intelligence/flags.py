@@ -263,3 +263,36 @@ def broker_intelligence_erasure_enabled() -> bool:
     ErasureRequest and a second confirmation. It grants NO execution/strategy/credential authority and never a
     financial action. Never exposed as a customer endpoint."""
     return _flag("BROKER_INTELLIGENCE_ERASURE_ENABLED")
+
+
+def broker_unknown_sender_discovery_enabled() -> bool:
+    """GA global switch for TIER-2 UNKNOWN-SENDER withdrawal DISCOVERY (ADR-0089). DEFAULT OFF — the eventual
+    whole-base enable; until armed the ONLY path is the owner canary below. While both are unset the pre-retention
+    discovery stage is NEVER invoked and no extra metadata/raw Gmail read and no new table write happens (behaviour
+    byte-identical to ADR-0088). Observation-only + redacted-only; never retains a raw non-allowlisted body, never
+    creates an event/withdrawal, never allowlists a sender or enables a pattern, never a financial action."""
+    return _flag("BROKER_UNKNOWN_SENDER_DISCOVERY_ENABLED")
+
+
+def broker_unknown_sender_discovery_allowlist() -> frozenset:
+    """Owner-scoped TIER-2 discovery CANARY allowlist (default-DENY). Lowercased emails from
+    ``BROKER_UNKNOWN_SENDER_DISCOVERY_OWNER_ALLOWLIST`` (comma-separated), settings-then-env. Plain config, never a
+    secret. Empty ⇒ no owner is in the discovery canary."""
+    raw = getattr(settings, "BROKER_UNKNOWN_SENDER_DISCOVERY_OWNER_ALLOWLIST", None)
+    if raw is None:
+        raw = os.getenv("BROKER_UNKNOWN_SENDER_DISCOVERY_OWNER_ALLOWLIST", "")
+    return frozenset(e.strip().lower() for e in str(raw).split(",") if e.strip())
+
+
+def broker_unknown_sender_discovery_enabled_for(user) -> bool:
+    """OWNER-SCOPED tier-2 discovery gate — the SOLE authorization boundary, default-DENY. Discovery of
+    non-allowlisted senders runs for a member's mail ONLY when EITHER the GA global is armed, OR their email is in
+    ``broker_unknown_sender_discovery_allowlist()`` (the controlled ``support@`` canary). Both unset ⇒ denied (DARK).
+    Fail-closed on a missing/anonymous user. Governs ONLY whether the fail-closed, redacted-only, observation-only
+    discovery stage runs; never weakens retention (raw non-allowlisted mail is still never stored), never creates an
+    event/withdrawal, never allowlists a sender or enables a pattern."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if broker_unknown_sender_discovery_enabled():
+        return True
+    return (getattr(user, "email", "") or "").strip().lower() in broker_unknown_sender_discovery_allowlist()

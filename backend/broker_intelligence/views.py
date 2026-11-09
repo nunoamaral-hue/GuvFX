@@ -18,6 +18,8 @@ from rest_framework.views import APIView
 
 from .flags import (broker_account_contact_enabled, broker_generic_detection_allowlist,
                     broker_generic_detection_enabled, broker_generic_detection_enabled_for,
+                    broker_unknown_sender_discovery_allowlist, broker_unknown_sender_discovery_enabled,
+                    broker_unknown_sender_discovery_enabled_for,
                     broker_identity_verification_enabled,
                     broker_mailbox_connect_enabled, broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
                     broker_multi_mailbox_enabled_for,
@@ -314,6 +316,107 @@ class GenericReviewCandidateActionView(APIView):
             candidate.operator_action = action
             candidate.save(update_fields=["operator_action", "updated_at"])
         return Response({"id": candidate.id, "operator_action": candidate.operator_action, "audited": True})
+
+
+def _discovery_feature_active() -> bool:
+    return bool(broker_unknown_sender_discovery_enabled() or broker_unknown_sender_discovery_allowlist())
+
+
+def _discovery_candidate_json(c) -> dict:
+    """ADR-0089 — the REDACTED discovery projection: hashes, auth verdicts, lifecycle class, confidence band, reason
+    codes, review state. NO raw subject/body, name, full email, account, reference, amount, URL or token."""
+    return {
+        "id": c.id,
+        "review_state": c.review_state,
+        "lifecycle_class": c.lifecycle_class,
+        "confidence_band": c.confidence_band,
+        "registrable_domain": c.registrable_domain,            # broker public domain, only when auth-approved
+        "sender_domain_hash": c.sender_domain_hash,
+        "auth": {"spf": c.spf, "dkim": c.dkim, "dmarc": c.dmarc, "policy_passed": c.auth_policy_passed},
+        "reason_codes": list(c.reason_codes or []),
+        "detector_version": c.detector_version,
+        "associated_broker_profile_id": c.associated_broker_profile_id,
+        "proposed_pattern_id": c.proposed_pattern_id,
+        "received_at": (c.received_at.isoformat() if c.received_at else None),
+        "observed_at": (c.observed_at.isoformat() if c.observed_at else None),
+        "created_at": (c.created_at.isoformat() if c.created_at else None),
+    }
+
+
+class DiscoveryCandidateListView(APIView):
+    """GET /api/broker-intelligence/discovery-candidates/ — the OWNER's own unknown-sender discovery candidates
+    (redacted). Read-only; owner-scoped (``owner=request.user``); DARK-gated by the owner-scoped discovery canary →
+    404 while the owner is outside it. These are NOT withdrawals/events and never enter any withdrawal statistic."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_unknown_sender_discovery_enabled_for(request.user):
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .models import UnknownSenderDiscoveryCandidate
+        base = UnknownSenderDiscoveryCandidate.objects.filter(owner=request.user)
+        rows = list(base.order_by("-id")[:200])
+        return Response({"candidates": [_discovery_candidate_json(c) for c in rows], "count": base.count()})
+
+
+class DiscoveryCandidateActionView(APIView):
+    """POST /api/broker-intelligence/discovery-candidates/<id>/action/ — a STAFF action on a discovery candidate:
+    reject · insufficient · associate (with an existing broker profile) · propose_pattern (create a DISABLED
+    GenericWithdrawalPattern) · propose_broker (record the proposal). Requires STAFF (403 otherwise); AUDITED
+    (append-only ``DiscoveryCandidateAction``); preserves the message hash. NEVER allowlists a sender, NEVER enables
+    a pattern (proposed patterns are created DISABLED; enablement is a separate audited staff act), NEVER binds a
+    broker/account automatically, NEVER creates a withdrawal/event, NEVER retroactively processes other mail. 404
+    while the feature is fully DARK."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, candidate_id):
+        if not _discovery_feature_active():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not request.user.is_staff:
+            return Response({"detail": "Staff authority required."}, status=status.HTTP_403_FORBIDDEN)
+        from django.db import transaction
+        from .models import (DiscoveryCandidateAction, GenericWithdrawalPattern, BrokerProfile,
+                             UnknownSenderDiscoveryCandidate)
+        RS = UnknownSenderDiscoveryCandidate.ReviewState
+        candidate = UnknownSenderDiscoveryCandidate.objects.filter(pk=candidate_id).first()
+        if candidate is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        action = str(request.data.get("action", "") or "").strip().upper()
+        valid = {RS.REJECTED, RS.INSUFFICIENT, RS.ASSOCIATED, RS.PROPOSED_BROKER, RS.PROPOSED_PATTERN}
+        if action not in valid:
+            return Response({"detail": "Invalid action."}, status=status.HTTP_400_BAD_REQUEST)
+        reason = str(request.data.get("reason", "") or "")[:128]
+        with transaction.atomic():
+            if action == RS.ASSOCIATED:
+                bp_id = request.data.get("broker_profile_id")
+                bp = BrokerProfile.objects.filter(pk=bp_id).first() if bp_id else None
+                if bp is None:
+                    return Response({"detail": "broker_profile_id required and must exist."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                candidate.associated_broker_profile = bp
+            elif action == RS.PROPOSED_PATTERN:
+                dom = (candidate.registrable_domain or "").strip().lower()
+                if not dom:
+                    return Response({"detail": "No authenticated domain to propose a pattern for."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                # Create a DISABLED pattern — fully inert (never matches until a separate audited staff enablement AND
+                # an active BrokerProfile allowlist the domain). This never enables detection and never allowlists.
+                # Idempotent + unique per candidate (name carries the candidate id), so a repeated action never 500s.
+                if candidate.proposed_pattern_id:
+                    pat = candidate.proposed_pattern
+                else:
+                    pat, _created = GenericWithdrawalPattern.objects.get_or_create(
+                        name=f"proposed-{dom}-c{candidate.id}"[:64], version=1,
+                        defaults=dict(broker_display_name=dom[:64], authenticated_sender_domains=[dom],
+                                      subject_indicators=[], enabled=False, reviewer=f"user:{request.user.id}"))
+                    candidate.proposed_pattern = pat
+            candidate.review_state = action
+            candidate.save(update_fields=["review_state", "associated_broker_profile", "proposed_pattern",
+                                          "updated_at"])
+            DiscoveryCandidateAction.objects.create(
+                candidate=candidate, action=action, actor=f"user:{request.user.id}", reason=reason,
+                message_sha256=candidate.message_sha256)
+        return Response({"id": candidate.id, "review_state": candidate.review_state,
+                         "proposed_pattern_id": candidate.proposed_pattern_id, "audited": True})
 
 
 def _identity_json(i) -> dict:
