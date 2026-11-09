@@ -174,6 +174,37 @@ def copier_alerts_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ALERTS_ENABLED")
 
 
+def copier_mutation_dispatch_enabled() -> bool:
+    """Gate for the DARK MODIFY/CLOSE lifecycle-mutation DISPATCH pass (ADR-0086). DEFAULT OFF, ANDed with the
+    LIVE-execute master gate (``copier_live_execute_enabled`` -> hence ``copier_execute_enabled`` -> the master
+    gate), so the whole stack must be on before a single mutation is even considered.
+
+    The dispatch pass consumes the typed ``MODIFY_POSITION`` / ``CLOSE_TRADE`` ExecutionJobs the producer already
+    creates, re-checks the governing authority at send time (gate parity), derives the per-ticket revision
+    watermark, SENDS the command through an INJECTABLE transport, and records the outcome onto the EXISTING
+    canonical records (reconciliation_status + governed alert). It is transport-agnostic and ships with an INERT
+    default transport that performs NO network call and contacts NO broker, so even with every gate on the pass
+    cannot reach a broker until a real per-tenant transport is separately provisioned (the arming step). It opens
+    NO position, creates NO new ExecutionJob, and never recovers a late entry. Separate from — never ORs past —
+    the arm gates, which remain the sole authority for any order."""
+    return copier_live_execute_enabled() and _flag("COPIER_MUTATION_DISPATCH_ENABLED")
+
+
+def copier_lifecycle_guard_enabled() -> bool:
+    """Backend reflection of the BRIDGE DARK flag ``COPIER_LIFECYCLE_GUARD_ENABLED`` (ADR-0085). DEFAULT OFF,
+    ANDed with the master gate.
+
+    The actual enforcement flag lives on the HOST bridge process (read by
+    ``scripts/mt5_copier_lifecycle_guard.guard_enabled``); this predicate lets the backend emit the typed copier
+    command to the shared partial-close worker ONLY when the guard would act, so with it OFF the authorize-send
+    response is byte-identical to the pre-ADR-0085 instruction shape. It governs NO broker contact and widens NO
+    authority: the guard only ADDS a fail-closed pre-state/revision/deadline check around a send every existing
+    gate (demo/live wall, identity pin, authorization) already permits — it never opens a position, never
+    bypasses those gates, and makes NO new order path reachable. Separate from — never ORs past — the execute/arm
+    gates, which remain the sole authority for any order."""
+    return copier_enabled() and _flag("COPIER_LIFECYCLE_GUARD_ENABLED")
+
+
 def copier_event_projection_enabled() -> bool:
     """Gate for promoting accepted fast-path ``CopierIngestedRevision`` evidence into the AUTHORITATIVE
     ``MasterEvent`` ledger (ADR-0074 Phase-4 completion). DEFAULT OFF, ANDed with the master gate.
@@ -203,6 +234,17 @@ def copier_alert_dispatch_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ALERT_DISPATCH_ENABLED")
 
 
+def copier_operator_view_enabled() -> bool:
+    """Gate for the READ-ONLY operator lifecycle/failure view (ADR-0083 Phase-3). DEFAULT OFF, ANDed with the
+    master gate.
+
+    The view is staff-only, read-only, redacted and paginated: it surfaces the per-lifecycle state + failure
+    reason + data-quality label for GuvFX operators. It performs NO retry/recover/modify/close/arm/authorization
+    action, exposes NO secret/credential/raw-login, and NEVER converts missing/unreadable data into a zero,
+    closed or successful state. When OFF the endpoint reports ``enabled:false`` and returns no rows."""
+    return copier_enabled() and _flag("COPIER_OPERATOR_VIEW_ENABLED")
+
+
 def copier_attestation_verify_enabled() -> bool:
     """Gate for the NON-LIFECYCLE host-emitter identity-ATTESTATION verification surface (ADR-0077). DEFAULT OFF,
     ANDed with the master gate.
@@ -216,6 +258,71 @@ def copier_attestation_verify_enabled() -> bool:
     contact, and is fully independent of ingestion/projection/dispatch/alert/execution. When OFF the endpoint
     returns 503 and verifies nothing."""
     return copier_enabled() and _flag("COPIER_ATTESTATION_VERIFY_ENABLED")
+
+
+# ───────────────────── LIVE lifecycle completion (ADR-0083) — per-operation DARK arms ─────────────────────
+# ADR-0057 implemented the LIVE follower OPEN only; LIVE modify / partial-close / full-close stayed fail-closed.
+# ADR-0083 completes them behind THESE additional, independent, default-OFF arms. Each is ANDed with the whole
+# LIVE stack (``copier_live_execute_enabled`` → ``copier_execute_enabled`` → ``copier_enabled``), so a LIVE
+# lifecycle order is reachable ONLY when the master gate, the execute gate, the LIVE arm AND the specific
+# per-operation arm are all on — never by one flag, and never for a pair without a complete
+# ``CopierLiveAuthorization`` carrying the matching per-operation authority (see ``trade_copier.live_execution``).
+# Arming a per-op flag never ORs past the kill switch, the authorization window, identity pins or the runtime
+# ``MT5_ALLOW_LIVE`` boundary. None of these can OPEN or increase exposure.
+
+
+def copier_live_modify_enabled() -> bool:
+    """DARK arm for LIVE follower SL/TP MODIFY propagation (ADR-0083). DEFAULT OFF.
+
+    ANDed with ``copier_live_execute_enabled`` (hence the whole master stack). A MODIFY only ever changes a
+    LINKED follower position's protection (SL/TP); it can never open or increase exposure, and a stop weaken /
+    removal stays fail-closed independently (``execution_producer._sl_weakening_reason``). Requires the
+    authorization's ``modify_authority`` as well — a separate, auditable grant from the one-shot entry
+    authority."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_MODIFY_ENABLED")
+
+
+def copier_live_partial_close_enabled() -> bool:
+    """DARK arm for LIVE follower PARTIAL-CLOSE propagation (ADR-0083). DEFAULT OFF.
+
+    ANDed with ``copier_live_execute_enabled``. A partial close only ever REDUCES a LINKED follower position's
+    volume (never increases/reopens); the reduction fraction is derived from the master's confirmed
+    before/after volume and normalised to broker min-volume/step, fail-closed on any ambiguity. Requires the
+    authorization's ``partial_close_authority``."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_PARTIAL_CLOSE_ENABLED")
+
+
+def copier_live_full_close_enabled() -> bool:
+    """DARK arm for LIVE follower FULL-CLOSE propagation (ADR-0083). DEFAULT OFF.
+
+    ANDed with ``copier_live_execute_enabled``. A full close only ever CLOSES the one bound follower position
+    (never reopens). Requires the authorization's ``full_close_authority``."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_FULL_CLOSE_ENABLED")
+
+
+def copier_live_close_only_after_expiry_enabled() -> bool:
+    """DARK policy arm for CLOSE-ONLY containment AFTER the authorization entry window expires (ADR-0083). DEFAULT OFF.
+
+    The entry authority always lapses at ``expires_at`` (no new entry may ever follow — ADR-0057). This
+    SEPARATE, explicit, Sponsor-set policy decides whether a SAFETY-REDUCING close/partial-close
+    (``full_close``/``partial_close`` only) may still be propagated to an ALREADY-BOUND follower position after
+    that window, so a master close is not stranded. It can only REDUCE or close existing exposure — never
+    create, reopen or increase it, and never a MODIFY. OFF (the default) means a post-expiry close is NOT
+    auto-propagated and is surfaced for manual containment. Still ANDed with the matching per-op arm +
+    authority."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_CLOSE_ONLY_AFTER_EXPIRY_ENABLED")
+
+
+def copier_live_contain_on_kill_switch_enabled() -> bool:
+    """DARK policy arm for SAFETY-REDUCING close-only containment WHILE a kill switch is engaged (ADR-0083). DEFAULT OFF.
+
+    The kill switch ALWAYS blocks every new entry and every MODIFY. This explicit, documented, default-OFF
+    policy decides the one deliberately-chosen exception: whether an ALREADY-BOUND follower position may still
+    be CLOSED / PARTIALLY CLOSED (exposure strictly reduced) while the switch is engaged — the conservative
+    choice is OFF (freeze everything; the operator closes manually), but an operator may opt into
+    close-to-contain. It can never open, increase or reopen exposure. Chosen rule documented in ADR-0083 and
+    asserted by tests."""
+    return copier_live_execute_enabled() and _flag("COPIER_LIVE_CONTAIN_ON_KILL_SWITCH_ENABLED")
 
 
 def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:

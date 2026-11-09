@@ -79,14 +79,18 @@ def allow_live_for_account(account) -> bool:
     per account; the bridge's identity pin + order-time gate remain the final authority."""
     try:
         from trading.account_policy import is_live_environment
-        from execution.live_authz import copier_live_execution_authorized, live_execution_permitted
+        from execution.live_authz import (copier_live_execution_authorized, live_execution_permitted,
+                                           copier_live_lifecycle_authorized)
         if not is_live_environment(account):
             return False
-        # Either the strategy §3 authorization OR the ADR-0057 per-pair copier authorization independently
-        # authorizes this LIVE runtime. The strategy path is unchanged; the copier path is additive and equally
-        # fail-closed. Whichever set the flag, the order-time identity pin + evaluate_binding remain the final
-        # authority, and the copier itself only ever creates a LIVE job after its full per-pair admission.
-        return bool(live_execution_permitted(account) or copier_live_execution_authorized(account))
+        # Either the strategy §3 authorization OR the ADR-0057 per-pair copier ENTRY authorization OR the
+        # ADR-0083 per-pair copier LIFECYCLE authorization (managing an already-bound position after the entry
+        # allowance is consumed) independently authorizes this LIVE runtime. The strategy path is unchanged; the
+        # two copier paths are additive, DARK (the lifecycle one returns False with every per-op arm OFF) and
+        # equally fail-closed. Whichever set the flag, the order-time identity pin + evaluate_binding remain the
+        # final authority, and the copier itself only ever creates a LIVE job after its full per-op admission.
+        return bool(live_execution_permitted(account) or copier_live_execution_authorized(account)
+                    or copier_live_lifecycle_authorized(account))
     except Exception:  # noqa: BLE001 — fail closed
         return False
 

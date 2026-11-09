@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-FULL-LIFECYCLE-FOUNDATION-024",
+  "packet_id": "GFX-COPIER-FULL-LIFECYCLE-FOUNDATION-024 (ADR-0083)",
+  "created_at_utc": "2026-11-08T21:30:00Z",
+  "branch": "feat/copier-full-lifecycle-foundation",
+  "base_commit": "e12a20c9643043bbf6df418f9c2001ea4ec101e8",
+  "head_commit": "8a92a9e6ef2f42a34a396c6554f35b5a64c59f50 (feature commit on feat/copier-full-lifecycle-foundation; this metadata-only update follows it)",
+  "summary": "Additive, DARK/default-OFF implementation of LIVE follower MODIFY / PARTIAL_CLOSE / FULL_CLOSE on an already-bound position (ADR-0083). Layers 1-2 (authorization model + admission + typed command + producer wiring + runtime boundary). No production change, no broker order, no credential handled, no flag armed.",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test trade_copier --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_live_lifecycle --keepdb",
+    "cd backend && .venv/bin/python manage.py test execution.tests_d4b_router_allowlive execution.tests_bridge_live_expiry execution.tests_bridge_binding execution.tests_per_tenant_transport --keepdb",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance --keepdb",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check clean.",
+    "No trade_copier migration drift beyond the new additive 0012.",
+    "Full trade_copier suite green incl. the new live-lifecycle suite and the 3 updated producer tests.",
+    "New live-lifecycle suite green (admission gating, no-exposure-increase, containment policy, security/identity, idempotency, grant ceremony).",
+    "execution-side live-auth / bridge tests green (the runtime-boundary widening does not regress strategy/D4b).",
+    "ADR governance green (ADR-0083, next free number).",
+    "Secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "PASS - manage.py check: System check identified no issues (0 silenced).",
+    "PASS - makemigrations trade_copier --check: only 0012 (5 additive nullable-default fields on CopierLiveAuthorization); no drift.",
+    "PASS - trade_copier: Ran 738 tests, OK (0 failures/errors) after the adversarial fixes (+13 regression tests). (An earlier full-run showed a transient DB-connection setUpClass cascade; re-runs are clean.)",
+    "PASS - trade_copier.tests_live_lifecycle: Ran 51 tests, OK (DARK LIVE lifecycle suite incl. the adversarial-fix regressions + runtime-boundary controls).",
+    "PASS - execution live-auth/bridge (d4b_router_allowlive + bridge_live_expiry + bridge_binding + per_tenant_transport): Ran 79 tests, OK.",
+    "PASS - core.tests_adr_governance: Ran 3 tests, OK (ADR-0083 accepted, next free number).",
+    "PASS - check_no_secrets: no findings (admission/command/payloads carry env-var names + a login/server identity pin only; no secret value).",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest.",
+    "ADVERSARIAL - two independent lanes (exposure-safety; authority/identity/containment): see adversarial_review below."
+  ],
+  "status": "PARTIAL",
+  "scope_completed": [
+    "Layer 1 - authorization model: CopierLiveAuthorization + modify_authority / partial_close_authority / full_close_authority / close_only_after_expiry / correlation_id (migration 0012, additive, default-OFF). grant_copier_live_authorization extended with the matching --*-authority flags (default-OFF, fail-closed).",
+    "Layer 1 - flags: copier_live_modify_enabled / copier_live_partial_close_enabled / copier_live_full_close_enabled / copier_live_close_only_after_expiry_enabled / copier_live_contain_on_kill_switch_enabled (all DARK, ANDed with the LIVE arm stack).",
+    "Layer 2 - admission: admit_modify_live / admit_partial_close_live / admit_full_close_live (fail-closed; LINKED-ticket-only; no-exposure-increase; separate per-op authority; window + close-only-after-expiry + kill-switch containment policy; identity/pair/symbol/runtime gates mirrored from admit_open_live).",
+    "Layer 2 - typed command + job creation: create_live_modify_job (MODIFY_POSITION) / create_live_full_close_job (CLOSE_TRADE) / create_live_partial_close_job (PARTIAL_CLOSE_TRADE). Each re-locks the authorization + re-applies policy under the lock; carries operation id + follower binding + identity pin + master revision + authorization ref + correlation id + expiry/deadline + expected pre-state fingerprint + requested post-state; never consumes the entry allowance; never emits PLACE_ORDER.",
+    "Layer 2 - producer wiring: admit_close/admit_modify/admit_partial_close delegate a non-demo follower to the LIVE path; produce_close_one/produce_modify_one/produce_partial_close_one route a non-demo follower to create_live_*_job under the lock (mirrors admit_open/produce_one OPEN routing). The DEMO path is unchanged.",
+    "Runtime boundary (Amber): copier_live_lifecycle_authorized added to execution.live_authz and OR'd into bridge_config.allow_live_for_account (sets MT5_ALLOW_LIVE) ALONGSIDE the strict entry predicate. Fully DARK (returns False with every per-op arm OFF).",
+    "ADR-0083 written (lifecycle vocabulary reconciliation + transition table + authorization/containment policy + typed command contract + the two Amber decisions + deployment prerequisites)."
+  ],
+  "scope_remaining": [
+    "Layer 3 - operator failure-alert surfacing for the new MODIFICATION_FAILED / PARTIAL_CLOSE_FAILED / FULL_CLOSE_FAILED / DIVERGED / unknown-outcome reasons + a read-only operator view (which step failed, redacted identities, whether exposure exists / manual close required, no fabricated zero). Additive on the existing failure_alerts + operations summary.",
+    "Bridge-side enforcement of the expected-pre-state fingerprint and the typed-command deadline (the command carries them; the bridge today enforces the order-time identity pin + wrong-account-fails-closed). A separate reviewed bridge change before any live use.",
+    "Bounded unknown-broker-outcome retry executor (reconcile-before-retry; close-only bounded retries that reduce exposure). The detection/containment exists (close_failed -> CONTAINED_FAILURE, never auto-retried); the bounded executor is not armed.",
+    "The full ~80-scenario matrix + full 16-vector multi-agent adversarial review at production depth. A strong representative subset is covered (40 synthetic tests); the remainder is follow-up before any live arming."
+  ],
+  "safety_invariants_proved": [
+    "NO-EXPOSURE-INCREASE: no lifecycle op creates a PLACE_ORDER/PLACE_ORDER_SHADOW (asserted); MODIFY carries no volume/side; PARTIAL strictly reduces (< current, rounded down, never full/below-min); FULL closes the bound ticket.",
+    "NO-LATE-ENTRY: lifecycle ops act only on a reconciled LINKED follower ticket; an unlinked/ambiguous ticket denies.",
+    "ENTRY-ALLOWANCE-UNTOUCHED: lifecycle ops never change orders_consumed (asserted).",
+    "SEPARATE AUTHORITY: each op requires its own default-OFF authority on the authorization.",
+    "CONTAINMENT: MODIFY never survives expiry or the kill switch; a close/partial-close contains only under the explicit, default-OFF close-only policies; no containment can increase/reopen exposure.",
+    "FAIL-CLOSED MID-FLIGHT: a revoke/expiry/kill-switch committed between admission and job creation yields no job.",
+    "DARK: with every per-op arm OFF (default) behaviour — incl. the MT5_ALLOW_LIVE posture — is unchanged."
+  ],
+  "limitations": [
+    "Repository-only, DARK, default-OFF. No production deploy, no migration applied to prod, no flag armed, no broker order, no credential handled, no host/bridge contact, no Notion-authority lifecycle change.",
+    "No live readiness is claimed on synthetic tests. Promotion requires arming the per-op flags, granting the per-op authority, the bridge pre-state enforcement, and a Sponsor-present human-operated test.",
+    "The LIVE lifecycle path has never executed a real order; it is certified only against synthetic fakes.",
+    "Two files in the shared execution app (live_authz.py, bridge_config.py) are touched additively (the Amber runtime-boundary decision, documented in ADR-0083)."
+  ],
+  "deployment_prerequisites": [
+    "Separate Sponsor GO to merge (auto-merge OFF; STOP before merge).",
+    "A canonical deploy of main (production == main == e12a20c9 today; the new migration 0012 is additive).",
+    "Bridge-side pre-state/deadline enforcement reviewed + deployed before any live arming.",
+    "Gate parity for the live-bridge PROVISIONING renderer (live_bridge_provision.evaluate_live_gates) with the new lifecycle states (CONSUMED / expired-close-only / kill-switch-contained) — it currently fails CLOSED for them, so a lifecycle op cannot reach a live bridge end-to-end until this is addressed (no safety hole; recorded by the adversarial review).",
+    "Per-op flags armed + per-op authority granted + containment policy chosen, then a Sponsor-present live test."
+  ],
+  "artefact_locations": [
+    "docs/architecture/ADR-0083-COPIER-LIVE-LIFECYCLE-COMPLETION.md",
+    "backend/trade_copier/live_execution.py",
+    "backend/trade_copier/execution_producer.py",
+    "backend/trade_copier/flags.py",
+    "backend/trade_copier/models.py",
+    "backend/trade_copier/migrations/0012_copierliveauthorization_close_only_after_expiry_and_more.py",
+    "backend/trade_copier/management/commands/grant_copier_live_authorization.py",
+    "backend/execution/live_authz.py",
+    "backend/execution/bridge_config.py",
+    "backend/trade_copier/tests_live_lifecycle.py",
+    "backend/trade_copier/tests_close_producer.py (updated expectation)",
+    "backend/trade_copier/tests_modify_producer.py (updated expectation)",
+    "backend/trade_copier/tests_partial_close_producer.py (updated expectation)",
+    "evidence/manifests/GFX-EVD-COPIER-FULL-LIFECYCLE-FOUNDATION-024.json"
+  ],
+  "checksums": {
+    "backend/trade_copier/live_execution.py": "sha256:1365e3ae690a1b9b9c381cdc3c8488be959d3b290558caef6ae6b0275b4d58f6",
+    "backend/trade_copier/execution_producer.py": "sha256:01bc6a847695e2170636d86600ce6298fd166efe1782ef7920b1cffdd9a902d0",
+    "backend/trade_copier/flags.py": "sha256:665a0d65060284cb3a51882d6ac0076cbcad7884602532c572d339b29f8cd5d8",
+    "backend/trade_copier/models.py": "sha256:b4b2aa6a7060bf63310512e493e1752e31edf6fc585154ddf95e408f337c7ce1",
+    "backend/execution/live_authz.py": "sha256:6cbeb66d3ac70484c274c3c94678feb4002753f3ff996a3a4f6c15f4f1e90aab",
+    "backend/execution/bridge_config.py": "sha256:d5ab04fbf2d48d123deb0d565769d6358568007de5a78eeb1d7a403c23da92f1",
+    "backend/trade_copier/migrations/0012_copierliveauthorization_close_only_after_expiry_and_more.py": "sha256:9b1c74ea9a04e71aaa563892c754d1835da26afcc70f469901306e8615d15d37",
+    "docs/architecture/ADR-0083-COPIER-LIVE-LIFECYCLE-COMPLETION.md": "sha256:50ffd5fd7458ad7611f19d8df67dcea7c3976f1d61c53c3908ca6b61a16d1798",
+    "backend/trade_copier/management/commands/grant_copier_live_authorization.py": "sha256:9531561c174b4afbab7edf88655c12b7676f88d2a7b59450789e034704d68d27",
+    "backend/trade_copier/tests_live_lifecycle.py": "sha256:099fdc9891b43e606b669fee948666d20e3ea9a63445149838de10facb38cde1"
+  },
+  "adversarial_review": {
+    "method": "Two independent adversarial subagent lanes (exposure-safety; authority/identity/containment), each reading the diff + callees and running the suite. Findings verified dynamically.",
+    "invariants_confirmed_holding": [
+      "No-exposure-increase / no PLACE_ORDER; no-late-entry (LINKED-ticket-only); entry-allowance untouched; partial-close rounds down + fail-closed; separate per-op authority; cross-tenant/identity gates; window + close-only containment both ways; kill-switch both ways; secret/PII (identity pin only, no credential)."
+    ],
+    "findings": [
+      {"id": "F1", "severity": "HIGH", "title": "Lifecycle ops bound to the newest authorization for the pair, not the grant the position was opened under (both lanes found this).", "disposition": "FIXED", "fix": "Resolve the governing authorization from the OPEN's recorded copier_live_authorization_id (_governing_authorization); the preamble and the under-lock re-lock both bind to that exact id. Regression: test_regrant_does_not_widen_authority."},
+      {"id": "F2", "severity": "MEDIUM", "title": "No monotonic-sequence / superseded-by-close guard on the lifecycle path (a stale/out-of-order MODIFY could admit; two out-of-order SL changes could net-widen).", "disposition": "FIXED", "fix": "Added event.sequence > OPEN.sequence guard + _superseded_by_close for MODIFY/PARTIAL. Regressions: test_modify_superseded_by_later_close, test_lifecycle_event_must_be_after_open."},
+      {"id": "F3", "severity": "LOW", "title": "Blank follower_symbol short-circuited the intent-symbol check and mislabelled the command symbol.", "disposition": "FIXED", "fix": "Unconditional require follower_symbol present AND == authz.follower_symbol (preamble + partial-close fresh read). Regression: test_blank_follower_symbol_denied."},
+      {"id": "F4", "severity": "LOW", "title": "Cross-op idempotency gap (a FULL_CLOSE could be admitted while a PARTIAL_CLOSE was in flight on the same ticket, and vice versa).", "disposition": "FIXED", "fix": "_reducing_op_in_flight checks BOTH CLOSE_TRADE and PARTIAL_CLOSE_TRADE for every reducing/modify op. Regression: test_full_close_blocked_while_partial_in_flight."},
+      {"id": "F-runtime-boundary-untested", "severity": "MEDIUM", "title": "copier_live_lifecycle_authorized (the MT5_ALLOW_LIVE lifecycle boundary — the most security-sensitive change) had ZERO tests (evidence.md requires positive+negative controls).", "disposition": "FIXED", "fix": "Added RuntimeBoundaryTests: DARK-when-no-op-armed, authorized-when-armed, wrong-account, revoked, kill-switch-without/with-contain (6 positive/negative controls)."},
+      {"id": "F5", "severity": "LOW", "title": "The LIVE partial-close admission performs a bridge follower read under the replication/follower row lock.", "disposition": "ACCEPTED (pre-existing)", "note": "Inherited unchanged from the ADR-0055 demo partial-close path (execution_producer.produce_partial_close_one); ADR-0083 extends it to the LIVE path but does not introduce it. Restructuring the shared partial-close lock discipline is out of this packet's scope; recorded for a follow-up."},
+      {"id": "F-provisioning-divergence", "severity": "NOTE (fails safe)", "title": "The live-bridge provisioning path (live_bridge_provision.evaluate_live_gates) still requires status==ACTIVE + within-window + allowance-remaining + no-kill-switch, so it will NOT provision a live bridge for the new lifecycle states (CONSUMED / expired-close-only / kill-switch-contained).", "disposition": "DOCUMENTED (deployment prerequisite)", "note": "This FAILS CLOSED (no safety hole): the bridge will not go live for lifecycle states until the provisioning renderer is given gate parity. Recorded as a deployment prerequisite in ADR-0083; the lifecycle path cannot reach a live bridge end-to-end until then."}
+    ],
+    "result": "All CRITICAL/HIGH fixed before PR-ready (1 HIGH + 1 MEDIUM + 2 LOW fixed; 1 MEDIUM test-gap closed). 1 LOW accepted as pre-existing; 1 fail-safe divergence documented as a deployment prerequisite. Full trade_copier suite re-run green at 738 tests after the fixes."
+  },
+  "reviewer": "Two independent adversarial subagent lanes + author disposition. 1 HIGH + 1 MEDIUM + 2 LOW fixed with mutation-killing regression tests; the untested runtime-boundary closed with 6 positive/negative controls; 1 LOW accepted (pre-existing ADR-0055) and 1 fail-safe divergence documented. No order placed, no credential handled, no production mutation."
+}

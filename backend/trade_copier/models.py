@@ -596,6 +596,23 @@ class CopierLiveAuthorization(models.Model):
     max_orders = models.PositiveIntegerField(default=1, help_text="Bounded order allowance (1 = one test order).")
     orders_consumed = models.PositiveIntegerField(default=0)
 
+    # ─── ADR-0083: separately-auditable lifecycle authority (distinct from the one-shot ENTRY allowance) ───
+    # The ENTRY authority is the bounded, consume-once ``max_orders`` above. These three are the SEPARATE,
+    # explicit grants that let an already-bound follower position be managed; each DEFAULTS FALSE (a legacy /
+    # ADR-0057 authorization confers NO lifecycle authority — fail-closed) and is recorded on the grant for
+    # audit. They never confer entry authority and can never OPEN or INCREASE exposure. ``modify_authority``
+    # only changes SL/TP; the two close authorities only reduce/close exposure.
+    modify_authority = models.BooleanField(
+        default=False, help_text="Permit LIVE SL/TP MODIFY of the bound follower position (no exposure change).")
+    partial_close_authority = models.BooleanField(
+        default=False, help_text="Permit LIVE PARTIAL CLOSE of the bound follower position (reduce only).")
+    full_close_authority = models.BooleanField(
+        default=False, help_text="Permit LIVE FULL CLOSE of the bound follower position (close only).")
+    close_only_after_expiry = models.BooleanField(
+        default=False,
+        help_text="Policy: after the entry window expires, still propagate a SAFETY-REDUCING close/partial "
+                  "close to the bound position (never a new entry, never a modify, never an increase).")
+
     valid_from = models.DateTimeField()
     expires_at = models.DateTimeField()
     # Future-event-only watermark (ADR-0057 §6): an OPEN qualifies ONLY if its MasterEvent.sequence is
@@ -611,6 +628,9 @@ class CopierLiveAuthorization(models.Model):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
                                     blank=True, related_name="+")
     reason = models.CharField(max_length=256)
+    # Stable correlation id threaded through every lifecycle decision, command, job and audit row for this
+    # authorization (ADR-0083). Plain opaque token, never a secret. Blank on legacy rows.
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
     revoked_at = models.DateTimeField(null=True, blank=True)
     revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
                                     blank=True, related_name="+")

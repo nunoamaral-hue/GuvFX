@@ -86,7 +86,10 @@ class AdmitCloseTests(CloseFixture):
     def test_live_follower_rejected(self):
         f = self._follower(number="2000077", live=True)
         f, rep = self._ready_close(follower=f)
-        self.assertEqual(admit_close(rep)[2], "follower_not_demo")
+        # ADR-0083: a LIVE follower now routes to the DARK live full-close admission. With the live arms OFF
+        # (the default) it is rejected fail-closed as live_copier_arm_disabled — no demo path, no order.
+        self.assertEqual(admit_close(rep)[2], "live_copier_arm_disabled")
+        self.assertEqual(ExecutionJob.objects.count(), 0)
 
 
 class ProduceCloseTests(CloseFixture):

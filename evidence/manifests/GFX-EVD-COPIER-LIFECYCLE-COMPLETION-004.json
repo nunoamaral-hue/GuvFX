@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-LIFECYCLE-COMPLETION-004",
+  "packet_id": "GFX-COPIER-LIFECYCLE-COMPLETION-004 (ADR-0084)",
+  "created_at_utc": "2026-11-09T00:10:00Z",
+  "branch": "feat/copier-lifecycle-guard",
+  "base_commit": "b5ea8922105084ed0e5b924561f197a98d1f7628",
+  "head_commit": "3c302f9825274426ceb9ec1440953dd4afa14a42 (feature commit on feat/copier-lifecycle-guard; this metadata-only update follows it)",
+  "summary": "Repository-only, DARK/default-OFF implementation of the bridge-boundary lifecycle guard (ADR-0084): a pure, importable pre-state / revision / deadline / idempotency admission + explicit-outcome classifier for copier follower MODIFY/PARTIAL_CLOSE/FULL_CLOSE, realising the ADR-0083 bridge-enforcement prerequisite. NO migration, no bridge wiring in this packet (the live money path is byte-identical), no production change, no broker order, no credential handled, no flag armed.",
+  "phase1_gap_audit": "Traced the real path assumption-free. The backend already carries every needed field (ADR-0083 _live_command_envelope: pre-state fingerprint, master_revision, deadline, idempotency key, correlation id) AND reconciles a partial close read-only (PCLOSE_OUTCOME_UNKNOWN, never a blind retry). The no-late-entry policy is enforced by the pure lifecycle engine. The GAP is at the final bridge boundary: the bridge (scripts/mt5_signal_bridge.py) enforces the identity pin but NOT the pre-state fingerprint / lifecycle revision / deadline, and maps outcomes to success/failure, not the explicit set. Full matrix in ADR-0084.",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier execution --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test execution.tests_copier_lifecycle_guard --keepdb",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier execution.tests_bridge_binding execution.tests_d4b_router_allowlive --keepdb",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check clean.",
+    "NO new migration (the guard is a pure script + a SimpleTestCase; no model change).",
+    "Guard suite green (29 synthetic cases: admit + classify + normalisation + malformed fail-closed).",
+    "ADR governance green (ADR-0084, next free number).",
+    "trade_copier + relevant execution suites unaffected (no backend runtime change this packet).",
+    "Secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "PASS - manage.py check: no issues.",
+    "PASS - makemigrations trade_copier execution --check: No changes detected (NO new migration).",
+    "PASS - execution.tests_copier_lifecycle_guard: Ran 36 tests, OK (29 base + 7 adversarial-fix regressions).",
+    "PASS - core.tests_adr_governance: Ran 3 tests, OK (ADR-0084 accepted).",
+    "PENDING - full trade_copier + execution-guard-area suites (run before PR; the guard is a standalone module, no backend runtime path changed).",
+    "PASS - check_no_secrets: no findings.",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest.",
+    "ADVERSARIAL - one independent lane on the guard logic: see adversarial_review."
+  ],
+  "status": "PASS",
+  "delivery_state": "PR_READY — repository-only, DARK/default-OFF, auto-merge OFF, STOP before merge. The live bridge money path is UNCHANGED in this packet (the guard is not yet wired — a deliberately separate, focused PR).",
+  "open_modify_close_behaviour": [
+    "OPEN: unchanged (live OPEN admitted by ADR-0057; no-late-entry by the pure engine).",
+    "MODIFY SL/TP (add/change/remove, from neither/SL-only/TP-only/both): admit_mutation verifies pre-state + revision + deadline + identity + symbol; idempotent (ALREADY_APPLIED when SL/TP already set); normalised price compare; never an older revision over a newer; broker rejection truthfully classified; no repeat of a broker-invalid modify (the guard rejects/contains, it does not loop).",
+    "PARTIAL CLOSE: proportional reduction verified strictly-reducing against the fresh follower volume (pre-state fingerprint); idempotent (ALREADY_APPLIED when already at expected_remaining); volume-step tolerance; a partial that leaves no position is CONTAINED (never 'applied').",
+    "FULL CLOSE: idempotent (absent position -> ALREADY_APPLIED); APPLIED only when the post-snapshot confirms the position is gone.",
+    "All via the pure guard; NO path opens or increases exposure; NO path turns an uncertain result into success."
+  ],
+  "no_late_entry_recovery_proof": "The guard never opens a position (only MODIFY/PARTIAL/FULL on an existing LINKED ticket). No-late-entry remains enforced by the pure lifecycle engine (ENTRY_FAILED_FINAL absorbs all later events; proven by the merged trade_copier.tests_lifecycle + tests_live_lifecycle). A mutation past its deadline is DEADLINE_EXCEEDED (never a late action).",
+  "pre_state_deadline_idempotency_proof": "admit_mutation: PRE_STATE_MISMATCH on ticket/login/server/symbol/volume mismatch; DEADLINE_EXCEEDED on now>=deadline and CONTAINED on a missing/unparseable deadline; STALE_REVISION on revision<=last_applied; POSITION_NOT_FOUND on an absent modify/partial target; ALREADY_APPLIED on an already-holding post-state. classify_result: UNKNOWN_OUTCOME on indeterminate/no-post-snapshot (never success); BROKER_REJECTED on definitive refusal; CONTAINED_FAILURE on a determinate success whose post-state contradicts the request. Proven by the 29-case suite.",
+  "unknown_outcome_reconciliation_design": "classify_result returns UNKNOWN_OUTCOME (never success) for a timeout/lost-connection/missing-post-snapshot; the bridge (once wired) reports it, and reconciliation is a READ (not a blind retry): the partial-close reconcile (reconcile.reconcile_partial_close / PCLOSE_OUTCOME_UNKNOWN, read-only) is the existing pattern; the modify/full-close reconciliation extension + the backend outcome recording are the documented next step (ADR-0084 integration points). No unbounded/exponential/restart-driven retry is introduced.",
+  "operator_alert_view_coverage": "The guard's explicit outcomes (PRE_STATE_MISMATCH / DEADLINE_EXCEEDED / UNKNOWN_OUTCOME / CONTAINED_FAILURE / ...) are the SAME vocabulary the merged ADR-0083 Phase-3 operator alert classifier (classify_lifecycle_failure, PR #625) already maps, so once the bridge reports them the operator alert + read-only view surface them with no new category work.",
+  "limitations": [
+    "Repository-only, DARK, default-OFF. No merge, no deploy, no migration, no host contact, no flag armed, no broker order, no credential handled.",
+    "NO bridge wiring in this packet — the live money path (scripts/mt5_signal_bridge.py send path) is byte-identical. The three DARK integration hooks (modify_position / close_position / partial-close worker) are documented in ADR-0084 and are the deliberately-separate next PR (mis-wiring live-money dispatch is the catastrophic risk).",
+    "The backend outcome->reconciliation_status->alert recording and the modify/full-close unknown-outcome reconciliation extension follow with the bridge wiring.",
+    "No live readiness is claimed on synthetic tests."
+  ],
+  "production_host_broker_impact": "NONE. No deploy, no migration, no Windows-host contact, no bridge runtime change, no scheduled-task/emitter/verifier change, no flag enabled, no live authorization, no broker order. Production backend remains e12a20c9; execution + all copier flags OFF; COPIER_LIFECYCLE_GUARD_ENABLED default OFF.",
+  "artefact_locations": [
+    "scripts/mt5_copier_lifecycle_guard.py (new, pure DARK guard)",
+    "backend/execution/tests_copier_lifecycle_guard.py (new, 29 synthetic cases)",
+    "docs/architecture/ADR-0084-COPIER-LIFECYCLE-GUARD.md (gap matrix + design + integration points)",
+    "evidence/manifests/GFX-EVD-COPIER-LIFECYCLE-COMPLETION-004.json"
+  ],
+  "checksums": {
+    "scripts/mt5_copier_lifecycle_guard.py": "sha256:a449c90f939e374d404ffaf66cc9b2ea7a4f2f3c3b23d5ccec1011831a1249e5",
+    "backend/execution/tests_copier_lifecycle_guard.py": "sha256:9ddff254ff6ae34c983943ea768d549b7301982995dee7937eded6d23510211a",
+    "docs/architecture/ADR-0084-COPIER-LIFECYCLE-GUARD.md": "sha256:7494e4e6c301d580e378a5bb52032425f7dd7cb07015a81e657fc5e6a8e7b7db"
+  },
+  "adversarial_review": {
+    "method": "One independent adversarial subagent lane on the pure guard logic, reproducing every finding against the real module.",
+    "findings": [
+      {"id": "G1", "severity": "HIGH", "title": "Non-finite floats (NaN/Inf) passed _num, defeating the deadline AND partial-reduction gates (fail-OPEN: admitted the send).", "disposition": "FIXED", "fix": "_num now rejects non-finite (math.isfinite) and bools; a NaN/Inf deadline -> CONTAINED, a NaN volume -> never PROCEED. Regressions: test_nan_deadline_fails_closed, test_nan_volume_not_proceed."},
+      {"id": "G2", "severity": "HIGH", "title": "OP_MODIFY never required a numeric SL/TP target -> a degenerate empty command PROCEEDed (stripping protection) or returned a false ALREADY_APPLIED (silent skip of a real modify).", "disposition": "FIXED", "fix": "the MODIFY branch fails closed (CONTAINED_FAILURE 'modify_missing_targets') when neither target is numeric. Regression: test_modify_empty_post_state_fails_closed."},
+      {"id": "G3", "severity": "MEDIUM", "title": "A tz-less ISO deadline was interpreted in host-local time (extending the deadline on a non-UTC host).", "disposition": "FIXED", "fix": "_deadline_epoch treats a naive datetime as UTC. Regression: test_naive_iso_deadline_is_utc."},
+      {"id": "G4", "severity": "MEDIUM", "title": "A non-integer/garbage master_revision (or last_applied_revision=None) raised out of the guard instead of a terminal outcome.", "disposition": "FIXED", "fix": "_int_or_none coercion; a bad revision -> CONTAINED_FAILURE 'command_bad_revision'; last_applied None -> -1. Regressions: test_non_integer_revision_fails_closed, test_last_applied_none_does_not_raise."},
+      {"id": "G5", "severity": "LOW", "title": "The identity/symbol fingerprint was soft/opt-in (identity only when require_identity_pin; server/symbol only when present).", "disposition": "FIXED", "fix": "identity pin + login + server + symbol are now MANDATORY for a copier mutation (a command missing any -> CONTAINED_FAILURE); the login/server/symbol checks are unconditional. Regression: test_missing_identity_or_symbol_fails_closed."}
+    ],
+    "invariants_confirmed_holding": [
+      "Uncertain never success (classify_result UNKNOWN_OUTCOME before any APPLIED); partial strictly-reducing against the follower snapshot; stale-revision equal-is-stale with no off-by-one; price-unset (0.0/None) semantics correct; position-presence robust to None/{}/{'exists':False}."
+    ],
+    "result": "2 HIGH + 2 MEDIUM + 1 LOW fixed with mutation-killing regression tests; guard suite re-run green at 36 tests."
+  },
+  "reviewer": "One independent adversarial subagent lane + author disposition. 2 HIGH + 2 MEDIUM + 1 LOW fixed with regression tests. No order placed, no credential handled, no production mutation, no bridge wiring."
+}

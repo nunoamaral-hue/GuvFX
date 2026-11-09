@@ -2609,6 +2609,218 @@ def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str
 
 
 # =============================================================================
+# ADR-0085 — DARK copier lifecycle-guard bridge wiring (realises ADR-0084)
+# =============================================================================
+# The guard (scripts/mt5_copier_lifecycle_guard.py) is a PURE pre-state / revision / deadline / idempotency
+# admission + explicit-outcome classifier. These thin wrappers are the ONLY place the bridge consults it, and
+# ONLY when COPIER_LIFECYCLE_GUARD_ENABLED is on AND the caller supplied a typed copier command (the backend
+# ``trade_copier.live_execution._live_command_envelope``). With the flag OFF or no command the wrapper calls the
+# UNCHANGED money function and returns its result verbatim (byte-for-byte prior behaviour — proven by tests).
+#
+# The guard AUTHORISES NOTHING on its own. It only REJECTS (fail-closed) a send every existing gate already
+# permits, and CLASSIFIES the outcome. It never opens a position, never touches the demo/live wall (CLOSE /
+# MODIFY / PARTIAL-CLOSE stay demo-only and independently fail-closed for LIVE), and makes NO new order path
+# reachable: on PROCEED it calls exactly the same money function the un-guarded path calls, and on anything
+# else it sends NOTHING.
+
+_GUARD_INDETERMINATE_ERRORS = frozenset({
+    "mt5_not_installed", "mt5_init_failed", "account_info_failed", "positions_get_failed",
+    "tick_failed", "order_send_none", "order_send_none_unknown", "exception",
+})
+_GUARD_BROKER_REJECT_ERRORS = frozenset({"modify_rejected", "partial_close_rejected"})
+# Settle window before the authoritative POST-snapshot re-read. A just-closed position can still show OPEN on a
+# fresh attach for a tick while the broker propagates; without a settle the guard would mis-verdict a genuinely
+# successful close/modify as "not reflected". Tunable via env; tests set it to 0 to stay fast.
+_GUARD_POST_SETTLE_SECONDS = float(os.getenv("GUVFX_GUARD_POST_SETTLE_SECONDS", "1.5") or 1.5)
+
+
+def _copier_lifecycle_guard():
+    """Lazy import of the sibling PURE guard module. Returns the module, or None if it cannot be imported.
+    Import is attempted ONLY when the DARK flag is on, so the un-guarded money path never imports it."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import mt5_copier_lifecycle_guard as _g
+        return _g
+    except Exception:  # noqa: BLE001 — a guard import failure must fail CLOSED, never crash the bridge
+        logger.exception("[copier-guard] guard module import failed")
+        return None
+
+
+def _copier_guard_active(command) -> bool:
+    """True when the guard must run for THIS call: the DARK flag is on AND a typed copier command is present.
+    Checks the env flag FIRST (no import) so the OFF path is byte-identical and never imports the guard."""
+    if not command:
+        return False
+    return str(os.getenv("COPIER_LIFECYCLE_GUARD_ENABLED", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _guard_follower_snapshot(ticket: int):
+    """Read the follower's CURRENT position as a guard snapshot mapping. Returns ``(ok, snap)``.
+
+    ``ok`` is False on ANY read failure (init / account / positions_get error) — a read failure is NEVER
+    treated as "position absent" (that would let the guard mis-classify a FULL close as already-done and
+    strand exposure). On success ``snap`` is ``{exists, ticket, symbol, volume, sl, tp, login, server, point,
+    volume_step}`` (``exists`` False with only login/server when the ticket is not open). Read-only."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return False, {}
+    init_kwargs = {}
+    if MT5_TERMINAL_PATH:
+        init_kwargs["path"] = MT5_TERMINAL_PATH
+    if not guarded_initialize(mt5, init_kwargs):
+        return False, {}
+    try:
+        acct = mt5.account_info()
+        if acct is None:
+            return False, {}
+        login = getattr(acct, "login", None)
+        server = getattr(acct, "server", None)
+        positions = mt5.positions_get(ticket=ticket)
+        if positions is None:
+            # A query/IPC error is NOT proof of absence — fail closed (ok=False), never infer "flat".
+            return False, {}
+        if len(positions) == 0:
+            return True, {"exists": False, "login": login, "server": server}
+        pos = positions[0]
+        si = mt5.symbol_info(pos.symbol)
+        point = getattr(si, "point", None) if si is not None else None
+        vstep = getattr(si, "volume_step", None) if si is not None else None
+        return True, {"exists": True, "ticket": getattr(pos, "ticket", None), "symbol": pos.symbol,
+                      "volume": pos.volume, "sl": pos.sl, "tp": pos.tp, "login": login, "server": server,
+                      "point": point, "volume_step": vstep}
+    except Exception:  # noqa: BLE001 — never raise out of a read; fail closed
+        logger.exception("[copier-guard] follower snapshot read failed ticket=%s", ticket)
+        return False, {}
+    finally:
+        mt5.shutdown()
+
+
+def _guard_send_signals(result: Dict[str, Any]) -> tuple[bool, bool]:
+    """Derive ``(send_determinate, broker_rejected)`` from a money-function result, conservatively. An
+    indeterminate send (lost ACK / exception / read error) yields ``send_determinate=False`` so the guard
+    classifies UNKNOWN_OUTCOME — never success. A definite broker refusal yields ``broker_rejected=True``."""
+    if not isinstance(result, dict):
+        return False, False
+    err = result.get("error")
+    determinate = err not in _GUARD_INDETERMINATE_ERRORS
+    rejected = bool(err in _GUARD_BROKER_REJECT_ERRORS
+                    or (err == "close_failed_position_open" and result.get("retcode") is not None))
+    return determinate, rejected
+
+
+def _guarded_mutation(op: str, command: Dict[str, Any], send_callable, *, ticket: int) -> Dict[str, Any]:
+    """Run the guard around a copier follower mutation: PRE-send admission, the UNCHANGED money send, then
+    POST-send classification. Called ONLY when ``_copier_guard_active(command)``. Fail-closed throughout: a
+    terminal admission sends NOTHING; an unverifiable outcome is UNKNOWN_OUTCOME (never success)."""
+    import time as _t
+    g = _copier_lifecycle_guard()
+    if g is None:
+        # The flag is on (enforcement required) but the guard could not load -> fail CLOSED, send nothing.
+        return {"ok": False, "error": "copier_guard_unavailable", "guard_blocked": True,
+                "lifecycle_outcome": "CONTAINED_FAILURE", "lifecycle_reason": "guard_unavailable",
+                "ticket": ticket}
+
+    ok_pre, pre = _guard_follower_snapshot(ticket)
+    if not ok_pre:
+        # Could not read an authoritative pre-state -> never send on an unverified pre-state.
+        return {"ok": False, "error": "copier_guard_pre_snapshot_unavailable", "guard_blocked": True,
+                "lifecycle_outcome": g.CONTAINED_FAILURE, "lifecycle_reason": "pre_snapshot_unavailable",
+                "ticket": ticket}
+
+    outcome, reason = g.admit_mutation(
+        command, pre, now_epoch=_t.time(),
+        last_applied_revision=command.get("last_applied_revision", -1),
+        point=pre.get("point"), volume_step=pre.get("volume_step"))
+
+    if outcome == g.ALREADY_APPLIED:
+        # The requested post-state already holds -> a safe no-op success; send NOTHING.
+        return {"ok": True, "ticket": ticket, "already_applied": True,
+                "lifecycle_outcome": g.ALREADY_APPLIED, "lifecycle_reason": reason,
+                "note": "copier guard: requested post-state already holds; no send"}
+    if outcome != g.PROCEED:
+        # Fail-closed terminal admission -> send NOTHING. ``guard_blocked`` lets the backend record 'nothing
+        # sent' truthfully (no order_send was attempted).
+        return {"ok": False, "error": "copier_guard_" + str(outcome).lower(), "guard_blocked": True,
+                "lifecycle_outcome": outcome, "lifecycle_reason": reason, "ticket": ticket}
+
+    # PROCEED -> perform exactly the same (UNCHANGED) money send the un-guarded path would.
+    result = send_callable()
+    if not isinstance(result, dict):
+        result = {"ok": False, "error": "exception", "detail": "money_function_returned_non_dict"}
+
+    determinate, rejected = _guard_send_signals(result)
+    # Let the broker propagate the mutation before the authoritative re-read, so a genuinely-successful close/
+    # modify is not mis-verdicted "not reflected" on a just-opened attach (the money path settles similarly).
+    if _GUARD_POST_SETTLE_SECONDS > 0:
+        _t.sleep(_GUARD_POST_SETTLE_SECONDS)
+    ok_post, post = _guard_follower_snapshot(ticket)
+    post_snapshot = post if ok_post else None
+    outcome2, reason2 = g.classify_result(
+        command, send_determinate=determinate, broker_rejected=rejected, post_snapshot=post_snapshot,
+        point=(post or {}).get("point"), volume_step=(post or {}).get("volume_step"))
+
+    merged = dict(result)
+    merged["lifecycle_outcome"] = outcome2
+    merged["lifecycle_reason"] = reason2
+    # Truthfulness: reconcile the merged result with the AUTHORITATIVE post-state verdict.
+    if outcome2 in (g.PRE_STATE_MISMATCH, g.DEADLINE_EXCEEDED, g.STALE_REVISION, g.POSITION_NOT_FOUND,
+                    g.BROKER_REJECTED, g.CONTAINED_FAILURE):
+        merged["ok"] = False                       # a DEFINITE non-success never presents as ok=True
+    elif outcome2 == g.UNKNOWN_OUTCOME:
+        merged["need_reconcile"] = True            # keep the money ok; flag reconciliation (never fabricated)
+    elif outcome2 == g.APPLIED:
+        # The post-state CONFIRMS the mutation. Reconcile a STALE money-side failure marker (e.g. a lost-ACK
+        # close whose position is now confirmed gone) so the merged result is self-consistent — never the
+        # reverse: the guard only UPGRADES ok to True on an authoritative confirmation, never fabricates one.
+        merged["ok"] = True
+        merged.pop("residual_exposure", None)
+    return merged
+
+
+def _copier_command_from_body(body: Dict[str, Any]):
+    """Extract the typed copier command from an inbound HTTP body, or None when the body is not a copier
+    lifecycle command (then the guard never runs and the handler behaves exactly as before). The command is
+    used verbatim by the guard; it carries NO secret (ids / reason codes / the already-present identity pin)."""
+    if not isinstance(body, dict):
+        return None
+    if body.get("copier_operation") not in ("MODIFY_PROTECTION", "PARTIAL_CLOSE", "FULL_CLOSE"):
+        return None
+    return body
+
+
+def guarded_close_position(ticket: int, identity: Dict[str, Any] = None,
+                           command: Dict[str, Any] = None) -> Dict[str, Any]:
+    """FULL-CLOSE entry point. When the guard is active for ``command`` it admits/classifies around the
+    UNCHANGED ``close_position``; otherwise it IS ``close_position`` (byte-for-byte)."""
+    if not _copier_guard_active(command):
+        return close_position(ticket, identity=identity)
+    return _guarded_mutation("FULL_CLOSE", command, lambda: close_position(ticket, identity=identity),
+                             ticket=ticket)
+
+
+def guarded_modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str, Any] = None,
+                            command: Dict[str, Any] = None) -> Dict[str, Any]:
+    """MODIFY-PROTECTION entry point. Guard-wrapped ``modify_position`` when active; otherwise identical."""
+    if not _copier_guard_active(command):
+        return modify_position(ticket, sl, tp, identity=identity)
+    return _guarded_mutation("MODIFY_PROTECTION", command,
+                             lambda: modify_position(ticket, sl, tp, identity=identity), ticket=ticket)
+
+
+def guarded_partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] = None,
+                                   expected_symbol: str = None,
+                                   command: Dict[str, Any] = None) -> Dict[str, Any]:
+    """PARTIAL-CLOSE entry point. Guard-wrapped ``partial_close_position`` when active; otherwise identical."""
+    if not _copier_guard_active(command):
+        return partial_close_position(ticket, volume, identity=identity, expected_symbol=expected_symbol)
+    return _guarded_mutation(
+        "PARTIAL_CLOSE", command,
+        lambda: partial_close_position(ticket, volume, identity=identity, expected_symbol=expected_symbol),
+        ticket=ticket)
+
+
+# =============================================================================
 # Login-and-Validate (POST /mt5/login-and-validate)
 # =============================================================================
 
@@ -2909,7 +3121,10 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
             return
 
         identity = {k: body.get(k) for k in ("require_identity_pin", "expected_login", "expected_server")}
-        result = close_position(int(ticket), identity=identity)
+        # DARK copier lifecycle guard (ADR-0085): active only when COPIER_LIFECYCLE_GUARD_ENABLED is on AND the
+        # body is a typed copier command; otherwise guarded_close_position IS close_position (byte-identical).
+        result = guarded_close_position(int(ticket), identity=identity,
+                                        command=_copier_command_from_body(body))
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 
@@ -2935,7 +3150,10 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
 
         tp = body.get("tp")
         identity = {k: body.get(k) for k in ("require_identity_pin", "expected_login", "expected_server")}
-        result = modify_position(int(ticket), float(sl), None if tp is None else float(tp), identity=identity)
+        # DARK copier lifecycle guard (ADR-0085): active only when COPIER_LIFECYCLE_GUARD_ENABLED is on AND the
+        # body is a typed copier command; otherwise guarded_modify_position IS modify_position (byte-identical).
+        result = guarded_modify_position(int(ticket), float(sl), None if tp is None else float(tp),
+                                         identity=identity, command=_copier_command_from_body(body))
         status_code = 200 if result.get("ok") else 400
         self._send_json_response(result, status_code)
 
