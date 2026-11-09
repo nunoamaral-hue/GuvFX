@@ -5,7 +5,7 @@
   "created_at_utc": "2026-11-09T00:00:00Z",
   "branch": "feat/copier-mutation-transport-admission",
   "base_commit": "06cce64625193d8c441b46652fa2ae2f5cd91a61",
-  "head_commit": "feature commit on feat/copier-mutation-transport-admission (recorded by the follow-up metadata commit)",
+  "head_commit": "979a7e52475e73eafff56abc1aa422d2fafcd479 (feature commit on feat/copier-mutation-transport-admission; this metadata-only update follows it)",
   "summary": "Repository-only, DARK/default-OFF. Completes the (still-unarmed) live follower-mutation path for the SOLE governed route #46->#48 XAUUSD: (1) a REAL per-tenant mutation transport (route-pinned, identity-bound, inert-by-default, one-shot, UNKNOWN-on-timeout, env-token never-in-repo); (2) a NARROW RED live-mutation admission that narrows the bridge account_not_demo wall for the exact route/account/symbol only, time-bound, guard-required, triple-agreement, default OFF, byte-identical when OFF. NO migration. No bridge host deployment, no flag armed, no live authorization, no route activation, no broker order, no live mutation.",
   "phase1_preflight": "Read-only prod verification: revision 06cce646; all copier/execution flags OFF; CopierLiveAuthorization active=0; copier jobs=0; sole route master #46 (TradersWay/Tradersway-Live, acct 55442, LIVE) -> follower #48 (IS6FX/IS6Technologies-Live, acct 51763831, LIVE), CopierFollower enabled, both active=False. No material difference from the packet's stated starting state.",
   "commands": [
