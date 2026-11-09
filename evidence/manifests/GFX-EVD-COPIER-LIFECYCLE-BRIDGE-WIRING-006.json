@@ -5,7 +5,7 @@
   "created_at_utc": "2026-11-09T00:00:00Z",
   "branch": "feat/copier-lifecycle-bridge-wiring",
   "base_commit": "74a2ffa6897d71a2778b78696161f2cbfac42248",
-  "head_commit": "feature commit on feat/copier-lifecycle-bridge-wiring (recorded by the follow-up metadata commit)",
+  "head_commit": "6c6d6801bc5bc653ab0e4cfa5f9d877a6001c583 (feature commit on feat/copier-lifecycle-bridge-wiring; this metadata-only update follows it)",
   "summary": "Repository-only, DARK/default-OFF wiring (ADR-0085) of the ADR-0084 PURE lifecycle guard into the bridge's three real follower-mutation paths, plus the persistence->operator-alert mapping onto the EXISTING canonical records. Gated by COPIER_LIFECYCLE_GUARD_ENABLED (default OFF). NO migration. The three money functions (close_position / modify_position / partial_close_position) are byte-for-byte UNCHANGED and keep their demo wall, so the guard enables no live mutation and opens no new order path. No production change, no host contact, no broker order, no credential handled, no flag armed.",
   "phase1_bridge_path_identification": "Identified the exact production bridge and the three mutation paths before editing: HTTP POST /mt5/close-position -> close_position; POST /mt5/modify-position -> modify_position; the dedicated DEMO partial-close worker (mt5_partial_close_worker) -> partial_close_position (authorize-send/claim/complete). The poll path (process_job) handles PLACE_ORDER only (validate_job_safety rejects non-PLACE_ORDER) and is NOT touched. The guard API (admit_mutation / classify_result) and the backend _live_command_envelope match the ADR-0084/0083 assumptions (verified, no material divergence -> no STOP).",
   "commands": [
