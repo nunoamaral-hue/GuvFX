@@ -174,6 +174,21 @@ def copier_alerts_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ALERTS_ENABLED")
 
 
+def copier_lifecycle_guard_enabled() -> bool:
+    """Backend reflection of the BRIDGE DARK flag ``COPIER_LIFECYCLE_GUARD_ENABLED`` (ADR-0085). DEFAULT OFF,
+    ANDed with the master gate.
+
+    The actual enforcement flag lives on the HOST bridge process (read by
+    ``scripts/mt5_copier_lifecycle_guard.guard_enabled``); this predicate lets the backend emit the typed copier
+    command to the shared partial-close worker ONLY when the guard would act, so with it OFF the authorize-send
+    response is byte-identical to the pre-ADR-0085 instruction shape. It governs NO broker contact and widens NO
+    authority: the guard only ADDS a fail-closed pre-state/revision/deadline check around a send every existing
+    gate (demo/live wall, identity pin, authorization) already permits — it never opens a position, never
+    bypasses those gates, and makes NO new order path reachable. Separate from — never ORs past — the execute/arm
+    gates, which remain the sole authority for any order."""
+    return copier_enabled() and _flag("COPIER_LIFECYCLE_GUARD_ENABLED")
+
+
 def copier_event_projection_enabled() -> bool:
     """Gate for promoting accepted fast-path ``CopierIngestedRevision`` evidence into the AUTHORITATIVE
     ``MasterEvent`` ledger (ADR-0074 Phase-4 completion). DEFAULT OFF, ANDed with the master gate.

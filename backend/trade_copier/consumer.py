@@ -23,7 +23,8 @@ from django.utils import timezone
 from core.audit import log_event
 from execution.models import ExecutionJob
 from trade_copier import reconcile
-from trade_copier.flags import copier_enabled, copier_execute_demo_armed, copier_execute_enabled
+from trade_copier.flags import (copier_enabled, copier_execute_demo_armed, copier_execute_enabled,
+                                 copier_lifecycle_guard_enabled)
 from trade_copier.models import CopierReplication, ReplicationStatus
 from trade_copier.replication import _broker_constraints
 
@@ -339,6 +340,33 @@ def _admit_authorize_locked(job, replication, worker_identity, dispatch_token, *
     return True, "ok"
 
 
+def _authorize_guard_command(job, replication, pin):
+    """Build the server-derived typed copier command (ADR-0085) released to the host bridge alongside the
+    partial-close instruction, or None when the job is not a typed copier lifecycle command. Secret-free: the
+    fixed op, the VERIFIED follower ticket, the follower symbol, the master revision, the hard authorization
+    deadline, the SERVER-computed expected pre-state / requested post-state, and the SAME server-derived identity
+    pin already in the response — never a worker-supplied or customer value. The bridge uses it only to REJECT
+    (fail-closed) or classify a send; it authorises nothing and widens no scope."""
+    payload = job.payload or {}
+    op = payload.get("copier_operation")
+    if op not in ("MODIFY_PROTECTION", "PARTIAL_CLOSE", "FULL_CLOSE"):
+        return None
+    pin = pin or {}
+    return {
+        "copier_operation": op,
+        "ticket": int(replication.follower_ticket),
+        "symbol": replication.follower_symbol,
+        "master_revision": payload.get("master_revision"),
+        "authorization_expires_at": payload.get("authorization_expires_at"),
+        "expected_pre_state": payload.get("expected_pre_state") or {},
+        "requested_post_state": payload.get("requested_post_state") or {},
+        "require_identity_pin": True,
+        "expected_login": pin.get("expected_login"),
+        "expected_server": pin.get("expected_server"),
+        "last_applied_revision": payload.get("last_applied_revision", -1),
+    }
+
+
 def authorize_send(worker_identity, *, job_id: int, dispatch_token: str, account_id: int,
                    authorized_node_hostnames) -> dict:
     """Single-use PRE-SEND authorization (ADR-0056 F1). Atomically, under the job row lock: re-authenticate
@@ -387,12 +415,21 @@ def authorize_send(worker_identity, *, job_id: int, dispatch_token: str, account
     _audit(AUDIT_SEND_AUTHORIZED, replication=replication, job=job, worker_id=wid)
     # The mutation instruction — released ONLY now, all server-derived. ``send_nonce`` binds the single
     # subsequent completion to THIS authorization.
-    return {"ok": True, "job_id": job.id, "send_nonce": send_nonce,
-            "bridge_call": "partial_close_position",
-            "ticket": int(replication.follower_ticket),
-            "volume": str(replication.target_volume),
-            "expected_symbol": replication.follower_symbol,
-            "identity": pin}
+    out = {"ok": True, "job_id": job.id, "send_nonce": send_nonce,
+           "bridge_call": "partial_close_position",
+           "ticket": int(replication.follower_ticket),
+           "volume": str(replication.target_volume),
+           "expected_symbol": replication.follower_symbol,
+           "identity": pin}
+    # ADR-0085 — DARK: additionally release the typed copier command so the host bridge can apply the
+    # pre-state/revision/deadline guard around the send. Emitted ONLY when the guard flag is on AND the job
+    # carries a typed copier envelope; otherwise the response is byte-identical to the pre-ADR-0085 shape. The
+    # command is server-derived and secret-free (ids/reason codes + the identity pin already in the response).
+    if copier_lifecycle_guard_enabled():
+        cmd = _authorize_guard_command(job, replication, pin)
+        if cmd is not None:
+            out["command"] = cmd
+    return out
 
 
 # ── terminal job bookkeeping (ADR-0056 F3) ────────────────────────────────────────────────────────────
@@ -512,8 +549,9 @@ def complete_partial_close(worker_identity, *, job_id: int, dispatch_token: str,
         br = bridge_result or {}
         need_reconcile = bool(br.get("need_reconcile"))
         err = br.get("error")
-        if not br.get("ok") and not need_reconcile and err in _PRESEND_REFUSAL_ERRORS:
-            # A PROVABLY PRE-SEND bridge refusal (identity/demo/volume gate) — NO order_send was attempted, so
+        if not br.get("ok") and not need_reconcile and (err in _PRESEND_REFUSAL_ERRORS or br.get("guard_blocked")):
+            # A PROVABLY PRE-SEND bridge refusal (identity/demo/volume gate, or an ADR-0085 lifecycle-guard
+            # admission that blocked the send — ``guard_blocked``) — NO order_send was attempted, so
             # the position is untouched. Terminal dispatch-refused; no reconciliation read. A not-ok result
             # that is NOT an enumerated pre-send code (e.g. "exception", raisable AFTER the send) falls through
             # to the reconcile path below — we never record "nothing sent" unless we can prove it.
