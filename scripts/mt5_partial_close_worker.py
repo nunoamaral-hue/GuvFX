@@ -135,15 +135,19 @@ def _requests_session():
     return requests.Session()
 
 
-def _default_bridge_call(*, ticket, volume, identity, expected_symbol):
-    """Invoke the real bridge ``partial_close_position`` (imported lazily from the sibling bridge script).
-    The ONLY bridge primitive this worker may call."""
+def _default_bridge_call(*, ticket, volume, identity, expected_symbol, command=None):
+    """Invoke the real bridge partial-close primitive (imported lazily from the sibling bridge script). The
+    ONLY bridge primitive this worker may call. ``command`` is the server-issued typed copier command (ADR-0085):
+    when present AND the bridge's DARK ``COPIER_LIFECYCLE_GUARD_ENABLED`` flag is on, the bridge wrapper applies
+    the pre-state / revision / deadline guard around the send; otherwise it IS ``partial_close_position``
+    (byte-identical). The worker passes the command verbatim and interprets none of it."""
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from mt5_signal_bridge import partial_close_position
+        from mt5_signal_bridge import guarded_partial_close_position
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": "bridge_import_failed", "need_reconcile": False, "detail": str(e)}
-    return partial_close_position(int(ticket), float(volume), identity=identity, expected_symbol=expected_symbol)
+    return guarded_partial_close_position(int(ticket), float(volume), identity=identity,
+                                          expected_symbol=expected_symbol, command=command)
 
 
 def run_once(client: BackendClient, *, bridge_call=_default_bridge_call) -> dict:
@@ -173,13 +177,18 @@ def run_once(client: BackendClient, *, bridge_call=_default_bridge_call) -> dict
     send_nonce = auth.get("send_nonce")
     ticket, volume = auth.get("ticket"), auth.get("volume")
     expected_symbol, identity = auth.get("expected_symbol"), auth.get("identity")
+    # Server-issued typed copier command (ADR-0085), passed verbatim to the bridge guard when present. The
+    # worker never inspects or acts on it; a missing command (the pre-ADR-0085 instruction shape) leaves the
+    # bridge call byte-identical.
+    command = auth.get("command")
     logger.info("pclose worker: authorized job=%s ticket=%s symbol=%s identity=%s",
                 job_id, ticket, expected_symbol, _redact_identity(identity))
 
     # EXACTLY ONE broker call — never retried on timeout/disconnect/uncertain result.
     try:
+        _extra = {"command": command} if command is not None else {}
         bridge_result = bridge_call(ticket=ticket, volume=volume, identity=identity,
-                                    expected_symbol=expected_symbol)
+                                    expected_symbol=expected_symbol, **_extra)
     except Exception as e:  # noqa: BLE001 — a worker-side failure is reported, NOT retried
         logger.warning("pclose worker: bridge call failed job=%s (no retry): %s", job_id, type(e).__name__)
         bridge_result = dict(_WORKER_FAILURE_RESULT)
