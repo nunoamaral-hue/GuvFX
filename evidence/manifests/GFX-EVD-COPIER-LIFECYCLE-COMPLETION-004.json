@@ -5,7 +5,7 @@
   "created_at_utc": "2026-11-09T00:10:00Z",
   "branch": "feat/copier-lifecycle-guard",
   "base_commit": "b5ea8922105084ed0e5b924561f197a98d1f7628",
-  "head_commit": "PENDING_COMMIT",
+  "head_commit": "3c302f9825274426ceb9ec1440953dd4afa14a42 (feature commit on feat/copier-lifecycle-guard; this metadata-only update follows it)",
   "summary": "Repository-only, DARK/default-OFF implementation of the bridge-boundary lifecycle guard (ADR-0084): a pure, importable pre-state / revision / deadline / idempotency admission + explicit-outcome classifier for copier follower MODIFY/PARTIAL_CLOSE/FULL_CLOSE, realising the ADR-0083 bridge-enforcement prerequisite. NO migration, no bridge wiring in this packet (the live money path is byte-identical), no production change, no broker order, no credential handled, no flag armed.",
   "phase1_gap_audit": "Traced the real path assumption-free. The backend already carries every needed field (ADR-0083 _live_command_envelope: pre-state fingerprint, master_revision, deadline, idempotency key, correlation id) AND reconciles a partial close read-only (PCLOSE_OUTCOME_UNKNOWN, never a blind retry). The no-late-entry policy is enforced by the pure lifecycle engine. The GAP is at the final bridge boundary: the bridge (scripts/mt5_signal_bridge.py) enforces the identity pin but NOT the pre-state fingerprint / lifecycle revision / deadline, and maps outcomes to success/failure, not the explicit set. Full matrix in ADR-0084.",
   "commands": [
