@@ -2,6 +2,7 @@
 from django.urls import path
 
 from .views import (AccountBrokerContactCreateView, AccountBrokerContactListView, AccountBrokerContactVerifyView,
+                    DiscoveryCandidateActionView, DiscoveryCandidateListView,
                     GenericReviewCandidateActionView, GenericReviewCandidateListView,
                     IdentityListView, IdentityVerifyView, MailboxCallbackView, MailboxConnectView,
                     MailboxRevokeView, MailboxStatusView, WithdrawalHistoryView, WithdrawalMetricsView,
@@ -28,4 +29,9 @@ urlpatterns = [
          name="broker-intelligence-review-candidates"),
     path("review-candidates/<int:candidate_id>/action/", GenericReviewCandidateActionView.as_view(),
          name="broker-intelligence-review-candidate-action"),
+    # ADR-0089 unknown-sender discovery review surface (owner-scoped read + staff-gated audited action).
+    path("discovery-candidates/", DiscoveryCandidateListView.as_view(),
+         name="broker-intelligence-discovery-candidates"),
+    path("discovery-candidates/<int:candidate_id>/action/", DiscoveryCandidateActionView.as_view(),
+         name="broker-intelligence-discovery-candidate-action"),
 ]

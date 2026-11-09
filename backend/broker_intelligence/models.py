@@ -1261,3 +1261,91 @@ class ReviewCandidateAction(models.Model):
 
     def __str__(self) -> str:
         return f"ReviewCandidateAction(cand={self.candidate_id}, {self.action}, {self.actor})"
+
+
+# ======================================================================================================
+# ADR-0089 — Unknown-sender withdrawal DISCOVERY (pre-retention, REDACTED). DARK: inert unless the owner is
+# in the discovery canary. Persists ONLY hashes/enums/verdicts/band/timestamps — never raw body or PII.
+# ======================================================================================================
+
+class UnknownSenderDiscoveryCandidate(models.Model):
+    """ADR-0089 — a REDACTED pre-retention discovery record for a credible withdrawal email from a NON-allowlisted
+    (unknown) sender, surfaced for staff review. PRIVACY (formally tested redaction contract): stores ONLY hashes,
+    enums, authentication verdicts, a confidence BAND, timestamps and (ONLY when the auth policy approved the sender)
+    the broker's public registrable domain — NEVER a raw subject/body snippet, name, full email address, account
+    number, reference, amount, fee, payment detail, URL, token or credential. NEVER creates/updates a BrokerEvent or
+    Withdrawal; never allowlists a sender; never enables a pattern; never binds a broker/account. Idempotent per
+    (owner, provider_message_id_hash)."""
+
+    class ConfidenceBand(models.TextChoices):
+        LOW = "LOW", "Low"
+        MEDIUM = "MEDIUM", "Medium"
+        HIGH = "HIGH", "High"
+
+    class ReviewState(models.TextChoices):
+        NEW = "NEW", "New (awaiting review)"
+        REJECTED = "REJECTED", "Rejected (not a withdrawal / not a broker)"
+        INSUFFICIENT = "INSUFFICIENT", "Insufficient evidence"
+        ASSOCIATED = "ASSOCIATED", "Associated with an existing broker profile"
+        PROPOSED_BROKER = "PROPOSED_BROKER", "Proposed broker/profile candidate created"
+        PROPOSED_PATTERN = "PROPOSED_PATTERN", "Proposed GenericWithdrawalPattern (DISABLED) created"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="unknown_sender_discovery_candidates")
+    message_sha256 = models.CharField(max_length=64, db_index=True)            # hash of raw bytes (dedup); NOT the bytes
+    provider_message_id_hash = models.CharField(max_length=64, db_index=True)  # salted hash of the Gmail message id
+    sender_domain_hash = models.CharField(max_length=64, db_index=True)        # salted hash of the canonical domain
+    registrable_domain = models.CharField(max_length=190, blank=True, default="")  # ONLY when auth-approved; broker public domain
+    spf = models.CharField(max_length=12, blank=True, default="")
+    dkim = models.CharField(max_length=12, blank=True, default="")
+    dmarc = models.CharField(max_length=12, blank=True, default="")
+    auth_policy_passed = models.BooleanField(default=False)
+    lifecycle_class = models.CharField(max_length=24, blank=True, default="")
+    confidence_band = models.CharField(max_length=8, choices=ConfidenceBand.choices, blank=True, default="")
+    reason_codes = models.JSONField(default=list, blank=True)                  # structural enum codes; never raw text
+    detector_version = models.CharField(max_length=32, blank=True, default="")
+    received_at = models.DateTimeField(null=True, blank=True)
+    observed_at = models.DateTimeField(null=True, blank=True)
+    review_state = models.CharField(max_length=20, choices=ReviewState.choices, default=ReviewState.NEW)
+    associated_broker_profile = models.ForeignKey("BrokerProfile", on_delete=models.SET_NULL, null=True, blank=True,
+                                                  related_name="+")
+    proposed_pattern = models.ForeignKey("GenericWithdrawalPattern", on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [models.UniqueConstraint(fields=["owner", "provider_message_id_hash"],
+                                               name="uniq_discovery_owner_pmidhash")]
+        indexes = [models.Index(fields=["owner", "id"]), models.Index(fields=["review_state"]),
+                   models.Index(fields=["sender_domain_hash"])]
+
+    def __str__(self) -> str:
+        return f"UnknownSenderDiscoveryCandidate({self.lifecycle_class}, {self.confidence_band}, {self.review_state})"
+
+
+class DiscoveryCandidateAction(models.Model):
+    """ADR-0089 — append-only AUDIT of a STAFF action on an ``UnknownSenderDiscoveryCandidate``. Write-once; never
+    deleted; preserves the message hash. Carries NO body/PII — only the action, the staff actor and a reason code."""
+    candidate = models.ForeignKey(UnknownSenderDiscoveryCandidate, on_delete=models.PROTECT, related_name="actions")
+    action = models.CharField(max_length=20, choices=UnknownSenderDiscoveryCandidate.ReviewState.choices)
+    actor = models.CharField(max_length=128)
+    reason = models.CharField(max_length=128, blank=True, default="")
+    message_sha256 = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["candidate", "id"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("DiscoveryCandidateAction is append-only; a correction is a new row")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("DiscoveryCandidateAction is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"DiscoveryCandidateAction(cand={self.candidate_id}, {self.action}, {self.actor})"

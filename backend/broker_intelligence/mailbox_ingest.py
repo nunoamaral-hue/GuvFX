@@ -83,7 +83,9 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
                                    consecutive_failures=prior_failures + 1, last_pass_cursor_advanced=False)
             return {"mailbox_id": mailbox.id, "ok": False, "error": "oauth_not_configured", "ingested": 0,
                     "events": 0, "no_event": 0, "diagnostic": diag.safe_dict()}
-        client = GmailApiClient(mailbox, client_id=client_id, client_secret=client_secret)
+        from .flags import broker_unknown_sender_discovery_enabled_for
+        client = GmailApiClient(mailbox, client_id=client_id, client_secret=client_secret,
+                                discovery_enabled=broker_unknown_sender_discovery_enabled_for(mailbox.user))
 
     source = GmailMailSource(mailbox, client)
     ingested = 0
@@ -125,6 +127,18 @@ def ingest_mailbox(mailbox, *, client=None) -> dict:
     _record_mailbox_health(mailbox, last_attempted_sync=attempted_at, last_error_code="",
                            last_error_http_status=None, last_error_at=None, consecutive_failures=0,
                            last_pass_cursor_advanced=cursor_advanced)
+    # ADR-0089 (DARK; canary-only): classify the NON-allowlisted withdrawal-keyword messages the client collected
+    # IN MEMORY into REDACTED discovery candidates. Runs AFTER the cursor is committed (never touches the cursor);
+    # NEVER stores raw bytes, NEVER creates an event/withdrawal. Owner-gated; a failure here never affects the
+    # ingestion result or health (observation-only side pass).
+    try:
+        from .flags import broker_unknown_sender_discovery_enabled_for
+        discovery_raw = getattr(client, "discovery_raw", None)
+        if discovery_raw and broker_unknown_sender_discovery_enabled_for(mailbox.user):
+            from .discovery import process_discovery_messages
+            process_discovery_messages(discovery_raw, owner=mailbox.user)
+    except Exception:  # noqa: BLE001 — discovery must never affect ingestion health/result
+        logger.warning("mailbox %s: discovery post-processing failed (no candidate; ingestion unaffected)", mailbox.id)
     # ``no_event`` = messages acquired that produced NO BrokerEvent (authenticated-but-quarantined, unparseable,
     # parser-declined, or a parser that RAISED — each already logged secret-free in ``ingest_message``). Surfaced in
     # the summary so a rising no-event volume (e.g. a broker template whose parser is crashing) is visible to an
