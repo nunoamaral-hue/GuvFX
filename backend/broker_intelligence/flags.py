@@ -217,6 +217,41 @@ def broker_routing_evidence_required() -> bool:
     return _flag("BROKER_ROUTING_EVIDENCE_REQUIRED")
 
 
+def broker_generic_detection_enabled() -> bool:
+    """GA (general-availability) global switch for GENERIC withdrawal-email detection (ADR-0088). DEFAULT OFF — this
+    is the eventual whole-base enable; until it is armed, the ONLY path is the owner-scoped canary allowlist below
+    (``broker_generic_detection_enabled_for``). While both are unset the detector is NEVER invoked and no new table is
+    touched (behaviour byte-identical to today). Specific-broker adapters are NEVER affected by this flag — generic
+    detection runs only when ``select_parser`` returns None. Read-only observation plane; grants NO execution/strategy/
+    credential authority and never a financial action; never relaxes the sender-allowlist/authenticity retention gates."""
+    return _flag("BROKER_GENERIC_DETECTION_ENABLED")
+
+
+def broker_generic_detection_allowlist() -> frozenset:
+    """Owner-scoped generic-detection CANARY allowlist (default-DENY). Lowercased emails parsed from
+    ``BROKER_GENERIC_DETECTION_OWNER_ALLOWLIST`` (comma-separated), settings-override-then-env. Plain config, never a
+    secret. Empty ⇒ no owner is in the canary (and the GA global above is then the only path)."""
+    raw = getattr(settings, "BROKER_GENERIC_DETECTION_OWNER_ALLOWLIST", None)
+    if raw is None:
+        raw = os.getenv("BROKER_GENERIC_DETECTION_OWNER_ALLOWLIST", "")
+    return frozenset(e.strip().lower() for e in str(raw).split(",") if e.strip())
+
+
+def broker_generic_detection_enabled_for(user) -> bool:
+    """OWNER-SCOPED generic-detection gate — the SOLE authorization boundary, default-DENY. Generic detection runs for
+    a member's mail ONLY when EITHER the GA global (``broker_generic_detection_enabled``) is armed for everyone, OR
+    their email is in ``broker_generic_detection_allowlist()`` (the controlled ``support@`` canary). Both unset ⇒ every
+    owner is denied (the feature stays DARK / OFF globally). The global here is a DEDICATED GA switch for THIS feature
+    only. Fail-closed on a missing/anonymous user. This gate governs ONLY whether the fail-closed generic detector is
+    consulted after a specific-parser miss — it never weakens the retention/authenticity gates and never touches a
+    specific parser."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if broker_generic_detection_enabled():
+        return True
+    return (getattr(user, "email", "") or "").strip().lower() in broker_generic_detection_allowlist()
+
+
 def broker_intelligence_erasure_enabled() -> bool:
     """Master gate for the CONTROLLED OWNER-SCOPED ERASURE path (GDPR/UK-GDPR Art 17), per ADR-0054. DEFAULT OFF and
     this is the ONLY switch that lets the governed erasure run at all: while OFF, ``execute_owner_erasure`` refuses.
