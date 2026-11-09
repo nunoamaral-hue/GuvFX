@@ -354,9 +354,13 @@ class CopierBridgeWiringTests(SimpleTestCase):
                                           requested_post_state={"closed": True}))
         self.assertEqual(len(self.calls), 1)
         name, args, kwargs = self.calls[0]
-        self.assertEqual(name, "close_position")
+        self.assertEqual(name, "close_position")                 # same money function, no new path
         self.assertEqual(args, (555,))
-        self.assertEqual(kwargs, {"identity": ident})
+        self.assertEqual(kwargs["identity"], ident)
+        # The command is also threaded to the money function (consulted only by the ADR-0087 route-pinned
+        # live admission; absent/OFF it is inert) — the only addition beyond identity.
+        self.assertEqual(kwargs["command"]["copier_operation"], "FULL_CLOSE")
+        self.assertEqual(set(kwargs), {"identity", "command"})
 
     def test_send_signals_conservative(self):
         # An indeterminate error => not determinate; a definite reject => broker_rejected.

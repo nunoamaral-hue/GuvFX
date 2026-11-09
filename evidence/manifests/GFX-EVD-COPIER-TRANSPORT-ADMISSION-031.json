@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-TRANSPORT-ADMISSION-031",
+  "packet_id": "GFX-COPIER-PHASE4-TRANSPORT-ADMISSION-031 (ADR-0087)",
+  "created_at_utc": "2026-11-09T00:00:00Z",
+  "branch": "feat/copier-mutation-transport-admission",
+  "base_commit": "06cce64625193d8c441b46652fa2ae2f5cd91a61",
+  "head_commit": "feature commit on feat/copier-mutation-transport-admission (recorded by the follow-up metadata commit)",
+  "summary": "Repository-only, DARK/default-OFF. Completes the (still-unarmed) live follower-mutation path for the SOLE governed route #46->#48 XAUUSD: (1) a REAL per-tenant mutation transport (route-pinned, identity-bound, inert-by-default, one-shot, UNKNOWN-on-timeout, env-token never-in-repo); (2) a NARROW RED live-mutation admission that narrows the bridge account_not_demo wall for the exact route/account/symbol only, time-bound, guard-required, triple-agreement, default OFF, byte-identical when OFF. NO migration. No bridge host deployment, no flag armed, no live authorization, no route activation, no broker order, no live mutation.",
+  "phase1_preflight": "Read-only prod verification: revision 06cce646; all copier/execution flags OFF; CopierLiveAuthorization active=0; copier jobs=0; sole route master #46 (TradersWay/Tradersway-Live, acct 55442, LIVE) -> follower #48 (IS6FX/IS6Technologies-Live, acct 51763831, LIVE), CopierFollower enabled, both active=False. No material difference from the packet's stated starting state.",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier execution --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test execution.tests_copier_live_admission trade_copier.tests_mutation_transport trade_copier.tests_phase4_acceptance --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier execution.tests_copier_live_admission execution.tests_bridge_mutation_identity execution.tests_bridge_close execution.tests_bridge_partial_close execution.tests_bridge_guarded_attach core.tests_adr_governance --keepdb",
+    "python scripts/check_no_secrets.py",
+    "python scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check clean.",
+    "NO new migration (the transport is a new module + a flag; the admission is bridge code; the watermark is migration-free).",
+    "Transport + admission + acceptance suites green: inert-OFF no-contact, route/identity/deadline/token fail-closed, op route, UNKNOWN no-retry; admission default-OFF byte-identical + triple-agreement + symbol pin + guard-required + server fail-closed + send-time-gate reconciled; all-off no-broker-contact + OPEN->MODIFY->CLOSE e2e + expired->FAILED.",
+    "Full trade_copier + bridge regression unaffected; ADR governance green (ADR-0087 unique). Secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "PASS - manage.py check: no issues.",
+    "PASS - makemigrations --check: No changes detected (NO new migration).",
+    "PASS - new suites: Ran 38 tests (execution.tests_copier_live_admission + trade_copier.tests_mutation_transport + trade_copier.tests_phase4_acceptance), OK.",
+    "PASS - full trade_copier + admission + bridge regression + ADR governance: Ran 913 tests, OK.",
+    "PASS - check_no_secrets: no findings.",
+    "PASS - check_evidence_manifests: EVIDENCE-LINT PASS incl. this manifest.",
+    "ADVERSARIAL - one independent lane on the live-money transport + RED admission: no CRITICAL; 1 HIGH + 2 MEDIUM + 2 LOW ALL FIXED with regression tests (see adversarial_review)."
+  ],
+  "status": "PASS",
+  "delivery_state": "PR_READY — repository-only, DARK/default-OFF, auto-merge OFF, STOP before merge. The backend transport is deployable DARK; the bridge RED admission's HOST deployment is a SEPARATE Sponsor-gated step (not the backend deploy). No deploy, no flag armed, no live authorization, no route activation, no broker order, no live mutation.",
+  "transport_design": "trade_copier/mutation_transport.py: resolve_governed_follower_route route-pins to the ENABLED governed follower + resolves its OWN per-tenant endpoint via snapshot_transport.resolve_account_snapshot_base (fails closed; never global/sibling); _identity_matches binds command expected_login/server to the resolved account_number/server; _agent_token from the env chain (never repo/args/logs); send_mutation enforces the deadline, POSTs MODIFY/CLOSE to the op route, ONE shot never retried, UNKNOWN_OUTCOME on timeout/error/indeterminate non-2xx (never success). Default OFF (copier_mutation_transport_enabled) -> INERT, no broker contact. PARTIAL keeps its worker; OPEN the PLACE_ORDER path.",
+  "red_admission_design": "scripts/mt5_signal_bridge.py: _copier_live_mutation_admitted / _demo_or_admitted_ok narrow the account_not_demo wall for the ONE governed route only. Admits a LIVE mutation ONLY when: COPIER_LIVE_MUTATION_ADMIT_ENABLED on AND the lifecycle guard is active (binds the ACTUAL position symbol/pre-state/deadline) AND the full live stack (_bridge_live_admitted = MT5_ALLOW_LIVE + non-expired MT5_LIVE_EXPIRY) AND a typed command for the same op AND exact-account TRIPLE agreement (runtime MT5_EXPECTED_LOGIN == connected account == command expected_login; server fail-closed) AND command.symbol == COPIER_LIVE_ADMIT_SYMBOL. Fail-closed on any miss/error; read fresh per call (restart/expiry/drift fail closed). Applied at BOTH the top-of-function wall AND the send-time identity gate (evaluate_mutation_identity) so the two walls are consistent. Default OFF / no command -> exactly trade_mode==0 (byte-identical). Authorises no other account/route/symbol/op; no single flag enables trading.",
+  "no_late_recovery_proof": "The transport/dispatcher send only an EXISTING MODIFY/CLOSE on a bound follower ticket; they open no position and never recover a late/failed OPEN. A timeout/indeterminate result is UNKNOWN (need_reconcile, job RUNNING), never retried, never success. A past-deadline/expired command is blocked pre-send (nothing sent -> FAILED). The guard (required for a live mutation) rejects a past-deadline/stale-revision/pre-state-mismatch command.",
+  "migration_status": "NONE. makemigrations --check: No changes detected.",
+  "limitations": [
+    "Repository-only, DARK, default-OFF. No merge/deploy performed yet at manifest time; no bridge host deployment; no flag armed; no real transport network call (inert default); no live authorization; no route activation; no broker order; no credential handled.",
+    "Production truth (prod 06cce646; execution + all copier flags OFF; zero authz/jobs/orders) asserted by read-only verification (ssh ubuntu@100.119.23.29), not by arming anything.",
+    "The bridge RED admission (scripts/mt5_signal_bridge.py) runs on the Windows host and is NOT deployed by the backend deploy; its host deployment is a separate Sponsor-gated step.",
+    "No live readiness is claimed on synthetic tests; the #46->#48 demo remains gated on host deploy of the admission, route activation, a live authorization and a Sponsor-present run."
+  ],
+  "production_host_broker_impact": "NONE at build time. No deploy, no migration, no Windows-host contact beyond read-only verification, no flag enabled, no transport armed, no live authorization, no broker order. Production backend remains 06cce646; execution + all copier flags OFF.",
+  "artefact_locations": [
+    "backend/trade_copier/mutation_transport.py (new: real per-tenant transport, inert-default)",
+    "scripts/mt5_signal_bridge.py (changed: ADR-0087 RED admission + reconciled send-time identity gate; money fns take command)",
+    "backend/trade_copier/mutation_dispatch.py (changed: gate parity per-op arm, watermark fail-closed, guard_blocked->CONTAINED_FAILURE)",
+    "backend/trade_copier/flags.py (changed: copier_mutation_transport_enabled, default OFF)",
+    "backend/execution/tests_copier_live_admission.py (new: 20 admission tests)",
+    "backend/trade_copier/tests_mutation_transport.py (new: 13 transport tests)",
+    "backend/trade_copier/tests_phase4_acceptance.py (new: 6 e2e acceptance + A-T map)",
+    "backend/execution/tests_copier_bridge_wiring.py (changed: money fn now also receives command)",
+    "docs/architecture/ADR-0087-COPIER-TRANSPORT-LIVE-ADMISSION.md (new)",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md (new: Sponsor-operated runbook, prepare-only)",
+    "evidence/manifests/GFX-EVD-COPIER-TRANSPORT-ADMISSION-031.json"
+  ],
+  "checksums": {
+    "scripts/mt5_signal_bridge.py": "sha256:96a5e84446f5e33f031e859808e76fc7de4beee023baa03e7eb0529ff0cbba58",
+    "backend/trade_copier/mutation_transport.py": "sha256:8937dc37ea4c4819f099120801182c697780c9f9e316bca0297dbd262a5b534e",
+    "backend/trade_copier/mutation_dispatch.py": "sha256:938cae5c7e5961eafcd58e52c261b74cbe38a51fa0ce1c5baed6c165167edadd",
+    "backend/trade_copier/flags.py": "sha256:962a2a8db024265a79b7cba8e299086caae5d9fc4ffe7124b2b272b3255e8a7f",
+    "backend/execution/tests_copier_live_admission.py": "sha256:a1c0d495f018ca1c270719d78124d9cfa5556470d7d0427f1b3493725f276170",
+    "backend/trade_copier/tests_mutation_transport.py": "sha256:e450acf8b2ae8c63c5a306d89fd01ce05648f144b4c2a282cbb78bc019dc5e93",
+    "backend/trade_copier/tests_phase4_acceptance.py": "sha256:d1cc3282e5eaab58ae528fe0936e667725826f06f34ae6a5e4ea362ccf2fcab3",
+    "backend/execution/tests_copier_bridge_wiring.py": "sha256:d4b3d8eeff37bb2bfba9083210c73fb6718d21f323fc0ddd5c15a4484760bed8",
+    "docs/architecture/ADR-0087-COPIER-TRANSPORT-LIVE-ADMISSION.md": "sha256:9ddb04a2af70fd1f34c0915b9fbe5b2291d93478a1f5034db5d723ebe2dc9d6a",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md": "sha256:d4a7cb5e9534e30b1e4e4e19ac5602c61d9b0d0ec1a9742ef82c86f5d6d053f2"
+  },
+  "adversarial_review": {
+    "method": "One independent adversarial subagent lane on the full live-money path (dispatcher -> transport -> bridge money functions + both demo walls + producer gate stack). Attack checklist: cross-tenant mutation, account/server/login substitution, symbol substitution, admission bypass, replay/duplicate/late execution, MODIFY-after-CLOSE/wrong-ticket, dispatcher state machine, secret leakage, fail-open.",
+    "result": "No CRITICAL. 1 HIGH + 2 MEDIUM + 2 LOW, ALL FIXED with regression tests. Verified sound: cross-tenant routing (fails closed, no global/sibling, no caller URL), login triple-agreement airtight, OFF-path byte-identity, replay/double-execute prevented (single-flight + at-most-once + UNKNOWN-not-re-picked), guard_blocked->CONTAINED mapping never mis-maps a real send, no secret leakage.",
+    "findings": [
+      {"id": "A", "severity": "HIGH", "title": "The send-time identity gate (evaluate_mutation_identity) kept a SECOND account_not_demo wall, silently defeating the new top-wall admission (feature non-functional / latent trap); no test exercised the real money path with a LIVE account.", "disposition": "FIXED", "fix": "evaluate_mutation_identity / verify_mutation_identity now thread (command, op) and consult the SAME _demo_or_admitted_ok as the top wall, so the two walls are consistent (and byte-identical when OFF/no-command). Regressions: test_send_time_identity_gate_consistent_with_top_wall, test_send_time_gate_demo_always_ok_no_command."},
+      {"id": "B", "severity": "MEDIUM", "title": "The dispatcher's send-time authority re-check omitted the per-op LIVE arm flags + copier_live_execute_enabled (gate-parity gap vs the producer): a job minted while a per-op arm was ON could still dispatch after a SELECTIVE per-op disarm.", "disposition": "FIXED", "fix": "_governing_authority_ok now re-checks copier_live_execute_enabled() AND live_execution._per_op_flag_armed(op) at send time, before the authz relock."},
+      {"id": "C", "severity": "MEDIUM", "title": "The admission was not coupled to the lifecycle guard; its symbol pin bound the command's DECLARED symbol, not the actual ticket's position symbol; the per-command deadline was not enforced by the bridge admission.", "disposition": "FIXED", "fix": "_copier_live_mutation_admitted now REQUIRES _copier_guard_active(command): the guard (mandatory for a live mutation) binds the actual position symbol, pre-state, revision and per-command deadline. Regression: test_guard_required_for_admission."},
+      {"id": "D", "severity": "LOW", "title": "Admission server pin could skip verification when both MT5_EXPECTED_SERVER and the connected server were blank (weaker server leg).", "disposition": "FIXED", "fix": "Server pin is now fail-closed: the connected AND command servers must both be present and agree, and a configured runtime server must agree too. Regression: test_blank_server_leg_fails_closed."},
+      {"id": "E", "severity": "LOW", "title": "follower_mutation_hwm failed OPEN to -1 on a DB read error, disabling the stale-revision check for that command.", "disposition": "FIXED", "fix": "follower_mutation_hwm returns None on error; _build_command returns None; dispatch_one refuses the dispatch (watermark_unavailable, nothing sent)."}
+    ],
+    "reviewer": "One independent adversarial subagent lane + author disposition. No CRITICAL. 1 HIGH + 2 MEDIUM + 2 LOW all fixed with regression tests. No order placed, no credential handled, no production mutation, no transport armed, no live authorization."
+  },
+  "reviewer": "One independent adversarial subagent lane + author disposition. 1 HIGH + 2 MEDIUM + 2 LOW all fixed with regression tests; 38 new tests + 913-test regression green. No order, no credential, no live authorization, no transport armed, no bridge host deploy."
+}

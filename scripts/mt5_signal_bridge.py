@@ -353,8 +353,96 @@ def _bridge_live_admitted(now_epoch=None) -> bool:
     ``MT5_ALLOW_LIVE`` read: BOTH the per-runtime live authorization (MT5_ALLOW_LIVE=1) AND a valid, non-expired
     host time-bound (MT5_LIVE_EXPIRY). Either absent/invalid ⇒ not admitted, so a non-demo account is refused by
     ``evaluate_binding`` exactly as an un-authorized runtime. CLOSE / MODIFY / PARTIAL-CLOSE remain demo-only and
-    never consult this (they stay fail-closed for LIVE independently)."""
+    never consult this (they stay fail-closed for LIVE independently) — EXCEPT the narrow route-pinned copier
+    mutation admission ``_copier_live_mutation_admitted`` below, which is itself ANDed with this predicate."""
     return _bridge_allow_live() and _bridge_live_expiry_ok(now_epoch)
+
+
+# ADR-0087 — NARROW RED live-mutation admission for the ONE governed copier route. DEFAULT OFF. It NEVER widens
+# the demo wall globally: it admits a LIVE follower MODIFY/PARTIAL/FULL-CLOSE ONLY when EVERY one of the
+# following holds, and fails closed (demo wall unchanged) on any miss — after restart, on expiry, or on identity
+# drift. It is ANDed with the existing live stack (``_bridge_live_admitted`` = MT5_ALLOW_LIVE + a non-expired
+# MT5_LIVE_EXPIRY), so enabling a single flag can never enable trading on its own. It can authorise NO other
+# account, route, symbol or operation. The connected account, the per-runtime authorised identity and the
+# command's expected identity must ALL agree (exact-account triple agreement).
+_COPIER_LIVE_MUTATION_OPS = frozenset({"MODIFY_PROTECTION", "PARTIAL_CLOSE", "FULL_CLOSE"})
+
+
+def _copier_live_mutation_admit_enabled() -> bool:
+    """DARK gate for the narrow copier live-mutation admission (default OFF)."""
+    return str(os.getenv("COPIER_LIVE_MUTATION_ADMIT_ENABLED", "") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _acc_field(acc, name):
+    """Read a field from an account snapshot that may be a dict (``_acc_snapshot``) or the raw ``account_info``
+    object — so the admission works identically at the top-of-function wall and the send-time identity gate."""
+    if isinstance(acc, dict):
+        return acc.get(name)
+    return getattr(acc, name, None)
+
+
+def _copier_live_mutation_admitted(acc, command, op, now_epoch=None) -> bool:
+    """RED: admit a LIVE follower mutation for the EXACT governed route/account/symbol only, time-bound, all
+    fail-closed. Returns False (⇒ the demo wall rejects, unchanged) unless EVERY condition holds. Never a global
+    'allow live' and never operable by a single flag — it is ANDed with the full live stack AND the lifecycle
+    guard. ``acc`` may be a dict (send-time snapshot) or the raw account_info object (top wall)."""
+    try:
+        # 1. Narrow flag OFF (default) ⇒ never admit.
+        if not _copier_live_mutation_admit_enabled():
+            return False
+        # 2. The lifecycle guard is MANDATORY for a live mutation — it binds the ACTUAL position symbol, pre-state,
+        #    revision and per-command deadline to the command. The admission never admits a live send the guard
+        #    does not also cover (defence in depth vs. a command whose declared symbol ≠ the ticket's position).
+        if not _copier_guard_active(command):
+            return False
+        # 3. The full existing live stack must independently admit this runtime (MT5_ALLOW_LIVE + time-bound).
+        if not _bridge_live_admitted(now_epoch):
+            return False
+        # 4. A typed copier command for the SAME mutation op is MANDATORY (no demo/legacy caller reaches here).
+        if not isinstance(command, dict):
+            return False
+        if op not in _COPIER_LIVE_MUTATION_OPS or str(command.get("copier_operation") or "") != op:
+            return False
+        if not command.get("require_identity_pin"):
+            return False
+        # 5. Exact-account TRIPLE agreement: the per-runtime authorised login, the broker-connected account, and
+        #    the command's expected login must ALL be equal (and non-blank). Server is fail-closed too.
+        exp_login = str(os.getenv("MT5_EXPECTED_LOGIN", "") or "").strip()
+        exp_server = str(os.getenv("MT5_EXPECTED_SERVER", "") or "").strip()
+        conn_login = str(_acc_field(acc, "login") or "").strip()
+        conn_server = str(_acc_field(acc, "server") or "").strip()
+        cmd_login = str(command.get("expected_login") or "").strip()
+        cmd_server = str(command.get("expected_server") or "").strip()
+        if not (exp_login and conn_login and cmd_login and exp_login == conn_login == cmd_login):
+            return False
+        # Server pin FAIL-CLOSED: the connected AND command servers must BOTH be present and agree; and when a
+        # runtime expected server is configured it must agree too. A blank on either leg denies.
+        if not (conn_server and cmd_server and conn_server.lower() == cmd_server.lower()):
+            return False
+        if exp_server and exp_server.lower() != conn_server.lower():
+            return False
+        # 6. Symbol pin: the command symbol must equal the single governed admitted symbol (e.g. XAUUSD). The
+        #    guard (required at step 2) additionally binds this to the ACTUAL position symbol.
+        admit_symbol = str(os.getenv("COPIER_LIVE_ADMIT_SYMBOL", "") or "").strip()
+        cmd_symbol = str(command.get("symbol") or (command.get("expected_pre_state") or {}).get("symbol") or "").strip()
+        if not (admit_symbol and cmd_symbol and admit_symbol == cmd_symbol):
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — any error FAILS CLOSED (demo wall unchanged)
+        logger.exception("[copier-live-admit] admission check error; failing closed")
+        return False
+
+
+def _demo_or_admitted_ok(acc, command, op) -> bool:
+    """True iff the account is DEMO (trade_mode==0) OR the narrow route-pinned live-mutation admission applies.
+    The money functions use this IN PLACE OF a bare ``trade_mode != 0`` demo wall — at the top of the function
+    AND at the send-time identity gate — so the two walls are CONSISTENT. With the admission OFF (default)
+    and/or no copier command, this is exactly ``trade_mode == 0`` (byte-identical behaviour). ``acc`` may be a
+    dict or the raw account_info object."""
+    if _acc_field(acc, "trade_mode") == 0:
+        return True
+    return _copier_live_mutation_admitted(acc, command, op)
 
 
 def _require_identity_pin() -> bool:
@@ -777,7 +865,7 @@ def verify_execution_binding(mt5, payload):
 # The pin is MANDATORY on the persistent-workspace path (payload require_identity_pin, or the terminal-level
 # MT5_REQUIRE_IDENTITY_PIN); for legacy it matches the opening-order behaviour (process-env pins, enforced
 # only when set).
-def evaluate_mutation_identity(acc, term, expected):
+def evaluate_mutation_identity(acc, term, expected, command=None, op=None):
     """Pure, fail-closed IDENTITY decision for a trade mutation. Returns (ok, reason). ok is True ONLY
     when the terminal is connected, the account is present, and the active (login, server) matches every
     pin that is SET. A None pin is not enforced here — verify_mutation_identity decides mandatory-ness."""
@@ -787,11 +875,11 @@ def evaluate_mutation_identity(acc, term, expected):
         return False, "terminal_not_connected"
     if acc is None:
         return False, "account_info_unavailable"
-    # Re-assert demo AT SEND TIME (close/modify are demo-only): the top-of-function trade_mode check is
-    # single-shot, so a terminal that drifted demo→REAL between it and order_send would otherwise mutate a
-    # LIVE position. trade_mode: 0=DEMO, 1=CONTEST, 2=REAL — anything but demo fails closed here (parity
-    # with the opening-order gate, which re-checks classification before every send).
-    if acc.get("trade_mode") != 0:
+    # Re-assert AT SEND TIME (the top-of-function wall is single-shot, so a terminal that drifted between it and
+    # order_send would otherwise mutate the wrong classification/account). DEMO is always ok; a LIVE account is
+    # admitted ONLY by the SAME narrow route-pinned admission as the top wall (ADR-0087) — consistent, so the
+    # two walls can never disagree. Default OFF / no command ⇒ exactly ``trade_mode == 0`` (byte-identical).
+    if not _demo_or_admitted_ok(acc, command, op):
         return False, "account_not_demo"
     exp_login = expected.get("expected_login")
     if exp_login and str(acc.get("login")) != str(exp_login):
@@ -802,7 +890,7 @@ def evaluate_mutation_identity(acc, term, expected):
     return True, "ok"
 
 
-def verify_mutation_identity(mt5, identity):
+def verify_mutation_identity(mt5, identity, command=None, op=None):
     """Live-read IDENTITY gate for close/modify. ``identity`` (from the request body / job-bound account)
     may carry require_identity_pin + expected_login + expected_server. When the pin is required (the job
     declares it OR MT5_REQUIRE_IDENTITY_PIN is set on this bridge) the expected (login, server) MUST come
@@ -822,7 +910,7 @@ def verify_mutation_identity(mt5, identity):
             exp_login = (os.getenv("MT5_EXPECTED_LOGIN", "").strip() or None)
             exp_server = (os.getenv("MT5_EXPECTED_SERVER", "").strip() or None)
         ok, reason = evaluate_mutation_identity(
-            acc, term, {"expected_login": exp_login, "expected_server": exp_server})
+            acc, term, {"expected_login": exp_login, "expected_server": exp_server}, command=command, op=op)
         details = {}
         if acc is not None:
             login = acc.get("login")
@@ -2145,10 +2233,13 @@ def fetch_positions(symbol: str = "") -> Dict[str, Any]:
         mt5.shutdown()
 
 
-def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, Any]:
-    """Close an open position by ticket. Demo accounts only. ADR-0033 Inc3: ``identity`` (from the
-    request body / job-bound account) drives the pre-send IDENTITY gate so a drifted terminal cannot
-    close the WRONG account's position; legacy callers pass None ⇒ process-env pins."""
+def close_position(ticket: int, identity: Dict[str, Any] = None,
+                   command: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Close an open position by ticket. DEMO accounts only, EXCEPT the narrow ADR-0087 route-pinned live
+    admission (default OFF). ADR-0033 Inc3: ``identity`` (from the request body / job-bound account) drives the
+    pre-send IDENTITY gate so a drifted terminal cannot close the WRONG account's position; legacy callers pass
+    None ⇒ process-env pins. ``command`` is the typed copier command — consulted ONLY by the route-pinned live
+    admission; absent/OFF ⇒ the demo wall is byte-identical."""
     try:
         import MetaTrader5 as mt5
     except ImportError:
@@ -2165,7 +2256,7 @@ def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, An
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
-        if account_info.trade_mode != 0:
+        if not _demo_or_admitted_ok(account_info, command, "FULL_CLOSE"):
             return {"ok": False, "error": "account_not_demo"}
 
         # Control 2 (guaranteed exposure recovery, close side): a single order_send leaves the position
@@ -2219,7 +2310,7 @@ def close_position(ticket: int, identity: Dict[str, Any] = None) -> Dict[str, An
 
             # ADR-0033 Inc3 — IDENTITY gate immediately before the close order_send (TOCTOU-narrowed): the
             # ticket alone is not authorisation; the terminal's ACTIVE account must be the intended one.
-            _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
+            _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity, command=command, op="FULL_CLOSE")
             if not _idok:
                 # A HARD mismatch (wrong/real account, or a missing mandatory pin) is a non-retryable
                 # REJECT — never close the wrong account's position. A TRANSIENT failure (not connected /
@@ -2278,7 +2369,7 @@ def _normalize_volume_down(volume: float, step: float, vmin: float):
 
 
 def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] = None,
-                           expected_symbol: str = None) -> Dict[str, Any]:
+                           expected_symbol: str = None, command: Dict[str, Any] = None) -> Dict[str, Any]:
     """Partially close an open position by an EXPLICIT ticket and EXPLICIT volume (ADR-0055). DEMO + HEDGING
     accounts only. A DISTINCT operation from ``close_position``: it NEVER closes the full position, never
     targets a different ticket/symbol, and never falls back to a full close. Structured reason codes.
@@ -2311,7 +2402,7 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
-        if account_info.trade_mode != 0:                     # 0 == demo; refuse real/contest
+        if not _demo_or_admitted_ok(account_info, command, "PARTIAL_CLOSE"):  # demo, or narrow route-pinned live admit
             return {"ok": False, "error": "account_not_demo"}
         # HEDGING only: per-ticket partial close is unambiguous. Netting/exchange/unknown fail closed.
         if getattr(account_info, "margin_mode", None) != mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
@@ -2418,7 +2509,8 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
         # IDENTITY gate immediately before the mutation — require_identity_pin FORCED on, so the expected
         # (login, server) MUST come from the job-bound identity (never env) and BOTH must match. A hard
         # mismatch (wrong login/server, or a missing mandatory pin) rejects before any send.
-        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, {**idobj, "require_identity_pin": True})
+        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, {**idobj, "require_identity_pin": True},
+                                                                command=command, op="PARTIAL_CLOSE")
         if not _idok:
             return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails,
                     "ticket": verified_ticket}
@@ -2467,7 +2559,8 @@ def partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] 
         mt5.shutdown()
 
 
-def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str, Any] = None) -> Dict[str, Any]:
+def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str, Any] = None,
+                    command: Dict[str, Any] = None) -> Dict[str, Any]:
     """WS-B AUTO-BREAKEVEN — move an OPEN position's stop-loss (and optionally keep its
     take-profit) via ``TRADE_ACTION_SLTP``. Demo accounts only. Never opens/closes a position:
     ``TRADE_ACTION_SLTP`` only edits SL/TP on an existing position.
@@ -2494,7 +2587,7 @@ def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str
         account_info = mt5.account_info()
         if account_info is None:
             return {"ok": False, "error": "account_info_failed"}
-        if account_info.trade_mode != 0:  # 0 == demo; refuse on real accounts
+        if not _demo_or_admitted_ok(account_info, command, "MODIFY_PROTECTION"):  # demo, or narrow route-pinned live admit
             return {"ok": False, "error": "account_not_demo"}
 
         positions = mt5.positions_get(ticket=ticket)
@@ -2566,7 +2659,7 @@ def modify_position(ticket: int, sl: float, tp: float = None, identity: Dict[str
         }
 
         # ADR-0033 Inc3 — IDENTITY gate immediately before the modify order_send (TOCTOU-narrowed).
-        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity)
+        _idok, _idreason, _iddetails = verify_mutation_identity(mt5, identity, command=command, op="MODIFY_PROTECTION")
         if not _idok:
             logger.error(f"[modify] ticket={ticket} IDENTITY REJECTED: {_idreason} {_iddetails}")
             return {"ok": False, "error": "identity_rejected", "reason": _idreason, **_iddetails, "ticket": ticket}
@@ -2794,8 +2887,8 @@ def guarded_close_position(ticket: int, identity: Dict[str, Any] = None,
     """FULL-CLOSE entry point. When the guard is active for ``command`` it admits/classifies around the
     UNCHANGED ``close_position``; otherwise it IS ``close_position`` (byte-for-byte)."""
     if not _copier_guard_active(command):
-        return close_position(ticket, identity=identity)
-    return _guarded_mutation("FULL_CLOSE", command, lambda: close_position(ticket, identity=identity),
+        return close_position(ticket, identity=identity, command=command)
+    return _guarded_mutation("FULL_CLOSE", command, lambda: close_position(ticket, identity=identity, command=command),
                              ticket=ticket)
 
 
@@ -2803,9 +2896,9 @@ def guarded_modify_position(ticket: int, sl: float, tp: float = None, identity: 
                             command: Dict[str, Any] = None) -> Dict[str, Any]:
     """MODIFY-PROTECTION entry point. Guard-wrapped ``modify_position`` when active; otherwise identical."""
     if not _copier_guard_active(command):
-        return modify_position(ticket, sl, tp, identity=identity)
+        return modify_position(ticket, sl, tp, identity=identity, command=command)
     return _guarded_mutation("MODIFY_PROTECTION", command,
-                             lambda: modify_position(ticket, sl, tp, identity=identity), ticket=ticket)
+                             lambda: modify_position(ticket, sl, tp, identity=identity, command=command), ticket=ticket)
 
 
 def guarded_partial_close_position(ticket: int, volume: float, identity: Dict[str, Any] = None,
@@ -2813,10 +2906,12 @@ def guarded_partial_close_position(ticket: int, volume: float, identity: Dict[st
                                    command: Dict[str, Any] = None) -> Dict[str, Any]:
     """PARTIAL-CLOSE entry point. Guard-wrapped ``partial_close_position`` when active; otherwise identical."""
     if not _copier_guard_active(command):
-        return partial_close_position(ticket, volume, identity=identity, expected_symbol=expected_symbol)
+        return partial_close_position(ticket, volume, identity=identity, expected_symbol=expected_symbol,
+                                      command=command)
     return _guarded_mutation(
         "PARTIAL_CLOSE", command,
-        lambda: partial_close_position(ticket, volume, identity=identity, expected_symbol=expected_symbol),
+        lambda: partial_close_position(ticket, volume, identity=identity, expected_symbol=expected_symbol,
+                                       command=command),
         ticket=ticket)
 
 

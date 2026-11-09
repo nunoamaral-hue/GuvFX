@@ -67,17 +67,23 @@ def follower_mutation_hwm(follower, ticket) -> int:
                 .select_related("master_event").values_list("master_event__sequence", flat=True))
         seqs = [int(s) for s in rows if s is not None]
         return max(seqs) if seqs else -1
-    except Exception:  # noqa: BLE001 — a watermark read must never raise into the dispatch; fail to -1 (no reject)
+    except Exception:  # noqa: BLE001 — a watermark read error FAILS CLOSED (None) so the caller refuses the
+        # dispatch, rather than silently disabling stale-revision rejection with a -1.
         logger.exception("copier mutation watermark read failed follower=%s ticket=%s",
                          getattr(follower, "id", "?"), ticket)
-        return -1
+        return None
 
 
-def _build_command(job, replication) -> dict:
+def _build_command(job, replication):
     """The typed guard command for the bridge = the job payload (ADR-0083 envelope) + the per-ticket watermark.
-    Secret-free (the payload carries ids / reason codes / the server-derived identity pin, no credential)."""
+    Secret-free (ids / reason codes / the server-derived identity pin, no credential). Returns None when the
+    watermark could not be read — the caller then refuses the dispatch (fail-closed), rather than sending with a
+    disabled stale-revision check."""
+    hwm = follower_mutation_hwm(replication.follower, replication.follower_ticket)
+    if hwm is None:
+        return None
     command = dict(job.payload or {})
-    command["last_applied_revision"] = follower_mutation_hwm(replication.follower, replication.follower_ticket)
+    command["last_applied_revision"] = hwm
     return command
 
 
@@ -87,6 +93,14 @@ def _governing_authority_ok(replication, op, *, now) -> tuple[bool, str]:
     committed after the job was minted fails closed at send time too. ``(ok, reason)``."""
     try:
         from trade_copier import live_execution as le
+        from trade_copier.flags import copier_live_execute_enabled
+        # Gate parity with the producer's preamble: the LIVE execute arm AND the specific per-op arm must be ON
+        # at SEND time, not only at mint time — a selective per-op disarm (e.g. flipping full-close off) must
+        # stop a still-pending job too.
+        if not copier_live_execute_enabled():
+            return False, "live_copier_arm_disabled"
+        if not le._per_op_flag_armed(op):
+            return False, "live_%s_arm_disabled" % str(op).lower()
         authz, reason = le._relock_live_authz_for_lifecycle(replication, op, now=now)
         return (authz is not None), reason
     except Exception:  # noqa: BLE001 — a gate error fails CLOSED (never send on an unverifiable authority)
@@ -126,6 +140,8 @@ def dispatch_one(job_id: int, *, transport=_inert_transport, gate_check=_governi
         if not ok:
             return {"dispatched": False, "reason": reason, "gate": "refused"}
         command = _build_command(job, replication)
+        if command is None:                       # watermark unreadable -> fail closed, leave PENDING, send nothing
+            return {"dispatched": False, "reason": "watermark_unavailable"}
         # Claim single-flight.
         job.status = ExecutionJob.Status.RUNNING
         job.save(update_fields=["status"])
@@ -139,7 +155,7 @@ def dispatch_one(job_id: int, *, transport=_inert_transport, gate_check=_governi
                          "lifecycle_outcome": "UNKNOWN_OUTCOME", "lifecycle_reason": "transport_exception"}
 
     br = bridge_result or {}
-    # The INERT transport (or any transport that did NOT send) -> revert to PENDING; record nothing.
+    # The INERT transport (not armed) -> revert to PENDING; nothing sent, nothing recorded.
     if br.get("error") == "mutation_transport_disabled":
         with transaction.atomic():
             j = ExecutionJob.objects.select_for_update().filter(id=job_id).first()
@@ -147,6 +163,14 @@ def dispatch_one(job_id: int, *, transport=_inert_transport, gate_check=_governi
                 j.status = ExecutionJob.Status.PENDING
                 j.save(update_fields=["status"])
         return {"dispatched": False, "reason": "transport_disabled"}
+
+    # A GENUINE pre-send refusal (transport identity/deadline/route block, or a bridge admit block) carries
+    # ``guard_blocked`` and NO explicit outcome -> nothing was sent and it cannot recover; record a terminal
+    # CONTAINED_FAILURE (FAILED + alert), never a false RUNNING and never a retry loop.
+    if br.get("guard_blocked") and not str(br.get("lifecycle_outcome") or "").strip():
+        br = dict(br)
+        br["lifecycle_outcome"] = "CONTAINED_FAILURE"
+        br.setdefault("lifecycle_reason", str(br.get("error") or "transport_blocked")[:64])
 
     # Record the outcome onto the canonical records (reconciliation_status + governed alert).
     from trade_copier.lifecycle_outcome_record import record_lifecycle_outcome
