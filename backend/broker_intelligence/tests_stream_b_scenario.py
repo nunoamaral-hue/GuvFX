@@ -168,3 +168,35 @@ class CrossAccountIsolation(TestCase):
         w1 = Withdrawal.objects.get(trading_account=a1)
         self.assertEqual(w1.status, Withdrawal.Status.CONFIRMATION_REQUIRED)  # untouched by a2's completion
         self.assertFalse(Withdrawal.objects.filter(trading_account=a2).exists())  # completion fabricated nothing
+
+
+class ProcessedCompletionAdvancesExistingWithdrawal(TestCase):
+    """Packet 010: Pepperstone's terminal "We've processed your withdrawal" email must ADVANCE the existing
+    CONFIRMATION_REQUIRED withdrawal to COMPLETED (by shared reference), not create a second record."""
+
+    def test_processed_completion_advances_to_completed_single_record_separate_timestamps(self):
+        a = _acct()
+        _mk_event(a, F.PS_CONFIRMATION_REQUIRED, minutes=0)
+        C.run_correlation()
+        w = Withdrawal.objects.get()
+        self.assertEqual(w.status, Withdrawal.Status.CONFIRMATION_REQUIRED)
+        self.assertIsNone(w.completed_at)
+        req_at = w.confirmation_required_at
+        # The genuine "processed" terminal email (same reference) arrives ~99 minutes later.
+        _mk_event(a, F.PS_PROCESSED, minutes=99)
+        C.run_correlation()
+        self.assertEqual(Withdrawal.objects.count(), 1)                  # advanced, NOT duplicated
+        w.refresh_from_db()
+        self.assertEqual(w.status, Withdrawal.Status.COMPLETED)
+        self.assertIsNotNone(w.completed_at)
+        self.assertEqual(w.confirmation_required_at, req_at)             # request anchor preserved, separate field
+        self.assertGreater(w.completed_at, w.confirmation_required_at)   # completion AFTER request => truthful duration
+
+    def test_replayed_processed_completion_is_idempotent(self):
+        a = _acct()
+        _mk_event(a, F.PS_CONFIRMATION_REQUIRED, minutes=0)
+        _mk_event(a, F.PS_PROCESSED, minutes=99)
+        C.run_correlation()
+        C.run_correlation()                                             # replay must not duplicate
+        self.assertEqual(Withdrawal.objects.count(), 1)
+        self.assertEqual(Withdrawal.objects.get().status, Withdrawal.Status.COMPLETED)

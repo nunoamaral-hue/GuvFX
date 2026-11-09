@@ -42,6 +42,15 @@ PS_COMPLETED = dict(
     subject="Your withdrawal is complete",
     body=("Your withdrawal has been completed.\nFunds have been sent to your Visa card.\n"
           "Amount: GBP 15.00\nReference: %s\n" % PS_REF))
+# Pepperstone's genuine terminal notification is worded "We've processed your withdrawal" / "your withdrawal has been
+# processed" (NOT "completed"/"funds sent"). Past-tense "processed" is COMPLETED; it co-occurs with forward-looking
+# "may/will be processed in 1-2 business days" text, which must NOT keep it non-terminal.
+PS_PROCESSED = dict(
+    from_address=PS_FROM,
+    subject="We’ve processed your withdrawal",
+    body=("Hi,\nWe’ve processed your withdrawal — your withdrawal has been processed and is on its way to "
+          "your nominated card. Your withdrawal may be processed in multiple transactions and will be processed in "
+          "the next 1-2 business days.\nAmount: GBP 15.00\nReference: %s\n" % PS_REF))
 PS_EXPIRED = dict(
     from_address=PS_FROM,
     subject="Your withdrawal confirmation has expired",
@@ -73,6 +82,26 @@ class PepperstoneClassification(TestCase):
         self.assertEqual(PEPPERSTONE.parse(**PS_PROCESSING).event_type, "WITHDRAWAL_PROCESSING")
         self.assertEqual(PEPPERSTONE.parse(**PS_COMPLETED).event_type, "WITHDRAWAL_COMPLETED")
         self.assertEqual(PEPPERSTONE.parse(**PS_EXPIRED).event_type, "WITHDRAWAL_EXPIRED")
+
+    def test_processed_wording_is_a_completion(self):
+        # Packet 010: Pepperstone's genuine terminal email is "We've processed your withdrawal" / "has been processed"
+        # (NOT "completed"/"funds sent"). Past-tense "processed" -> COMPLETED, carrying the reference so correlation
+        # advances the EXISTING withdrawal rather than leaving it stuck at CONFIRMATION_REQUIRED.
+        p = PEPPERSTONE.parse(**PS_PROCESSED)
+        self.assertEqual(p.event_type, "WITHDRAWAL_COMPLETED")
+        self.assertEqual(p.broker_reference_id, PS_REF)
+        self.assertEqual(p.transaction_category, "UNKNOWN")   # completion carries no rail -> not re-claimed external
+
+    def test_present_and_future_processing_are_not_completed(self):
+        # MUTATION-KILLER for a too-broad 'processed' anchor: "is being processed" -> PROCESSING; "will be / may be
+        # processed" (forward-looking, present in the real completion email too) is never COMPLETED on its own.
+        being = PEPPERSTONE.parse(from_address=PS_FROM, subject="Withdrawal update",
+                                  body="Your withdrawal is being processed.\nReference: %s\n" % PS_REF)
+        self.assertEqual(being.event_type, "WITHDRAWAL_PROCESSING")
+        for body in ("Your withdrawal will be processed in 1-2 business days.\nReference: %s\n" % PS_REF,
+                     "Your withdrawal may be processed in multiple transactions.\nReference: %s\n" % PS_REF):
+            ev = PEPPERSTONE.parse(from_address=PS_FROM, subject="Withdrawal update", body=body)
+            self.assertNotEqual(getattr(ev, "event_type", None), "WITHDRAWAL_COMPLETED", body)
 
     def test_confirmation_phrasing_with_the_word_complete_is_not_a_completion(self):
         # ADR-0079 review (MEDIUM): the COMPLETED rule must not let an optional reference token swallow arbitrary

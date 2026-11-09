@@ -200,3 +200,49 @@ class ParseRfc822ExposesHtmlBody(SimpleTestCase):
                b"Content-Type: text/html; charset=utf-8\r\n\r\n<html><body><p>Hi</p></body></html>\r\n")
         f = parse_rfc822(raw)
         self.assertIn("<p>Hi</p>", f["html_body"])
+
+
+def _pep_completion_html(ref="WX-COMPLETE-1",
+                         phrase="your withdrawal has been processed and is on its way to your nominated card",
+                         heading="We’ve processed your withdrawal",
+                         tail=" Your withdrawal may be processed in multiple transactions and will be processed in "
+                              "the next 1-2 business days."):
+    """Synthetic Pepperstone 'processed' email (HTML), mirroring the genuine structure: an OPTIONAL terminal
+    'processed' heading + a status sentence + a details table whose labels differ from the request email
+    (Reference number / Account number / Total Amount / Account Currency). Invented data only.
+
+    The default fixture is a genuine completion (past-tense heading AND the future 1-2-business-days boilerplate
+    the real email carries). Negative variants pass heading="" (and their own tail) so ONLY `phrase` drives
+    lifecycle classification — otherwise the completion heading would plant the past-tense anchor in every variant."""
+    rows = [("Reference number", ref), ("Account number", "99887766"),
+            ("Total Amount", "250.00"), ("Account Currency", "EUR")]
+    detail = "".join(_ROW.format(label=l, value=v) for l, v in rows)
+    head_html = ("<p>" + heading + "</p>") if heading else ""
+    return ("<html><body><div>" + head_html + "<p>Hi Jordan,</p>"
+            "<p>" + phrase + "." + tail + "</p><h2>Withdrawal details</h2><table>" + detail + "</table></div></body></html>")
+
+
+class PepperstoneHtmlProcessedCompletion(SimpleTestCase):
+    def test_processed_completion_html_is_completed_and_carries_reference(self):
+        ev = PEPPERSTONE.parse(subject="We’ve processed your withdrawal", body="", from_address=PS_FROM,
+                               html_body=_pep_completion_html(ref="WX-COMPLETE-1"))
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.event_type, "WITHDRAWAL_COMPLETED")
+        self.assertEqual(ev.broker_reference_id, "WX-COMPLETE-1")       # carried so correlation advances by reference
+        self.assertNotEqual(ev.transaction_category, "EXTERNAL_WITHDRAWAL")  # completion is not re-claimed external
+
+    def test_being_processed_html_is_not_a_completion(self):
+        # Genuine 'being processed' update: present-tense status PLUS the FUTURE "will be processed in 1-2 business
+        # days" boilerplate the real completion email also carries — but NO past-tense completion anchor. Proves the
+        # future-tense boilerplate alone never advances to COMPLETED on the HTML path.
+        ev = PEPPERSTONE.parse(subject="Withdrawal update", body="", from_address=PS_FROM,
+                               html_body=_pep_completion_html(
+                                   phrase="your withdrawal is being processed", heading="",
+                                   tail=" It will be processed in the next 1-2 business days."))
+        self.assertNotEqual(getattr(ev, "event_type", None), "WITHDRAWAL_COMPLETED")
+
+    def test_future_processed_html_is_not_a_completion(self):
+        ev = PEPPERSTONE.parse(subject="Withdrawal update", body="", from_address=PS_FROM,
+                               html_body=_pep_completion_html(
+                                   phrase="your withdrawal will be processed shortly", heading="", tail=""))
+        self.assertNotEqual(getattr(ev, "event_type", None), "WITHDRAWAL_COMPLETED")
