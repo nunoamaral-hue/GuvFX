@@ -190,6 +190,14 @@ def copier_mutation_dispatch_enabled() -> bool:
     return copier_live_execute_enabled() and _flag("COPIER_MUTATION_DISPATCH_ENABLED")
 
 
+def copier_mutation_transport_enabled() -> bool:
+    """DARK gate for the REAL per-tenant follower MUTATION transport (ADR-0087). DEFAULT OFF, ANDed with the
+    dispatcher arm stack (``copier_mutation_dispatch_enabled`` → ``copier_live_execute_enabled`` → the master
+    gate). With it OFF the dispatcher's transport is INERT and contacts NO broker; it widens no gate and
+    resolves only the GOVERNED follower's OWN per-tenant endpoint (never a global/sibling bridge)."""
+    return copier_mutation_dispatch_enabled() and _flag("COPIER_MUTATION_TRANSPORT_ENABLED")
+
+
 def copier_lifecycle_guard_enabled() -> bool:
     """Backend reflection of the BRIDGE DARK flag ``COPIER_LIFECYCLE_GUARD_ENABLED`` (ADR-0085). DEFAULT OFF,
     ANDed with the master gate.
