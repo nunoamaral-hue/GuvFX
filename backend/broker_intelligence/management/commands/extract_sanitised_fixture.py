@@ -42,6 +42,9 @@ class Command(BaseCommand):
                             help="Private artifact path for the FULL detail (OUTSIDE repo/credential/evidence/static roots; "
                                  "created 0600, no overwrite, no symlink). The only place body + residual literals appear.")
         parser.add_argument("--json", action="store_true", help="Emit the SAFE SUMMARY as JSON (never body/residual literals).")
+        parser.add_argument("--owner-id", type=int, default=None,
+                            help="Explicit owner (GuvFX user id) whose known name is used as a redaction input. Only "
+                                 "needed when the blob's owner cannot be resolved unambiguously; never prints the name.")
 
     # ---- private-artifact path safety (Blocker B) -------------------------------------------------------------------
     def _unsafe_roots(self):
@@ -50,7 +53,16 @@ class Command(BaseCommand):
         roots = []
         base = str(getattr(settings, "BASE_DIR", "") or "")
         if base:
-            roots.append(os.path.dirname(base))            # the repository (BASE_DIR == <repo>/backend)
+            # The REPOSITORY root. In a dev checkout BASE_DIR == <repo>/backend, so the repository is its parent.
+            # In the deployed container BASE_DIR IS the app root (e.g. /app) whose parent is the filesystem root '/';
+            # protecting '/' would mark the ENTIRE filesystem protected and reject every private --out path. When the
+            # parent resolves to the filesystem root, protect BASE_DIR ITSELF (still fully protecting the repository)
+            # rather than '/'. The evidence / credential / static / media roots below stay protected independently —
+            # this NARROWS an over-broad guard; it never broadens access to any sensitive root. Realpath first so a
+            # symlinked BASE_DIR is compared by its canonical location.
+            base_real = os.path.realpath(base)
+            parent = os.path.dirname(base_real)
+            roots.append(base_real if (parent in ("", os.sep) or parent == base_real) else parent)
         try:
             roots.append(evidence_root())                  # immutable evidence store
         except Exception:  # noqa: BLE001
@@ -107,11 +119,57 @@ class Command(BaseCommand):
             fh.write("# SANITISED fixture (Provenance.SANITISED) — review residual_* before deriving a committed fixture.\n")
             fh.write(json.dumps(artifact, indent=2, default=str))
 
+    # ---- owner-identity resolution (name is a REDACTION INPUT only; never printed/returned) --------------------------
+    def _resolve_owner_names(self, blob, owner_id):
+        """Return (name_strings, owner_source) for the blob's owner — the GuvFX-known name used ONLY to build name
+        masks. Resolution order: explicit --owner-id; the blob's own BrokerEvent owner; the blob's capturing mailbox
+        owner; else the single distinct connected-mailbox owner. Ambiguous (several distinct owners) or unavailable ->
+        ([], reason): the caller FAILS CLOSED. Never emits the name itself — only the owner id and a source label."""
+        from django.contrib.auth import get_user_model
+        from broker_intelligence.models import BrokerEvent, ConnectedMailbox
+        User = get_user_model()
+
+        def _names_for(uid):
+            u = User.objects.filter(id=uid).first()
+            if u is None:
+                return None
+            vals = [getattr(u, "first_name", ""), getattr(u, "last_name", ""),
+                    (u.get_full_name() if hasattr(u, "get_full_name") else "")]
+            return [v for v in vals if (v or "").strip()]
+
+        if owner_id is not None:
+            names = _names_for(owner_id)
+            if not names:
+                return [], "explicit owner id has no usable name"
+            return names, "explicit --owner-id"
+
+        candidates = set(BrokerEvent.objects.filter(evidence_id=blob.id)
+                         .exclude(owner__isnull=True).values_list("owner_id", flat=True))
+        src = "blob BrokerEvent owner"
+        if not candidates:
+            try:
+                candidates = set(obs.connected_mailbox.user_id for obs in blob.message_observations.all()
+                                 if getattr(obs, "connected_mailbox", None) is not None)
+                src = "blob capturing mailbox owner"
+            except Exception:  # noqa: BLE001
+                candidates = set()
+        if not candidates:
+            candidates = set(ConnectedMailbox.objects.exclude(user__isnull=True).values_list("user_id", flat=True))
+            src = "single connected-mailbox owner"
+        candidates.discard(None)
+        if len(candidates) != 1:
+            return [], ("ambiguous owner (%d candidates) — pass --owner-id" % len(candidates)) if candidates \
+                else "owner identity unavailable"
+        names = _names_for(next(iter(candidates)))
+        if not names:
+            return [], "resolved owner has no usable name in GuvFX"
+        return names, src
+
     def handle(self, *args, **o):
         from broker_intelligence.models import BrokerEvent, EvidenceBlob, Withdrawal, ConnectedMailbox
         from broker_intelligence.evidence import EvidenceStore, EvidenceStoreError
         from broker_intelligence.gmail_source import parse_rfc822
-        from broker_intelligence.fixture_extraction import extract_fixture
+        from broker_intelligence.fixture_extraction import extract_fixture, validate_pii_clean
 
         out_path = o.get("out")
         resolved_out = self._validate_out(out_path) if out_path else None   # fail fast, before any read
@@ -120,6 +178,13 @@ class Command(BaseCommand):
             blob = EvidenceBlob.objects.get(id=o["blob_id"])
         except EvidenceBlob.DoesNotExist:
             raise CommandError("EvidenceBlob id=%s not found" % o["blob_id"])
+
+        # ---- OWNER IDENTITY as a redaction input (never printed). Packet 008: the owner's known name is masked so the
+        # member is not leaked. If it cannot be resolved unambiguously, FAIL CLOSED before any read -> no fixture. ----
+        known_names, owner_source = self._resolve_owner_names(blob, o.get("owner_id"))
+        if not known_names:
+            raise CommandError("owner identity for name redaction is unavailable/ambiguous (%s); refusing to extract"
+                               % owner_source)
 
         # ---- BEFORE snapshot (mutation guards) ----
         before = (BrokerEvent.objects.count(), EvidenceBlob.objects.count(), Withdrawal.objects.count())
@@ -137,7 +202,7 @@ class Command(BaseCommand):
                 from_address=f.get("from_address", ""), to_addresses=f.get("to_addresses", ()),
                 subject=f.get("subject", ""), body=f.get("body", ""),
                 date=str(f.get("received_at", "") or ""), auth_verdict=f.get("auth_verdict", ""),
-                min_account_digits=o["min_account_digits"])
+                known_names=known_names, min_account_digits=o["min_account_digits"])
         except EvidenceStoreError:
             hash_ok = False
 
@@ -151,6 +216,12 @@ class Command(BaseCommand):
         n_token = len(fixture["residual_token_candidates"]) if fixture else 0
         header = fixture["header"] if fixture else {}
 
+        # ---- PII ACCEPTANCE GATE (packet 008): prove no personal name/email/number/token/phone survived, or fail
+        # closed. Reports CATEGORY COUNTS ONLY — never a literal value. ----
+        pii = (validate_pii_clean(subject=header.get("subject", ""), body=fixture["body"], known_names=known_names,
+                                  min_account_digits=o["min_account_digits"])
+               if fixture is not None else {"ok": False, "counts": {}})
+
         # ---- SAFE SUMMARY (default stdout / --json): domains + counts + guards ONLY; never body/residual literals ----
         # The recipient (member) mailbox domain is deliberately NOT in the default summary — on a vanity/corporate
         # domain it would identify the member in ordinary logs. Only the broker's from_domain (safe) is shown; the
@@ -160,6 +231,9 @@ class Command(BaseCommand):
             "provenance_tier": "SANITISED",
             "from_domain": header.get("from_domain", ""),
             "auth_verdict": header.get("auth_verdict", ""),
+            "owner_name_source": owner_source,
+            "name_tokens_masked_count": fixture["name_tokens_masked_count"] if fixture else 0,
+            "pii_clean": pii["ok"], "pii_residual_counts": pii["counts"],
             "residual_numeric_run_count": n_numeric, "residual_token_candidate_count": n_token,
         }
         if o["json"]:
@@ -169,7 +243,9 @@ class Command(BaseCommand):
             w("=== SANITISED FIXTURE SUMMARY (READ-ONLY, blob id=%s sha=%s) ===" % (blob.id, sha_before[:16]))
             w("evidence_hash_verified=%s  provenance_tier=SANITISED" % hash_ok)
             if fixture is not None:
-                w("from_domain=%s  auth_verdict=%s" % (summary["from_domain"], summary["auth_verdict"]))
+                w("from_domain=%s  auth_verdict=%s  owner_name_source=%s  name_tokens_masked=%d"
+                  % (summary["from_domain"], summary["auth_verdict"], owner_source, summary["name_tokens_masked_count"]))
+                w("PII GATE: clean=%s  residual_counts=%s" % (pii["ok"], pii["counts"]))
                 w("residual_numeric_runs=%d  residual_token_candidates=%d  (DETAIL only via --out private artifact)"
                   % (n_numeric, n_token))
             else:
@@ -180,10 +256,15 @@ class Command(BaseCommand):
         # Guard FIRST: a failed read-only guarantee prevents any --out write.
         if not (hash_ok and no_mutation):
             raise CommandError("extraction FAILED read-only guarantees (hash_ok=%s no_mutation=%s)" % (hash_ok, no_mutation))
+        # Then the PII gate: never write a fixture that still carries personal data (categories only in the message).
+        if not pii["ok"]:
+            raise CommandError("extraction FAILED PII validation — residual categories %s; refusing to write fixture"
+                               % {k: v for k, v in pii["counts"].items() if v})
 
         if resolved_out and fixture is not None:
             artifact = dict(fixture, blob_id=blob.id, evidence_hash_verified=hash_ok, no_mutation=no_mutation,
-                            provenance_tier="SANITISED")
+                            provenance_tier="SANITISED", owner_name_source=owner_source,
+                            pii_validation={"clean": pii["ok"], "counts": pii["counts"]})
             self._write_private(resolved_out, artifact)
             # Confirmation carries NO raw identifiers — only the path + counts.
             self.stdout.write("wrote private sanitised fixture to %s (0600; %d numeric + %d token residual candidates "

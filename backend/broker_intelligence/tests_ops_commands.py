@@ -6,6 +6,7 @@ All synthetic; no genuine sample. The command tests assert the strict READ-ONLY 
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from datetime import timedelta
 from io import StringIO
@@ -62,6 +63,15 @@ def _mailbox(**extra):
         primary_email="x@gmail.com", status=ConnectedMailbox.Status.CONNECTED, cursor_state="c1", **extra)
 
 
+def _named_owner(first="John", last="Smith"):
+    """A GuvFX user with a known name, used as the owner-identity redaction input the sanitiser now requires
+    (packet 008). Synthetic name only."""
+    _SEQ[0] += 1
+    n = _SEQ[0]
+    return User.objects.create_user(username="owner%d" % n, email="owner%d@x.invalid" % n, password="x",
+                                    first_name=first, last_name=last)
+
+
 class MailboxHealthExitCode(TestCase):
     def test_default_invocation_exits_zero_even_when_recovery_required(self):
         _mailbox(last_successful_sync=timezone.now() - timedelta(days=100))   # very stale -> RECOVERY_REQUIRED
@@ -86,9 +96,11 @@ class ExtractSanitisedFixtureDefaultOutputSafe(TestCase):
     def test_default_stdout_is_summary_only(self):
         with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
             blob, _ = EvidenceStore().put(_TRADERSWAY_RAW)
+            owner = _named_owner()
             before = (BrokerEvent.objects.count(), EvidenceBlob.objects.count(), Withdrawal.objects.count())
             out, err = StringIO(), StringIO()
-            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=out, stderr=err)
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id),
+                         stdout=out, stderr=err)
             text = out.getvalue() + err.getvalue()
         self.assertIn("NO_MUTATION=True", text)
         self.assertIn("tradersway.com", text)                     # domain is safe
@@ -103,8 +115,10 @@ class ExtractSanitisedFixtureDefaultOutputSafe(TestCase):
         import json
         with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
             blob, _ = EvidenceStore().put(_TRADERSWAY_RAW)
+            owner = _named_owner()
             out = StringIO()
-            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--json", stdout=out)
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id),
+                         "--json", stdout=out)
             payload = json.loads(out.getvalue())
         self.assertNotIn("body", payload)                         # summary carries no body / residual literals
         self.assertNotIn("residual_numeric_runs", payload)
@@ -120,8 +134,10 @@ class ExtractSanitisedFixturePrivateArtifact(TestCase):
         with tempfile.TemporaryDirectory() as evroot, tempfile.TemporaryDirectory() as outdir, \
                 override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=evroot):
             blob, _ = EvidenceStore().put(_TRADERSWAY_RAW)
+            owner = _named_owner()
             out_path = os.path.join(outdir, "fixture.sanitised.json")
-            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--out", out_path, stdout=StringIO())
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id),
+                         "--out", out_path, stdout=StringIO())
             self.assertTrue(os.path.exists(out_path))
             self.assertEqual(os.stat(out_path).st_mode & 0o777, 0o600)          # owner-only
             content = open(out_path, encoding="utf-8").read()
@@ -130,6 +146,7 @@ class ExtractSanitisedFixturePrivateArtifact(TestCase):
         self.assertIn("24.12", artifact["body"])                               # amount shape preserved
         self.assertTrue(artifact["evidence_hash_verified"])
         self.assertEqual(artifact["provenance_tier"], "SANITISED")
+        self.assertTrue(artifact["pii_validation"]["clean"])                   # fail-closed gate passed
         for ident in _RAW_IDENTIFIERS:
             self.assertNotIn(ident, content, ident)                            # raw identifiers never in the artifact
 
@@ -172,15 +189,17 @@ class ExtractSanitisedFixturePrivateArtifact(TestCase):
             self.assertFalse(os.path.exists(in_evidence))
 
     def test_default_summary_shows_residual_count_but_not_literal(self):
-        # A decimal-glued identifier survives the masker and is surfaced ONLY as a residual COUNT in default output —
-        # never as a literal (non-trivial Blocker-B default-output safety).
+        # A decimal-glued identifier UNDER A NEUTRAL (non-reference) word survives the masker's decimal guard and is
+        # surfaced ONLY as a residual COUNT in default output — never as a literal (non-trivial Blocker-B safety). A
+        # LABELLED decimal-glued value (e.g. "Reference 2026...") is now actively removed as <REF> by the 008 masker.
         import re
         raw = (b"From: noreply@tradersway.com\r\nTo: member@gmail.com\r\nSubject: statement\r\n"
-               b"Content-Type: text/plain; charset=utf-8\r\n\r\nReference 20261014.998877 recorded.\r\n")
+               b"Content-Type: text/plain; charset=utf-8\r\n\r\nStatement 20261014.998877 recorded.\r\n")
         with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
             blob, _ = EvidenceStore().put(raw)
+            owner = _named_owner()
             out = StringIO()
-            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=out)
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id), stdout=out)
             text = out.getvalue()
         self.assertNotIn("20261014", text)                       # literal withheld from default output
         self.assertNotIn("998877", text)
@@ -224,6 +243,76 @@ class ExtractSanitisedFixturePrivateArtifact(TestCase):
                 fh.write(b"TAMPERED BYTES")
             with self.assertRaises(CommandError):
                 call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=StringIO())
+
+
+class ExtractSanitisedFixtureOwnerAndPiiGate(TestCase):
+    """Packet 008: the owner name is a REQUIRED redaction input (fail closed if unavailable/ambiguous), the PII gate
+    fails closed if any personal data would remain, and no owner name ever appears in output."""
+
+    def _put(self, root, raw=_TRADERSWAY_RAW):
+        return EvidenceStore().put(raw)[0]
+
+    def test_fails_closed_when_owner_unavailable(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
+            blob = self._put(root)          # no mailbox, no event, no --owner-id
+            with self.assertRaises(CommandError) as ctx:
+                call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=StringIO())
+            self.assertIn("owner identity", str(ctx.exception))
+
+    def test_auto_resolves_single_mailbox_owner(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
+            blob = self._put(root)
+            u = _named_owner("John", "Smith")
+            ConnectedMailbox.objects.create(
+                user=u, provider=ConnectedMailbox.Provider.GMAIL, provider_mailbox_id="solo-pm",
+                primary_email="x@gmail.com", status=ConnectedMailbox.Status.CONNECTED, cursor_state="c1")
+            out = StringIO()
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=out)   # no --owner-id
+            text = out.getvalue()
+        self.assertIn("owner_name_source=", text)
+        self.assertIn("PII GATE: clean=True", text)
+        for ident in ("John", "Smith"):
+            self.assertNotIn(ident, text, ident)
+
+    def test_ambiguous_owner_requires_explicit_owner_id(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=root):
+            blob = self._put(root)
+            _mailbox(); _mailbox()          # two distinct mailbox owners -> ambiguous
+            with self.assertRaises(CommandError) as ctx:
+                call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), stdout=StringIO())
+            self.assertIn("ambiguous", str(ctx.exception))
+            owner = _named_owner()          # an explicit owner id disambiguates
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id),
+                         stdout=StringIO())
+
+    def test_pii_gate_fails_closed_and_writes_no_fixture(self):
+        with tempfile.TemporaryDirectory() as evroot, tempfile.TemporaryDirectory() as outdir, \
+                override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=evroot):
+            blob = self._put(evroot)
+            owner = _named_owner()
+            out_path = os.path.join(outdir, "must_not_exist.json")
+            with mock.patch("broker_intelligence.fixture_extraction.validate_pii_clean",
+                            return_value={"ok": False, "counts": {"known_or_discovered_name": 1}}):
+                with self.assertRaises(CommandError) as ctx:
+                    call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id),
+                                 "--out", out_path, stdout=StringIO())
+            self.assertIn("PII validation", str(ctx.exception))
+            self.assertFalse(os.path.exists(out_path))     # fail closed: NOTHING written
+
+    def test_known_owner_name_masked_even_without_salutation(self):
+        raw = (b"From: noreply@tradersway.com\r\nTo: m@gmail.com\r\nSubject: update\r\n"
+               b"Content-Type: text/plain; charset=utf-8\r\n\r\nYour withdrawal was approved for Zebediah Quill.\r\n")
+        with tempfile.TemporaryDirectory() as evroot, tempfile.TemporaryDirectory() as outdir, \
+                override_settings(BROKER_INTELLIGENCE_EVIDENCE_ROOT=evroot):
+            blob = self._put(evroot, raw)
+            owner = _named_owner("Zebediah", "Quill")
+            out_path = os.path.join(outdir, "fx.json")
+            call_command("extract_sanitised_fixture", "--blob-id", str(blob.id), "--owner-id", str(owner.id),
+                         "--out", out_path, stdout=StringIO())
+            content = open(out_path, encoding="utf-8").read()
+        self.assertNotIn("Zebediah", content)              # known name masked though not in any salutation
+        self.assertNotIn("Quill", content)
+        self.assertIn("<NAME>", content)
 
 
 class CertifyBrokerBlobCommand(TestCase):
@@ -396,3 +485,61 @@ class CertifyGenuineEvidenceChain(TestCase):
     def test_certified_broker_alone_without_chain_is_blocked(self):
         # Avoid circular proof: a certified broker + attestation but NO matching REAL event cannot certify.
         self._assert_blocked(self._certify(make_event=False))
+
+
+class ExtractSanitisedFixtureContainerLayoutGuard(TestCase):
+    """GFX-PEPPERSTONE-EXTRACTOR-PARSER-007 — the private-artifact ``--out`` guard must work in the DEPLOYED container
+    layout (``BASE_DIR`` IS the app root, e.g. ``/app``, whose parent is the filesystem root ``/``) as well as the dev
+    checkout layout, WITHOUT broadening access to any sensitive root. The previous logic protected
+    ``os.path.dirname(BASE_DIR)`` which in the container is ``/`` — marking the entire filesystem protected and
+    rejecting every private output path."""
+
+    def _cmd(self):
+        from broker_intelligence.management.commands.extract_sanitised_fixture import Command
+        return Command()
+
+    def test_container_base_dir_app_protects_app_not_filesystem_root(self):
+        # MUTATION-KILLER: reverting the fix to ``roots.append(os.path.dirname(base))`` makes ``/`` a protected root
+        # with BASE_DIR=/app, which this assertion forbids.
+        with override_settings(BASE_DIR="/app", STATIC_ROOT=None, MEDIA_ROOT=""):
+            roots = self._cmd()._unsafe_roots()
+        self.assertIn("/app", roots)
+        self.assertNotIn("/", roots)
+
+    def test_dev_base_dir_protects_repo_parent_only(self):
+        # Dev layout unchanged: BASE_DIR == <repo>/backend → protect <repo> (its parent), never the backend dir alone
+        # and never ``/``.
+        with override_settings(BASE_DIR="/srv/myrepo/backend", STATIC_ROOT=None, MEDIA_ROOT=""):
+            roots = self._cmd()._unsafe_roots()
+        self.assertIn("/srv/myrepo", roots)
+        self.assertNotIn("/srv/myrepo/backend", roots)
+        self.assertNotIn("/", roots)
+
+    def test_evidence_credential_static_media_roots_stay_protected(self):
+        with override_settings(BASE_DIR="/app", STATIC_ROOT="/srv/static_x", MEDIA_ROOT="/srv/media_x"):
+            with mock.patch.dict(os.environ, {"BROKER_INTELLIGENCE_CREDENTIAL_ROOT": "/srv/cred_x"}):
+                roots = self._cmd()._unsafe_roots()
+        for r in ("/app", "/srv/static_x", "/srv/media_x", "/srv/cred_x"):
+            self.assertIn(os.path.realpath(r), roots)
+
+    def test_validate_out_accepts_private_rejects_protected_traversal_and_symlink(self):
+        cmd = self._cmd()
+        protected = os.path.realpath(tempfile.mkdtemp())   # stands in for the repo/app root
+        private = os.path.realpath(tempfile.mkdtemp())     # operator's private dir — a sibling, OUTSIDE protected
+        self.addCleanup(shutil.rmtree, protected, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, private, ignore_errors=True)
+        with mock.patch.object(cmd, "_unsafe_roots", return_value=[protected]):
+            # ACCEPTED: a private file outside every protected root.
+            self.assertEqual(cmd._validate_out(os.path.join(private, "fixture.json")),
+                             os.path.join(private, "fixture.json"))
+            # REJECTED: directly inside the protected root.
+            with self.assertRaises(CommandError):
+                cmd._validate_out(os.path.join(protected, "leak.json"))
+            # REJECTED: a ``..`` traversal that resolves back into the protected root.
+            with self.assertRaises(CommandError):
+                cmd._validate_out(os.path.join(private, "..", os.path.basename(protected), "leak.json"))
+            # REJECTED: a symlink whose realpath lands in the protected root.
+            sneaky = os.path.join(private, "sneaky")
+            os.symlink(protected, sneaky)
+            with self.assertRaises(CommandError):
+                cmd._validate_out(os.path.join(sneaky, "leak.json"))

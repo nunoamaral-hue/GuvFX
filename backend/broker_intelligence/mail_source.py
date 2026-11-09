@@ -36,6 +36,11 @@ class MailMessage:
     # or SPF+DKIM both pass), "fail" (present but not passing), or None (no verdict available). The From header is
     # never trusted on its own — the ingestion gate requires "pass" before an event is created from a broker sender.
     auth_verdict: Optional[str] = None
+    # The RAW text/html part, when the message is multipart/alternative and carries one. Additive convenience: the
+    # authoritative source stays ``raw_bytes``, and ``body`` is unchanged (text/plain preferred). It lets an HTML-aware
+    # parser read structured fields (a label/value table) that a degraded text/plain alternative drops. Empty when the
+    # message has no HTML part. (Packet 008: Pepperstone's text/plain alternative omits the withdrawal-detail VALUES.)
+    html_body: str = ""
 
 
 class MailSource(ABC):
