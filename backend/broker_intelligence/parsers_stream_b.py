@@ -158,7 +158,13 @@ _LIFECYCLE_RULES = (
     ("WITHDRAWAL_COMPLETED", re.compile(
         r"\bwithdrawal(?:\s+request)?(?:\s+#?\d{1,16})?\s+(?:has\s+been\s+|is\s+now\s+|was\s+)?"
         r"(?:completed|complete)\b|\bfunds\s+(?:have\s+been\s+)?(?:sent|withdrawn|paid\s+out|"
-        r"credited\s+to\s+your\s+(?:card|bank|wallet|account))\b", re.IGNORECASE)),
+        r"credited\s+to\s+your\s+(?:card|bank|wallet|account))\b|"
+        # Broker "processed" completion (Pepperstone): the terminal "We've processed your withdrawal" /
+        # "your withdrawal has been processed" notification. PAST-TENSE only — "is being processed" / "will be" /
+        # "may be processed" stay NON-terminal (fall through to WITHDRAWAL_PROCESSING), never COMPLETED.
+        r"\bwe(?:'ve|\s+have)\s+processed\s+your\s+withdrawal\b|"
+        r"\bwithdrawal(?:\s+request)?(?:\s+#?\w{1,20})?\s+(?:has\s+been|have\s+been|was|is\s+now)\s+processed\b",
+        re.IGNORECASE)),
     ("WITHDRAWAL_EXPIRED", re.compile(
         r"\b(?:confirmation(?:\s+link|\s+window)?|withdrawal(?:\s+request)?)\s+(?:has\s+)?expired\b|"
         r"\bexpired\s+(?:without|before)\s+confirmation\b", re.IGNORECASE)),
