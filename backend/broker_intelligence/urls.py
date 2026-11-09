@@ -2,6 +2,7 @@
 from django.urls import path
 
 from .views import (AccountBrokerContactCreateView, AccountBrokerContactListView, AccountBrokerContactVerifyView,
+                    GenericReviewCandidateActionView, GenericReviewCandidateListView,
                     IdentityListView, IdentityVerifyView, MailboxCallbackView, MailboxConnectView,
                     MailboxRevokeView, MailboxStatusView, WithdrawalHistoryView, WithdrawalMetricsView,
                     WithdrawalSpeedView)
@@ -22,4 +23,9 @@ urlpatterns = [
     path("mailboxes/connect/", MailboxConnectView.as_view(), name="broker-intelligence-mailbox-connect"),
     path("mailboxes/callback/", MailboxCallbackView.as_view(), name="broker-intelligence-mailbox-callback"),
     path("mailboxes/<int:mailbox_id>/revoke/", MailboxRevokeView.as_view(), name="broker-intelligence-mailbox-revoke"),
+    # ADR-0088 generic-detection review surface (owner-scoped read + staff-gated audited action).
+    path("review-candidates/", GenericReviewCandidateListView.as_view(),
+         name="broker-intelligence-review-candidates"),
+    path("review-candidates/<int:candidate_id>/action/", GenericReviewCandidateActionView.as_view(),
+         name="broker-intelligence-review-candidate-action"),
 ]

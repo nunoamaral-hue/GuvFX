@@ -1122,3 +1122,142 @@ class DeletionTask(models.Model):
 
     def __str__(self) -> str:
         return f"DeletionTask(req={self.request_id}, {self.kind}, {self.status})"
+
+
+# ======================================================================================================
+# ADR-0088 — Generic withdrawal-email detection (config-driven pattern registry + redacted review
+# candidates). DARK: inert unless BROKER_GENERIC_DETECTION is enabled for the owner. Carries NO PII.
+# ======================================================================================================
+
+class GenericWithdrawalPattern(models.Model):
+    """ADR-0088 — versioned, reviewable CONFIG for detecting a broker's withdrawal-lifecycle emails WITHOUT a code
+    parser. Onboarding a broker is normally adding/enabling a row here (data-driven), not shipping a parser. Inert
+    unless the owner is in the generic-detection canary. It carries NO customer PII — only operator-authored matching
+    config and SYNTHETIC examples. A Tier-1 auto-event additionally requires the sender domain to be independently
+    allowlisted (an active BrokerProfile / env) — a pattern never self-authorises a new sender domain."""
+    name = models.CharField(max_length=64)                       # stable identifier, e.g. "acme-fx"
+    version = models.PositiveIntegerField(default=1)
+    broker_display_name = models.CharField(max_length=64)
+    aliases = models.JSONField(default=list, blank=True)                     # alternate display names
+    authenticated_sender_domains = models.JSONField(default=list, blank=True)  # domains this pattern claims
+    subject_indicators = models.JSONField(default=list, blank=True)          # case-insensitive phrases
+    body_indicators = models.JSONField(default=list, blank=True)
+    lifecycle_phrases = models.JSONField(default=dict, blank=True)           # {STATE: [explicit phrases]}
+    amount_hint = models.CharField(max_length=128, blank=True, default="")   # optional label/hint
+    currency_hint = models.CharField(max_length=128, blank=True, default="")
+    reference_hint = models.CharField(max_length=128, blank=True, default="")
+    account_suffix_patterns = models.JSONField(default=list, blank=True)
+    locale = models.CharField(max_length=16, blank=True, default="")
+    positive_examples = models.JSONField(default=list, blank=True)           # SYNTHETIC only
+    negative_examples = models.JSONField(default=list, blank=True)
+    effective_date = models.DateField(null=True, blank=True)
+    reviewer = models.CharField(max_length=128, blank=True, default="")
+    enabled = models.BooleanField(default=False)                 # DARK default; config inert until enabled
+    confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
+    provenance = models.CharField(max_length=12, choices=Provenance.choices, default=Provenance.SYNTHETIC)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["name", "version"], name="uniq_genericpattern_name_version")]
+        indexes = [models.Index(fields=["enabled"])]
+
+    def domains(self):
+        return [str(d).strip().lower() for d in (self.authenticated_sender_domains or []) if str(d).strip()]
+
+    def __str__(self) -> str:
+        return f"GenericWithdrawalPattern({self.name} v{self.version}, enabled={self.enabled})"
+
+
+class WithdrawalReviewCandidate(models.Model):
+    """ADR-0088 — an owner-scoped, REDACTED detection candidate for a credible/ambiguous withdrawal email that the
+    generic detector did NOT auto-accept (REVIEW_REQUIRED / QUARANTINED), or an audit row for a GENERIC_HIGH_CONFIDENCE
+    auto-event. PRIVACY: stores ONLY redacted structural signals — NEVER a raw name, full account number, email
+    address, message body, URL/token or credential. Idempotent per (owner, evidence_sha256). REVIEW_REQUIRED /
+    QUARANTINED candidates are EXCLUDED from every public/member withdrawal statistic (they are not Withdrawals)."""
+
+    class Disposition(models.TextChoices):
+        KNOWN_BROKER_VERIFIED = "KNOWN_BROKER_VERIFIED", "Specific adapter produced a result"
+        GENERIC_HIGH_CONFIDENCE = "GENERIC_HIGH_CONFIDENCE", "Generic gates all passed; event created"
+        REVIEW_REQUIRED = "REVIEW_REQUIRED", "Probably a withdrawal; insufficient evidence to auto-accept"
+        QUARANTINED = "QUARANTINED", "Authentication / ownership / tenant / parse / evidence ambiguous"
+        NOT_WITHDRAWAL = "NOT_WITHDRAWAL", "Not a withdrawal (marketing / deposit / verification / margin / unrelated)"
+
+    class ProposedState(models.TextChoices):
+        REQUESTED = "REQUESTED", "Requested"
+        CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED", "Confirmation required"
+        PROCESSING = "PROCESSING", "Processing"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+        UNKNOWN = "UNKNOWN", "Not determinable"
+
+    class OperatorAction(models.TextChoices):
+        NONE = "NONE", "No operator action yet"
+        APPROVED = "APPROVED", "Pattern / broker approved"
+        CORRECTED = "CORRECTED", "Broker identity / status corrected"
+        REJECTED = "REJECTED", "Rejected as not a withdrawal"
+        QUARANTINED = "QUARANTINED", "Quarantined by operator"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="withdrawal_review_candidates")
+    evidence_sha256 = models.CharField(max_length=64, db_index=True)         # dedup key; the HASH, never the body
+    # Tier 1 (allowlisted sender) stored evidence pointer; NULL for Tier 2 (unseen sender — raw bytes NEVER stored).
+    evidence = models.ForeignKey(EvidenceBlob, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    provider_message_id = models.CharField(max_length=190, blank=True, default="")   # mailbox-native id (dedup); non-PII
+    tier = models.PositiveSmallIntegerField(default=1)                       # 1=allowlisted, 2=unseen (hash-only)
+    disposition = models.CharField(max_length=24, choices=Disposition.choices)
+    proposed_state = models.CharField(max_length=24, choices=ProposedState.choices, default=ProposedState.UNKNOWN)
+    authenticated_sender_domain = models.CharField(max_length=190, blank=True, default="")  # DOMAIN only, never full address
+    auth_verdict = models.CharField(max_length=8, blank=True, default="")    # pass / fail / ''
+    candidate_broker_name = models.CharField(max_length=64, blank=True, default="")   # derived; non-PII
+    masked_account_suffix = models.CharField(max_length=12, blank=True, default="")   # masked last-4, e.g. "••••1234"
+    amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)   # only when safely extracted
+    currency = models.CharField(max_length=8, blank=True, default="")
+    reason_codes = models.JSONField(default=list, blank=True)                # structural ENUM codes; NEVER raw text
+    confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
+    correlation_result = models.CharField(max_length=48, blank=True, default="")   # "none"/"weak"/"event:<id>"/"withdrawal:<id>"
+    matched_pattern = models.CharField(max_length=96, blank=True, default="")      # "<name>:<version>" when matched
+    created_event = models.ForeignKey(BrokerEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    observed_at = models.DateTimeField(null=True, blank=True)                # message received time (≠ created_at)
+    operator_action = models.CharField(max_length=16, choices=OperatorAction.choices, default=OperatorAction.NONE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [models.UniqueConstraint(fields=["owner", "evidence_sha256"],
+                                               name="uniq_reviewcandidate_owner_evidence")]
+        indexes = [models.Index(fields=["owner", "id"]), models.Index(fields=["disposition"])]
+
+    def __str__(self) -> str:
+        return f"WithdrawalReviewCandidate({self.disposition}, {self.proposed_state}, conf={self.confidence})"
+
+
+class ReviewCandidateAction(models.Model):
+    """ADR-0088 — append-only AUDIT of a STAFF action on a ``WithdrawalReviewCandidate`` (approve / correct / reject /
+    quarantine). Write-once; never deleted; preserves the candidate's evidence hash. Carries NO body/PII — only the
+    action, the staff actor, a reason code and corrected identity/state where applicable."""
+    candidate = models.ForeignKey(WithdrawalReviewCandidate, on_delete=models.PROTECT, related_name="actions")
+    action = models.CharField(max_length=16, choices=WithdrawalReviewCandidate.OperatorAction.choices)
+    actor = models.CharField(max_length=128)                     # staff identity, e.g. "user:3"
+    reason = models.CharField(max_length=128, blank=True, default="")
+    evidence_sha256 = models.CharField(max_length=64)            # preserved from the candidate (integrity)
+    corrected_broker_name = models.CharField(max_length=64, blank=True, default="")
+    corrected_state = models.CharField(max_length=24, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["candidate", "id"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("ReviewCandidateAction is append-only; a correction is a new row")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("ReviewCandidateAction is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"ReviewCandidateAction(cand={self.candidate_id}, {self.action}, {self.actor})"

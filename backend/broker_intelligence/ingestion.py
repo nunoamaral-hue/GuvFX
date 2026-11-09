@@ -141,6 +141,15 @@ def ingest_message(message: MailMessage, *, store: Optional[EvidenceStore] = Non
             # 4) deterministic parser selection; no match -> unparseable -> retain evidence, emit NO event
             parser = select_parser(subject=message.subject, body=message.body, from_address=message.from_address)
             if parser is None:
+                # ADR-0088 (DARK; owner-canary-gated): a specific parser is always highest-confidence and runs
+                # first; ONLY when none matched do we consult the fail-closed generic detector. It returns a
+                # GENERIC_HIGH_CONFIDENCE owner-scoped BrokerEvent, or None (review candidate / quarantine /
+                # not-a-withdrawal / gate OFF). While the owner is not in the canary this is byte-identical to today.
+                from .generic_detection import run_generic_detection
+                generic_event = run_generic_detection(message=message, blob=blob, owner=owner_key,
+                                                      provenance=provenance)
+                if generic_event is not None:
+                    return generic_event
                 logger.info("broker_intelligence ingest: unparseable message (evidence %s retained, no event)",
                             blob.sha256[:12])
                 return None

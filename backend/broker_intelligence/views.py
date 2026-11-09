@@ -16,7 +16,9 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .flags import (broker_account_contact_enabled, broker_identity_verification_enabled,
+from .flags import (broker_account_contact_enabled, broker_generic_detection_allowlist,
+                    broker_generic_detection_enabled, broker_generic_detection_enabled_for,
+                    broker_identity_verification_enabled,
                     broker_mailbox_connect_enabled, broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
                     broker_multi_mailbox_enabled_for,
                     broker_withdrawal_demo_include_synthetic, broker_withdrawal_speed_enabled_for,
@@ -229,6 +231,89 @@ class WithdrawalSpeedView(APIView):
         accounts = TradingAccount.objects.filter(user=request.user)
         return Response(withdrawal_speed(accounts, owner=request.user, now=timezone.now(),
                                          include_demonstration=broker_withdrawal_demo_include_synthetic()))
+
+
+def _generic_feature_active() -> bool:
+    """The generic-detection feature is reachable at all when the GA global is armed OR an owner canary is
+    configured. Used to 404 the staff review surface while the feature is fully DARK."""
+    return bool(broker_generic_detection_enabled() or broker_generic_detection_allowlist())
+
+
+def _review_candidate_json(c) -> dict:
+    """ADR-0088 — the ALREADY-REDACTED candidate projection. Contains NO raw name / full account / email / body /
+    URL / token — only the structural signals the model stores."""
+    return {
+        "id": c.id,
+        "disposition": c.disposition,
+        "proposed_state": c.proposed_state,
+        "tier": c.tier,
+        "candidate_broker": c.candidate_broker_name,
+        "authenticated_sender_domain": c.authenticated_sender_domain,
+        "auth_verdict": c.auth_verdict,
+        "masked_account_suffix": c.masked_account_suffix,
+        "amount": (str(c.amount) if c.amount is not None else None),
+        "currency": c.currency,
+        "confidence": (str(c.confidence) if c.confidence is not None else None),
+        "reason_codes": list(c.reason_codes or []),
+        "correlation_result": c.correlation_result,
+        "matched_pattern": c.matched_pattern,
+        "operator_action": c.operator_action,
+        "observed_at": (c.observed_at.isoformat() if c.observed_at else None),
+        "created_at": (c.created_at.isoformat() if c.created_at else None),
+    }
+
+
+class GenericReviewCandidateListView(APIView):
+    """GET /api/broker-intelligence/review-candidates/ — the OWNER's own generic-detection review candidates
+    (redacted). Read-only; owner-scoped (``owner=request.user``, no staff cross-user read here); DARK-gated by the
+    owner-scoped canary → 404 while the owner is outside the canary. REVIEW_REQUIRED / QUARANTINED candidates live
+    ONLY on this surface — they are never Withdrawals and never enter withdrawal totals/speed/completed counts."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not broker_generic_detection_enabled_for(request.user):
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .models import WithdrawalReviewCandidate
+        base = WithdrawalReviewCandidate.objects.filter(owner=request.user)
+        rows = list(base.order_by("-id")[:200])
+        return Response({"candidates": [_review_candidate_json(c) for c in rows], "count": base.count()})
+
+
+class GenericReviewCandidateActionView(APIView):
+    """POST /api/broker-intelligence/review-candidates/<id>/action/ — a STAFF action on a review candidate
+    (approve / correct / reject / quarantine). Requires STAFF authority (403 otherwise), is AUDITED (append-only
+    ``ReviewCandidateAction``, actor = the staff user), preserves the candidate's evidence hash, and NEVER
+    retroactively processes other messages. Approval records the audited decision only — it does NOT auto-allowlist
+    a sender domain or auto-create a broker/pattern (promotion stays an explicit config act). 404 while the feature
+    is fully DARK."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, candidate_id):
+        if not _generic_feature_active():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not request.user.is_staff:
+            return Response({"detail": "Staff authority required."}, status=status.HTTP_403_FORBIDDEN)
+        from django.db import transaction
+        from .models import ReviewCandidateAction, WithdrawalReviewCandidate
+        OA = WithdrawalReviewCandidate.OperatorAction
+        candidate = WithdrawalReviewCandidate.objects.filter(pk=candidate_id).first()
+        if candidate is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        action = str(request.data.get("action", "") or "").strip().upper()
+        valid = {OA.APPROVED, OA.CORRECTED, OA.REJECTED, OA.QUARANTINED}
+        if action not in valid:
+            return Response({"detail": "Invalid action."}, status=status.HTTP_400_BAD_REQUEST)
+        reason = str(request.data.get("reason", "") or "")[:128]
+        corrected_broker = str(request.data.get("corrected_broker_name", "") or "")[:64]
+        corrected_state = str(request.data.get("corrected_state", "") or "")[:24]
+        with transaction.atomic():
+            ReviewCandidateAction.objects.create(
+                candidate=candidate, action=action, actor=f"user:{request.user.id}", reason=reason,
+                evidence_sha256=candidate.evidence_sha256, corrected_broker_name=corrected_broker,
+                corrected_state=corrected_state)
+            candidate.operator_action = action
+            candidate.save(update_fields=["operator_action", "updated_at"])
+        return Response({"id": candidate.id, "operator_action": candidate.operator_action, "audited": True})
 
 
 def _identity_json(i) -> dict:

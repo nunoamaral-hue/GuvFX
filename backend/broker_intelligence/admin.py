@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from django.contrib import admin
 
-from .models import BrokerEmailIdentity, BrokerEmailIdentityAudit, BrokerProfile, BrokerProfileAudit
+from .models import (BrokerEmailIdentity, BrokerEmailIdentityAudit, BrokerProfile, BrokerProfileAudit,
+                     GenericWithdrawalPattern, ReviewCandidateAction, WithdrawalReviewCandidate)
 
 
 @admin.register(BrokerProfile)
@@ -80,6 +81,49 @@ class BrokerProfileAuditAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# ADR-0088 — generic withdrawal detection: the pattern registry (staff-editable config) + redacted review
+# candidates and their append-only audit (read-only). Django admin is auth-gated staff-only; no PII is shown
+# (candidates store only redacted structural signals).
+
+@admin.register(GenericWithdrawalPattern)
+class GenericWithdrawalPatternAdmin(admin.ModelAdmin):
+    list_display = ("name", "version", "broker_display_name", "enabled", "confidence", "provenance",
+                    "effective_date", "reviewer", "updated_at")
+    list_filter = ("enabled", "provenance")
+    search_fields = ("name", "broker_display_name")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(WithdrawalReviewCandidate)
+class WithdrawalReviewCandidateAdmin(admin.ModelAdmin):
+    list_display = ("id", "owner", "disposition", "proposed_state", "tier", "candidate_broker_name",
+                    "authenticated_sender_domain", "masked_account_suffix", "amount", "currency", "confidence",
+                    "operator_action", "observed_at")
+    list_filter = ("disposition", "proposed_state", "tier", "operator_action")
+    search_fields = ("candidate_broker_name", "authenticated_sender_domain", "evidence_sha256", "matched_pattern")
+    readonly_fields = tuple(f.name for f in WithdrawalReviewCandidate._meta.fields)
+
+    def has_add_permission(self, request):          # candidates are written by the detector, never by hand
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ReviewCandidateAction)
+class ReviewCandidateActionAdmin(admin.ModelAdmin):
+    list_display = ("id", "candidate", "action", "actor", "reason", "created_at")
+    list_filter = ("action",)
+    search_fields = ("actor", "evidence_sha256")
+    readonly_fields = tuple(f.name for f in ReviewCandidateAction._meta.fields)
+
+    def has_add_permission(self, request):          # append-only audit — written by the API, never by hand
         return False
 
     def has_delete_permission(self, request, obj=None):
