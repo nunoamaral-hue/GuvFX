@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-COPIER-PREFLIGHT-ENDPOINT-FIX-053",
+  "packet_id": "GFX-COPIER-PREFLIGHT-ENDPOINT-FIX-053",
+  "created_at_utc": "2026-11-10T18:00:00Z",
+  "branch": "fix/copier-preflight-endpoint-keyword",
+  "base_commit": "b2d68ef4e7b88578cd740aac89435c85c24271fa",
+  "head_commit": "(fix commit on fix/copier-preflight-endpoint-keyword; see PR)",
+  "root_cause": "copier_live_demo_preflight.py passed the follower endpoint resolver's keyword-only second parameter positionally: resolve_account_snapshot_base(account, *, global_base_url) was called as resolve_account_snapshot_base(facct, <url>). Python raised TypeError('resolve_account_snapshot_base() takes 1 positional argument but 2 were given') for EVERY follower, and the gate's try/except converted it to a spurious ENDPOINT_RESOLVE_ERROR (fail-closed, so never unsafe, but it masked the true per-tenant endpoint state and blocked truthful readiness reporting before the Sponsor-present #46->#48 demo).",
+  "fix": "One-line, behaviour-preserving: pass global_base_url by name -> resolve_account_snapshot_base(facct, global_base_url=getattr(_s, 'GUVFX_WINDOWS_AGENT_BASE_URL', '') or ''). The gate predicate (e_ok = st.ok AND st.per_tenant), the fail-closed try/except, and the verdict logic are UNCHANGED. No migration, no flag, no authorization, no host/broker contact. Host gates (HOST_PROBE_REQUIRED) still force NOT_READY from a backend-only probe, so the fix cannot yield a false READY.",
+  "summary": "Repository-only corrective fix for the preflight follower-endpoint gate discovered during packet 052. Pure keyword-call correction plus mutation-killing regression coverage. DARK: production and all copier/execution controls untouched.",
+  "commands": [
+    "manage.py test trade_copier.tests_control_plane.PreflightFollowerEndpointResolverTests trade_copier.tests_control_plane.PreflightCommandTests --keepdb",
+    "manage.py test trade_copier --keepdb",
+    "manage.py check",
+    "manage.py makemigrations --check --dry-run trade_copier execution",
+    "manage.py test core.tests_adr_governance --keepdb",
+    "scripts/check_evidence_manifests.py",
+    "secret scan over changed files",
+    "mutation check: revert fix to positional call, confirm the two keyword/typeerror tests FAIL, restore fix"
+  ],
+  "expected_results": [
+    "focused preflight + resolver tests: pass on fixed code",
+    "full trade_copier suite: pass",
+    "system check: no issues",
+    "makemigrations --check: No changes detected",
+    "ADR/governance: pass",
+    "evidence lint: PASS",
+    "secret scan: no secrets",
+    "mutation check: the two mutation-killing tests FAIL on the buggy positional call"
+  ],
+  "actual_results": [
+    "focused: 5 OK (4 new regression + existing PreflightCommandTests)",
+    "full trade_copier: Ran 831 tests; OK (0 failures)",
+    "system check: System check identified no issues (0 silenced)",
+    "makemigrations --check: No changes detected in apps 'trade_copier', 'execution'",
+    "ADR/governance (core.tests_adr_governance): 3 OK",
+    "evidence lint: EVIDENCE-LINT: PASS (60 manifests, pre-this-manifest)",
+    "secret scan: no secret literals in changed files",
+    "mutation check: both test_real_resolver_no_typeerror_and_fail_closed_non_per_tenant (ENDPOINT_RESOLVE_ERROR) and test_resolver_called_keyword_only_and_bound_to_follower (global_base_url not in kwargs) FAIL on the reverted positional call; both PASS after restoring the keyword fix"
+  ],
+  "status": "PASS",
+  "status_detail": "PASS: the one-line keyword fix resolves the spurious TypeError; mutation-killing regression proves the tests fail on the buggy code and pass on the fix; fail-closed readiness is preserved and a false READY remains impossible (host gates force NOT_READY).",
+  "adversarial_review": {
+    "accidental_readiness_bypass": "NONE - gate predicate + verdict logic unchanged; host gates always force NOT_READY from a backend-only probe, so no false READY is possible.",
+    "cross_tenant_endpoint_substitution": "NONE - resolver still invoked with the follower account (facct); test asserts call_args.args[0].id == follower.id; the resolver enforces per-tenant isolation internally.",
+    "missing_identity_binding": "NONE - follower identity binding preserved.",
+    "exception_to_ready_conversion": "NONE - try/except still fail-closes to ENDPOINT_RESOLVE_ERROR; test proves a resolver exception stays non-READY.",
+    "global_live_account_relaxation": "NONE - no is_demo / account_not_demo change; test asserts the live follower stays is_demo=False.",
+    "secret_or_endpoint_leakage": "NONE - gate emits only the secret-free reason_code + per_tenant boolean; no base_url or secret is output.",
+    "unintended_host_or_broker_contact_in_tests": "NONE - real resolver is a pure DB query; other cases are mocked; the preflight is backend-only."
+  },
+  "migration_status": "No migration. makemigrations --check: No changes detected.",
+  "limitations": [
+    "Repository-only: not merged, not deployed; production remains b2d68ef4 and all copier/execution controls remain OFF.",
+    "The fix is scoped to the follower_endpoint gate's resolver call; it does not alter the resolver, the gate predicate, or any other preflight gate.",
+    "The valid-per-tenant-endpoint path (ENDPOINT_OK) is exercised via a spy mock rather than a full HostedExecutionEndpoint fixture; the fail-closed non-per-tenant path uses the real resolver."
+  ],
+  "production_host_broker_impact": "None. Repository-only. Production remains b2d68ef4; all copier/execution controls OFF; host admission OFF; no Windows-host or broker contact; zero broker orders.",
+  "remaining_gate": "Separate, NOT authorised here: governed merge (Sponsor GO) -> rollback-first DARK backend deploy of the merged revision -> truthful preflight re-run -> fresh 15-min CopierLiveAuthorization + worker arming (human) + signed host-admission commit (prod-operator) -> bounded Sponsor-present #46->#48 demo -> return-to-OFF.",
+  "artefact_locations": [
+    "backend/trade_copier/management/commands/copier_live_demo_preflight.py",
+    "backend/trade_copier/tests_control_plane.py",
+    "evidence/manifests/GFX-EVD-COPIER-PREFLIGHT-ENDPOINT-FIX-053.json"
+  ],
+  "checksums": {
+    "backend/trade_copier/management/commands/copier_live_demo_preflight.py": "sha256:78fcd491867850914b000ef37529084b6b7f8e6187d26fe59bc6807a1f4d1cff",
+    "backend/trade_copier/tests_control_plane.py": "sha256:1dbfc1588ac04a5b46e42ce6b7f998178a9abd390b84bfd7bd790e60dfff83bb"
+  },
+  "reviewer": "Copy Trading coding agent (self-verified; adversarial review pending in PR)"
+}
