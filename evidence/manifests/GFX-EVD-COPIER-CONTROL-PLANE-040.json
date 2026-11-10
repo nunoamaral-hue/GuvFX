@@ -1,0 +1,78 @@
+{
+ "schema_version": "1.0.0",
+ "handoff_id": "GFX-EVD-COPIER-CONTROL-PLANE-040",
+ "packet_id": "GFX-COPIER-LIVE-DEMO-CONTROL-PLANE-040",
+ "created_at_utc": "2026-11-10T00:00:00Z",
+ "branch": "feat/copier-live-demo-control-plane",
+ "base_commit": "15f2eebcb299484803d13866f918a50a1027c607",
+ "head_commit": "(control-plane feature commit on feat/copier-live-demo-control-plane; see PR)",
+ "summary": "Repository-only, DARK control-plane completion for the governed #46->#48 live copy-trading demo. Resolves the run_copier_execute shadow-vs-live contradiction (docstring was factually wrong; the LIVE OPEN path IS reachable), adds the supported single-authorization revoke + expired-ACTIVE reconciliation commands, a read-only machine-readable demo-preflight command, the four missing DARK producer/dispatcher worker commands that complete one authoritative worker sequence, the authoritative worker-sequence doc, and the deterministic human runbook. No production deploy, no host contact, no flag enablement, no authorization creation, no order. No migration.",
+ "phase1_preflight": "Read-only dry-run of provision_authorized_live_copier_bridge (packet 039) established the 5 arm gates; this PR is repository-only and mutates no production state.",
+ "commands": [
+  "backend/.venv/bin/python manage.py check  -> no issues",
+  "backend/.venv/bin/python manage.py makemigrations --check --dry-run trade_copier  -> No changes detected",
+  "backend/.venv/bin/python manage.py test trade_copier.tests_control_plane  -> 16 OK",
+  "backend/.venv/bin/python manage.py test trade_copier  -> 827 OK",
+  "backend/.venv/bin/python manage.py test trade_copier.tests_phase4_acceptance trade_copier.tests_mutation_dispatch trade_copier.tests_live_copier trade_copier.tests_mutation_transport execution.tests_copier_live_admission  -> 104 OK",
+  "scripts/check_no_secrets.py  -> no findings"
+ ],
+ "expected_results": [
+  "run_copier_execute docstring corrected to state it reaches the LIVE OPEN producer under the governed flag stack",
+  "revoke + reconcile + preflight + four worker commands load, no migration, all gated DARK/inert by default",
+  "full trade_copier regression green; secret scan clean",
+  "no production/host/flag/authorization/order change"
+ ],
+ "actual_results": [
+  "manage.py check: System check identified no issues",
+  "makemigrations --check trade_copier: No changes detected (whole-project check shows only unrelated pre-existing strategies index renames, not trade_copier)",
+  "tests_control_plane: 16 OK (revoke 9 cases, reconcile 5 cases, preflight read-only, workers inert-when-off)",
+  "full trade_copier: 827 OK",
+  "key copier suites: 104 OK",
+  "check_no_secrets: no findings"
+ ],
+ "status": "PASS",
+ "delivery_state": "PR_READY — repository-only, DARK/default-OFF, auto-merge OFF, STOP before merge. No production deployment, no Windows-host contact, no flag enablement, no authorization creation, no order/modify/close. All new worker commands are no-ops with flags OFF.",
+ "worker_sequence_authoritative": "OPEN: run_copier_observer -> run_copier_replication -> run_copier_execute (produce_one -> admit_open -> LIVE: admit_open_live -> create_live_open_job PLACE_ORDER under select_for_update lock, 1 allowance/lock). MODIFY/CLOSE: run_copier_lifecycle -> run_copier_execute_modifies/closes (create_live_modify_job/create_live_full_close_job) -> run_copier_mutation_dispatch (run_mutation_dispatch_pass -> per-tenant transport -> #48 bridge). See docs/COPIER_LIVE_WORKER_SEQUENCE.md.",
+ "contradiction_resolution": "run_copier_execute is NOT shadow-only. execution_producer.produce_one routes a LIVE follower to create_live_open_job (a real live PLACE_ORDER) when fully authorized/armed; the prior 'DEMO-only / Never LIVE' docstring predated the ADR-0057 live OPEN producer and is corrected in this PR.",
+ "no_late_recovery_proof": "OPEN consumes the authorization allowance under the same select_for_update lock (no second order on retry); the mutation transport is one-shot (UNKNOWN_OUTCOME on timeout/non-2xx, never retried, never success); no late-OPEN path exists; admission is read-fresh/time-bound and fails closed on restart/expiry/identity drift. All paths inert with flags OFF.",
+ "migration_status": "NONE. makemigrations --check (trade_copier): No changes detected. No new authorization status added; reconciliation uses the existing REVOKED terminal state.",
+ "limitations": [
+  "The LIVE MODIFY/CLOSE worker path (producers + mutation dispatcher) had no production command before this PR; it is now added DARK but has not been exercised end-to-end against a live follower in production.",
+  "copier_live_demo_preflight reports host-side gates (bridge/watchdog/host-admission/follower positions) as HOST_PROBE_REQUIRED (fail-closed) — the backend cannot read them without the agent token.",
+  "Whole-project makemigrations --check reports unrelated pre-existing index renames in the strategies app (not introduced here).",
+  "Deployment, host arming, flag enablement, authorization creation and the Sponsor-present demo remain SEPARATE, separately-authorized steps."
+ ],
+ "production_host_broker_impact": "NONE. No deploy, no Windows-host contact, no flag enablement, no authorization creation, no broker order/modification/close. Production remains at 15f2eebc with all copier controls OFF and host admission OFF.",
+ "remaining_production_gates": [
+  "Governed merge of this PR (separate Sponsor GO).",
+  "Rollback-first DARK backend deploy of the merged revision (separate).",
+  "Fresh 15-min authorization (human) + backend worker arming (human) + signed host-admission commit (prod-operator).",
+  "Sponsor-present human-operated OPEN->MODIFY->CLOSE then return-to-OFF."
+ ],
+ "artefact_locations": [
+  "backend/trade_copier/management/commands/revoke_copier_live_authorization.py",
+  "backend/trade_copier/management/commands/reconcile_expired_copier_authorizations.py",
+  "backend/trade_copier/management/commands/copier_live_demo_preflight.py",
+  "backend/trade_copier/management/commands/run_copier_mutation_dispatch.py",
+  "backend/trade_copier/management/commands/run_copier_execute_closes.py",
+  "backend/trade_copier/management/commands/run_copier_execute_modifies.py",
+  "backend/trade_copier/management/commands/run_copier_execute_partial_closes.py",
+  "backend/trade_copier/management/commands/run_copier_execute.py",
+  "backend/trade_copier/tests_control_plane.py",
+  "docs/COPIER_LIVE_WORKER_SEQUENCE.md",
+  "docs/COPIER_46_48_DEMO_RUNBOOK.md"
+ ],
+ "checksums": {
+  "backend/trade_copier/management/commands/revoke_copier_live_authorization.py": "sha256:4f8b913190441081042289e0c22115d2fa8a4ffa2dc7d4907c9f166f3d10d054",
+  "backend/trade_copier/management/commands/reconcile_expired_copier_authorizations.py": "sha256:f55e146c0a5e1a0b8040ac3c1daecc0c1f8dd629958cd00b90c41ae156115ce5",
+  "backend/trade_copier/management/commands/copier_live_demo_preflight.py": "sha256:3a9878996c887667b3c2a88f6636a235f12e50838de3a23260c091e749d590a2",
+  "backend/trade_copier/management/commands/run_copier_mutation_dispatch.py": "sha256:8a00b2895f027f743ad8c7660cf6093a6d27cb53506fd9704145ac69cbf94563",
+  "backend/trade_copier/management/commands/run_copier_execute_closes.py": "sha256:ae24916bffc0459e24c05de22ef2eddabf71d7f7fc190727c35e965b68b507cb",
+  "backend/trade_copier/management/commands/run_copier_execute_modifies.py": "sha256:6decbfcbdfcd05a70ec4109df6070399f142e75f006975ec292ce9ed3602ec0e",
+  "backend/trade_copier/management/commands/run_copier_execute_partial_closes.py": "sha256:e0d77bb73d1563b25eacd5ff10e969bb59fe2368abeec4eadbde3c096d1688ab",
+  "backend/trade_copier/tests_control_plane.py": "sha256:2333b0dcdb8dbd94bd4a0e56b3793bc0b41312e5731c81de080ec86c6b2b29fe",
+  "docs/COPIER_LIVE_WORKER_SEQUENCE.md": "sha256:8901205c87613c51131471e0642fdf60cc77f5462da8db6af4b31f454fc90748",
+  "docs/COPIER_46_48_DEMO_RUNBOOK.md": "sha256:62cb7ca4e577e606c091282640c1e06c71616af28de13c095cb8a829e1b04fd9"
+ },
+ "reviewer": "Copy Trading coding agent (self-review); independent review recommended before merge."
+}

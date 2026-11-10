@@ -1,60 +1,50 @@
-# #46 → #48 XAUUSD copy-trading demo runbook (PREPARATION ONLY — DO NOT EXECUTE)
+# #46 → #48 XAUUSD demo runbook — authoritative, deterministic (2026-11-10)
 
-**Status:** preparation only. This runbook is NOT armed and MUST NOT be executed without a separate, explicit,
-Sponsor-present GO. The live path is DARK and default-OFF. No `CopierLiveAuthorization` exists, no route is
-active, no flag is armed, no order has been placed. Claude does NOT arm or execute any step below.
+**Status: preparation only. NOT armed.** Executed only under a separate, explicit, Sponsor-present GO. The
+live path is DARK and default-OFF. Every step is labelled:
 
-**Governed route (sole):** master **#46** TradersWay / Tradersway-Live (acct 55442, LIVE) → follower **#48**
-IS6FX / IS6Technologies-Live (acct 51763831, LIVE). Symbol: **XAUUSD** (the single governed admitted symbol).
-Intended human test size: **0.01 lot**.
+- **[HUMAN]** — the Sponsor performs it (all MT5 actions + all arming/authorization commands).
+- **[READ-ONLY AGENT]** — Claude may run it; it mutates nothing (reads/verifies/observes).
+- **[PROD-OPERATOR]** — a separately-authorized production operator runs the signed host command.
 
-Legend — **[SPONSOR]** a human must perform it; **[CLAUDE/OBSERVE]** Claude may observe/verify read-only.
+**Governed route (sole):** master **#46** TradersWay / `Tradersway-Live` (55442, LIVE) → follower **#48** IS6FX /
+`IS6Technologies-Live` (51763831, LIVE). Symbol **XAUUSD → XAUUSD.std**. Size **0.01 lot**, **1 order**, **1
+position**. Authorization window **≤ 15 min**. Authorities: **MODIFY + FULL_CLOSE only** (no partial, no new
+entry after expiry). No credentials appear here.
 
-## A. Preflight (read-only) — **[CLAUDE/OBSERVE]**
-1. Verify production revision carries the transport (ADR-0087) and all copier/execution/transport/admission
-   flags are OFF; `CopierLiveAuthorization` active = 0; zero queued/running copier jobs; zero broker orders.
-2. Verify #46 and #48 immutable identity: account id, broker login, server, workspace, host, terminal and
-   bridge identity; the governed XAUUSD symbol map; both accounts' per-tenant endpoints READY.
-3. Verify both terminals logged in + healthy; bridge, observer and watchdog healthy and identity-attested;
-   XAUUSD visible + `trade_mode=FULL` on both; quotes fresh + market open; follower volume min/step accept 0.01;
-   stops/freeze + contract metadata captured; free margin sufficient; **no conflicting XAUUSD position or
-   pending order on either account**; no stale lifecycle record / replay item / queued copier job.
-   **If any gate fails → STOP; do not arm.**
+## Timing / containment limits
+- Authorization window ≤ 15 min; disarm immediately after step 13 regardless of time left.
+- Per-step observe wait: **≤ 90 s** after each human MT5 action (observer cadence is 2 min — run the live-path
+  workers on demand immediately after each action rather than waiting for a cron).
+- Containment triggers: wrong account/symbol/side/volume; duplicate follower position; UNKNOWN_OUTCOME /
+  PRE_STATE_MISMATCH / DEADLINE_EXCEEDED; identity/authorization/expiry drift; bridge/observer/watchdog
+  degradation; any extra job/order. **No automatic retry or late recovery is ever permitted.**
 
-## B. Arm the minimum controls — **[SPONSOR]** (each a deliberate, logged change; shortest-lived possible)
-4. Activate the #46→#48 route (activate #46 and #48) and confirm their per-tenant bridges are READY.
-5. Create a **short-lived** `CopierLiveAuthorization` for exactly this route (modify + full-close authority as
-   needed), with a tight expiry.
-6. On the follower bridge host set the exact-account admission env (`COPIER_LIVE_MUTATION_ADMIT_ENABLED=1`,
-   `MT5_ALLOW_LIVE=1`, a fresh short `MT5_LIVE_EXPIRY`, `MT5_EXPECTED_LOGIN`/`MT5_EXPECTED_SERVER` = #48,
-   `COPIER_LIVE_ADMIT_SYMBOL=XAUUSD`) and the backend arm flags (`COPIER_ENABLED`, `COPIER_EXECUTE_ENABLED`,
-   `COPIER_LIVE_EXECUTE_ENABLED`, `COPIER_MUTATION_DISPATCH_ENABLED`, `COPIER_MUTATION_TRANSPORT_ENABLED`,
-   `COPIER_LIFECYCLE_GUARD_ENABLED`). Confirm the kill switch is NOT engaged.
-7. **[CLAUDE/OBSERVE]** Re-verify the armed state is scoped to #46→#48 + XAUUSD only and nothing else changed.
+## Authoritative ordered sequence
+1. **[READ-ONLY AGENT]** `copier_live_demo_preflight --master-account-id 46 --follower-account-id 48 --source-symbol XAUUSD --follower-symbol XAUUSD.std` → require `verdict=READY_TO_ARM` for the backend gates; resolve every `HOST_PROBE_REQUIRED` item out of band ([PROD-OPERATOR] confirms bridge/watchdog health, host admission absent, #48 position-clean).
+2. **[HUMAN]** Create a fresh 15-min authorization (revoke any stale ACTIVE row first — see step 16 command):
+   `grant_copier_live_authorization --user-email support@guvfx.com --master-account-id 46 --follower-account-id 48 --source-symbol XAUUSD --follower-symbol XAUUSD.std --max-volume 0.01 --max-concurrent 1 --max-orders 1 --valid-minutes 15 --approved-by <STAFF_EMAIL> --reason "..." --modify-authority --full-close-authority`
+3. **[READ-ONLY AGENT]** Independent DB read-back: exact identities/scope/window/watermark/authorities, staff approver, `status=ACTIVE`, unexpired, sole ACTIVE for the pair.
+4. **[HUMAN]** Backend worker arming — run the live-path workers with the flag stack injected per invocation
+   (`COPIER_ENABLED COPIER_EXECUTE_ENABLED COPIER_LIVE_EXECUTE_ENABLED HOSTED_LIVE_EXECUTION_ENABLED COPIER_MUTATION_DISPATCH_ENABLED COPIER_MUTATION_TRANSPORT_ENABLED COPIER_LIFECYCLE_GUARD_ENABLED COPIER_LIVE_MODIFY_ENABLED COPIER_LIVE_FULL_CLOSE_ENABLED`): `run_copier_observer`, `run_copier_replication`, `run_copier_execute`, `run_copier_lifecycle`, `run_copier_execute_modifies`, `run_copier_execute_closes`, `run_copier_mutation_dispatch` (see `COPIER_LIVE_WORKER_SEQUENCE.md`).
+5. **[PROD-OPERATOR]** Signed host-admission **dry-run** (with the flags injected): `provision_authorized_live_copier_bridge --account-id 48 --authorization-id <N>` → require `gates_ok=true`, `env_will_be_live=true`.
+6. **[PROD-OPERATOR]** Signed host-admission **commit**: same command **+ `--commit`** → sets `MT5_ALLOW_LIVE` + exact-account/route/symbol/time admission env on #48's bridge + restart.
+7. **[READ-ONLY AGENT]** Read-back the exact #46→#48 XAUUSD boundary: authorization ACTIVE+unexpired; the 5 gates TRUE; host admission exact-account/route/symbol/time-pinned; **0 jobs; 0 broker tickets**; kill switch clear; sole route.
+8. **[HUMAN]** Open exactly **one 0.01 XAUUSD** position on #46 (SL/TP optional).
+9. **[READ-ONLY AGENT]** Observe exactly **one** follower OPEN on #48: master/follower tickets, volume, latency, deviation. On any trigger → containment (step 14).
+10. **[HUMAN]** Add or change SL/TP on #46.
+11. **[READ-ONLY AGENT]** Observe the follower MODIFY on #48: master/follower revision, latency, resulting SL/TP, any broker normalization (report it exactly — never claim equality when values differ).
+12. **[HUMAN]** Close the #46 master position.
+13. **[READ-ONLY AGENT]** Observe exactly one follower FULL_CLOSE on #48; both flat; no residual; no pending mutation; no retry scheduled.
+14. **[HUMAN/PROD-OPERATOR]** Immediate return to execution OFF: stop invoking the live-path workers (shadow crons continue).
+15. **[PROD-OPERATOR]** Signed host-admission OFF: `restore_copier_bridge_execution_off --account-id 48` (dry-run) then `--commit` → removes `MT5_ALLOW_LIVE` + admission env, restarts #48's bridge to DARK.
+16. **[HUMAN]** Revoke the authorization: `revoke_copier_live_authorization --authorization-id <N> --owner-email support@guvfx.com --master-account-id 46 --follower-account-id 48 --revoked-by <STAFF_EMAIL> --reason "demo complete"` (or `reconcile_expired_copier_authorizations --commit` for an expired one).
+17. **[READ-ONLY AGENT]** Final OFF read-back: all copier flags OFF; host admission absent (bridge DARK); 0 ACTIVE authorizations; `LiveExecutionAuthorization` 0; kill switch clear; 0 queued/running copier jobs; no residual #48 position; route monitoring-only; sibling accounts/routes unchanged.
 
-## C. The demo sequence
-8.  **[SPONSOR]** Open the master XAUUSD trade on #46 (0.01 lot) — optionally without SL/TP initially.
-9.  **[CLAUDE/OBSERVE]** Observe + correlate the follower OPEN on #48 (ticket, volume, symbol, latency, deviation).
-10. **[SPONSOR]** Add SL and TP to the master #46.
-11. **[CLAUDE/OBSERVE]** Observe the follower MODIFY on #48 (SL/TP reflected).
-12. **[SPONSOR]** Change SL/TP again on #46.
-13. **[CLAUDE/OBSERVE]** Observe the second follower MODIFY.
-14. **[SPONSOR]** (optional) Partially close #46 → **[CLAUDE/OBSERVE]** observe the follower partial close.
-15. **[SPONSOR]** Close the master #46.
-16. **[CLAUDE/OBSERVE]** Observe the follower CLOSE on #48 (position flat).
+## Failure classifications
+`OPEN_REJECTED/TIMEOUT` → record FAILED, **never place later** (position abandoned); master-open/follower-not is an accepted asymmetric outcome. `MODIFY_UNKNOWN` → record, no retry without a separate human decision. `CLOSE_FAILED/TIMEOUT` → alert + **[HUMAN] manual close of #48 in MT5** (contingency). `IDENTITY/ROUTE/SYMBOL/EXPIRY drift` / `GUARD/CONTROL missing` → admission fails closed, no broker contact, record.
 
-## D. Return to OFF (immediately) — **[SPONSOR]**
-17. Disarm every flag + env knob set in B, revoke/expire the `CopierLiveAuthorization`, and deactivate the route.
-18. **[CLAUDE/OBSERVE]** Verify execution + all copier controls OFF; `CopierLiveAuthorization` active = 0; zero
-    residual copier jobs; zero open positions attributable to the demo on #48; zero new broker orders beyond the
-    demo's intended ones.
-19. **[CLAUDE/OBSERVE]** Record latency, deviation, per-op outcomes and any failures (every failure is recorded
-    + alerted; a failed OPEN is never recovered late).
+## Containment (any step)
+[HUMAN] set backend flags OFF → [PROD-OPERATOR] `restore_copier_bridge_execution_off --commit` → [HUMAN] manually close any #48 position in MT5 → [HUMAN] revoke the authorization → capture state. The kill switch (`copier_live_disarm`) is engaged only if separately authorized for containment. **The system never re-opens or late-reconciles a failed/late entry** (transport one-shot; admission time-bound + fail-closed on restart/expiry).
 
-## E. Containment (if anything is wrong at any step) — **[SPONSOR]**
-- Engage the kill switch and disarm the arm flags/env immediately.
-- Manually close any follower #48 position in the MT5 terminal (manual-close containment); the system never
-  re-opens a failed/late entry.
-- Capture the state for review before re-attempting.
-
-**No step here is armed or executed by Claude. The demo proceeds only under a separate Sponsor-present GO.**
+**No step here is armed or executed by Claude. Claude's role is read-only preflight, read-back verification, and observation only.**
