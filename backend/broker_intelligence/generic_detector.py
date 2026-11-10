@@ -110,6 +110,13 @@ _CONFIRMATION = (
 _REQUESTED = (
     "we received your withdrawal", "withdrawal request received", "requested a withdrawal",
     "withdrawal requested", "received your withdrawal request", "your withdrawal request",
+    # Submission / acceptance stage (ADR-0089 live observation: "Withdrawal Submitted" / "Withdrawal Request
+    # Successful"). A submission or acceptance of the REQUEST is the opening request stage — conservative, NEVER
+    # COMPLETED. Gated by the withdrawal-intent requirement so it cannot match an unrelated "submitted"/"successful".
+    "withdrawal submitted", "withdrawal has been submitted", "has been submitted", "request submitted",
+    "request has been submitted", "request was submitted", "withdrawal request submitted",
+    "request successful", "request was successful", "withdrawal request successful", "request is successful",
+    "successfully submitted", "request accepted", "request has been accepted", "withdrawal request accepted",
 )
 _CANCELLED = (
     "has been cancelled", "has been canceled", "withdrawal cancelled", "withdrawal canceled",

@@ -99,6 +99,7 @@ def classify_discovery(*, subject: str, body: str, from_domain: str, auth_verdic
     passes (combined aligned verdict == 'pass'), there is withdrawal intent AND explicit lifecycle wording, no hard
     negative, and no contradictory terminal wording. Pure; fail-closed."""
     text = gdx._norm(subject, body, html_text)
+    subj = (subject or "").lower()
 
     # 1) Authentication policy — fail closed on weak/missing evidence (the pre-retention gate).
     approved = (auth_verdict or "").strip().lower() == "pass"
@@ -111,9 +112,12 @@ def classify_discovery(*, subject: str, body: str, from_domain: str, auth_verdic
     if not gdx._any(text, gdx._INTENT):
         return DiscoveryResult(False, reason_codes=(gdx.RC_NO_INTENT,), auth_approved=True, spf=spf, dkim=dkim, dmarc=dmarc)
 
-    # 2) Hard negatives — a deposit / marketing / statement / KYC / login / trade-confirmation message is NEVER a
-    # withdrawal, even if it carries a generic completion phrase. Applied REGARDLESS of lifecycle wording.
-    if gdx._any(text, _NEG_EXTRA + gdx._NEG_DEPOSIT + gdx._NEG_MARKETING + gdx._NEG_VERIFY
+    # 2) Hard negatives in the SUBJECT ONLY — a deposit / marketing / statement / KYC / login / trade-confirmation
+    # SUBJECT declares a non-withdrawal; a genuine withdrawal subject carries the withdrawal word. Checking the
+    # SUBJECT (not the flattened body) means footer boilerplate common to nearly every transactional email (e.g.
+    # "unsubscribe") can NEVER reject a genuine withdrawal — the ADR-0089 live-observation false negative. Deposits
+    # are already rejected by the withdrawal-intent-word requirement above, so dropping the body check is safe.
+    if gdx._any(subj, _NEG_EXTRA + gdx._NEG_DEPOSIT + gdx._NEG_MARKETING + gdx._NEG_VERIFY
                 + gdx._NEG_MARGIN + gdx._NEG_TRADEALERT):
         return DiscoveryResult(False, reason_codes=(gdx.RC_NEGATIVE,), auth_approved=True, spf=spf, dkim=dkim, dmarc=dmarc)
 

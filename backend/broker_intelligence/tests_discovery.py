@@ -141,3 +141,34 @@ class AdversarialRegression(SimpleTestCase):
         self.assertEqual(spf, "fail")        # from the Authentication-Results header
         self.assertEqual(dkim, "")           # body 'dkim=pass' ignored
         self.assertEqual(dmarc, "")           # body 'dmarc=pass' ignored
+
+
+class VantageTerminologyRegression(SimpleTestCase):
+    """ADR-0089 live-observation regression (Vantage): submission/acceptance terminology recognised; footer
+    boilerplate ('unsubscribe'/'trade now'/'login') in the BODY must not cause a false negative; 'request
+    successful' stays conservative (REQUESTED, never COMPLETED). SYNTHETIC only."""
+    FOOTER = " Unsubscribe here | Trade now | Login to your account | View statement"
+
+    def test_submitted_stage_recognised_despite_footer(self):
+        r = _c("Withdrawal Submitted", "your withdrawal has been submitted and is being reviewed." + self.FOOTER)
+        self.assertTrue(r.qualifies)
+        self.assertEqual(r.lifecycle_class, d.gdx.S_REQUESTED)
+
+    def test_request_successful_is_requested_not_completed(self):
+        r = _c("Withdrawal Request Successful", "your withdrawal request was successful." + self.FOOTER)
+        self.assertTrue(r.qualifies)
+        self.assertEqual(r.lifecycle_class, d.gdx.S_REQUESTED)       # acceptance of the REQUEST, NEVER completed
+        self.assertNotEqual(r.lifecycle_class, d.gdx.S_COMPLETED)
+
+    def test_body_unsubscribe_does_not_reject_a_genuine_withdrawal(self):
+        # the EXACT Vantage failure: 'unsubscribe' in the footer must not reject a genuine withdrawal
+        self.assertTrue(_c("Withdrawal Submitted", "your withdrawal request" + self.FOOTER).qualifies)
+
+    def test_marketing_subject_still_rejected(self):
+        self.assertFalse(_c("Trade now special offer", "withdrawal bonus unsubscribe").qualifies)
+
+    def test_statement_subject_still_rejected(self):
+        self.assertFalse(_c("Your account statement", "withdrawals included unsubscribe").qualifies)
+
+    def test_deposit_still_rejected(self):
+        self.assertFalse(_c("Deposit received", "your deposit has been completed").qualifies)
