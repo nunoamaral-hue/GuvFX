@@ -50,7 +50,8 @@ class ProbeSessionExecutorTests(SimpleTestCase):
             self.assertEqual(ex.probe_session()["session_status"], status)
 
     def test_transport_failure_normalised_to_unknown(self):
-        # A raising transport => host_unavailable, ok:false, and session_status GUARANTEED UNKNOWN (never ABSENT).
+        # A raising transport => ok:false and session_status GUARANTEED UNKNOWN (never ABSENT). Post-ADR-0091 the
+        # reason is the specific, truthful `host_unreachable` (a bare connection error), not `host_unavailable`.
         def boom(base_url, request):
             raise OSError("connection refused")
         ex = SignedHostExecutor(
@@ -59,7 +60,7 @@ class ProbeSessionExecutorTests(SimpleTestCase):
             correlation_id="corr-probe", clock=lambda: 1_000_000)
         r = ex.probe_session()
         self.assertFalse(r["ok"])
-        self.assertEqual(r.get("reason"), "host_unavailable")
+        self.assertEqual(r.get("reason"), "host_unreachable")
         self.assertEqual(r["session_status"], "UNKNOWN")
 
     def test_ok_true_missing_status_normalised_to_unknown(self):
