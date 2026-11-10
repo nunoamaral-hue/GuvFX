@@ -1,4 +1,4 @@
-"""ADR-0090 — truthful, sanitised signed-transport error taxonomy (de-conflates `host_unavailable`).
+"""ADR-0091 — truthful, sanitised signed-transport error taxonomy (de-conflates `host_unavailable`).
 
 Pure, no host, no DB (SimpleTestCase). Covers the classifier directly, the grouping-compat helper, that the
 executor's fail-closed path now carries the specific code with NO secrets, and that a consequential op is NEVER

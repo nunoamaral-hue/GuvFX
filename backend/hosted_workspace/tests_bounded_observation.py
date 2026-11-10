@@ -83,7 +83,7 @@ class BoundedObservationTests(TestCase):
         self.assertEqual(out["unavailable"], 1)         # the slow one held, not fatal
         self.assertLess(elapsed, 1.0 * 3 - 0.3)         # concurrent, NOT serial (serial would be ~3s)
 
-    # ── ADR-0090 observation-concurrency budget (reserve control-plane headroom on the host executor) ──────────
+    # ── ADR-0091 observation-concurrency budget (reserve control-plane headroom on the host executor) ──────────
     def test_default_budget_reserves_control_plane_headroom(self):
         b = BO.observation_budget()
         self.assertEqual(b["effective"], 4)                              # conservative default, below the cap of 8

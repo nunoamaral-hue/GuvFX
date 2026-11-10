@@ -219,7 +219,7 @@ class SignedHostExecutorTests(SimpleTestCase):
         self.assertEqual(ex.enforce_single_session()["reason"], "reserved_identity")
 
     def test_transport_error_fails_closed_classified(self):
-        # A raising transport fails closed (ok:false). Post-ADR-0090 the reason is the specific, truthful code —
+        # A raising transport fails closed (ok:false). Post-ADR-0091 the reason is the specific, truthful code —
         # a bare connection error (never reached a usable response) is `host_unreachable`, not `host_unavailable`.
         def boom(base_url, request):
             raise OSError("connection refused")

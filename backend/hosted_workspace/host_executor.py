@@ -74,7 +74,7 @@ class SignedHostExecutor:
             return {"ok": False, "reason": e.reason_code}
         try:
             resp = self.transport(self.base_url, req)
-        except Exception as exc:  # noqa: BLE001 — a transport error fails closed; classify it truthfully (ADR-0090)
+        except Exception as exc:  # noqa: BLE001 — a transport error fails closed; classify it truthfully (ADR-0091)
             from hosted_workspace.transport_errors import classify_transport_exception
             classified = classify_transport_exception(exc)   # secret-free: type-only (+ integer http_status)
             logger.warning("hosted host-executor: transport failed op=%s account=%s corr=%s reason=%s",

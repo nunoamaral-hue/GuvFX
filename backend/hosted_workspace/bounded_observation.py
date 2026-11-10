@@ -13,7 +13,7 @@ making its own ``executor.observe()`` per workspace) when ``HOSTED_BOUNDED_OBSER
 
 It launches nothing, mutates no canonical state directly, arms nothing, weakens no identity pin, and never
 raises into the scheduler. DARK unless the master ``hosted_persistent_mt5_enabled()`` is on (same as the legacy
-path). Concurrency is bounded by :func:`observation_budget` (ADR-0090): at most ``capacity - reserved`` observes
+path). Concurrency is bounded by :func:`observation_budget` (ADR-0091): at most ``capacity - reserved`` observes
 run at once, so the fan-out can never occupy every host signed-executor permit and starve a time-critical signed
 control-plane op (ACTIVATE / RESTORE) — the packet-046 failure — and never outgrows Node-2 host capacity.
 """
@@ -36,7 +36,7 @@ logger = logging.getLogger("guvfx.hosted_workspace")
 SOURCE = "hosted_workspace.bounded_observation"
 _CONNECTED = "CONNECTED"
 _DISCONNECTED = "DISCONNECTED"
-_DEFAULT_OBSERVATION_CONCURRENCY = 4   # conservative default, safely below the executor connection cap (ADR-0090)
+_DEFAULT_OBSERVATION_CONCURRENCY = 4   # conservative default, safely below the executor connection cap (ADR-0091)
 _DEFAULT_EXECUTOR_CAPACITY = 8         # MUST mirror the host daemon's HOSTED_EXECUTOR_MAX_CONNECTIONS (default 8)
 _DEFAULT_RESERVED_SLOTS = 2            # executor connections kept free for time-critical signed control-plane ops
 _HARD_MAX_WORKERS = 12                 # Node-2 host capacity ceiling — the observe fan-out cannot outgrow it
@@ -53,7 +53,7 @@ def _int_setting(name: str, default: int) -> int:
 
 
 def observation_budget() -> dict:
-    """Single source of truth for hosted-observation concurrency (ADR-0090).
+    """Single source of truth for hosted-observation concurrency (ADR-0091).
 
     The host signed-executor daemon admits at most ``capacity`` concurrent connections (its
     ``HOSTED_EXECUTOR_MAX_CONNECTIONS``, default 8) and REFUSES the rest with a bare pre-response close. If the
@@ -192,7 +192,7 @@ def run_bounded_observation_cycle(*, combined_fn=None, correlation_id: str = "",
             workers, budget["capacity"], budget["reserved"], budget["configured"], ",".join(budget["notes"]))
     # Excess observations are QUEUED behind the budget (the pool runs `workers` at a time), never dropped: every
     # workspace is still observed within this cycle. `deferred` is the peak queued behind the budget — the
-    # operator-facing HOST_OBSERVATION_CAPACITY_DEFERRED condition (ADR-0090), computed from real counts only.
+    # operator-facing HOST_OBSERVATION_CAPACITY_DEFERRED condition (ADR-0091), computed from real counts only.
     deferred = max(0, len(workspaces) - workers)
 
     results = []   # list of (ws, canonical, delivery, reason)

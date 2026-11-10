@@ -1,4 +1,4 @@
-"""hosted_workspace.transport_errors — truthful, sanitised taxonomy for signed host-transport outcomes (ADR-0090).
+"""hosted_workspace.transport_errors — truthful, sanitised taxonomy for signed host-transport outcomes (ADR-0091).
 
 Packet 046 proved that the single ``host_unavailable`` reason conflated three unrelated conditions: a host that
 could not be reached, a host that accepted the connection and closed it before any HTTP response (the executor
@@ -31,7 +31,7 @@ HOST_UNREACHABLE = "host_unreachable"
 HOST_CONNECTION_DROPPED_PRE_RESPONSE = "host_connection_dropped_pre_response"
 # The host returned an explicit non-2xx HTTP status. Only the integer status code is retained (never the body).
 HOST_HTTP_ERROR = "host_http_error"
-# BACKEND-side (not transport) outcome: the local observation-concurrency budget (ADR-0090) is the limiter, so
+# BACKEND-side (not transport) outcome: the local observation-concurrency budget (ADR-0091) is the limiter, so
 # excess observations are queued/deferred behind the budget rather than dispatched. Operator-facing label for the
 # bounded-observation cycle's deferral metric; it is never produced by :func:`classify_transport_exception`.
 HOST_OBSERVATION_CAPACITY_DEFERRED = "host_observation_capacity_deferred"

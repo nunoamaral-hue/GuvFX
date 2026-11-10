@@ -71,7 +71,7 @@ class DecommissionClientTimeoutTests(SimpleTestCase):
 class DecommissionBoundaryTests(SimpleTestCase):
     def test_host_unavailable_on_raising_transport(self):
         # #55 boundary: a client read-timeout (or any transport error) on a slow teardown → fail closed. Post
-        # ADR-0090 the fail-closed reason is the specific, truthful `host_unreachable` (never reached the host).
+        # ADR-0091 the fail-closed reason is the specific, truthful `host_unreachable` (never reached the host).
         def boom(base_url, request):
             raise OSError("timed out")
 

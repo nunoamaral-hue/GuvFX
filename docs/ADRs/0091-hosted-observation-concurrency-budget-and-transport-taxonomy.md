@@ -1,7 +1,12 @@
-# 0090 — Hosted-observation concurrency budget + signed-transport error taxonomy
+# 0091 — Hosted-observation concurrency budget + signed-transport error taxonomy
 
 - Date: 2026-11-10
 - Status: Accepted
+
+> Renumbered from 0090 to 0091 during branch reconciliation: `main` advanced (PR #635) and filed
+> `docs/architecture/ADR-0090-vantage-withdrawal-correlation.md`, so 0090 is taken programme-wide. This ADR
+> (originally filed as 0090 when that number was free) was moved to the next free number, 0091, to satisfy the
+> ADR-uniqueness rule. No content changed except the number.
 
 ## Context
 
