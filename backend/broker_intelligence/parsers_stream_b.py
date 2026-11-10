@@ -142,6 +142,18 @@ _LABELED_AMOUNT = re.compile(
 _REFERENCE = re.compile(
     r"\b(?:reference|ref(?:erence)?\s*(?:id|no\.?|#)?|transaction\s*(?:id|no\.?|#)?|request\s*(?:id|no\.?|#))"
     r"[^\S\n]{0,8}[:#]?[^\S\n]{0,8}([A-Za-z0-9\-]{3,32})", re.IGNORECASE)
+# ADR-0090 — a STRICT, LINE-ANCHORED, MARKER-BEARING reference field used ONLY by brokers that require a stable
+# reference (Vantage). The label must BEGIN a line and be followed by an explicit ':'/'#' separator (a bare
+# 'transaction'/'request' additionally needs an id/no/number/code word before the separator, so an amount line
+# "Transaction: 500.00" is not read as a reference). This structurally refuses the mid-sentence boilerplate the loose
+# `_REFERENCE` above would otherwise capture ("...regulated under reference 428901", "this transaction 24h to clear",
+# "Transaction 2026-11-10 is now queued") — only a genuinely labeled reference FIELD qualifies. The digit-stability
+# guard (`_reference_is_stable`) is still applied on top.
+_REFERENCE_FIELD = re.compile(
+    r"(?m)^[^\S\n]{0,8}(?:(?:withdrawal|payment)\s+)?"
+    r"(?:(?:reference|ref|confirmation)(?:\s+(?:id|no\.?|number|code))?"
+    r"|(?:transaction|request)\s+(?:id|no\.?|number|code))"
+    r"[^\S\n]{0,4}[:#][^\S\n]{0,4}([A-Za-z0-9][A-Za-z0-9\-]{2,31})", re.IGNORECASE)
 # Internal trading-account -> internal trading-account ONLY. This deliberately does NOT capture an EXTERNAL
 # destination (a card PAN, bank or wallet number): `destination_account` is a broker INTERNAL trading-account number
 # resolved against the owner's GuvFX accounts (an external PAN can never satisfy that match), and storing an external
@@ -197,7 +209,19 @@ _LIFECYCLE_RULES = (
     ("WITHDRAWAL_REQUESTED", re.compile(
         r"\bwithdrawal\s+request\s+(?:has\s+been\s+)?(?:received|submitted|created|registered)\b|"
         r"\bwe(?:'ve|\s+have)\s+received\s+your\s+withdrawal\s+request\b|"
-        r"\byou(?:'ve|\s+have)\s+requested\s+a\s+withdrawal\b", re.IGNORECASE)),
+        r"\byou(?:'ve|\s+have)\s+requested\s+a\s+withdrawal\b|"
+        # ADR-0090 (Vantage submission + request-acceptance stages). REQUESTED-family ONLY — these are the OPENING
+        # observations of a withdrawal, never a settlement. Completion stays gated on the WITHDRAWAL_COMPLETED rule
+        # above (explicit completed/processed/funds-sent), which is evaluated FIRST, so none of these can ever read
+        # as COMPLETED.
+        #   * "Withdrawal Submitted" — bare "submitted" with no "request" word. Past-tense/neutral only: an
+        #     intervening "will be" / "not" breaks the adjacency, so future tense and negation fail closed.
+        r"\bwithdrawal\s+(?:has\s+been\s+|was\s+|successfully\s+)?submitted\b|"
+        #   * "Withdrawal Request Successful" — the acceptance of the REQUEST. ANCHORED to "withdrawal request ...
+        #     successful" so a bare "successful", a "deposit successful" or a "payment successful" can NEVER match,
+        #     and "successful" is never treated as completion.
+        r"\bwithdrawal\s+request\s+(?:is\s+|was\s+|has\s+been\s+)?successful\b|"
+        r"\bwithdrawal\s+request\s+(?:has\s+been\s+|was\s+)?accepted\b", re.IGNORECASE)),
 )
 _EXTERNAL_ELIGIBLE = frozenset({
     "WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED",
@@ -297,12 +321,42 @@ class _GenericWithdrawalParser:
     detail values (Pepperstone) opts in. A broker with a complete text/plain part (Dominion, Vantage) stays on the
     text path, so the HTML preference never shadows a good text/plain body for them."""
 
-    def __init__(self, *, name: str, version: str, sender_domain: str, display: str, wants_html: bool = False):
+    def __init__(self, *, name: str, version: str, sender_domain: str, display: str, wants_html: bool = False,
+                 requires_reference: bool = False):
         self.name = name
         self.version = version
         self._sender_domain = sender_domain
         self._display = display
         self.WANTS_HTML_BODY = bool(wants_html)
+        # ADR-0090 fail-closed correlation safeguard (per-broker, default OFF — existing brokers unchanged).
+        self._requires_reference = bool(requires_reference)
+
+    @staticmethod
+    def _reference_is_stable(reference: str) -> bool:
+        """A STABLE broker reference carries at least one DIGIT. Real withdrawal references are alphanumeric ids
+        (e.g. ``VTG-20261110-001``, ``V-9``). The shared ``_REFERENCE`` regex deliberately makes the trailing
+        id/no/# token OPTIONAL, so ordinary withdrawal-email BOILERPLATE — "this transaction may take 3-5 days",
+        "for reference please keep this email", "your transaction will be reviewed" — yields a NON-EMPTY but
+        meaningless alphabetic token ('may' / 'please' / 'will'). Requiring a digit rejects those, so emptiness alone
+        is not trusted as the absence of a stable reference."""
+        return bool(reference) and any(ch.isdigit() for ch in reference)
+
+    def _guard_reference(self, category: str, reference: str):
+        """ADR-0090: a broker that REQUIRES a stable reference (Vantage) must never assert EXTERNAL_WITHDRAWAL without
+        one, and must never store an UNSTABLE (boilerplate-derived) reference. Two reference-less Vantage lifecycle
+        emails ("submitted" + "request successful") cannot be deterministically correlated and would each OPEN a
+        separate ref-less withdrawal (double count); a spurious shared token could instead MERGE two genuinely distinct
+        withdrawals under the reference-first key. So an unstable reference is treated as ABSENT: it is cleared and an
+        EXTERNAL_WITHDRAWAL is downgraded to UNKNOWN. Correlation never fabricates a record from an UNKNOWN event, so
+        the observation is held for manual review, never force-correlated by timing. Brokers that do not set
+        ``requires_reference`` (Pepperstone / Dominion / IS6) are unaffected. Returns (category, reference)."""
+        if not self._requires_reference:
+            return category, reference
+        if not self._reference_is_stable(reference):
+            reference = ""                                   # drop a boilerplate-derived / implausible token
+        if category == "EXTERNAL_WITHDRAWAL" and not reference:
+            category = "UNKNOWN"
+        return category, reference
 
     def can_parse(self, *, subject: str, body: str, from_address: str) -> bool:
         if not domain_matches(_domain_of(from_address), self._sender_domain):
@@ -335,10 +389,21 @@ class _GenericWithdrawalParser:
         source_account = account if re.fullmatch(r"\d{4,12}", account or "") else ""   # internal trading acct only
         reference = _field_value(cells, _LBL_REFERENCE)
         reference = "" if reference.lower().startswith("http") else re.sub(r"[^A-Za-z0-9\-]", "", reference)[:32]
+        category, reference = self._guard_reference(category, reference)   # ADR-0090 fail-closed (stable ref only)
         return ParsedBrokerEvent(
             event_type=lifecycle, transaction_category=category, broker=self._display,
             amount=amount, currency=currency, occurred_at=None, broker_reference_id=reference,
             source_account=source_account, destination_account="", confidence=Decimal("0.800"))
+
+    def _extract_text_reference(self, body: str) -> str:
+        """Extract the broker reference from a plain-text body. A broker that REQUIRES a stable reference (Vantage)
+        uses the STRICT line-anchored, marker-bearing labeled-field pattern (ADR-0090 ``_REFERENCE_FIELD``), so
+        mid-sentence boilerplate (even digit-bearing: a date, a duration, a regulatory footer number) is never
+        captured; other brokers use the permissive legacy ``_REFERENCE`` pattern, UNCHANGED."""
+        rx = _REFERENCE_FIELD if self._requires_reference else _REFERENCE
+        m = rx.search(body)
+        reference = m.group(1) if m else ""
+        return "" if reference.lower().startswith("http") else reference
 
     def _parse_text(self, *, subject: str, body: str, from_address: str) -> Optional[ParsedBrokerEvent]:
         lifecycle = _classify_lifecycle(subject, body)
@@ -346,12 +411,10 @@ class _GenericWithdrawalParser:
             return None
         category = _classify_category(subject, body, lifecycle)
         amount, currency = _extract_amount(body)
-        ref_m = _REFERENCE.search(body)
-        reference = ref_m.group(1) if ref_m else ""
-        if reference.lower().startswith("http"):
-            reference = ""
+        reference = self._extract_text_reference(body)
         pairs = {(m.group("src"), m.group("dst")) for m in _TRANSFER_CLAUSE.finditer(body)}
         source_account, destination_account = next(iter(pairs)) if len(pairs) == 1 else ("", "")
+        category, reference = self._guard_reference(category, reference)   # ADR-0090 fail-closed (stable ref only)
         return ParsedBrokerEvent(
             event_type=lifecycle, transaction_category=category, broker=self._display,
             amount=amount, currency=currency, occurred_at=None, broker_reference_id=reference,
@@ -366,7 +429,7 @@ PEPPERSTONE = _GenericWithdrawalParser(name="pepperstone", version="v1", sender_
 DOMINION = _GenericWithdrawalParser(name="dominion_markets", version="v1", sender_domain="dominionmarkets.com",
                                     display="Dominion Markets")
 VANTAGE = _GenericWithdrawalParser(name="vantage", version="v1", sender_domain="vantagemarkets.com",
-                                   display="Vantage")
+                                   display="Vantage", requires_reference=True)   # ADR-0090: no ref => no auto-withdrawal
 
 STREAM_B_PARSERS = (PEPPERSTONE, DOMINION, VANTAGE)
 
