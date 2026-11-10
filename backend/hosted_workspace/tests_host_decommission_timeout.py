@@ -70,13 +70,14 @@ class DecommissionClientTimeoutTests(SimpleTestCase):
 
 class DecommissionBoundaryTests(SimpleTestCase):
     def test_host_unavailable_on_raising_transport(self):
-        # #55 boundary: a client read-timeout (or any transport error) on a slow teardown → fail closed, ambiguous.
+        # #55 boundary: a client read-timeout (or any transport error) on a slow teardown → fail closed. Post
+        # ADR-0090 the fail-closed reason is the specific, truthful `host_unreachable` (never reached the host).
         def boom(base_url, request):
             raise OSError("timed out")
 
         res = _ex(boom).decommission_runtime(username="guvfx_u_14", runtime_root=r"C:\GuvFX\accounts\14")
         self.assertFalse(res["ok"])
-        self.assertEqual(res["reason"], "host_unavailable")
+        self.assertEqual(res["reason"], "host_unreachable")
 
     def test_unknown_key_id_on_unsigned_host_error_response(self):
         # #25 boundary: the teardown fails host-side on a LIVE/locked runtime and the host returns an unsigned

@@ -83,12 +83,66 @@ class BoundedObservationTests(TestCase):
         self.assertEqual(out["unavailable"], 1)         # the slow one held, not fatal
         self.assertLess(elapsed, 1.0 * 3 - 0.3)         # concurrent, NOT serial (serial would be ~3s)
 
-    def test_worker_pool_is_bounded(self):
+    # ── ADR-0090 observation-concurrency budget (reserve control-plane headroom on the host executor) ──────────
+    def test_default_budget_reserves_control_plane_headroom(self):
+        b = BO.observation_budget()
+        self.assertEqual(b["effective"], 4)                              # conservative default, below the cap of 8
+        self.assertEqual((b["capacity"], b["reserved"]), (8, 2))
+        self.assertLessEqual(b["effective"] + b["reserved"], b["capacity"])   # >= `reserved` permits stay free
+        self.assertFalse(b["notes"])
         self.assertLessEqual(BO._max_workers(), BO._HARD_MAX_WORKERS)
-        with override_settings(HOSTED_OBSERVATION_MAX_WORKERS="999"):
-            self.assertEqual(BO._max_workers(), BO._HARD_MAX_WORKERS)   # never exceeds host capacity
-        with override_settings(HOSTED_OBSERVATION_MAX_WORKERS="0"):
-            self.assertEqual(BO._max_workers(), 1)
+
+    def test_budget_clamps_to_capacity_minus_reserved(self):
+        with override_settings(HOSTED_OBSERVATION_MAX_WORKERS="7"):      # 7 < capacity(8) but > max_safe(6)
+            b = BO.observation_budget()
+            self.assertEqual(b["effective"], 6)
+            self.assertIn("observation_concurrency_exceeds_headroom", b["notes"])
+
+    def test_budget_fails_closed_on_invalid_concurrency(self):
+        # Zero / negative / >= capacity must never saturate the executor: effective stays in [1, capacity-reserved].
+        for bad in ("0", "-3", "8", "999"):
+            with override_settings(HOSTED_OBSERVATION_MAX_WORKERS=bad):
+                b = BO.observation_budget()
+                self.assertGreaterEqual(b["effective"], 1)
+                self.assertLessEqual(b["effective"], b["capacity"] - b["reserved"])
+                self.assertIn("observation_concurrency_invalid", b["notes"])
+
+    def test_budget_fails_closed_when_reserved_leaves_no_headroom(self):
+        with override_settings(HOSTED_EXECUTOR_CONNECTION_CAPACITY="3", HOSTED_CONTROL_PLANE_RESERVED_SLOTS="5"):
+            b = BO.observation_budget()
+            self.assertIn("reserved_ge_capacity", b["notes"])
+            self.assertGreaterEqual(b["effective"], 1)
+            self.assertLessEqual(b["effective"] + b["reserved"], b["capacity"])   # headroom still preserved
+
+    def test_budget_tracks_a_raised_host_capacity_up_to_node_ceiling(self):
+        # If an operator raises the daemon cap, the backend mirror must be raised to match for observation to scale.
+        with override_settings(HOSTED_EXECUTOR_CONNECTION_CAPACITY="24", HOSTED_OBSERVATION_MAX_WORKERS="10"):
+            self.assertEqual(BO.observation_budget()["effective"], 10)   # scales with a raised, matched capacity
+        with override_settings(HOSTED_EXECUTOR_CONNECTION_CAPACITY="24", HOSTED_OBSERVATION_MAX_WORKERS="16"):
+            # …but the Node-2 host-capacity ceiling (_HARD_MAX_WORKERS) still caps the fan-out regardless.
+            self.assertEqual(BO.observation_budget()["effective"], BO._HARD_MAX_WORKERS)
+
+    def test_pool_concurrency_never_exceeds_effective_and_defers_truthfully(self):
+        import threading
+        for i in range(28):
+            _ws(f"w{i}", login=str(700100 + i))
+        lock = threading.Lock(); state = {"cur": 0, "peak": 0}
+        def combined(ws):
+            with lock:
+                state["cur"] += 1; state["peak"] = max(state["peak"], state["cur"])
+            time.sleep(0.02)
+            with lock:
+                state["cur"] -= 1
+            return (SimpleNamespace(), None, "ok")
+        with patch("hosted_workspace.bounded_observation.ingest_observation",
+                   return_value=SimpleNamespace(status="APPLIED")):
+            out = BO.run_bounded_observation_cycle(combined_fn=combined)
+        self.assertEqual(out["polled"], 28)                              # every workspace observed — queued, not lost
+        self.assertEqual(out["workers"], 4)
+        self.assertLessEqual(state["peak"], 4)                           # peak in-flight never exceeded the budget
+        self.assertEqual(out["deferred"], 24)                            # 28 - 4 queued behind the budget at peak
+        self.assertEqual(out["deferred_reason"], "host_observation_capacity_deferred")
+        self.assertEqual(out["budget"]["reserved"], 2)                   # control-plane headroom reserved throughout
 
     def test_typed_reasons_preserved_not_flattened(self):
         _ws("t1"); _ws("t2"); _ws("t3")

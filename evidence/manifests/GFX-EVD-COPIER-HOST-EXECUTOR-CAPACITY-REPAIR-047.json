@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-COPIER-HOST-EXECUTOR-CAPACITY-REPAIR-047",
+  "packet_id": "GFX-COPIER-HOST-EXECUTOR-CAPACITY-REPAIR-047",
+  "created_at_utc": "2026-11-10T00:00:00Z",
+  "branch": "feat/copier-host-executor-capacity-repair",
+  "base_commit": "7ef7ae10a6817d88db4dbacd7449cff99121e507",
+  "head_commit": "(capacity-repair commit on feat/copier-host-executor-capacity-repair; see PR)",
+  "adr": "docs/ADRs/0090-hosted-observation-concurrency-budget-and-transport-taxonomy.md",
+  "summary": "Repository-only fix for the packet-046 root cause. (1) Observation concurrency budget (hosted_workspace/bounded_observation.observation_budget): default 4, reserves >=2 host-executor connections for the control plane (HOSTED_EXECUTOR_CONNECTION_CAPACITY=8 mirror, HOSTED_CONTROL_PLANE_RESERVED_SLOTS=2, HOSTED_OBSERVATION_MAX_WORKERS=4); invariant 1<=effective<=capacity-reserved; excess observations QUEUED not dropped; fails closed to the safe range on invalid/zero/negative/>=capacity config. (2) Signed-transport error taxonomy (hosted_workspace/transport_errors): host_unreachable / host_connection_dropped_pre_response / host_http_error (integer status only) / host_transport_error + host_observation_capacity_deferred; SignedHostExecutor._send returns the specific secret-free code; is_host_unavailable_reason groups them (incl. legacy) for catch-all consumers. (3) Retry safety unchanged: consequential ops remain single-attempt fail-closed; a safe bounded retry limited to the pre-dispatch bare-close is recorded as a follow-up, not implemented. No migration. No deploy, no host contact, no flag armed, no authorization, no order. Does NOT change the host daemon's connection limit.",
+  "phase0_current_truth": "Canonical main = prod = 7ef7ae10. Packet-046 all-OFF state reverified (flags off, host admission off, 0 active authorizations, id=3 REVOKED, kill switch 0, 0 copier jobs, 0 broker orders). Refinement recorded truthfully: the observe fan-out pool itself was bounded to HOSTED_OBSERVATION_MAX_WORKERS (default 8), which EQUALS the daemon's max_connections (8) -> the pool alone could occupy every permit; the 28 workspaces kept that 8-worker pool full across the cycle. Packet-046 mechanism not contradicted.",
+  "commands": [
+    "manage.py test hosted_workspace.tests_transport_errors hosted_workspace.tests_bounded_observation hosted_workspace.tests_host_executor hosted_workspace.tests_host_decommission_timeout hosted_workspace.tests_p4a_probe_executor hosted_workspace.tests_corroboration_diagnosis hosted_workspace.tests_poll_diagnostics",
+    "manage.py test hosted_workspace execution trade_copier broker_catalogue",
+    "manage.py makemigrations --check --dry-run hosted_workspace execution trade_copier",
+    "secret scan over all changed/new files"
+  ],
+  "expected_results": [
+    "focused modules (touched code + direct compat consumers): all pass",
+    "full 4-app regression: pass except pre-existing environment failures",
+    "makemigrations --check: No changes detected",
+    "secret scan: no secrets (only documentation/safety language + intentional negative-test markers)"
+  ],
+  "actual_results": [
+    "focused modules: 121 OK (incl. corroboration_diagnosis + poll_diagnostics compat)",
+    "full 4-app regression: Ran 3952 tests; 3950 pass; 2 FAIL (hosted_workspace.tests_observer_attach.BareTerminalClassifierControlTests) — PRE-EXISTING, environment-specific: a Windows-CIM path classifier (terminal_provisioning.windows.observer_attach._bare_terminal_pids) run on macOS; a module NOT touched by this packet, byte-identical to main, importing none of the changed files. CONFIRMED identical 2-failure result on the main checkout with none of these changes.",
+    "makemigrations --check: No changes detected in apps 'hosted_workspace', 'execution', 'trade_copier'",
+    "secret scan: clean"
+  ],
+  "status": "PASS",
+  "status_detail": "PASS for packet 047: zero new failures introduced. The 2 full-suite failures are pre-existing and reproduce on main without these changes (macOS running a Windows-only CIM classifier control test).",
+  "observation_budget": {
+    "defaults": {"HOSTED_OBSERVATION_MAX_WORKERS": 4, "HOSTED_EXECUTOR_CONNECTION_CAPACITY": 8, "HOSTED_CONTROL_PLANE_RESERVED_SLOTS": 2, "node2_hard_ceiling": 12},
+    "invariant": "1 <= effective <= capacity - reserved AND reserved >= 1",
+    "reserved_headroom_proof": "effective(4) + reserved(2) = 6 <= capacity(8); >= 2 control-plane permits always free while observation runs at its maximum. Fail-closed clamps verified for 0/-3/8/999 and reserved>=capacity.",
+    "excess_handling": "queued by the ThreadPool (every workspace observed within the cycle); none dropped; deferred = max(0, workspaces - effective) reported with reason host_observation_capacity_deferred."
+  },
+  "transport_error_taxonomy": {
+    "host_unreachable": "connection refused / timeout / DNS / bare socket error — host not reached",
+    "host_connection_dropped_pre_response": "accepted then closed before any HTTP response (the daemon cap shutdown_request); labelled by observation, never inferred as capacity",
+    "host_http_error": "explicit non-2xx; integer http_status retained only (no body/token/url)",
+    "host_transport_error": "unclassified transport fault (still not the misleading host_unavailable)",
+    "host_observation_capacity_deferred": "backend-side observation-budget deferral metric (never a transport outcome)",
+    "compatibility": "is_host_unavailable_reason() groups all transport-failure codes incl. legacy host_unavailable; corroboration_diagnosis already routes any non-no_observer_task reason to OBSERVE_UNAVAILABLE (catch-all), so no consumer behaviour changes."
+  },
+  "retry_decision": "No automatic retry added to any consequential signed op (ACTIVATE/MODIFY/CLOSE/decommission): single-attempt, fail-closed, exactly one POST per step (verified: a raising transport is called exactly once). A safe bounded retry limited to host_connection_dropped_pre_response is recorded as a separate follow-up in ADR-0090, not implemented here.",
+  "migration_status": "No migration. makemigrations --check: No changes detected.",
+  "limitations": [
+    "No host contact: no host-side behaviour (daemon, WinSW, max_connections) was changed or tested in this packet.",
+    "Per-host observation budgets not built: the current model has a single host-executor endpoint, so a single global budget is correct; per-host budgets are a documented future extension (ADR-0090).",
+    "2 pre-existing macOS-environment test failures in terminal_provisioning.windows.observer_attach (BareTerminalClassifierControlTests) are outside this packet's scope and reproduce on main.",
+    "The de-conflated taxonomy is applied to the hosted_workspace host-executor transport only; broker_catalogue/host_catalogue.py still returns host_unavailable (documented optional follow-up)."
+  ],
+  "production_host_broker_impact": "None. Repository-only. Production remains at 7ef7ae10; all copier/execution controls OFF; host admission OFF; no Windows-host contact; zero broker orders.",
+  "remaining_production_gates": "Separate, NOT authorised: governed merge (Sponsor GO) -> rollback-first DARK backend deploy of the merged revision -> fresh 15-min CopierLiveAuthorization + backend worker arming (human) + signed host-admission commit (prod-operator) -> Sponsor-present OPEN->MODIFY->CLOSE -> return-to-OFF. Optional host-side max_connections increase is its own Sponsor deploy packet.",
+  "artefact_locations": [
+    "backend/hosted_workspace/transport_errors.py",
+    "backend/hosted_workspace/host_executor.py",
+    "backend/hosted_workspace/bounded_observation.py",
+    "backend/hosted_workspace/tests_transport_errors.py",
+    "backend/hosted_workspace/tests_bounded_observation.py",
+    "backend/hosted_workspace/tests_host_executor.py",
+    "backend/hosted_workspace/tests_host_decommission_timeout.py",
+    "backend/hosted_workspace/tests_p4a_probe_executor.py",
+    "docs/ADRs/0090-hosted-observation-concurrency-budget-and-transport-taxonomy.md",
+    "evidence/manifests/GFX-EVD-COPIER-HOST-EXECUTOR-CAPACITY-REPAIR-047.json"
+  ],
+  "checksums": {
+    "backend/hosted_workspace/transport_errors.py": "sha256:4519aab852308f0bdb5357868417213a2fc24a056529a8e238db1ee8938db901",
+    "backend/hosted_workspace/host_executor.py": "sha256:ef3c2e88f076415b6261b5c716165ebb0f9bea32be78ae6a4484487ed9e233ea",
+    "backend/hosted_workspace/bounded_observation.py": "sha256:c742cd2712427fe707add41897240c9b3fb29a0887c8d6de695428b3cffaf134",
+    "backend/hosted_workspace/tests_transport_errors.py": "sha256:31b7d223eb75878620f669f2296b16f877098075cca1359e72f98a2cffb9c460",
+    "backend/hosted_workspace/tests_bounded_observation.py": "sha256:17792a7b7dd3b0191b8567fd9124ee41de93b7c546685ce04d3597faaccfd359",
+    "backend/hosted_workspace/tests_host_executor.py": "sha256:704410fa799694854c941da08cad1252df644bb5285408556882a39972b6a9ec",
+    "backend/hosted_workspace/tests_host_decommission_timeout.py": "sha256:b1b47f65f58ffa236f315c3a1ba7f817d96793feb0081087c8df3675f843cc2b",
+    "backend/hosted_workspace/tests_p4a_probe_executor.py": "sha256:091e83df036abeaee984c3883d8d294384dce3a51329115ac3d395169cad5deb",
+    "docs/ADRs/0090-hosted-observation-concurrency-budget-and-transport-taxonomy.md": "sha256:ebd728c5e6637e35c05dc89ac871b41bcfacaaa60d696cf88f53872c933cf86c"
+  },
+  "reviewer": "Copy Trading coding agent (self-verified; adversarial review pending in PR)"
+}
