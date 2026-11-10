@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-STAFF-WITHDRAWAL-CORRELATION",
+  "packet_id": "GFX-WITHDRAWAL-STAFF-CORRELATION-024-GO-001",
+  "created_at_utc": "2026-11-10T00:00:00Z",
+  "branch": "feat/staff-withdrawal-correlation",
+  "base_commit": "278125226c9024a4bed171e137e72061a7e3f5fc",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only — a broker-neutral, staff-gated, append-only manual withdrawal-correlation control (ADR-0091) for brokers that supply no stable transaction reference",
+    "mode": "new model + additive reversible migration 0031 + new service + new management command + synthetic tests + ADR; NOT applied in production; NOT run against the real Vantage candidates",
+    "adr": "ADR-0091 (next free; 0090 was the prior highest)",
+    "production_or_db_mutation": false,
+    "command_applied_in_production": false,
+    "real_candidates_1_or_2_touched": false,
+    "withdrawal_created_or_modified_in_production": false,
+    "candidate_or_profile_association_changed_in_production": false,
+    "gmail_cursor_moved_or_mailbox_read": false,
+    "broker_certified_or_public_statistics_published": false,
+    "real_gmail_mt5_broker_credentials_pii_or_email_body": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "financial_or_broker_action_by_agent": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test covers broker_intelligence) + governance-check + secret/PII scan"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py makemigrations broker_intelligence --check --dry-run   (No changes detected in app 'broker_intelligence')",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_staff_correlation   (30 tests OK)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence execution.tests_tb1_migration core.tests_adr_governance   (1034 tests OK)",
+    "make governance-check   (check_no_secrets + test_no_secrets + test_data_root + evidence-lint + test_evidence_manifests + test_evidence_factuality + ADR uniqueness)",
+    "make secret-scan   (check_no_secrets: no findings)"
+  ],
+  "expected_results": [
+    "Migration 0031 is ADDITIVE + REVERSIBLE: CreateModel StaffWithdrawalCorrelation (+ M2M to discovery candidates) and three AlterField choice additions (Withdrawal.correlation_method += MANUAL_STAFF; UnknownSenderDiscoveryCandidate.review_state += CORRELATED; DiscoveryCandidateAction.action tracks the same choices). No data migration; no destructive change.",
+    "A NAMED active-staff reviewer can, via `correlate_withdrawal_candidates` with an EXPLICIT --broker-profile-id, confirm two+ reference-less discovery candidates are ONE withdrawal lifecycle; --apply creates EXACTLY ONE REQUESTED / in-progress withdrawal (completed_at NULL, correlation_method MANUAL_STAFF, requested_at = earliest trusted timestamp), links provenance to both candidates and their evidence, and marks the candidates CORRELATED.",
+    "Fail-closed: non-staff reviewer, inactive/non-operator-verified/absent broker profile, candidate domain not a sender of the selected profile (broker mis-attribution), conflicting existing broker association, cross-tenant membership, ineligible/already-correlated/terminal-lifecycle candidate, conflicting recorded reference/amount/currency, ambiguous timestamp, duplicate or unknown candidate id — each REFUSES with a stable PII-free code and makes zero changes. The broker is never inferred/back-filled; a refusal never mutates a candidate's association.",
+    "Lifecycle truthfulness: the result is ALWAYS REQUESTED; \"request successful\" wording is never interpreted as COMPLETED; no processing duration is published.",
+    "Idempotency/concurrency: a deterministic idempotency key + its unique constraint make a replay (and a concurrent double-apply) a safe no-op — never a duplicate withdrawal; the decision is append-only (save/delete refuse rewrites).",
+    "Privacy: synthetic fixtures only; the decision stores only owner/broker FKs, salted message-id hashes, the user:<id> reviewer, a sanitised bounded reason and enums — no raw body/name/full-account/PII; command output is PII-free.",
+    "broker_intelligence suite green; makemigrations --check clean for broker_intelligence; ADR-0091 unique; migration rewind green; governance + secret + PII scans clean."
+  ],
+  "actual_results": [
+    "makemigrations --check broker_intelligence: No changes detected (0031 captures the model + 3 choice AlterFields).",
+    "broker_intelligence.tests_staff_correlation: Ran 30 tests OK — positive (submitted+request-successful -> ONE REQUESTED withdrawal; timestamp ordering independent of candidate-id order; dry-run no-op via the command; --apply creates exactly one; replay idempotent; evidence preserved + provenance linked) and adversarial (cross-tenant; broker mis-attribution; conflicting broker association; non-staff + inactive reviewer; inactive + non-operator-verified + absent broker profile; conflicting reference; conflicting amount/currency; ambiguous timestamp; already-correlated; already-rejected; terminal-lifecycle refusal (never COMPLETED); too-few; duplicate id; not-found; TOCTOU ineligibility rollback; append-only save/delete; reason sanitisation; no-PII-fields-on-decision).",
+    "Full backend scope: Ran 1034 tests OK (1004 prior + 30 new) — no regression; the additive choice changes and the correlation.py MANUAL_STAFF exclusion broke no existing test. execution.tests_tb1_migration (migration rewind) and core.tests_adr_governance (ADR uniqueness incl. 0091) green.",
+    "Independent adversarial review (6-dimension multi-agent workflow + per-finding verification): 4 confirmed findings, all FIXED before PR with regressions — (HIGH) the ref-less, amount-bearing MANUAL_STAFF withdrawal was matchable by the automatic heuristic and could be silently advanced to COMPLETED; (MEDIUM) a later reference-carrying event could adopt it and stamp an unreviewed reference; (MEDIUM x2) the command did not catch an apply-time CorrelationRefused and a concurrent apply loser raised instead of returning the idempotent no-op. Fixes: exclude correlation_method=MANUAL_STAFF from correlation._heuristic_candidates (engine never advances/adopts a staff record); re-check the idempotency key UNDER the candidate lock before eligibility (concurrent loser -> no-op); the command catches apply-time CorrelationRefused. Regressions added: manual withdrawal stays REQUESTED after a later ref-less COMPLETED event; not adopted by a later reference event; command apply-time refusal is graceful; replay no-op even after candidates are CORRELATED.",
+    "PII review of the diff: synthetic only — fixtures use vantagemarkets.test / other-broker.test / *.guvfx.test / x.test, invented references REF-A/REF-B, amounts 100.00/250.00; no personal name, real email address, full account number, real reference or email body. Command output prints only owner_id/profile-id/candidate-ids/timestamp/truncated idempotency hash/user:<id>.",
+    "Scope: repository-only. The command was NOT applied in production and was NOT run against the genuine Vantage candidates 1/2; no production withdrawal, candidate/profile association, cursor or mailbox was touched."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed, migration 0031 NOT applied in production without a separate explicit Sponsor GO. No production/DB mutation, no financial/broker action, no cursor movement, no mailbox read.",
+    "This control is an EXCEPTION PATH for reference-less brokers. It requires an explicit human staff decision per correlation; it does not and must not automatically merge candidates. When a broker later supplies a stable reference, the automatic reference-first engine handles it and this path is unnecessary.",
+    "Three existing fields gain a choice value via AlterField (Withdrawal.correlation_method, UnknownSenderDiscoveryCandidate.review_state, DiscoveryCandidateAction.action); these are additive and reversible and changed no existing test.",
+    "The manual withdrawal is reference-less and (unless a consistent amount/currency is already recorded in redacted evidence) amount-less, so the automatic reference-first/heuristic engine cannot later match or double-count it.",
+    "A pre-existing unrelated makemigrations drift in other apps on canonical main is not introduced or touched by this PR (broker_intelligence makemigrations --check is clean)."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/models.py (new StaffWithdrawalCorrelation append-only model; Withdrawal.CorrelationMethod.MANUAL_STAFF; UnknownSenderDiscoveryCandidate.ReviewState.CORRELATED)",
+    "backend/broker_intelligence/staff_correlation.py (new broker-neutral service: plan_correlation fail-closed validation + apply_correlation idempotent application)",
+    "backend/broker_intelligence/correlation.py (one-line adversarial-review fix: _heuristic_candidates excludes MANUAL_STAFF so the automatic engine never advances/adopts a staff-owned withdrawal)",
+    "backend/broker_intelligence/management/commands/correlate_withdrawal_candidates.py (new dry-run-by-default staff command)",
+    "backend/broker_intelligence/migrations/0031_staff_withdrawal_correlation.py (additive, reversible)",
+    "backend/broker_intelligence/tests_staff_correlation.py (30 synthetic tests: positive + adversarial matrix + review regressions)",
+    "docs/architecture/ADR-0091-staff-gated-withdrawal-correlation.md"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/staff_correlation.py": "sha256:b6b20e6be7e51bb803b0e7f052d396af44a403b50c4efdea4aadb4ab058f5fd0",
+    "backend/broker_intelligence/management/commands/correlate_withdrawal_candidates.py": "sha256:118c07c7fbbf0a9ad8d03d97748b9568948c2ca494d78ddcc189d0d5f596252c",
+    "backend/broker_intelligence/correlation.py": "sha256:8a1ac4669feb1ad5b5e52e56653256bcd29bd4d379689a05e6c2f46e7c4f7caa",
+    "backend/broker_intelligence/migrations/0031_staff_withdrawal_correlation.py": "sha256:b92d60ad379964f7a34420cbc80aba510557a391c8d42827cbe20fa3f5927489",
+    "backend/broker_intelligence/tests_staff_correlation.py": "sha256:d0f34659463b450b3c3fadb5bf51ffb11530df7213120bd8453cf1c7cbdbc312",
+    "docs/architecture/ADR-0091-staff-gated-withdrawal-correlation.md": "sha256:72e25edec4866d1970bbb92654895f47c55540aa48584d55c89904dfe7d852a8"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review + independent adversarial review workflow; Sponsor review pending (auto-merge OFF, STOP before merge)"
+}

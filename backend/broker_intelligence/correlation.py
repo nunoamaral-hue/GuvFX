@@ -374,7 +374,9 @@ def _correlate_by_reference(event: BrokerEvent, target_status: str) -> Correlati
 
 def _heuristic_candidates(event: BrokerEvent):
     """Ref-less Withdrawals for this account matching amount+currency within the bounded window. Ref-id withdrawals
-    are excluded (they are matched deterministically by ref, never by heuristic)."""
+    are excluded (they are matched deterministically by ref, never by heuristic). ADR-0091: a staff-confirmed
+    ``MANUAL_STAFF`` withdrawal is a HUMAN-OWNED record and is likewise excluded — the automatic engine must never
+    advance it (e.g. to COMPLETED) or adopt a later reference into it; only a staff decision may change it."""
     anchor = _event_time(event)
     # Account-scoped when the event resolved an account, else owner-scoped over account-UNRESOLVED rows (ADR-0050).
     if event.trading_account_id is not None:
@@ -383,6 +385,7 @@ def _heuristic_candidates(event: BrokerEvent):
     else:
         qs = Withdrawal.objects.filter(owner_id=event.owner_id, trading_account__isnull=True, broker_reference_id="",
                                        amount=event.amount, currency=event.currency)
+    qs = qs.exclude(correlation_method=Withdrawal.CorrelationMethod.MANUAL_STAFF)   # ADR-0091: engine never touches a staff record
     lo, hi = anchor - HEURISTIC_WINDOW, anchor + HEURISTIC_WINDOW
     out = []
     for w in qs:
