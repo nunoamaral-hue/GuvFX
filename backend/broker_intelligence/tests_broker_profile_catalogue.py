@@ -19,13 +19,14 @@ class SupportedCategoriesTests(TestCase):
         self.assertEqual(set(tw.supported_category_list()), {"INTERNAL_TRANSFER", "UNKNOWN"})
         self.assertEqual(set(is6.supported_category_list()), {"DEPOSIT", "INTERNAL_TRANSFER", "UNKNOWN"})
 
-    def test_only_pepperstone_declares_external_withdrawal_after_activation(self):
-        # After migration 0027 (GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003) the operator-verified Pepperstone profile
-        # DECLARES EXTERNAL_WITHDRAWAL so genuine Pepperstone withdrawal emails surface on the owner-scoped
-        # dashboard. The non-activated pilots (is6, tradersway) still declare none.
+    def test_operator_verified_pepperstone_and_vantage_declare_external_withdrawal_after_activation(self):
+        # After migration 0027 (GFX-PEPPERSTONE-WITHDRAWAL-DEMO-003) and migration 0030
+        # (GFX-WITHDRAWAL-VANTAGE-CORRELATE-EXEC-019, ADR-0090) the operator-verified Pepperstone AND Vantage
+        # profiles DECLARE EXTERNAL_WITHDRAWAL so their genuine withdrawal emails surface on the owner-scoped
+        # dashboard. The non-activated pilots (is6, tradersway) still declare none; Dominion stays DARK.
         external = {p.slug for p in BrokerProfile.objects.filter(is_active=True)
                     if TransactionCategory.EXTERNAL_WITHDRAWAL in p.supported_category_list()}
-        self.assertEqual(external, {"pepperstone"})
+        self.assertEqual(external, {"pepperstone", "vantage"})
         for slug in ("is6", "tradersway"):
             self.assertNotIn(TransactionCategory.EXTERNAL_WITHDRAWAL,
                              BrokerProfile.objects.get(slug=slug).supported_category_list())
