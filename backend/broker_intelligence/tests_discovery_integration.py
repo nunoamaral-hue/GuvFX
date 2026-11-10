@@ -268,3 +268,48 @@ class ProposeIdempotent(_Base):
         self.assertEqual((sc1, sc2), (200, 200))          # a repeat must not 500 (IntegrityError)
         self.assertEqual(b1["proposed_pattern_id"], b2["proposed_pattern_id"])
         self.assertEqual(GenericWithdrawalPattern.objects.filter(enabled=False).count(), 1)
+
+
+class VantageTwoMessageLifecycle(_Base):
+    """ADR-0089 live-observation (Vantage): the two-message lifecycle produces two REDACTED candidates (same broker,
+    distinct messages), never a withdrawal/event, raw never stored, replay-idempotent, PII-free. SYNTHETIC only."""
+    FOOTER = "<footer>Unsubscribe here | Trade now | Login to your account</footer>"
+
+    def _rawv(self, subject, body):
+        return _raw("Vantage <no-reply@vantagemarkets.test>", subject,
+                    "<html><body><p>%s</p>%s</body></html>" % (body, self.FOOTER))
+
+    def test_two_messages_two_candidates_same_domain_no_withdrawal(self):
+        msgs = [{"provider_message_id": "v1", "raw_bytes": self._rawv("Withdrawal Submitted",
+                                                                      "your withdrawal has been submitted")},
+                {"provider_message_id": "v2", "raw_bytes": self._rawv("Withdrawal Request Successful",
+                                                                      "your withdrawal request was successful")}]
+        self.assertEqual(disc.process_discovery_messages(msgs, owner=self.user), 2)
+        cands = list(UnknownSenderDiscoveryCandidate.objects.filter(owner=self.user).order_by("id"))
+        self.assertEqual(len(cands), 2)
+        for c in cands:
+            self.assertEqual(c.lifecycle_class, "REQUESTED")        # conservative; NEVER completed
+            self.assertEqual(c.registrable_domain, "vantagemarkets.test")
+        self.assertEqual(cands[0].sender_domain_hash, cands[1].sender_domain_hash)   # same broker -> groupable
+        self.assertNotEqual(cands[0].message_sha256, cands[1].message_sha256)        # two distinct observations
+        self.assertEqual(BrokerEvent.objects.count(), 0)            # NO event
+        self.assertEqual(Withdrawal.objects.count(), 0)            # NO withdrawal auto-created
+        self.assertEqual(EvidenceBlob.objects.count(), 0)         # raw NEVER stored
+
+    def test_replay_idempotent(self):
+        m = {"provider_message_id": "vrep", "raw_bytes": self._rawv("Withdrawal Submitted",
+                                                                    "your withdrawal has been submitted")}
+        disc.process_discovery_messages([m], owner=self.user)
+        disc.process_discovery_messages([m], owner=self.user)
+        self.assertEqual(UnknownSenderDiscoveryCandidate.objects.filter(owner=self.user).count(), 1)
+
+    def test_candidate_is_pii_free(self):
+        m = {"provider_message_id": "vpii",
+             "raw_bytes": self._rawv("Withdrawal Submitted",
+                                     "Dear John Smith, your withdrawal 99887766 ref WX1 has been submitted")}
+        disc.process_discovery_messages([m], owner=self.user)
+        c = UnknownSenderDiscoveryCandidate.objects.get()
+        blob = " ".join(str(x) for x in (c.registrable_domain, c.sender_domain_hash, c.message_sha256,
+                                         c.provider_message_id_hash, c.lifecycle_class, " ".join(c.reason_codes or [])))
+        for bad in ("John", "Smith", "99887766", "WX1", "has been submitted"):
+            self.assertNotIn(bad, blob)
