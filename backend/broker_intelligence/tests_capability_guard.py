@@ -31,16 +31,17 @@ class ClassifierNotWiredIntoParsers(SimpleTestCase):
 
 
 class FailClosedCapability(TestCase):
-    def test_only_operator_verified_pepperstone_declares_external_and_no_broker_certified(self):
-        # After migration 0027 the operator-verified Pepperstone profile DECLARES EXTERNAL_WITHDRAWAL (it surfaces
-        # genuine Pepperstone withdrawal emails on the owner-scoped member dashboard). The fail-closed guards that
-        # remain: no broker is in CERTIFIED_BROKERS (the separate PUBLIC-metrics certification path stays empty), and
-        # the other active pilots (is6, tradersway) still declare no external-withdrawal capability.
+    def test_operator_verified_pepperstone_and_vantage_declare_external_and_no_broker_certified(self):
+        # After migration 0027 (Pepperstone) and migration 0030 (Vantage, ADR-0090) the operator-verified profiles
+        # DECLARE EXTERNAL_WITHDRAWAL (they surface genuine withdrawal emails on the owner-scoped member dashboard).
+        # The fail-closed guards that remain: NO broker is in CERTIFIED_BROKERS (the separate PUBLIC-metrics
+        # certification path stays empty — Vantage is activated but NOT certified/published), and the other active
+        # pilots (is6, tradersway) still declare no external-withdrawal capability.
         from broker_intelligence.models import BrokerProfile
         self.assertEqual(CERTIFIED_BROKERS, frozenset())
         external = {p.slug for p in BrokerProfile.objects.filter(is_active=True)
                     if TransactionCategory.EXTERNAL_WITHDRAWAL in p.supported_category_list()}
-        self.assertEqual(external, {"pepperstone"})
+        self.assertEqual(external, {"pepperstone", "vantage"})
 
 
 class ParsersNeverEmitExternalWithdrawal(TestCase):

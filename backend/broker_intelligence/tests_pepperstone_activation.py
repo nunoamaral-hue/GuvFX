@@ -74,12 +74,12 @@ class PepperstoneActivationMigrationTests(TestCase):
         # CERTIFIED_BROKERS path is separate and genuine-sample-gated. This migration must never certify.
         self.assertNotIn("Pepperstone", CERTIFIED_BROKERS)
 
-    def test_dominion_and_vantage_stay_dark(self):
+    def test_dominion_stays_dark(self):
+        # Migration 0027 activates ONLY Pepperstone. Dominion stays DARK. (Vantage is activated separately by
+        # migration 0030 / ADR-0090 — see tests_vantage_correlation — so it is no longer asserted dark here.)
         self.assertFalse(BrokerProfile.objects.get(slug="dominion_markets").is_active)
-        self.assertFalse(BrokerProfile.objects.get(slug="vantage").is_active)
         allow = sender_allowlist()
         self.assertNotIn("dominionmarkets.com", allow)
-        self.assertNotIn("vantagemarkets.com", allow)
 
 
 class PepperstoneGenuineScenarioParserTests(TestCase):
