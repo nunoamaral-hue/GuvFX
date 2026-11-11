@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-WITHDRAWAL-CI-PARALLEL-HYGIENE",
+  "packet_id": "GFX-WITHDRAWAL-CI-HYGIENE-051",
+  "created_at_utc": "2026-11-10T17:57:00Z",
+  "branch": "fix/ci-parallel-hang-hygiene",
+  "base_commit": "b2d68ef4e7b88578cd740aac89435c85c24271fa",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only CI/test-reliability fixes — NOT a Withdrawal Intelligence behaviour change. Removes a pre-existing backend --parallel hang and makes the mailbox-concurrency test deterministic. Discovered by packet GFX-WITHDRAWAL-PR637-CI-RECOVERY-050.",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "changes_to_pr_637": false,
+    "defects_are_pre_existing_not_from_pr_637_feature_scope": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test --parallel 4, full suite) + governance-check + secret/PII scan"
+  },
+  "commands": [
+    "cd backend && DB_NAME=<scratch> python manage.py test broker_intelligence.tests_migration_0030_reverse   (NEW regression; Ran 1 OK fixed; FAILED with ValueError when the 0030 fix is reverted = valid guard)",
+    "cd backend && DB_NAME=<scratch> python manage.py test broker_intelligence.tests_migration_0030_reverse (with a dummy broker_intelligence 0031 present)   (durability: Ran 1 OK fixed; still FAILS with ValueError when unfixed, proving the guard survives a later migration being added above 0030)",
+    "cd backend && DB_NAME=<scratch> python manage.py test broker_intelligence.tests_mailbox.MailboxStatusPhysicalSchema0010   (Ran 1 OK with the fix; cold-isolation FAILED with the unpicklable ValueError without it)",
+    "cd backend && DB_NAME=<scratch> python manage.py test broker_intelligence.tests_mailbox.MailboxConnectConcurrency --parallel 4   (x8 runs: 11/11 pass incl. full tests_mailbox x3; FAILS with 'must BLOCK on the per-owner advisory lock' when the production pg_advisory_xact_lock is neutered = assertion not weakened)",
+    "cd backend && DB_NAME=<scratch> python manage.py test broker_intelligence --parallel 4   (broker_intelligence app, parallel)",
+    "cd backend && DB_NAME=<scratch> python manage.py test --parallel 4   (FULL backend suite, same parallelism as CI: Ran 8097 tests in ~220s, NO hang)",
+    "cd backend && python manage.py makemigrations broker_intelligence --check --dry-run   (No changes detected in app 'broker_intelligence')",
+    "cd backend && DB_NAME=<scratch> python manage.py test core.tests_adr_governance   (ADR uniqueness: Ran 3 tests OK)",
+    "python3 scripts/check_no_secrets.py   (check_no_secrets: no findings)",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py' / 'test_data_root.py' / 'test_evidence_manifests.py'   (all OK)",
+    "python3 scripts/check_evidence_manifests.py   (EVIDENCE-LINT: PASS)"
+  ],
+  "expected_results": [
+    "Migration 0030's reverse (_retire) no longer raises the historical-model ValueError under the --parallel test runner, so a worker exception can be pickled and the backend CI job no longer hangs.",
+    "A regression test reverses migration 0030 and reapplies it, FAILS if the instance-filter is reintroduced, and keeps catching the regression even if a later broker_intelligence migration is added above 0030 (it anchors 0030 as the first-reversed op rather than reversing from the moving leaf).",
+    "MailboxConnectConcurrency is deterministic under --parallel (the two-callback race is pinned by the per-owner advisory lock, not thread timing) WITHOUT weakening the assertion: it still fails if the production advisory lock is removed.",
+    "Even an unpicklable-traceback worker exception is REPORTED rather than hanging, because tblib is installed (the --parallel runner uses it to serialize tracebacks).",
+    "Migration 0030's FORWARD production semantics and existing DB state are unchanged (only the reverse filter changed, and it deletes exactly the same rows by pk); no broker_intelligence makemigrations drift.",
+    "Governance, ADR uniqueness, secret scan, and evidence-manifest lint all pass; the diff is exactly 5 files (4 code/test + this manifest), touches no production code path, no Withdrawal Intelligence behaviour, and PR #637 is untouched."
+  ],
+  "actual_results": [
+    "0030 reverse fix: broker_intelligence/migrations/0030._retire now filters BrokerProfileAudit by broker_profile_id=bp.pk (was broker_profile=bp). MailboxStatusPhysicalSchema0010 passes cold-isolation (was FAILED with 'Cannot query BrokerProfile object (5): Must be BrokerProfile instance'). Forward _activate untouched; makemigrations --check broker_intelligence: No changes detected.",
+    "NEW regression broker_intelligence/tests_migration_0030_reverse.Migration0030ReverseReapply: Ran 1 OK. Negative control (revert the fix to the instance filter): FAILED with the exact ValueError — a valid guard. Durability (dummy broker_intelligence 0031 present so 0030 is not the leaf): fixed = Ran 1 OK, unfixed = FAILED with the ValueError — the guard still fires when 0030 is not leaf-most (so #637 adding 0031 will not silently disarm it).",
+    "MailboxConnectConcurrency.test_two_simultaneous_callbacks rewritten to pin interleaving with the per-owner Postgres advisory lock. Determinism: 8/8 class runs under --parallel 4 OK + 3/3 full tests_mailbox (73 tests) under --parallel 4 OK = 11/11. Not-weakened: with the production pg_advisory_xact_lock neutered, BOTH concurrency tests FAIL ('must BLOCK on the per-owner advisory lock', FAILED failures=2).",
+    "tblib 3.2.2 added to requirements.txt: with the 0030 fix reverted, the unfixed reverse under --parallel REPORTS the failure (Ran 1 ... FAILED errors=1 in ~2.5s) instead of hanging; without tblib the identical case previously hung the whole backend job (packet 050).",
+    "FULL backend suite, same parallelism as CI (manage.py test --parallel 4): Ran 8097 tests in ~220 s with NO hang (exit 1, not a 124 timeout). broker_intelligence is entirely green, including all three mailbox TransactionTestCases and the new regression.",
+    "Governance: core.tests_adr_governance Ran 3 OK (this packet adds NO ADR); check_no_secrets no findings; test_no_secrets / test_data_root / test_evidence_manifests OK; check_evidence_manifests EVIDENCE-LINT PASS.",
+    "Diff scope: exactly 4 code/test files (0030 reverse filter + comment; tblib line; one method of tests_mailbox.py; new tests_migration_0030_reverse.py) plus this manifest. git diff origin/main for backend/hosted_workspace and backend/execution is EMPTY (identical to main). PR #637 untouched."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed, no production migration, no DB/cursor/mailbox/broker/financial/Copy-Trading/TIM/MT5/NAS action. PR #637 not modified by this packet.",
+    "The local FULL --parallel 4 run reports 2 PRE-EXISTING failures in hosted_workspace.tests_observer_attach.BareTerminalClassifierControlTests (test_all_enumerators_unavailable_returns_none_fail_closed, test_cim_positive_and_negative_controls). These are NOT in this packet's scope and NOT caused by it: those files are byte-identical to origin/main (git diff empty), they fail deterministically in this local macOS environment both serially and in parallel, and main's CI is green on them. The authoritative all-green signal is this PR's CI run on the Ubuntu runner. They are flagged for a separate investigation, not fixed here.",
+    "A second pre-existing parallel-fragility (MailboxConnectConcurrency's 'database ... does not exist' clone race) is addressed by the deterministic rewrite above; tblib additionally ensures that any future unpicklable-traceback failure is reported, not hung.",
+    "tblib is added to backend/requirements.txt (a tiny, pure-Python, test-time dependency used only by Django's --parallel runner); it is not imported by production code.",
+    "makemigrations --check reports PRE-EXISTING index-rename drift in the unrelated 'strategies' app on canonical main; this packet neither introduces nor touches it (broker_intelligence is drift-free), and CI's backend job does not run makemigrations --check."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/migrations/0030_activate_vantage_profile.py (reverse _retire: instance filter -> pk filter; forward _activate unchanged)",
+    "backend/broker_intelligence/tests_migration_0030_reverse.py (NEW regression: durable reverse/reapply of migration 0030, anchored at 0030 as first-reversed)",
+    "backend/broker_intelligence/tests_mailbox.py (MailboxConnectConcurrency.test_two_simultaneous_callbacks_yield_exactly_one_live_mailbox: deterministic advisory-lock-pinned rewrite)",
+    "backend/requirements.txt (+tblib>=3.0 so the --parallel runner reports worker exceptions instead of hanging)",
+    "evidence/manifests/GFX-EVD-WITHDRAWAL-CI-PARALLEL-HYGIENE.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/migrations/0030_activate_vantage_profile.py": "sha256:77dfbd3edccc2091c45af88178c4286bdcebf158b5bd16fdb917d965143d1d06",
+    "backend/broker_intelligence/tests_mailbox.py": "sha256:11f7a6f1a93574093fe32979f43dc7edd7adcb233c1fcaa2eb50afb89dc1846f",
+    "backend/broker_intelligence/tests_migration_0030_reverse.py": "sha256:5ed9ef4921b173da18fec0e4c588ed196a1928925a0dffa31a68c4194a147478",
+    "backend/requirements.txt": "sha256:df1d6d9ab80ee20e3c6f892a53f9d51b777a6a397344bc4053b894441f7fa4c4"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review + 4-dimension adversarial workflow (3 dimensions clean; 1 confirmed finding — regression-test durability when a migration is added above 0030 — fixed and re-verified before PR). Sponsor review pending (auto-merge OFF, STOP before merge)."
+}

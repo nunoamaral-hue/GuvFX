@@ -1141,37 +1141,64 @@ class MailboxConnectConcurrency(TransactionTestCase):
             O.exchange_code, S.fetch_profile = orig
 
     def test_two_simultaneous_callbacks_yield_exactly_one_live_mailbox(self):
-        """True two-thread race: two callbacks for the SAME owner returning DIFFERENT Google accounts, started
-        together. With the per-owner lock the result is deterministic — exactly ONE CONNECTED mailbox and one 409.
-        (Without the lock this could intermittently create two live mailboxes.)"""
+        """Two callbacks for the SAME owner (returning DIFFERENT Google accounts) both run through the REAL endpoint;
+        with the per-owner lock the result is exactly ONE CONNECTED mailbox, one 200 and one 409.
+
+        GFX-WITHDRAWAL-CI-HYGIENE-051 — the interleaving is pinned by the per-owner advisory lock rather than by OS
+        thread scheduling, so the outcome is DETERMINISTIC on every run (parallel CI included). The previous version
+        relied on a ``threading.Barrier`` with tight 5 s / 20 s timeouts to "maximise overlap"; under the parallel
+        runner's CPU contention that timing was nondeterministic (spurious barrier/join timeouts, and threads that
+        outlived teardown produced a "database ... does not exist" clone race). The concurrency assertion is unchanged:
+        two real callbacks race for one owner and exactly one may create a live mailbox. Threads are always joined
+        before the test returns, so no connection outlives the test."""
         import threading
         import broker_intelligence.gmail_oauth as O
         import broker_intelligence.gmail_source as S
-        from django.db import connection, connections
+        from django.db import connection, connections, transaction
+        from broker_intelligence.views import _mailbox_lock_key
         orig = (O.exchange_code, S.fetch_profile)
         try:
             self._install_fakes(O, S)
             codes = ["CA", "CB"]
             states = {c: self._state(c) for c in codes}
             out = {}
-            barrier = threading.Barrier(len(codes))
+            started = {c: threading.Event() for c in codes}
 
             def worker(code):
                 try:
                     c = APIClient(); c.force_authenticate(self.u)
-                    barrier.wait(timeout=5)   # maximise overlap
+                    started[code].set()   # about to call the (lock-gated) endpoint
                     out[code] = c.get(f"/api/broker-intelligence/mailboxes/callback/?code={code}&state={states[code]}")
                 except Exception as e:   # noqa: BLE001
                     out[code] = e
                 finally:
                     connection.close()
 
-            threads = [threading.Thread(target=worker, args=(c,)) for c in codes]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=20)
+            threads = {c: threading.Thread(target=worker, args=(c,)) for c in codes}
+            try:
+                # Hold the per-owner advisory lock so BOTH callbacks deterministically BLOCK on it before either can
+                # create a mailbox. This pins the interleaving (no reliance on thread timing); on release the two
+                # blocked callbacks proceed serialized by the lock -> exactly one survives.
+                with transaction.atomic():
+                    with connection.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_xact_lock(%s)", [_mailbox_lock_key(self.u.id)])
+                    for t in threads.values():
+                        t.start()
+                    for c in codes:
+                        self.assertTrue(started[c].wait(timeout=10), f"{c} worker did not start")
+                    for t in threads.values():          # let both reach and block on the lock inside the callback
+                        t.join(timeout=1.0)
+                    for c in codes:
+                        self.assertTrue(threads[c].is_alive(),
+                                        f"{c} must BLOCK on the per-owner advisory lock while it is held")
+                # atomic exits -> commit -> advisory lock released -> the two blocked callbacks run, serialized.
+                for t in threads.values():
+                    t.join(timeout=30)
+            finally:
+                for t in threads.values():              # never leave a worker (or its connection) running past the test
+                    t.join(timeout=30)
             for c in codes:
+                self.assertFalse(threads[c].is_alive(), f"{c} callback did not finish after the lock was released")
                 self.assertFalse(isinstance(out.get(c), Exception), f"{c} errored: {out.get(c)!r}")
             statuses = sorted(r.status_code for r in out.values())
             self.assertEqual(statuses, [200, 409])                                   # exactly one won

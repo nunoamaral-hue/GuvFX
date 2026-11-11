@@ -81,7 +81,13 @@ def _retire(apps, schema_editor):
     bp = BrokerProfile.objects.filter(slug=SLUG).first()
     if bp is None:
         return
-    BrokerProfileAudit.objects.filter(broker_profile=bp, changed_by=_FWD).delete()
+    # Filter by the raw FK id, NOT the historical model instance. Under the parallel test runner, reversing this
+    # migration renders `BrokerProfile` from the historical migration state, and `bp`'s rendered class can differ from
+    # the class the `BrokerProfileAudit.broker_profile` FK expects -> Django raises "Cannot query ...: Must be a
+    # BrokerProfile instance.". That exception's traceback cannot be pickled, so the parallel worker hangs the whole
+    # backend CI job with no timeout. Filtering by the integer pk is identical in effect and is immune to the state
+    # rendering mismatch. Forward production semantics are unchanged. (GFX-WITHDRAWAL-CI-HYGIENE-051)
+    BrokerProfileAudit.objects.filter(broker_profile_id=bp.pk, changed_by=_FWD).delete()
     if bp.is_active or bp.provenance != "SEED":
         bp.is_active = False
         bp.provenance = "SEED"
