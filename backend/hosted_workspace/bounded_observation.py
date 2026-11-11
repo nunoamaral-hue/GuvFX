@@ -13,7 +13,9 @@ making its own ``executor.observe()`` per workspace) when ``HOSTED_BOUNDED_OBSER
 
 It launches nothing, mutates no canonical state directly, arms nothing, weakens no identity pin, and never
 raises into the scheduler. DARK unless the master ``hosted_persistent_mt5_enabled()`` is on (same as the legacy
-path). Concurrency is bounded to at most Node-2 capacity so it never fans out unboundedly against the host.
+path). Concurrency is bounded by :func:`observation_budget` (ADR-0091): at most ``capacity - reserved`` observes
+run at once, so the fan-out can never occupy every host signed-executor permit and starve a time-critical signed
+control-plane op (ACTIVATE / RESTORE) — the packet-046 failure — and never outgrows Node-2 host capacity.
 """
 from __future__ import annotations
 
@@ -27,25 +29,78 @@ from hosted_workspace.consumer import ingest_observation
 from hosted_workspace.flags import hosted_delivery_lifecycle_enabled, hosted_persistent_mt5_enabled
 from hosted_workspace.models import HostedMt5Workspace
 from hosted_workspace.poll_diagnostics import record_poll_unavailable
+from hosted_workspace.transport_errors import HOST_OBSERVATION_CAPACITY_DEFERRED
 
 logger = logging.getLogger("guvfx.hosted_workspace")
 
 SOURCE = "hosted_workspace.bounded_observation"
 _CONNECTED = "CONNECTED"
 _DISCONNECTED = "DISCONNECTED"
-_DEFAULT_MAX_WORKERS = 8
-_HARD_MAX_WORKERS = 12   # never exceed Node-2 max_accounts — the observe fan-out cannot outgrow host capacity
+_DEFAULT_OBSERVATION_CONCURRENCY = 4   # conservative default, safely below the executor connection cap (ADR-0091)
+_DEFAULT_EXECUTOR_CAPACITY = 8         # MUST mirror the host daemon's HOSTED_EXECUTOR_MAX_CONNECTIONS (default 8)
+_DEFAULT_RESERVED_SLOTS = 2            # executor connections kept free for time-critical signed control-plane ops
+_HARD_MAX_WORKERS = 12                 # Node-2 host capacity ceiling — the observe fan-out cannot outgrow it
+
+
+def _int_setting(name: str, default: int) -> int:
+    raw = getattr(settings, name, None)
+    if raw is None:
+        raw = os.getenv(name, str(default))
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def observation_budget() -> dict:
+    """Single source of truth for hosted-observation concurrency (ADR-0091).
+
+    The host signed-executor daemon admits at most ``capacity`` concurrent connections (its
+    ``HOSTED_EXECUTOR_MAX_CONNECTIONS``, default 8) and REFUSES the rest with a bare pre-response close. If the
+    observe fan-out is allowed to fill every permit, a one-shot signed control-plane op (ACTIVATE / RESTORE) is
+    starved — exactly the packet-046 failure. So the backend reserves ``reserved`` permits for the control plane
+    and bounds observation to at most ``capacity - reserved`` in-flight observes.
+
+    Documented invariant:  ``1 <= effective <= capacity - reserved``  and  ``reserved >= 1``.
+
+    Fails CLOSED against saturation: an invalid, zero, negative, or ``>= capacity`` observation setting — or a
+    reserved value that would leave no headroom — never raises ``effective`` above ``capacity - reserved`` and
+    never below 1. A read-only observation cycle must keep running (freezing login→CONNECTED detection would be
+    the worse failure), but it may never occupy the reserved control-plane headroom. ``notes`` records every
+    clamp applied, for operator evidence.
+
+    NOTE: ``capacity`` is the backend's mirror of the host cap. If an operator raises the daemon's
+    ``HOSTED_EXECUTOR_MAX_CONNECTIONS`` they MUST raise ``HOSTED_EXECUTOR_CONNECTION_CAPACITY`` to match, or the
+    backend will keep observation unnecessarily low (safe, but under-utilised).
+    """
+    notes: list = []
+    capacity = _int_setting("HOSTED_EXECUTOR_CONNECTION_CAPACITY", _DEFAULT_EXECUTOR_CAPACITY)
+    reserved = _int_setting("HOSTED_CONTROL_PLANE_RESERVED_SLOTS", _DEFAULT_RESERVED_SLOTS)
+    configured = _int_setting("HOSTED_OBSERVATION_MAX_WORKERS", _DEFAULT_OBSERVATION_CONCURRENCY)
+
+    if capacity < 1:
+        notes.append("capacity_invalid"); capacity = _DEFAULT_EXECUTOR_CAPACITY
+    if reserved < 1:
+        notes.append("reserved_invalid"); reserved = _DEFAULT_RESERVED_SLOTS
+    if reserved >= capacity:                        # reserved must leave at least one observe permit
+        notes.append("reserved_ge_capacity"); reserved = max(1, capacity - 1)
+    max_safe = capacity - reserved                  # >= 1 by construction
+
+    effective = configured
+    if configured < 1 or configured >= capacity:    # zero / negative / >= capacity are all invalid → fail closed
+        notes.append("observation_concurrency_invalid")
+        effective = min(_DEFAULT_OBSERVATION_CONCURRENCY, max_safe)
+    if effective > max_safe:                         # would eat into the reserved control-plane headroom
+        notes.append("observation_concurrency_exceeds_headroom")
+        effective = max_safe
+    effective = max(1, min(effective, _HARD_MAX_WORKERS))
+    return {"effective": effective, "capacity": capacity, "reserved": reserved,
+            "configured": configured, "max_safe": max_safe, "notes": notes}
 
 
 def _max_workers() -> int:
-    raw = getattr(settings, "HOSTED_OBSERVATION_MAX_WORKERS", None)
-    if raw is None:
-        raw = os.getenv("HOSTED_OBSERVATION_MAX_WORKERS", str(_DEFAULT_MAX_WORKERS))
-    try:
-        n = int(str(raw).strip())
-    except (TypeError, ValueError):
-        n = _DEFAULT_MAX_WORKERS
-    return max(1, min(n, _HARD_MAX_WORKERS))
+    """Effective hosted-observation worker count — see :func:`observation_budget`."""
+    return observation_budget()["effective"]
 
 
 # Reasons that mean a terminal IS present for the account but observation cannot proceed because the terminal is
@@ -63,7 +118,7 @@ FROZEN_REASONS = frozenset({"duplicate_terminal"})
 
 def _empty(enabled: bool) -> dict:
     return {"enabled": enabled, "polled": 0, "applied": 0, "unavailable": 0, "errors": 0,
-            "workers": 0, "reasons": {}, "frozen": 0,
+            "workers": 0, "reasons": {}, "frozen": 0, "deferred": 0, "deferred_reason": "",
             "delivery": {"connected": 0, "disconnected": 0, "held": 0, "cz_skipped": 0}}
 
 
@@ -129,7 +184,16 @@ def run_bounded_observation_cycle(*, combined_fn=None, correlation_id: str = "",
     if only_states is not None:
         qs = qs.filter(canonical_state__in=list(only_states))
     workspaces = list(qs.all())
-    workers = _max_workers()
+    budget = observation_budget()
+    workers = budget["effective"]
+    if budget["notes"]:
+        logger.warning(
+            "hosted observation budget clamped effective=%s capacity=%s reserved=%s configured=%s notes=%s",
+            workers, budget["capacity"], budget["reserved"], budget["configured"], ",".join(budget["notes"]))
+    # Excess observations are QUEUED behind the budget (the pool runs `workers` at a time), never dropped: every
+    # workspace is still observed within this cycle. `deferred` is the peak queued behind the budget — the
+    # operator-facing HOST_OBSERVATION_CAPACITY_DEFERRED condition (ADR-0091), computed from real counts only.
+    deferred = max(0, len(workspaces) - workers)
 
     results = []   # list of (ws, canonical, delivery, reason)
     if workspaces:
@@ -145,6 +209,9 @@ def run_bounded_observation_cycle(*, combined_fn=None, correlation_id: str = "",
 
     out = _empty(True)
     out["workers"] = workers
+    out["budget"] = {k: budget[k] for k in ("capacity", "reserved", "effective", "configured", "max_safe")}
+    out["deferred"] = deferred
+    out["deferred_reason"] = HOST_OBSERVATION_CAPACITY_DEFERRED if deferred else ""
     reasons: dict = {}
     if delivery_on:
         from hosted_workspace.delivery_persistence import (
