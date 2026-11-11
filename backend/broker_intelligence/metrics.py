@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from django.db.models import Q
 
-from .models import Provenance, Withdrawal
+from .models import Provenance, StaffWithdrawalCorrelation, Withdrawal
 
 # In-flight (requested, completion not yet observed) — explicitly NOT failed. The Stream B explicit lifecycle
 # (ADR-0079) adds CONFIRMATION_REQUIRED + CONFIRMED as in-flight pre-completion stages; the production TradersWay
@@ -58,9 +58,43 @@ def _owner_scoped_q(ids, owner):
     return q
 
 
-def _row_broker(w) -> str:
-    """Broker name for a row: from the resolved account, else (account-UNRESOLVED) from the originating event — the
-    Withdrawal itself carries no broker field (ADR-0050 known limitation)."""
+def _staff_correlation_broker_map(owner) -> dict:
+    """ADR-0092 broker-label provenance: ``{withdrawal_id: broker_name}`` from the owner's APPLIED staff-correlation
+    decisions — the authoritative broker for a broker-NEUTRAL, reference-less *manual* withdrawal, which has neither a
+    resolved account nor an originating parsed event (the ``Withdrawal`` row itself carries no broker field — ADR-0050).
+
+    ONE bounded query, strictly owner-scoped (never another tenant's decision). Fail-CLOSED: a withdrawal whose APPLIED
+    decisions DISAGREE on the broker is dropped from the map (→ blank), never guessed. Empty when ``owner`` is None (a
+    manual-staff withdrawal is owner-attributed; with no owner there is no tenant to agree with). Reads ONLY the broker
+    PROFILE NAME — never a candidate hash, sender address, account number, reason text or any other evidence / PII."""
+    if owner is None:
+        return {}
+    resolved: dict = {}
+    conflicted: set = set()
+    pairs = (StaffWithdrawalCorrelation.objects
+             .filter(status=StaffWithdrawalCorrelation.Status.APPLIED, owner=owner,
+                     resulting_withdrawal__isnull=False)
+             .values_list("resulting_withdrawal_id", "broker_profile__name"))
+    for wd_id, bname in pairs:
+        bname = bname or ""
+        if wd_id in conflicted:
+            continue
+        if wd_id in resolved and resolved[wd_id] != bname:
+            conflicted.add(wd_id)          # conflicting broker identity across APPLIED decisions → fail closed to blank
+            resolved.pop(wd_id, None)
+        else:
+            resolved[wd_id] = bname
+    return resolved
+
+
+def _row_broker(w, staff_broker=None) -> str:
+    """Broker name for a row, by deterministic PROVENANCE precedence (strongest first):
+      1. the withdrawal's RESOLVED trading account's broker;
+      2. else its originating broker EVENT (requested / completed);
+      3. else exactly ONE owner-matching APPLIED staff-correlation decision's broker profile (``staff_broker`` map;
+         ADR-0092 broker-neutral manual-correlation path — the ``Withdrawal`` itself carries no broker field, ADR-0050);
+      4. else blank / unresolved (truthful — never inferred from free text, account number, amount or email content).
+    ``staff_broker`` defaults to None so legacy callers keep precedence 1-2 + blank, byte-for-byte unchanged."""
     acct = w.trading_account
     if acct is not None:
         return getattr(acct, "broker_name", "") or ""
@@ -68,6 +102,8 @@ def _row_broker(w) -> str:
         b = getattr(ev, "broker", "") or ""
         if b:
             return b
+    if staff_broker:
+        return staff_broker.get(w.id, "") or ""
     return ""
 
 
@@ -96,13 +132,16 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None, owner=Non
     base = (Withdrawal.objects.filter(_owner_scoped_q(ids, owner)).filter(prov_q)
             .select_related("trading_account", "requested_event", "completed_event")
             .order_by("-requested_at", "-id"))
+    # Authoritative broker for broker-neutral MANUAL_STAFF withdrawals (ADR-0092): ONE bounded, owner-scoped query,
+    # resolved below ONLY when a row has no account and no originating event (precedence 3 in ``_row_broker``).
+    staff_broker = _staff_correlation_broker_map(owner)
 
     # Selector lists from the member's FULL (genuine) withdrawal set — NEVER narrowed by the active filters — so the
     # broker/account dropdowns stay complete and stable while filtering. An account-UNRESOLVED row contributes its
     # broker to the broker selector but NO account entry (it has no account to select).
     brokers, accts = set(), {}
     for w in base:
-        bname = _row_broker(w)
+        bname = _row_broker(w, staff_broker)
         if bname:
             brokers.add(bname)
         acct = w.trading_account
@@ -114,7 +153,7 @@ def withdrawal_history(accounts, *, broker: str = "", account_id=None, owner=Non
     qs = base.filter(trading_account_id=account_id) if account_id not in (None, "") else base
     rows = []
     for w in qs:
-        bname = _row_broker(w)
+        bname = _row_broker(w, staff_broker)
         if broker and bname != broker:
             continue
         acct = w.trading_account

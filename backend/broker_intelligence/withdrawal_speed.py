@@ -50,7 +50,7 @@ import statistics
 from collections import defaultdict
 from typing import Optional
 
-from .metrics import _masked_account, _owner_scoped_q, _row_broker
+from .metrics import _masked_account, _owner_scoped_q, _row_broker, _staff_correlation_broker_map
 from .models import Provenance, Withdrawal
 
 # Minimum completed samples before an aggregate is presented as a representative "typical" time (see policy above).
@@ -146,6 +146,10 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
     # rows, each flagged ``demonstration`` so the UI labels them — never mistaken for genuine.
     rows = all_rows if include_demonstration else [w for w in all_rows if w.provenance == Provenance.REAL]
     excluded_non_genuine = len(all_rows) - len(rows)
+    # Authoritative broker for broker-neutral MANUAL_STAFF withdrawals (ADR-0092): ONE bounded, owner-scoped query,
+    # used by ``_row_broker`` precedence 3 below (so a pending reference-less manual withdrawal labels consistently
+    # with the withdrawal-history view instead of rendering blank).
+    staff_broker = _staff_correlation_broker_map(owner)
 
     pending = [w for w in rows if w.status in _PENDING]
     completed = [w for w in rows if w.status == Withdrawal.Status.COMPLETED]
@@ -178,7 +182,7 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
         if secs is None:
             untimed += 1          # completed but missing an anchor — NOT a sample, never coerced to 0
             continue
-        bname = _row_broker(w)
+        bname = _row_broker(w, staff_broker)
         acct = w.trading_account
         match_basis = ("reference" if w.correlation_method == Withdrawal.CorrelationMethod.REFERENCE_ID
                        else "heuristic")
@@ -237,7 +241,7 @@ def withdrawal_speed(accounts, *, owner=None, now=None, include_demonstration: b
         acct = w.trading_account
         in_progress.append({
             "withdrawal_id": w.id,
-            "broker": _row_broker(w),
+            "broker": _row_broker(w, staff_broker),
             "account_masked": (_masked_account(acct) if acct is not None else "UNRESOLVED"),
             "account_unresolved": acct is None,
             "amount": str(w.amount) if w.amount is not None else None,

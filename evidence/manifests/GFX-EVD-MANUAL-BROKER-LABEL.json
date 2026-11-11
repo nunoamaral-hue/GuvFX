@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-MANUAL-BROKER-LABEL",
+  "packet_id": "GFX-WITHDRAWAL-MANUAL-BROKER-LABEL-057",
+  "created_at_utc": "2026-11-11T11:05:00Z",
+  "branch": "fix/manual-staff-broker-label",
+  "base_commit": "7fef543ff4110a9af49ad05b3b02ac2522d36637",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only presentation fix — the member-facing broker LABEL for a broker-neutral, reference-less MANUAL_STAFF withdrawal (ADR-0092) resolves from its APPLIED staff-correlation decision's broker profile. NO data-model change, NO migration, NO production mutation, NO deploy. Root cause of the blank label (production Withdrawal #4): the Withdrawal row carries no broker field (ADR-0050) and a MANUAL_STAFF withdrawal has neither a resolved account nor an originating parsed event, so the former account/event-only _row_broker returned blank.",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test, serial for broker_intelligence) + governance-check + secret/PII scan + evidence lint"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_manual_broker_label -v2   (NEW: Ran 16 OK — 15 history + 1 speed)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_withdrawal_history broker_intelligence.tests_withdrawal_speed broker_intelligence.tests_metrics broker_intelligence.tests_account_scope broker_intelligence.tests_staff_correlation broker_intelligence.tests_manual_broker_label broker_intelligence.tests_tradersway_completion_recovery   (Ran 126 OK)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence   (FULL app, serial: Ran 1046 OK)",
+    "cd backend && .venv/bin/python manage.py check   (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations broker_intelligence --check --dry-run   (No changes detected in app 'broker_intelligence' — migration-free proof)",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance   (Ran 3 OK)",
+    "python3 scripts/check_evidence_manifests.py   (EVIDENCE-LINT: PASS)",
+    "python3 scripts/check_no_secrets.py   (no findings)"
+  ],
+  "expected_results": [
+    "A broker-neutral MANUAL_STAFF withdrawal (no account, no originating event) renders its broker name from exactly ONE owner-matching APPLIED StaffWithdrawalCorrelation decision's broker_profile, while remaining REQUESTED/pending with amount/currency/reference unknown and account UNRESOLVED (no false completion, no fabricated field).",
+    "Deterministic precedence preserved: (1) resolved account broker, (2) originating event broker, (3) APPLIED staff-correlation decision broker, (4) blank. Account- (TradersWay) and event- (Pepperstone) resolution are byte-for-byte unchanged and both out-rank the staff-correlation path.",
+    "Fail-closed: a non-APPLIED decision, a decision for another withdrawal, a cross-owner decision, conflicting APPLIED brokers, or absent provenance all yield a blank label — never a guess, never cross-tenant leakage.",
+    "No N+1: the staff-correlation broker map is ONE bounded, owner-scoped query; the total query count is constant in the number of rows.",
+    "Migration-free and read-only: no model/schema change, makemigrations --check clean, the resolver creates/alters/deletes nothing, and public broker statistics / publication state are untouched.",
+    "No PII: only the broker PROFILE NAME is read — never a candidate hash, sender address, account number, reason text, raw email body or any other evidence."
+  ],
+  "actual_results": [
+    "metrics._staff_correlation_broker_map(owner): one owner-scoped values_list query over StaffWithdrawalCorrelation(status=APPLIED, owner=owner, resulting_withdrawal not null) -> {withdrawal_id: broker_profile.name}; conflicting APPLIED brokers for the same withdrawal drop the entry (fail closed); empty when owner is None.",
+    "metrics._row_broker(w, staff_broker=None): precedence account -> event -> staff_broker.get(w.id) -> ''. Default None preserves legacy callers byte-for-byte. withdrawal_history and withdrawal_speed each compute the map ONCE and pass it to every _row_broker call (history selector + rows; speed completed-series + in-progress).",
+    "tests_manual_broker_label: 16 tests — renders Vantage while pending/unresolved; BYPASS test proves _row_broker(wd) == '' without the map and == profile name with it (mutation anchor); TradersWay (account) and Pepperstone (event) unchanged and out-rank staff; non-APPLIED ignored; decision-for-other-withdrawal ignored; cross-owner ignored + no leak; conflicting brokers fail closed; missing provenance blank; no row duplication; read-only no-mutation; owner-scoped counts no cross-tenant leak; CaptureQueries equal for 1 vs 8 rows (no N+1); speed in-progress labels the pending manual withdrawal consistently.",
+    "Full broker_intelligence suite: Ran 1046 tests OK (serial). Affected cluster (history/speed/metrics/account-scope/staff-correlation/tradersway-recovery + new): Ran 126 OK. System check: no issues. makemigrations --check broker_intelligence: No changes detected. core.tests_adr_governance: Ran 3 OK.",
+    "Diff scope: exactly 3 code/test files (metrics.py, withdrawal_speed.py, NEW tests_manual_broker_label.py) + this manifest. No migration, no model field, no config, no secret, no production file, no unrelated code."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production migration, deploy, correlation, broker approval, publication, cursor movement, mailbox/ingestion action or raw-email access. Production stays at e6447f4e with migration 0031; Withdrawal #4 and all data are untouched by this packet.",
+    "Presentation-only: the resolver changes how an EXISTING, already-correct correlation is LABELLED in the member view. It does not alter the withdrawal, its status, its candidates, the decision, or any stored field. The historical broker label follows the decision's broker profile even if that profile is later deactivated (truthful to what it was correlated to) — the resolver does not require the profile to be currently active.",
+    "The authenticated human visual check of the live Withdrawals page (owner login on guvfx.com) remains a separate acceptance item for after deploy; it is out of scope for this repository-only PR.",
+    "makemigrations --check reports PRE-EXISTING index-rename drift in the unrelated 'strategies' app on canonical main; this packet neither introduces nor touches it (broker_intelligence is drift-free), and CI's backend job does not run makemigrations --check.",
+    "The full backend suite was NOT run under an unsafe --parallel mode (per packet direction and the known GFX-WITHDRAWAL-CI-HYGIENE-051 hang history); broker_intelligence was run serially."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/metrics.py (NEW _staff_correlation_broker_map; _row_broker gains optional staff_broker precedence-3; withdrawal_history computes + passes the map)",
+    "backend/broker_intelligence/withdrawal_speed.py (imports + computes the map; passes it to _row_broker in the completed-series and in-progress lists)",
+    "backend/broker_intelligence/tests_manual_broker_label.py (NEW: 16 mutation-killing regression tests incl. bypass anchor, tenant isolation, fail-closed provenance, and N+1 proof)",
+    "evidence/manifests/GFX-EVD-MANUAL-BROKER-LABEL.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/metrics.py": "sha256:103532361bdcb2c6431e37875a3838a04a1ffcf90a291dd17e034f51e5c210ae",
+    "backend/broker_intelligence/withdrawal_speed.py": "sha256:839ba0a2a1b2ee443973b288d793f3eed2bfa5e9020cca64ccef030d9c9ef81c",
+    "backend/broker_intelligence/tests_manual_broker_label.py": "sha256:778dae726575b3a3e20592504d293c91bf4920545d3af73a7211d53f44ff2a9c"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review + independent adversarial review across cross-tenant leakage, conflicting/non-APPLIED/stale/duplicate decisions, N+1, false-completion inference, PII leakage, public-statistics contamination, Pepperstone/TradersWay regression, raw-email dependence, inconsistent labels. Sponsor review pending (auto-merge OFF, STOP before merge)."
+}
