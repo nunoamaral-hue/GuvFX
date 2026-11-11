@@ -27,3 +27,4 @@ urllib3==2.6.1
 cryptography>=42.0.0
 pyotp>=2.9.0
 Pillow>=10.1  # trade-result card PNG rendering (intelligence/results_card.py)
+tblib>=3.0  # picklable tracebacks: lets the `manage.py test --parallel` runner serialize a worker's exception traceback back to the parent instead of failing to pickle it and hanging the backend CI job indefinitely (GFX-WITHDRAWAL-CI-HYGIENE-051)
