@@ -376,6 +376,7 @@ class Withdrawal(models.Model):
     class CorrelationMethod(models.TextChoices):
         REFERENCE_ID = "REFERENCE_ID", "Broker reference id (deterministic)"
         HEURISTIC = "HEURISTIC", "Bounded heuristic (account+amount+currency+time window)"
+        MANUAL_STAFF = "MANUAL_STAFF", "Staff-confirmed manual correlation (ADR-0092; no stable reference)"
 
     # Account-OPTIONAL (ADR-0050): an owner-attributed withdrawal whose TradersWay account is not registered in GuvFX
     # stays account-UNRESOLVED (trading_account NULL) rather than being bound to an unrelated account. PROTECT is kept
@@ -1289,6 +1290,7 @@ class UnknownSenderDiscoveryCandidate(models.Model):
         ASSOCIATED = "ASSOCIATED", "Associated with an existing broker profile"
         PROPOSED_BROKER = "PROPOSED_BROKER", "Proposed broker/profile candidate created"
         PROPOSED_PATTERN = "PROPOSED_PATTERN", "Proposed GenericWithdrawalPattern (DISABLED) created"
+        CORRELATED = "CORRELATED", "Correlated into a withdrawal by a staff decision (ADR-0092)"
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                               related_name="unknown_sender_discovery_candidates")
@@ -1349,3 +1351,55 @@ class DiscoveryCandidateAction(models.Model):
 
     def __str__(self) -> str:
         return f"DiscoveryCandidateAction(cand={self.candidate_id}, {self.action}, {self.actor})"
+
+
+class StaffWithdrawalCorrelation(models.Model):
+    """ADR-0092 — a broker-NEUTRAL, STAFF-GATED, append-only decision that a human reviewer has confirmed that TWO or
+    more unknown-sender discovery candidates represent ONE withdrawal lifecycle, when the broker supplies NO stable
+    transaction reference (so the automatic reference-first / heuristic engine cannot and must not merge them).
+
+    This is an EXCEPTION PATH, not broker-specific development: any broker whose emails lack a stable reference uses
+    the same mechanism. Fail-closed by construction: the decision is created ONLY by the staff command with an
+    EXPLICIT broker selection (never inferred), never infers COMPLETED, never moves money, never touches a cursor or a
+    mailbox, and is append-only (write-once; never rewritten or deleted — ``resulting_withdrawal`` is set in the same
+    create). Carries NO raw body, name, full account number or other PII — only owner/broker FKs, the candidates'
+    salted provider-message-id hashes (immutable provenance), the staff actor, a sanitised reason and enums."""
+
+    class Status(models.TextChoices):
+        PROPOSED = "PROPOSED", "Proposed (dry-run; not persisted)"
+        APPLIED = "APPLIED", "Applied — one withdrawal created"
+        REJECTED = "REJECTED", "Rejected"
+        SUPERSEDED = "SUPERSEDED", "Superseded by a later decision"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name="+")                                   # tenant attribution
+    broker_profile = models.ForeignKey("BrokerProfile", on_delete=models.PROTECT, related_name="+")  # EXPLICIT, operator-verified
+    candidates = models.ManyToManyField(UnknownSenderDiscoveryCandidate, related_name="staff_correlations")
+    # The candidates' salted provider-message-id hashes in trusted-timestamp order (immutable membership + ordering;
+    # NOT the candidate ids, which are not a stable ordering, and NOT raw content).
+    ordered_candidate_pmid_hashes = models.JSONField(default=list, blank=True)
+    lifecycle_result = models.CharField(max_length=24, default="REQUESTED")       # never a terminal/COMPLETED state
+    reviewer = models.CharField(max_length=128)                                  # "user:<id>" of an is_staff reviewer
+    reason = models.CharField(max_length=256, blank=True, default="")            # sanitised; control chars stripped; no PII
+    idempotency_key = models.CharField(max_length=64, unique=True)               # deterministic: hash(owner, broker, sorted pmid hashes)
+    resulting_withdrawal = models.ForeignKey("Withdrawal", on_delete=models.SET_NULL, null=True, blank=True,
+                                             related_name="+")
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PROPOSED)
+    decided_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [models.Index(fields=["owner", "id"]), models.Index(fields=["idempotency_key"]),
+                   models.Index(fields=["status"])]
+
+    def save(self, *args, **kwargs):
+        # Append-only provenance: a decision, once created, is never rewritten (a correction is a NEW decision).
+        if self.pk is not None:
+            raise ValidationError("StaffWithdrawalCorrelation is append-only; a correction is a NEW decision")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("StaffWithdrawalCorrelation is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"StaffWithdrawalCorrelation({self.status}, owner={self.owner_id}, wd={self.resulting_withdrawal_id})"
