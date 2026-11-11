@@ -6,6 +6,7 @@ preflight. No broker contact, no host contact, no flag enablement.
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
@@ -209,3 +210,86 @@ class WorkerInertWhenOffTests(TestCase):
             call_command(cmd, stdout=out)   # all flags default OFF
         self.assertEqual(ExecutionJob.objects.count(), 0)
         self.assertEqual(CopierLiveKillSwitch.objects.count(), 0)
+
+
+class PreflightFollowerEndpointResolverTests(TestCase):
+    """Regression (GFX-COPIER-PREFLIGHT-ENDPOINT-FIX-053): the follower-endpoint gate must call
+    ``resolve_account_snapshot_base(account, *, global_base_url)`` with the KEYWORD-ONLY ``global_base_url``.
+    The previous positional call raised ``TypeError`` for every follower, masking the true endpoint state as a
+    spurious ``ENDPOINT_RESOLVE_ERROR`` (fail-closed, so never unsafe, but never truthful either). These tests
+    pin the keyword call, the follower identity binding, truthful evaluation of a present endpoint, and — most
+    importantly — that fail-closed readiness is preserved: absence/error never becomes a READY result, and the
+    preflight still arms no flag, creates no authorization, dispatches no job, and relaxes no live/demo wall."""
+
+    def _accounts(self):
+        owner = User.objects.create_user("own", "own@guvfx.invalid", "x")
+        m = _acct(owner, "M", "55442", "Tradersway-Live", "TW")
+        f = _acct(owner, "F", "51763831", "IS6Technologies-Live", "IS6")
+        return owner, m, f
+
+    def _run(self, m, f, *, source="XAUUSD", follower="XAUUSD.std"):
+        import json
+        out = StringIO()
+        call_command("copier_live_demo_preflight", master_account_id=m.id, follower_account_id=f.id,
+                     source_symbol=source, follower_symbol=follower, stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_real_resolver_no_typeerror_and_fail_closed_non_per_tenant(self):
+        # REAL resolver, plain live follower with no per-tenant endpoint. The OLD positional call raised
+        # TypeError here (-> ENDPOINT_RESOLVE_ERROR); the fix evaluates the gate truthfully and fail-closed.
+        _owner, m, f = self._accounts()
+        data = self._run(m, f)
+        g = data["gates"]["follower_endpoint"]
+        self.assertNotEqual(g["code"], "ENDPOINT_RESOLVE_ERROR")     # the exact bug symptom must be gone
+        self.assertNotEqual(g.get("detail"), "TypeError")
+        self.assertFalse(g["ok"])                                    # no per-tenant endpoint -> fail-closed
+        self.assertEqual(g["code"], "ENDPOINT_NOT_PER_TENANT")
+        self.assertEqual(data["verdict"], "NOT_READY")
+        # no arming / no authorization / no job / no kill switch / no live->demo relaxation
+        self.assertEqual(CopierLiveAuthorization.objects.count(), 0)
+        self.assertEqual(CopierLiveKillSwitch.objects.count(), 0)
+        from execution.models import ExecutionJob
+        self.assertEqual(ExecutionJob.objects.count(), 0)
+        f.refresh_from_db()
+        self.assertFalse(f.is_demo)                                  # the live account is NOT relaxed to demo
+
+    def test_resolver_called_keyword_only_and_bound_to_follower(self):
+        _owner, m, f = self._accounts()
+        from execution.snapshot_transport import SnapshotTransport, ST_PER_TENANT_OK
+        spy = mock.Mock(return_value=SnapshotTransport(
+            True, ST_PER_TENANT_OK, "http://10.50.0.48:8800", per_tenant=True))
+        with mock.patch("execution.snapshot_transport.resolve_account_snapshot_base", spy):
+            data = self._run(m, f)
+        self.assertEqual(spy.call_count, 1)
+        # the keyword-only arg is passed BY NAME; a positional 2nd arg is exactly the regressed defect
+        self.assertIn("global_base_url", spy.call_args.kwargs)
+        self.assertEqual(len(spy.call_args.args), 1)                 # only the account is positional
+        self.assertEqual(spy.call_args.args[0].id, f.id)            # identity-bound to the FOLLOWER (never master/sibling)
+        # a present, READY per-tenant endpoint is evaluated normally -> ENDPOINT_OK (not an exception path)
+        self.assertTrue(data["gates"]["follower_endpoint"]["ok"])
+        self.assertEqual(data["gates"]["follower_endpoint"]["code"], "ENDPOINT_OK")
+
+    def test_resolver_exception_stays_fail_closed_never_ready(self):
+        # A genuine resolver error must remain a fail-closed gate, never converted into a READY/ok result.
+        _owner, m, f = self._accounts()
+        with mock.patch("execution.snapshot_transport.resolve_account_snapshot_base",
+                        side_effect=RuntimeError("boom")):
+            data = self._run(m, f)
+        g = data["gates"]["follower_endpoint"]
+        self.assertFalse(g["ok"])
+        self.assertEqual(g["code"], "ENDPOINT_RESOLVE_ERROR")
+        self.assertNotEqual(data["verdict"], "READY_TO_ARM")
+
+    def test_route_account_symbol_restrictions_retained(self):
+        # The #46->#48 identity/account/symbol pinning is unchanged by the fix.
+        _owner, m, f = self._accounts()
+        data = self._run(m, f)
+        idg = data["gates"]["identity"]
+        self.assertEqual(idg["master"]["id"], m.id)
+        self.assertEqual(idg["master"]["server"], "Tradersway-Live")
+        self.assertEqual(idg["follower"]["id"], f.id)
+        self.assertEqual(idg["follower"]["server"], "IS6Technologies-Live")
+        self.assertEqual(data["route"]["master"], m.id)
+        self.assertEqual(data["route"]["follower"], f.id)
+        self.assertEqual(data["route"]["source_symbol"], "XAUUSD")
+        self.assertEqual(data["route"]["follower_symbol"], "XAUUSD.std")

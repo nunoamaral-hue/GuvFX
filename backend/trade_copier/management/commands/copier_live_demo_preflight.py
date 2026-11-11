@@ -150,7 +150,7 @@ class Command(BaseCommand):
         try:
             from execution.snapshot_transport import resolve_account_snapshot_base
             from django.conf import settings as _s
-            st = resolve_account_snapshot_base(facct, getattr(_s, "GUVFX_WINDOWS_AGENT_BASE_URL", "") or "")
+            st = resolve_account_snapshot_base(facct, global_base_url=getattr(_s, "GUVFX_WINDOWS_AGENT_BASE_URL", "") or "")
             e_ok = bool(getattr(st, "ok", False)) and bool(getattr(st, "per_tenant", False))
             gate("follower_endpoint", e_ok, "ENDPOINT_OK" if e_ok else "ENDPOINT_NOT_PER_TENANT",
                  reason=getattr(st, "reason_code", None), per_tenant=getattr(st, "per_tenant", None))
