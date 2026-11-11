@@ -1,10 +1,16 @@
-# ADR-0091 — Staff-gated manual withdrawal correlation (broker-neutral, reference-less)
+# ADR-0092 — Staff-gated manual withdrawal correlation (broker-neutral, reference-less)
 
 - Status: Accepted (repository-only; DARK — command gated, not applied in production)
 - Date: 2026-11-10
 - Packet: GFX-WITHDRAWAL-STAFF-CORRELATION-024-GO-001
 - Extends: ADR-0079 (Stream B withdrawal lifecycle), ADR-0089 (unknown-sender discovery), ADR-0090 (Vantage
   reference-first correlation + fail-closed `requires_reference`)
+
+> **Reconciliation note (GFX-WITHDRAWAL-PR637-RECONCILE-053):** this decision was originally filed as **ADR-0091**.
+> While PR #637 was open, PR #636 merged to `main` first and claimed ADR-0091
+> (`docs/ADRs/0091-hosted-observation-concurrency-budget-and-transport-taxonomy.md`). During branch reconciliation
+> this decision was renumbered **0091 → 0092** (the next free number) to satisfy the programme-wide ADR-uniqueness
+> check. Only the number changed — the decision, scope and behaviour are unchanged; PR #636's ADR-0091 is not altered.
 
 ## Context
 

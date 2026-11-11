@@ -16,17 +16,17 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='discoverycandidateaction',
             name='action',
-            field=models.CharField(choices=[('NEW', 'New (awaiting review)'), ('REJECTED', 'Rejected (not a withdrawal / not a broker)'), ('INSUFFICIENT', 'Insufficient evidence'), ('ASSOCIATED', 'Associated with an existing broker profile'), ('PROPOSED_BROKER', 'Proposed broker/profile candidate created'), ('PROPOSED_PATTERN', 'Proposed GenericWithdrawalPattern (DISABLED) created'), ('CORRELATED', 'Correlated into a withdrawal by a staff decision (ADR-0091)')], max_length=20),
+            field=models.CharField(choices=[('NEW', 'New (awaiting review)'), ('REJECTED', 'Rejected (not a withdrawal / not a broker)'), ('INSUFFICIENT', 'Insufficient evidence'), ('ASSOCIATED', 'Associated with an existing broker profile'), ('PROPOSED_BROKER', 'Proposed broker/profile candidate created'), ('PROPOSED_PATTERN', 'Proposed GenericWithdrawalPattern (DISABLED) created'), ('CORRELATED', 'Correlated into a withdrawal by a staff decision (ADR-0092)')], max_length=20),
         ),
         migrations.AlterField(
             model_name='unknownsenderdiscoverycandidate',
             name='review_state',
-            field=models.CharField(choices=[('NEW', 'New (awaiting review)'), ('REJECTED', 'Rejected (not a withdrawal / not a broker)'), ('INSUFFICIENT', 'Insufficient evidence'), ('ASSOCIATED', 'Associated with an existing broker profile'), ('PROPOSED_BROKER', 'Proposed broker/profile candidate created'), ('PROPOSED_PATTERN', 'Proposed GenericWithdrawalPattern (DISABLED) created'), ('CORRELATED', 'Correlated into a withdrawal by a staff decision (ADR-0091)')], default='NEW', max_length=20),
+            field=models.CharField(choices=[('NEW', 'New (awaiting review)'), ('REJECTED', 'Rejected (not a withdrawal / not a broker)'), ('INSUFFICIENT', 'Insufficient evidence'), ('ASSOCIATED', 'Associated with an existing broker profile'), ('PROPOSED_BROKER', 'Proposed broker/profile candidate created'), ('PROPOSED_PATTERN', 'Proposed GenericWithdrawalPattern (DISABLED) created'), ('CORRELATED', 'Correlated into a withdrawal by a staff decision (ADR-0092)')], default='NEW', max_length=20),
         ),
         migrations.AlterField(
             model_name='withdrawal',
             name='correlation_method',
-            field=models.CharField(blank=True, choices=[('REFERENCE_ID', 'Broker reference id (deterministic)'), ('HEURISTIC', 'Bounded heuristic (account+amount+currency+time window)'), ('MANUAL_STAFF', 'Staff-confirmed manual correlation (ADR-0091; no stable reference)')], default='', max_length=16),
+            field=models.CharField(blank=True, choices=[('REFERENCE_ID', 'Broker reference id (deterministic)'), ('HEURISTIC', 'Bounded heuristic (account+amount+currency+time window)'), ('MANUAL_STAFF', 'Staff-confirmed manual correlation (ADR-0092; no stable reference)')], default='', max_length=16),
         ),
         migrations.CreateModel(
             name='StaffWithdrawalCorrelation',

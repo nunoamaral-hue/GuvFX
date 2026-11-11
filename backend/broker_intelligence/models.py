@@ -376,7 +376,7 @@ class Withdrawal(models.Model):
     class CorrelationMethod(models.TextChoices):
         REFERENCE_ID = "REFERENCE_ID", "Broker reference id (deterministic)"
         HEURISTIC = "HEURISTIC", "Bounded heuristic (account+amount+currency+time window)"
-        MANUAL_STAFF = "MANUAL_STAFF", "Staff-confirmed manual correlation (ADR-0091; no stable reference)"
+        MANUAL_STAFF = "MANUAL_STAFF", "Staff-confirmed manual correlation (ADR-0092; no stable reference)"
 
     # Account-OPTIONAL (ADR-0050): an owner-attributed withdrawal whose TradersWay account is not registered in GuvFX
     # stays account-UNRESOLVED (trading_account NULL) rather than being bound to an unrelated account. PROTECT is kept
@@ -1290,7 +1290,7 @@ class UnknownSenderDiscoveryCandidate(models.Model):
         ASSOCIATED = "ASSOCIATED", "Associated with an existing broker profile"
         PROPOSED_BROKER = "PROPOSED_BROKER", "Proposed broker/profile candidate created"
         PROPOSED_PATTERN = "PROPOSED_PATTERN", "Proposed GenericWithdrawalPattern (DISABLED) created"
-        CORRELATED = "CORRELATED", "Correlated into a withdrawal by a staff decision (ADR-0091)"
+        CORRELATED = "CORRELATED", "Correlated into a withdrawal by a staff decision (ADR-0092)"
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                               related_name="unknown_sender_discovery_candidates")
@@ -1354,7 +1354,7 @@ class DiscoveryCandidateAction(models.Model):
 
 
 class StaffWithdrawalCorrelation(models.Model):
-    """ADR-0091 — a broker-NEUTRAL, STAFF-GATED, append-only decision that a human reviewer has confirmed that TWO or
+    """ADR-0092 — a broker-NEUTRAL, STAFF-GATED, append-only decision that a human reviewer has confirmed that TWO or
     more unknown-sender discovery candidates represent ONE withdrawal lifecycle, when the broker supplies NO stable
     transaction reference (so the automatic reference-first / heuristic engine cannot and must not merge them).
 

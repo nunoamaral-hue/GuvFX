@@ -1,4 +1,4 @@
-"""ADR-0091 — staff-gated manual withdrawal correlation. SYNTHETIC fixtures ONLY (no real email, name, account,
+"""ADR-0092 — staff-gated manual withdrawal correlation. SYNTHETIC fixtures ONLY (no real email, name, account,
 reference or PII). Covers the positive flow and the fail-closed adversarial matrix."""
 from __future__ import annotations
 

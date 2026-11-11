@@ -1,4 +1,4 @@
-"""ADR-0091 — broker-NEUTRAL, STAFF-GATED manual withdrawal correlation.
+"""ADR-0092 — broker-NEUTRAL, STAFF-GATED manual withdrawal correlation.
 
 When a broker's withdrawal emails carry NO stable transaction reference, the automatic reference-first / bounded-
 heuristic engine cannot (and must not) merge the lifecycle messages — doing so on amount/currency/date/account hints

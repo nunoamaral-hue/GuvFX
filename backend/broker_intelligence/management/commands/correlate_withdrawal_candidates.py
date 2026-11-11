@@ -1,4 +1,4 @@
-"""ADR-0091 — staff-gated manual withdrawal correlation (broker-neutral).
+"""ADR-0092 — staff-gated manual withdrawal correlation (broker-neutral).
 
 Lets a NAMED staff reviewer confirm that two or more unknown-sender discovery candidates are ONE withdrawal
 lifecycle when the broker provides no stable transaction reference, and (with --apply) project exactly ONE
@@ -20,7 +20,7 @@ from django.core.management.base import BaseCommand
 
 class Command(BaseCommand):
     help = ("Staff-gated manual correlation of unknown-sender discovery candidates into ONE REQUESTED withdrawal "
-            "(ADR-0091). Dry-run by default; pass --apply to mutate.")
+            "(ADR-0092). Dry-run by default; pass --apply to mutate.")
 
     def add_arguments(self, parser):
         parser.add_argument("--candidate-id", type=int, action="append", required=True, dest="candidate_ids",
