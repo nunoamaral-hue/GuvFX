@@ -70,6 +70,7 @@ class CompletionPlan:
     resolved_account_last4: str     # the RESOLVED account's real last-4 (for masking, independent of the suffix arg)
     reviewer: str                   # "user:<id>"
     already_completed: bool = False
+    currency_backfill_only: bool = False   # ADR-0095: the ONLY permitted change to an already-completed row
 
 
 def _trusted_ts(candidate):
@@ -77,7 +78,8 @@ def _trusted_ts(candidate):
 
 
 def plan_staff_completion(*, withdrawal_id, owner, broker_profile_id, completion_candidate_id,
-                          expected_account_suffix, expected_amount, approved_by) -> CompletionPlan:
+                          expected_account_suffix, expected_amount, approved_by,
+                          expected_currency=None) -> CompletionPlan:
     """Validate the staff completion FAIL-CLOSED and return an admissible plan. Pure read-only; raises
     ``CompletionRefused`` with a stable code on any violation. ``owner`` is a resolved User; ``expected_amount`` a
     Decimal; ``expected_account_suffix`` a short digit string the resolved login must end with."""
@@ -110,19 +112,88 @@ def plan_staff_completion(*, withdrawal_id, owner, broker_profile_id, completion
     suffix = (expected_account_suffix or "").strip()
     if not suffix:
         raise CompletionRefused("EXPECTED_SUFFIX_REQUIRED", "--expected-account-suffix must be a non-empty digit suffix")
+    exp_ccy = (expected_currency or "").strip().upper()
+    try:
+        exp_amt = Decimal(str(expected_amount))
+    except (ArithmeticError, ValueError, TypeError):
+        raise CompletionRefused("EXPECTED_AMOUNT_INVALID", "--expected-amount is not a number")
 
-    # 2b) Idempotency: an already-completed, account-resolved withdrawal is a NO-OP (not a refusal).
+    # 2b) The withdrawal's single APPLIED staff correlation + the explicit broker profile (needed by BOTH the full
+    #     completion path and the currency-backfill path below).
+    decisions = list(StaffWithdrawalCorrelation.objects.filter(
+        resulting_withdrawal_id=wd.id, status=StaffWithdrawalCorrelation.Status.APPLIED))
+    if len(decisions) != 1:
+        raise CompletionRefused("CORRELATION_NOT_UNIQUE", f"{len(decisions)} APPLIED correlations for this withdrawal")
+    dec = decisions[0]
+    bp = BrokerProfile.objects.filter(id=broker_profile_id).first()
+    if bp is None:
+        raise CompletionRefused("BROKER_PROFILE_NOT_FOUND", "--broker-profile-id does not exist")
+    if dec.broker_profile_id != bp.id:
+        raise CompletionRefused("BROKER_PROFILE_MISMATCH", "selected broker does not match the withdrawal's correlation")
+
+    _tw.register_default_parsers()
+    store = EvidenceStore()
+
+    def _parse_candidate(c):
+        """Re-parse ONE correlation candidate's immutable stored blob (read-only; no event). Returns the parsed event,
+        or None when the blob is missing / unreadable / not from an allowlisted+authenticated broker / unparseable."""
+        b = EvidenceBlob.objects.filter(sha256=c.message_sha256).first()
+        if b is None:
+            return None
+        try:
+            r = store.read(b)
+        except (EvidenceStoreError, OSError):
+            return None
+        dd = parse_rfc822(r)
+        subj, bod, frm = dd.get("subject", ""), dd.get("body", ""), dd.get("from_address", "")
+        if not is_allowlisted_broker_sender(frm) or dd.get("auth_verdict") != "pass":
+            return None
+        p = select_parser(subject=subj, body=bod, from_address=frm)
+        return p.parse(subject=subj, body=bod, from_address=frm) if p else None
+
+    # 2c) Resolve the CURRENCY from the correlated REQUEST/submission evidence — computed LAZILY (ONLY by the paths
+    #     that need it), so a pure idempotent no-op never touches it and a conflicting-currency correlation cannot
+    #     break a no-op. ADR-0095 design: the SUBMISSION supplies amount + currency ("Currency Type: GBP"); the
+    #     completion need not. A SINGLE non-blank currency across the candidates is required (conflicting ⇒ fail
+    #     closed); absent ⇒ blank (never invented); when --expected-currency is given it must match a non-blank one.
+    def _resolved_currency():
+        ccys = {(pc.currency or "").strip().upper()
+                for pc in (_parse_candidate(c) for c in dec.candidates.all())
+                if pc is not None and (pc.currency or "").strip()}
+        if len(ccys) > 1:
+            raise CompletionRefused("CONFLICTING_REQUEST_CURRENCY", "correlated candidates state different currencies")
+        rc = next(iter(ccys)) if ccys else ""
+        if exp_ccy:
+            if not rc:
+                raise CompletionRefused("CURRENCY_NOT_EVIDENCED", "no currency is evidenced for --expected-currency")
+            if rc != exp_ccy:
+                raise CompletionRefused("CURRENCY_MISMATCH", "evidenced currency != --expected-currency")
+        return rc
+
+    # 2d) Idempotency / CURRENCY BACKFILL for an already-completed, account-resolved withdrawal. The shared
+    #     expected-value guards (suffix, amount) still apply to a completed row.
     if wd.status == Withdrawal.Status.COMPLETED and wd.trading_account_id is not None and wd.completed_at is not None:
         acctnum = (wd.trading_account.account_number or "") if wd.trading_account_id else ""
-        return CompletionPlan(
-            withdrawal_id=wd.id, owner_id=owner.id, broker_profile_id=broker_profile_id, broker_display="",
+        if suffix and not acctnum.endswith(suffix):
+            raise CompletionRefused("ACCOUNT_SUFFIX_MISMATCH", "resolved account suffix != --expected-account-suffix")
+        if wd.amount is not None and wd.amount != exp_amt:
+            raise CompletionRefused("AMOUNT_CONFLICTS_WITHDRAWAL", "withdrawal amount != --expected-amount")
+        base = dict(
+            withdrawal_id=wd.id, owner_id=owner.id, broker_profile_id=bp.id, broker_display=bp.name,
             completion_candidate_id=completion_candidate_id, completion_sha12="", requested_at=wd.requested_at,
             completion_at=wd.completed_at, duration_seconds=wd.duration_seconds(), amount=wd.amount,
-            currency=wd.currency or "", prior_amount=wd.amount, prior_currency=wd.currency or "",
-            resolved_account_id=wd.trading_account_id, resolved_account_suffix=acctnum[-len(suffix):],
-            resolved_account_last4=acctnum[-4:], reviewer=f"user:{reviewer.id}", already_completed=True)
+            prior_amount=wd.amount, prior_currency=wd.currency or "", resolved_account_id=wd.trading_account_id,
+            resolved_account_suffix=acctnum[-len(suffix):], resolved_account_last4=acctnum[-4:],
+            reviewer=f"user:{reviewer.id}")
+        # The ONLY permitted change to a completed row: backfill a MISSING currency from the correlated submission
+        # evidence, ONLY under an explicit --expected-currency (never a silent guess, never overwriting a non-blank one).
+        if not (wd.currency or "") and exp_ccy:
+            resolved = _resolved_currency()
+            if resolved:
+                return CompletionPlan(currency=resolved, currency_backfill_only=True, **base)
+        return CompletionPlan(currency=wd.currency or "", already_completed=True, **base)
 
-    # 3) Expected current state (fail-closed preconditions).
+    # 3) Expected current state (fail-closed preconditions) for a FULL completion.
     if wd.status != Withdrawal.Status.REQUESTED:
         raise CompletionRefused("WITHDRAWAL_NOT_REQUESTED", f"status is {wd.status}, expected REQUESTED")
     if wd.correlation_method != Withdrawal.CorrelationMethod.MANUAL_STAFF:
@@ -136,18 +207,6 @@ def plan_staff_completion(*, withdrawal_id, owner, broker_profile_id, completion
     if wd.requested_at is None:
         raise CompletionRefused("NO_REQUESTED_ANCHOR", "withdrawal has no requested_at to order against")
 
-    # 4) Exactly one APPLIED staff correlation for this withdrawal; its broker must be the EXPLICIT --broker-profile-id.
-    decisions = list(StaffWithdrawalCorrelation.objects.filter(
-        resulting_withdrawal_id=wd.id, status=StaffWithdrawalCorrelation.Status.APPLIED))
-    if len(decisions) != 1:
-        raise CompletionRefused("CORRELATION_NOT_UNIQUE", f"{len(decisions)} APPLIED correlations for this withdrawal")
-    dec = decisions[0]
-    bp = BrokerProfile.objects.filter(id=broker_profile_id).first()
-    if bp is None:
-        raise CompletionRefused("BROKER_PROFILE_NOT_FOUND", "--broker-profile-id does not exist")
-    if dec.broker_profile_id != bp.id:
-        raise CompletionRefused("BROKER_PROFILE_MISMATCH", "selected broker does not match the withdrawal's correlation")
-
     # 5) The completion candidate MUST be one of this correlation's candidates, and MUST post-date the request.
     cand = dec.candidates.filter(id=completion_candidate_id).first()
     if cand is None:
@@ -160,13 +219,12 @@ def plan_staff_completion(*, withdrawal_id, owner, broker_profile_id, completion
     if (cts - wd.requested_at) > _MAX_COMPLETION_WINDOW:
         raise CompletionRefused("COMPLETION_WINDOW_EXCEEDED", "completion is outside the bounded correlation window")
 
-    # 6) Re-parse the candidate's IMMUTABLE stored blob with the current parser (read-only; no event created).
+    # 6) Re-parse the completion candidate's IMMUTABLE stored blob -> WITHDRAWAL_COMPLETED for the selected broker.
     blob = EvidenceBlob.objects.filter(sha256=cand.message_sha256).first()
     if blob is None:
         raise CompletionRefused("EVIDENCE_NOT_RETAINED", "no retained evidence blob for this candidate")
-    _tw.register_default_parsers()
     try:
-        raw = EvidenceStore().read(blob)
+        raw = store.read(blob)
     except (EvidenceStoreError, OSError):
         raise CompletionRefused("EVIDENCE_UNREADABLE", "stored evidence could not be read (integrity/availability)")
     d = parse_rfc822(raw)
@@ -186,10 +244,6 @@ def plan_staff_completion(*, withdrawal_id, owner, broker_profile_id, completion
     # 7) Amount: parsed must be present and equal the operator-asserted expected amount (and any existing value).
     if parsed.amount is None:
         raise CompletionRefused("AMOUNT_NOT_EVIDENCED", "completion carries no amount")
-    try:
-        exp_amt = Decimal(str(expected_amount))
-    except (ArithmeticError, ValueError, TypeError):
-        raise CompletionRefused("EXPECTED_AMOUNT_INVALID", "--expected-amount is not a number")
     if parsed.amount != exp_amt:
         raise CompletionRefused("AMOUNT_MISMATCH", "parsed amount != --expected-amount")
     if wd.amount is not None and wd.amount != parsed.amount:
@@ -210,9 +264,9 @@ def plan_staff_completion(*, withdrawal_id, owner, broker_profile_id, completion
     if tok and tok[0].lower() not in (acct.broker_name or "").lower():
         raise CompletionRefused("ACCOUNT_BROKER_MISMATCH", "resolved account broker does not match the completion broker")
 
-    # Currency to PERSIST: keep a currency the withdrawal already carries; otherwise adopt the one the evidence
-    # states (which is '' when the broker does not state one — never invented).
-    result_currency = (wd.currency or "") or (parsed.currency or "")
+    # Currency to PERSIST: keep a currency the withdrawal already carries; otherwise the currency the correlated
+    # SUBMISSION evidence states (ADR-0095) — '' only when truly none is evidenced; NEVER invented.
+    result_currency = (wd.currency or "") or _resolved_currency()
     return CompletionPlan(
         withdrawal_id=wd.id, owner_id=owner.id, broker_profile_id=bp.id, broker_display=bp.name,
         completion_candidate_id=cand.id, completion_sha12=(cand.message_sha256 or "")[:12],
@@ -234,6 +288,15 @@ def apply_staff_completion(plan: CompletionPlan):
         return Withdrawal.objects.get(id=plan.withdrawal_id), False
     with transaction.atomic():
         wd = Withdrawal.objects.select_for_update().get(id=plan.withdrawal_id)
+        if plan.currency_backfill_only:
+            # ADR-0095: the ONLY permitted change to an already-completed row — set a MISSING currency from the
+            # correlated submission evidence. Never overwrite a non-blank currency; a concurrent set ⇒ no-op.
+            if (wd.status != Withdrawal.Status.COMPLETED or wd.trading_account_id != plan.resolved_account_id
+                    or (wd.currency or "") or not plan.currency):
+                return wd, False
+            wd.currency = plan.currency
+            wd.save(update_fields=["currency", "updated_at"])
+            return wd, True
         if wd.status == Withdrawal.Status.COMPLETED and wd.trading_account_id == plan.resolved_account_id:
             return wd, False
         # Re-validate the exact preconditions under the lock (a concurrent op may have changed the row).
