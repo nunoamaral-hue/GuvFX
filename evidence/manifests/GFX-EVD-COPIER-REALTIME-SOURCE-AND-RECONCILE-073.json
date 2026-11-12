@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-COPIER-REALTIME-SOURCE-AND-RECONCILE-073",
+  "packet_id": "GFX-COPIER-REALTIME-SOURCE-AND-RECONCILE-073",
+  "created_at_utc": "2026-11-12T00:00:00Z",
+  "branch": "feat/copier-realtime-source-reconcile",
+  "base_commit": "5c6e752c135a69ad4fe316e1962ed0c0bcdaf22a",
+  "head_commit": "(feat commit on feat/copier-realtime-source-reconcile; see PR)",
+  "summary": "Closes the two gaps the GFX-COPIER-REALTIME-HYBRID-PREDEMO-READINESS-072 assessment measured (NOT_READY). (1) ADR-0096 event-driven post-fill follower-ticket binding: new backend/trade_copier/open_result_binding.py (bind_open_result) binds CopierReplication.follower_ticket DIRECTLY from the OPEN order's fill result at the single job-completion convergence point (execution.ExecutionJobViewSet.complete), with NO /mt5/positions read, so the LIVE account_not_demo wall no longer blocks linkage; SUCCESS+positive-int ticket -> bind + reconciliation_status=MATCHED + status=EXECUTION_VERIFIED (mirrors the ADR-0087 mutation SUCCESS write), SUCCESS no/invalid ticket -> UNKNOWN (binds nothing; positions-read reconcile remains the fallback), FAILED -> EXECUTION_FAILED; idempotent, conflict fails closed (never overwrites; logs unconditionally + governed alert), anti-cross-bind (the replication must own the job), select_for_update, fully fail-safe (never breaks job completion). Consequence: MODIFY/FULL-CLOSE no longer hard-depend on COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED for the common path. (2) #46 real-time SOURCE reuse: the ADR-0077 emitter bundle signs with the SAME trade_copier.event_ingestion module the endpoint verifies with, pinned by new tests_emitter_ingest_contract.py for the exact #46/55442/Tradersway-Live OPEN->MODIFY->CLOSE lifecycle; what remains is host-side operational only, documented in docs/COPIER_REALTIME_SOURCE_ACTIVATION.md. No new flag, no new model, NO migration. DARK/default-OFF; no deploy, no host contact, no secret provisioning, no flag enablement, no broker order.",
+  "root_cause": "The 072 readiness returned NOT_READY for two independent reasons: (a) no master-side real-time SOURCE is wired to production #46 (ingested_revisions_total=0 - the ADR-0077 emitter bundle exists but is not installed/armed on the host, so every #46 event is POLL-sourced); and (b) the fast path had no post-fill binding of the follower ticket - the only linker was the ADR-0074 positions-read reconcile, which a LIVE follower bridge refuses with account_not_demo unless the route-scoped read flag is armed, so a copied LIVE OPEN could not be linked and the governed MODIFY/FULL-CLOSE (which require a MATCHED, non-null follower_ticket) stayed fail-closed.",
+  "change": "1) New backend/trade_copier/open_result_binding.py: bind_open_result(job) + _bind + _result_ticket + _alert_conflict - event-driven post-fill binding from ExecutionJob.result (NEVER a /mt5/positions read). 2) backend/execution/views.py: fail-safe call to bind_open_result after record_hosted_completion in ExecutionJobViewSet.complete (double-wrapped try/except; the job's own completion write is already committed - ATOMIC_REQUESTS is False). 3) New backend/trade_copier/tests_open_result_binding.py (12) and tests_emitter_ingest_contract.py (6, pure verifier). 4) backend/trade_copier/tests_immediate_dispatch.py: _open() now simulates OPEN completion + bind_open_result instead of the removed reconcile hook. Docs: ADR-0096, COPIER_REALTIME_SOURCE_ACTIVATION.md, COPIER_46_48_DEMO_RUNBOOK.md (ADR-0096 note), STATUS.md, KNOWN_ISSUES.md. No model, no migration, no flag.",
+  "commands": [
+    "manage.py test trade_copier.tests_open_result_binding trade_copier.tests_immediate_dispatch trade_copier.tests_emitter_ingest_contract",
+    "manage.py test trade_copier",
+    "manage.py test execution",
+    "manage.py check",
+    "manage.py makemigrations --check --dry-run trade_copier execution",
+    "secret scan over changed/new files (grep secret-pattern)",
+    "independent adversarial review (15 attack vectors) by a separate agent; MEDIUM findings fixed with regression tests"
+  ],
+  "expected_results": [
+    "binding + dispatch + emitter-contract focused suite: pass",
+    "full trade_copier suite: pass",
+    "execution suite: pass",
+    "system check: no issues",
+    "makemigrations --check (trade_copier, execution): no changes detected (no model, no migration)",
+    "secret scan: no hardcoded secret literals (only the documented test-only SECRET in the pure-verifier contract test)",
+    "adversarial review: no CRITICAL/HIGH; money path fail-closed; MEDIUM findings fixed or documented"
+  ],
+  "actual_results": [
+    "trade_copier.tests_open_result_binding + tests_immediate_dispatch + tests_emitter_ingest_contract: Ran 39 tests; OK (12 binding incl. 3 added for the MEDIUM fixes + 21 dispatch + 6 contract)",
+    "trade_copier (full): Ran 867 tests; OK",
+    "execution (full): OK (exit 0)",
+    "system check: System check identified no issues (0 silenced)",
+    "makemigrations --check trade_copier execution: No changes detected in apps 'execution', 'trade_copier' (no model, no migration added by this packet)",
+    "secret scan: clean (the only 40-hex literal is the documented test-only SECRET in tests_emitter_ingest_contract.py, a crypto-verifier fixture, not a secret of record)",
+    "adversarial review: no CRITICAL; no HIGH; money path SAFE on all 15 vectors (fail-closed on forged/malformed ticket, duplicate/replay, cross-bind, MODIFY-before-OPEN, CLOSE-after-UNKNOWN, kill-switch/expiry; binding creates no order, consumes no allowance, contacts no broker); MEDIUM-1 + MEDIUM-2 fixed with regression tests (see adversarial_review)"
+  ],
+  "status": "PASS",
+  "status_detail": "PASS (repository-only / DARK). The follower ticket binds deterministically and event-driven from the OPEN fill result with no positions read; fail-closed on UNKNOWN/FAILED/conflict/cross-bind; idempotent; fully fail-safe. The #46 emitter envelope is byte-compatible with the verifier (pinned). No model, no migration, no flag; production unchanged; all copier/execution controls OFF. No merge, no deploy, no host contact, no broker order.",
+  "adversarial_review": {
+    "reviewer": "independent agent (fresh context), 15 attack vectors; read open_result_binding.py + execution/views.py complete() against live_execution/execution_producer/reconcile/models + the real bridge result contract (scripts/mt5_signal_bridge.py) + the new tests",
+    "critical": "NONE",
+    "high": "NONE",
+    "money_path": "SAFE on all vectors: duplicate/replayed completion (409 guard + idempotent same-ticket), timeout-then-late-success (no retry, no second order), contradictory tickets (ownership guard + conflict fail-closed, never overwrite), MODIFY-before-OPEN and CLOSE-after-UNKNOWN (fail-closed on no_verified_follower_ticket), cross-route substitution (payload rep-id + rep.execution_job_id ownership guard), non-copier/non-PLACE_ORDER (inert), forged/malformed ticket (int>0 + bool/float rejected; a non-matching ticket resolves to nothing at positions_get - never a wrong position, since MT5 tickets are globally unique), VERIFIED invariant (only on SUCCESS + positive broker-reported ticket), reconcile interaction (bound row excluded from both reconcile selectors; first writer wins), fail-safe HTTP (job write already committed; double-wrapped), select_for_update (own atomic), no order/allowance/broker contact, kill-switch/expiry (binding grants no authority; MODIFY/CLOSE re-gate under lock), ungated-by-design (inert in DARK; required for containment).",
+    "MEDIUM_1_order_vs_position_ticket": "FIXED + DOCUMENTED. The signal bridge's normal OPEN result reports the opening ORDER ticket in result['ticket']; the governed MODIFY/CLOSE resolve by the POSITION ticket. For a position-clean fresh open (the governed route precondition) they are EQUAL, so the bind is correct; a NETTING follower with a pre-existing same-symbol position (forbidden by the route's position-clean precondition) is the one divergence, where the bound order ticket resolves to NOTHING at positions_get -> MODIFY/CLOSE fail CLOSED (never the wrong position) and the ADR-0057 operator-manual-close fallback applies. Fix: _result_ticket now PREFERS an explicit position/position_ticket field whenever a bridge surfaces one (the lost-ACK recovery result already carries the position ticket), falling back to ticket. Regression test_prefers_position_ticket_over_order_ticket. Surfacing the position ticket in every bridge OPEN result is a bridge-side follow-up (out of backend scope). Documented in ADR-0096 + the module docstring + KNOWN_ISSUES.",
+    "MEDIUM_2_silent_conflict_when_alerts_off": "FIXED. The conflicting-ticket branch now emits an UNCONDITIONAL logger.error (independent of the default-OFF governed alert) so an integrity-class event is never silent; the governed de-duplicated alert is still raised; the bound ticket is never overwritten. A ticket is an audit identifier, not a secret.",
+    "LOW_findings": "Reviewed: (a) the rep.execution_job_id in (None, job.id) allowance is defensive and not exploitable (copier payloads are stamped only by sanctioned producers) - kept intentionally for linkage-lag resilience; (b) ticket coercion now rejects bool and fractional floats (regression tests test_bool_ticket_is_unknown + test_fractional_ticket_is_unknown); (c) oversized ticket -> save raises -> contained (fails closed); (d) idempotent-after-reconcile leaving status=EXECUTION_REQUESTED is cosmetic (lifecycle admission keys on MATCHED + non-null ticket, not on EXECUTION_VERIFIED).",
+    "secrets_pii": "SAFE - broker_result stores the bridge result dict (ticket/price/volume/symbol/sl/tp/comment/retcode), no login/password/token; the conflict alert redacts the ticket; no secret in any log."
+  },
+  "migration_status": "No migration. The packet reuses the existing CopierReplication fields (follower_ticket, broker_result, reconciliation_status, status). makemigrations --check trade_copier execution: No changes detected. Unrelated pre-existing index-rename drift in strategies exists on main independent of this PR (not touched here).",
+  "limitations": [
+    "Repository-only / DARK: not merged, not deployed; production unchanged; all copier/execution controls OFF; no new flag introduced.",
+    "The binding is proven on deterministic in-DB fixtures (no real bridge/broker). The live result->bind path is exercised only when the feature is enabled end-to-end with a host emitter + authorization present (separate gated steps).",
+    "Order-vs-position ticket on a NETTING follower is a documented, fail-SAFE limitation (MEDIUM-1): the backend prefers an explicit position field when a bridge surfaces one, but the signal bridge surfacing it in every OPEN result is a bridge-side follow-up. The governed #46->#48 route's position-clean precondition forecloses the divergence.",
+    "The #46 real-time SOURCE is NOT wired: the ADR-0077 emitter bundle is reusable as-is but installing/arming it on the host is host-side operational work (separate Sponsor gates; docs/COPIER_REALTIME_SOURCE_ACTIVATION.md).",
+    "Backend tests were run with Python 3.11 against a local PostgreSQL; CI runs the authoritative suite. Not run here: frontend (untouched).",
+    "Deep Windows-host inventory of #46/#48 is deferred to the host-deployment packet; this packet used only backend-mediated reads (#46 bridge port 8806 /health 200 session DISCONNECTED; #48 port 8804 /health 200 session DISCONNECTED; both LIVE)."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/open_result_binding.py",
+    "backend/execution/views.py (ExecutionJobViewSet.complete fail-safe bind hook)",
+    "backend/trade_copier/tests_open_result_binding.py",
+    "backend/trade_copier/tests_emitter_ingest_contract.py",
+    "backend/trade_copier/tests_immediate_dispatch.py",
+    "docs/architecture/ADR-0096-copier-open-result-binding.md",
+    "docs/COPIER_REALTIME_SOURCE_ACTIVATION.md",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md (ADR-0096 note)",
+    "docs/STATUS.md",
+    "docs/KNOWN_ISSUES.md"
+  ],
+  "checksums": {
+    "backend/trade_copier/open_result_binding.py": "sha256:1de51b64c5241b2f8dd02c64f79ea772e40451c71bf63f5eea27b958e80c0e13",
+    "backend/execution/views.py": "sha256:fa78c3d2a9eba4e7c7a8e6c34a8762c66a42b7793ce76c54b3717436df896c7e",
+    "backend/trade_copier/tests_open_result_binding.py": "sha256:5114f528196942c6323bdb289bd48989504dfaafd9ea0ce47362693b5f647c08",
+    "backend/trade_copier/tests_emitter_ingest_contract.py": "sha256:d3b0e7698e73cb619c8cf50bedba9f511727fd822f305e1aa29ed29be02307a8",
+    "backend/trade_copier/tests_immediate_dispatch.py": "sha256:40bc3e681f2f962a519a5d035618de4c77b21def1e58adfdbdd5b9939edb630a",
+    "docs/architecture/ADR-0096-copier-open-result-binding.md": "sha256:71a5727364d0645b901971032e2902b3027cab5f8199346e48b35ccb42e5cd9c",
+    "docs/COPIER_REALTIME_SOURCE_ACTIVATION.md": "sha256:96b80ccf691fa6735ce3d467c9576583aac5c8e43d399adfa265ddddcf295621"
+  },
+  "reviewer": "Independent adversarial agent (15 attack vectors) + the author's deterministic mutation-killing suite. No CRITICAL/HIGH; money path fail-closed on every vector; MEDIUM-1 (order-vs-position ticket, fails SAFE) + MEDIUM-2 (silent conflict) fixed with regression tests. See adversarial_review.",
+  "production_host_broker_impact": "None. Repository-only / DARK. Production unchanged; all copier/execution controls OFF; no new flag; no model; no migration; no Windows-host or broker contact; zero broker orders; no authorization created; no secret provisioned; no migration applied to production.",
+  "remaining_gate": "Separate, NOT authorised here: 1) merge (Sponsor GO); 2) DARK deployment; 3) host emitter installation + secret provisioning (COPIER_REALTIME_SOURCE_ACTIVATION.md); 4) account-scoped read-only-positions enablement (fallback only now); 5) flag enablement (COPIER_IMMEDIATE_DISPATCH_ENABLED + per-worker stack); 6) human CopierLiveAuthorization + signed host admission; 7) Sponsor-present bounded live demo. Bridge-side follow-up (non-blocking): surface the POSITION ticket in every OPEN result for netting-follower correctness."
+}

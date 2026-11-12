@@ -563,6 +563,17 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         from execution.hosted_execution import record_hosted_completion
         record_hosted_completion(job, correlation_id=str((job.payload or {}).get("correlation_id", "")))
 
+        # ADR-0096 — event-driven post-fill binding of the copier follower ticket from the OPEN order's fill
+        # RESULT (ExecutionJob.result["ticket"]), with NO /mt5/positions read. Fully fail-safe + inert for a
+        # non-copier job; for a copier PLACE_ORDER it binds follower_ticket -> reconciliation_status=MATCHED,
+        # status=EXECUTION_VERIFIED on SUCCESS (fail-closed on UNKNOWN/conflict), so the governed MODIFY/CLOSE
+        # can target the exact follower ticket. Never creates an order or contacts a broker.
+        try:
+            from trade_copier.open_result_binding import bind_open_result
+            bind_open_result(job)
+        except Exception:  # noqa: BLE001 — binding must never break job completion.
+            pass
+
         # =================================================================
         # Auto-sync: Queue SYNC_POSITIONS job after successful trade placement
         # Applies to both demo trades (PLACE_TEST_ORDER) and signal trades (PLACE_ORDER)

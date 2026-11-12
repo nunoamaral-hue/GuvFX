@@ -27,7 +27,6 @@ from trade_copier.models import (
     CopierMaster, CopierRealtimeDispatch, CopierReplication, CopierSymbolMap, MasterEvent,
     MasterObservationPoll, MasterPositionSnapshot, ReplicationStatus, SizingMode)
 from trade_copier.observer import MasterReadResult, observe_master
-from trade_copier.reconcile import reconcile_follower
 from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
@@ -104,26 +103,6 @@ class _LiveRT(TestCase):
             price_open=(Decimal(price_open) if price_open else None),
             open_time=now, broker_event_time=now, observed_time=now,
             broker_login="55425442", broker_server="Tradersway-Live")
-
-    def _fetch(self, ticket):
-        """An injected follower-position read carrying the OPEN replication's provenance comment, so reconcile
-        can link the follower ticket AFTER the (simulated) bridge fill — standing in for the live read bridge."""
-        master = self.master
-
-        def _f(account):
-            rep = (CopierReplication.objects
-                   .filter(follower__master=master, requested_op="OPEN").order_by("-id").first())
-            comment = f"CPY{rep.id}" if rep else ""
-            return MasterReadResult(
-                True, "ok", observed_login="38313831", observed_server="IS6Technologies-Live",
-                observed_trade_mode=2,
-                positions=(ObservedPosition(ticket=ticket, symbol="XAUUSD.std", side="SELL",
-                                            volume=0.01, comment=comment),))
-        return _f
-
-    def _link_open_ticket(self):
-        """Simulate the post-fill reconcile that links the OPEN follower ticket (not done on the sync path)."""
-        return reconcile_follower(self.f, fetch=self._fetch(self.FOLLOWER_TICKET))
 
     def _place_jobs(self):
         return ExecutionJob.objects.filter(account=self.follower_acct, job_type=ExecutionJob.JobType.PLACE_ORDER)
@@ -251,9 +230,17 @@ class ImmediateModifyCloseTests(_LiveRT):
     def _open(self):
         self._ingest(ticket=920, revision=1)
         dispatch_master_realtime(self.master.pk, mutation_transport_factory=lambda: _applied)
-        # The bridge fills the OPEN; the post-fill reconcile links the follower ticket (not done on the sync path).
-        self._link_open_ticket()
+        # Simulate the bridge filling the OPEN and reporting the result ticket to the job-completion endpoint →
+        # ADR-0096 event-driven binding (NOT a /mt5/positions reconcile — that is walled for a LIVE follower).
         rep = CopierReplication.objects.get(requested_op="OPEN")
+        job = rep.execution_job
+        self.assertIsNotNone(job, "OPEN produced no PLACE_ORDER job")
+        job.status = ExecutionJob.Status.SUCCESS
+        job.result = {"ticket": self.FOLLOWER_TICKET}
+        job.save(update_fields=["status", "result"])
+        from trade_copier.open_result_binding import bind_open_result
+        self.assertTrue(bind_open_result(job)["bound"])
+        rep.refresh_from_db()
         self.assertEqual(rep.follower_ticket, self.FOLLOWER_TICKET)
         return rep
 

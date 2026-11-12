@@ -2,6 +2,27 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading real-time SOURCE not yet wired to #46; ADR-0096 binding merged-pending (GFX-COPIER-REALTIME-SOURCE-AND-RECONCILE-073 / ADR-0096, 2026-11-12)
+
+- **The real-time chain still has no master-side source on production #46.** `ingested_revisions_total = 0`: every
+  #46 master event is POLL-sourced because the ADR-0077 emitter bundle (`deploy/copier-emitter/`) is NOT installed or
+  armed on the host. This is **host-side operational only** (no repo change): install the DISABLED
+  `GuvFX_CopierEmitter_46` task, provision `COPIER_INGEST_HMAC_KEY` by env-var name, point it at #46's read-only
+  bridge + `api.guvfx.com/api/copy-trading/event-ingest/`, arm `COPIER_IMMEDIATE_DISPATCH_ENABLED` + the per-worker
+  stack, enable the task. Ordered, Sponsor-gated steps: `docs/COPIER_REALTIME_SOURCE_ACTIVATION.md`.
+- **ADR-0096 post-fill binding is repository-only, NOT merged/deployed.** `bind_open_result` binds the follower
+  ticket from the OPEN fill result event-driven. Until merged + deployed, production is unchanged.
+- **Order-vs-position ticket on a netting follower (adversarial MEDIUM-1; fails SAFE).** The bind reads the OPEN
+  result's ticket (the opening ORDER ticket for the signal bridge). For a **position-clean** follower (the governed
+  route precondition) it equals the position ticket MODIFY/CLOSE resolve by. A **netting** follower already holding a
+  same-symbol position would diverge → the bound ticket resolves to NOTHING at `positions_get` → MODIFY/CLOSE fail
+  CLOSED (never the wrong position) and the ADR-0057 operator-manual-close fallback applies. `_result_ticket` prefers
+  an explicit `position`/`position_ticket` field when a bridge surfaces one; surfacing it in every bridge OPEN result
+  is a bridge-side follow-up. The #46→#48 route's position-clean precondition forecloses the divergence.
+- **Follower-read now optional for the common path.** `COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED` is no longer
+  required for MODIFY/CLOSE when the OPEN result carries the ticket; it remains the fallback for an UNKNOWN OPEN and
+  for read-only follower monitoring.
+
 ## 🟡 Copy Trading one-shot attestation — operator wrapper prepared, NOT executed (GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021 / ADR-0077, 2026-11-06)
 
 - **Why it exists.** Packet-020 (the one-shot attestation) halted at preflight: the emitter's `COPIER_INGEST_HMAC_KEY`
