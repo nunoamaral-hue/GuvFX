@@ -24,6 +24,18 @@ entry after expiry). No credentials appear here.
 > Sponsor-gated enablement; until then #48's `/mt5/positions` returns `account_not_demo` and a copied LIVE OPEN
 > needs manual close. All of this remains DARK/default-OFF; this runbook stays preparation-only.
 
+> **ADR-0096 update (post-fill follower-ticket binding).** The copied OPEN's follower ticket is now bound
+> **event-driven from the OPEN order's fill result** at job completion (`bind_open_result`), with **no
+> `/mt5/positions` read**. So for a **position-clean** follower (this route's precondition) the governed MODIFY
+> (step 11) and FULL_CLOSE (step 13) can fire **without** the route-scoped follower-read authority
+> (`COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED`) — the positions-read reconcile is now the FALLBACK, used only
+> when the OPEN result carries no ticket (UNKNOWN). At step 9, confirm the follower ticket bound from the OPEN
+> result (`reconciliation_status=MATCHED`, `status=EXECUTION_VERIFIED`). The result reports the opening ORDER
+> ticket; for a position-clean fresh open it equals the position ticket the mutations resolve by (a NETTING
+> follower with a pre-existing same-symbol position would diverge and fail CLOSED at MODIFY/CLOSE — the route's
+> position-clean precondition forecloses this). Still DARK/default-OFF; preparation-only. See the end-to-end
+> source + reconcile readiness in `docs/COPIER_REALTIME_SOURCE_ACTIVATION.md`.
+
 ## Timing / containment limits
 - Authorization window ≤ 15 min; disarm immediately after step 13 regardless of time left.
 - Per-step observe wait: **≤ 90 s** after each human MT5 action (observer cadence is 2 min — run the live-path

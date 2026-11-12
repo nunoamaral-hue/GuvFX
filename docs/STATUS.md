@@ -1,5 +1,32 @@
 # GuvFX — Project Status
 
+> **2026-11-12 — Copy Trading real-time SOURCE + post-fill reconcile (GFX-COPIER-REALTIME-SOURCE-AND-RECONCILE-073;
+> ADR-0096; repository-only / DARK; governed PR; auto-merge OFF; STOP before merge).** Off main `5c6e752c` (ADR-0094
+> #642). Closes the two gaps the 072 pre-demo readiness measured. **(1) Post-fill follower-ticket binding
+> (ADR-0096).** New `backend/trade_copier/open_result_binding.py` (`bind_open_result`) binds
+> `CopierReplication.follower_ticket` **event-driven from the OPEN order's fill result** at the single job-completion
+> convergence point (`ExecutionJobViewSet.complete`, wired fail-safe in `execution/views.py`) — with **no
+> `/mt5/positions` read**, so it is unaffected by the LIVE `account_not_demo` wall that previously blocked linkage.
+> SUCCESS+positive-int ticket → bind + `MATCHED` + `EXECUTION_VERIFIED` (mirrors the ADR-0087 mutation write);
+> SUCCESS no/invalid ticket → UNKNOWN (binds nothing, reconcile fallback); FAILED → `EXECUTION_FAILED`. Idempotent;
+> conflicting ticket fails closed (never overwrites, logs unconditionally + governed alert); anti-cross-bind (rep must
+> own the job); `select_for_update`; fully fail-safe (never breaks completion). Ungated by design: a copier order
+> exists only because the gated producer made it, so the hook is inert in DARK and MUST run for containment even after
+> a mid-flight disarm. **Consequence:** MODIFY/FULL-CLOSE no longer hard-depend on
+> `COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED` for the common path (positions-read reconcile → fallback). No new flag,
+> no model, **no migration**. **(2) #46 real-time SOURCE — reuse, not rebuild.** The ADR-0077 emitter bundle
+> (`deploy/copier-emitter/`) signs with the SAME `event_ingestion` module the endpoint verifies with; pinned by new
+> `tests_emitter_ingest_contract.py` (6, pure verifier) for the exact #46/55442/`Tradersway-Live` lifecycle. What
+> remains is host-side operational only (install DISABLED task, provision secret by env NAME, arm flags, enable task) —
+> documented in new `docs/COPIER_REALTIME_SOURCE_ACTIVATION.md`. Independent adversarial review (15 vectors): no
+> CRITICAL/HIGH; money path fail-closed on every vector; MEDIUM-1 (order-vs-position ticket on a netting follower —
+> fails SAFE, route precondition forecloses it) + MEDIUM-2 (silent conflict when alerts OFF) both fixed with
+> regression tests (`_result_ticket` prefers an explicit position field + rejects bool/fractional; unconditional
+> conflict log). Verified (local Py3.11 + Postgres): binding 12 + dispatch 21 + contract 6 = 39 OK; full trade_copier
+> 867 OK; execution suite OK; `check` clean; `makemigrations --check trade_copier execution` clean (no drift); ADR
+> governance OK. Repository-only: NO merge, NO deploy, NO host emitter install, NO secret provisioning, NO flag
+> enablement, NO authorization, NO broker order. STOP before merge.
+
 > **2026-11-06 — Copy Trading one-shot attestation operator wrapper (GFX-COPIER-ATTESTATION-OPERATOR-WRAPPER-021;
 > ADR-0077 reused; repository-only tooling; governed PR; auto-merge OFF; STOP before merge).** Builds a secure,
 > HUMAN-operated Windows PowerShell wrapper (`deploy/copier-emitter/operator/Invoke-GuvfxCopierOneShotAttestation.ps1`)
