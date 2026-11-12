@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-VANTAGE-CURRENCY-CORRECTION",
+  "packet_id": "GFX-WITHDRAWAL-VANTAGE-CURRENCY-CORRECTION-068",
+  "created_at_utc": "2026-11-12T09:30:00Z",
+  "branch": "fix/vantage-currency-extraction",
+  "base_commit": "4324b2de3e74c1ca6253bb9406adfa0241201af2",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only correction. Sponsor-observed defect: after APPLY-067 the dashboard shows Vantage #4 COMPLETED/account 5017/19s but amount N/A and the GBP total excludes the 30 — the record has amount 30 but currency blank. Root cause (read-only prod, privacy-safe boolean probes only): the genuine Vantage SUBMISSION email states 'Currency Type: GBP' with the value on the NEXT line; the text parser read only an inline amount-currency (Amount:30.00 has none) and the HTML _LBL_CURRENCY fullmatch('currency') missed 'Currency Type'; the COMPLETION email states no currency, so the ADR-0093 repair (which re-parsed only the completion) stored blank. Fix: (A) parser reads a line-anchored 'Currency Type:' field (value on same or next line; Vantage opt-in; _norm_currency-validated); (B) the repair resolves the currency from the correlated SUBMISSION evidence, adds --expected-currency, and a currency-BACKFILL path for an already-completed row with a blank currency. NO model/schema change, NO migration, NO production mutation. Withdrawal #4 stays COMPLETED with a blank currency until a separately-gated repair.",
+    "adr": "docs/architecture/ADR-0095-vantage-currency-field-extraction.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test, serial for broker_intelligence) + governance-check + secret/PII scan + evidence lint + frontend parity/lint/build"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_vantage_completion broker_intelligence.tests_staff_completion broker_intelligence.tests_parsers_stream_b broker_intelligence.tests_vantage_correlation   (Ran 101 OK)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence   (FULL app, serial: Ran 1109 OK = 1085 ADR-0093 baseline + 24 new, after adversarial-review fixes)",
+    "cd backend && .venv/bin/python manage.py check   (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations broker_intelligence --check --dry-run   (No changes detected — migration-free proof)",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance   (ADR-0095 unique across docs/architecture/ + docs/ADRs/)",
+    "python3 scripts/check_no_secrets.py   (no findings)",
+    "python3 scripts/check_evidence_manifests.py   (EVIDENCE-LINT: PASS)",
+    "Workflow adversarial-review-068 (6 dimensions, per-finding verification): 8 real findings (0 HIGH/CRITICAL; 2 MEDIUM + 6 LOW) — ALL fixed with regression tests; the tightened currency regex re-verified privacy-safe against the genuine evidence + attack cases."
+  ],
+  "expected_results": [
+    "The Vantage SUBMISSION parses amount 30 AND currency GBP from a standalone 'Currency Type: GBP' field (value on the same or the immediately-following line). An absent currency stays blank (never invented); an unsupported token stays blank; a preceding 'Account Currency: USD' / 'Deposit Currency: EUR' / bare 'Currency:' line is NOT read (line-anchored + mandatory 'Type'); prose ('paid in GBP') is not read; a card number / account suffix / date is never read as the amount or currency.",
+    "The COMPLETION email states no currency; the governed completion/backfill resolves the currency from the correlated SUBMISSION evidence — a SINGLE non-blank currency across the correlation's candidates (conflicting ⇒ CONFLICTING_REQUEST_CURRENCY), absent ⇒ blank. --expected-currency, when given, must match a non-blank resolved currency (CURRENCY_NOT_EVIDENCED / CURRENCY_MISMATCH).",
+    "A currency BACKFILL on an already-completed, account-resolved row whose currency is blank: sets ONLY the currency, under an explicit --expected-currency, never overwriting a non-blank currency, and still enforcing the shared suffix + amount guards. A pure idempotent no-op never resolves currency (so a conflicting-currency correlation cannot break a no-op). Cross-owner candidates cannot combine (single-owner correlation).",
+    "Projection: once currency=GBP the row renders '30.00 GBP', no N/A, no 'Account unresolved'; withdrawal_metrics.completed_amount_by_currency sums it into GBP (owner GBP total 15.00 + 30.00 = 45.00); a still-blank-currency amount is excluded (no fabricated conversion).",
+    "Per-broker: currency_from_field is Vantage-only; Pepperstone/Dominion/TradersWay parsing + projections are byte-for-byte unchanged (the speculative _LBL_CURRENCY broadening was reverted after review).",
+    "Migration-free, no production mutation, no raw email / name / full account / card number / Message-ID in any output, commit, test, fixture, Notion or chat; fixtures synthetic."
+  ],
+  "actual_results": [
+    "parsers_stream_b.py: NEW _CURRENCY_FIELD = line-anchored (?im)^ 'currency <type>: <CCC>' (mandatory 'Type'; value same or next line; bounded whitespace), validated by _norm_currency; applied in _parse_text ONLY when the inline currency is absent and the broker opts in (currency_from_field, Vantage only). Verified against the genuine retained evidence (submission -> GBP; completion -> None) and the adversarial attack cases (Account/Deposit/bare-Currency -> not used; empty-field/unbounded/prose -> blank). _LBL_CURRENCY reverted to its original (?i)currency.",
+    "staff_completion.py: lazy _resolved_currency() (conflict + --expected-currency checks) used ONLY by the full-completion and backfill paths; the already-completed path enforces the shared suffix + amount guards; currency-backfill sets only the currency and never overwrites a non-blank one. complete_staff_withdrawal gains --expected-currency and a backfill-aware before/after + rollback; the idempotent message no longer over-claims 'currency-resolved'.",
+    "Tests: tests_vantage_completion (+ currency extraction incl. the Account-Currency-override mutation-killer and empty-field case), tests_staff_completion (+ currency resolution, --expected-currency guards, conflicting currencies, backfill incl. never-overwrite + no-op-not-broken + suffix/amount guards, and the GBP total = 45.00 aggregate). Affected modules Ran 101 OK; full broker_intelligence Ran 1109 OK (serial). makemigrations --check: No changes detected. System check: no issues.",
+    "Diff scope: exactly 5 code/test files changed (parsers_stream_b.py, staff_completion.py, management/commands/complete_staff_withdrawal.py, tests_vantage_completion.py, tests_staff_completion.py) + NEW ADR-0095 + this manifest. No migration, no model field, no metrics.py change, no frontend change, no config, no secret, no production file."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production migration, deploy, correlation, broker approval, publication, cursor movement, mailbox/ingestion action, money movement or raw-email access. Production stays at 4324b2de with migration tip 0031; withdrawal #4 stays COMPLETED with a BLANK currency (amount 30, account 5017) until a separately-authorized repair backfills currency=GBP.",
+    "No migration and no model/enum change (the currency-backfill is a new code path on the existing command; the currency aggregation in metrics.py was already per-currency-safe and is unchanged).",
+    "The currency field and label structure were established by a PRIVACY-SAFE boolean/code probe on the retained evidence (currency code only; no name/account/card/body read into output); committed fixtures are SYNTHETIC. The gated production dry-run (--expected-currency GBP) re-parses the real blob and fails closed on any mismatch.",
+    "Adversarial review (6 dimensions) surfaced 8 real findings (0 HIGH/CRITICAL): 2 MEDIUM + 1 LOW on the currency regex over-matching (preceding Account/Deposit/bare-Currency line, unbounded whitespace, prose) ALL fixed by line-anchoring + mandatory 'Type' + bounded same/next-line value; 2 LOW backfill (skipped suffix/amount guards) fixed; 1 LOW (conflicting-currency correlation breaking a no-op) fixed by lazy resolution; 1 LOW (over-claiming idempotent message) fixed. The _LBL_CURRENCY broadening (2 unconfirmed findings) was reverted. Each fix carries a mutation-killing regression test.",
+    "The full backend suite was run SERIALLY (not --parallel, per the known hang history). Full make check / frontend build was not run locally; CI is authoritative.",
+    "ADR RENUMBER 0094 -> 0095: the first exact-head CI run (43192689436, head 913ace10) FAILED on exactly one of 8231 tests, core.tests_adr_governance.test_no_new_duplicate_adr_numbers, because main advanced to 5c6e752c and now carries docs/architecture/ADR-0094-copier-realtime-hybrid-replication.md (an unrelated workstream, merged as PR #642). The CI merge commit saw both ADR-0094 files. The already-merged copier ADR is authoritative (supersede-never-overwrite), so THIS packet's ADR was renumbered to the next free number 0095 (comment/docstring/help-text + filename only; no code behaviour, no test logic, no regex changed). All six artefact checksums were recomputed after the renumber. Re-run of the full governance/backend suite is required to confirm 5/5 before any CI-green marker."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/parsers_stream_b.py (NEW _CURRENCY_FIELD line-anchored 'Currency Type:' field + currency_from_field opt-in; _LBL_CURRENCY reverted)",
+    "backend/broker_intelligence/staff_completion.py (lazy _resolved_currency from the correlated submission; --expected-currency; currency-backfill path with shared suffix/amount guards)",
+    "backend/broker_intelligence/management/commands/complete_staff_withdrawal.py (--expected-currency; backfill-aware output + rollback; accurate idempotent message)",
+    "backend/broker_intelligence/tests_vantage_completion.py (currency extraction + over-match mutation-killers)",
+    "backend/broker_intelligence/tests_staff_completion.py (currency resolution / guards / conflict / backfill / GBP-45 aggregate)",
+    "docs/architecture/ADR-0095-vantage-currency-field-extraction.md (NEW ADR)",
+    "evidence/manifests/GFX-EVD-VANTAGE-CURRENCY-CORRECTION.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/parsers_stream_b.py": "sha256:9ce8ca9bfacb3562a3feeb6da5bb129d1b482cb192477fd857de205ff282d329",
+    "backend/broker_intelligence/staff_completion.py": "sha256:248a144508284aed4535ea1da4d872a182c41eb82c3c4da5cc939903a86fd3a5",
+    "backend/broker_intelligence/management/commands/complete_staff_withdrawal.py": "sha256:b489847d344644109c48617cc16287338f39a267a3c994574002f487b2c06f0c",
+    "backend/broker_intelligence/tests_vantage_completion.py": "sha256:4f7ed03a87472336b0f27297c6d4347dac0d5e6ef03fcc2038b84d8ba87d053b",
+    "backend/broker_intelligence/tests_staff_completion.py": "sha256:ab9ce12c0a55dcf50c294071b737d4fb4d7dfd86f5acefc13679cdf11c8e745f",
+    "docs/architecture/ADR-0095-vantage-currency-field-extraction.md": "sha256:b5c5fc1356c24e010ab956f974d664f029dd8aea30c496b00fb38e93600eb132"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review + independent adversarial review (false currency/amount, uncorrelated combination, cross-owner, conflict, currency invention, duplicate, idempotency, replay, summary-total corruption, Pepperstone/TradersWay regression, raw-email/PII, query performance, migration, repair reversibility); 8 findings all fixed. Sponsor review pending (auto-merge OFF, STOP before merge)."
+}

@@ -165,6 +165,83 @@ class OverClaimGuards(SimpleTestCase):
         self.assertNotIn("4111", blob)
 
 
+class CurrencyExtraction(SimpleTestCase):
+    """ADR-0095 — Vantage states the currency on its OWN labelled line ("Currency Type: GBP"), often with the value on
+    the NEXT line, so the inline amount-currency is blank. SYNTHETIC fixtures only."""
+
+    def test_submission_extracts_amount_and_currency(self):
+        p = _vt("Withdrawal Submitted",
+                "Your withdrawal has been submitted for account %s.\n"
+                "Currency Type: GBP\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.event_type, "WITHDRAWAL_REQUESTED")
+        self.assertEqual(p.amount, Decimal("30.00"))
+        self.assertEqual(p.currency, "GBP")                 # from the standalone "Currency Type:" field
+        self.assertEqual(p.source_account, LOGIN)
+
+    def test_currency_type_value_on_next_line(self):
+        # The genuine layout: the label and its value sit on separate lines.
+        p = _vt("Withdrawal Submitted",
+                "Your withdrawal has been submitted for account %s.\nCurrency Type:\n GBP\nAmount:\n 30.00\n" % LOGIN)
+        self.assertEqual(p.amount, Decimal("30.00"))
+        self.assertEqual(p.currency, "GBP")
+
+    def test_currency_whitespace_and_case(self):
+        for body, ccy in (("Currency Type:   gbp\nAmount: 30.00\n", "GBP"),
+                          ("CURRENCY TYPE : GBP\nAmount: 30.00\n", "GBP"),
+                          ("Currency Type:\n USD\nAmount: 30.00\n", "USD")):
+            p = _vt("Withdrawal Submitted", "account %s.\n%s" % (LOGIN, body))
+            self.assertEqual(p.currency, ccy)
+
+    def test_account_currency_line_does_not_override_currency_type(self):
+        # A preceding "Account Currency: USD" (or a bare "Currency: USD") must NOT win over the transaction's
+        # "Currency Type" field — it is line-anchored and the "Type" word is mandatory.
+        p = _vt("Withdrawal Submitted",
+                "account %s.\nAccount Currency: USD\nCurrency Type: GBP\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.currency, "GBP")
+        p2 = _vt("Withdrawal Submitted", "account %s.\nCurrency: USD\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p2.currency, "")       # bare "Currency:" (no "Type") is not read
+
+    def test_empty_currency_type_field_stays_blank(self):
+        p = _vt("Withdrawal Submitted",
+                "account %s.\nCurrency Type:\n\nUSD reference follows.\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.currency, "")        # an empty field never adopts a stray code across blank lines
+
+    def test_missing_currency_stays_blank(self):
+        p = _vt("Withdrawal Submitted", "Your withdrawal has been submitted for account %s.\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.amount, Decimal("30.00"))
+        self.assertEqual(p.currency, "")                    # absent -> blank, never invented
+
+    def test_unsupported_currency_token_blank(self):
+        p = _vt("Withdrawal Submitted", "account %s.\nCurrency Type: XYZ\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.currency, "")                    # XYZ is not a known currency -> blank
+
+    def test_prose_mention_is_not_a_currency(self):
+        p = _vt("Withdrawal Submitted",
+                "Your withdrawal has been submitted for account %s. Funds are paid in GBP within 3 days.\n"
+                "Amount: 30.00\n" % LOGIN)
+        self.assertEqual(p.currency, "")                    # "in GBP" prose has no currency label -> blank
+
+    def test_card_and_suffix_not_parsed_as_amount(self):
+        p = _vt("Withdrawal Submitted",
+                "account %s.\nCard Number: 465858**** **3055\nCurrency Type: GBP\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.amount, Decimal("30.00"))        # the Amount field, not the card digits
+        self.assertEqual(p.currency, "GBP")
+        self.assertEqual(p.source_account, LOGIN)
+
+    def test_completion_without_currency_stays_blank(self):
+        p = _vt("Withdrawal Request Successful",
+                "Your request has been processed successfully for account %s.\nAmount: 30.00\n" % LOGIN)
+        self.assertEqual(p.event_type, "WITHDRAWAL_COMPLETED")
+        self.assertEqual(p.currency, "")                    # the completion states no currency
+
+    def test_pepperstone_does_not_read_currency_type_field(self):
+        # Pepperstone does NOT opt into currency_from_field; a bare "Currency Type: GBP" line in its TEXT body is not
+        # read (its currency comes from the structured amount field). Byte-for-byte unchanged.
+        p = PEPPERSTONE.parse(from_address="no-reply@pepperstone.com", subject="Withdrawal Submitted",
+                              body="Your withdrawal has been submitted.\nCurrency Type: GBP\nAmount: 30.00\n")
+        self.assertEqual(getattr(p, "currency", ""), "")            # not read for Pepperstone (text path)
+
+
 class PerBrokerGating(SimpleTestCase):
     def test_pepperstone_does_not_upgrade_on_processed_successfully(self):
         # Same text that completes a Vantage mail must NOT complete a Pepperstone mail: the perfective-completion

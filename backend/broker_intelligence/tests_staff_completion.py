@@ -48,8 +48,10 @@ def _completion_raw(login="70005017", amount="30.00", date="Tue, 10 Nov 2026 06:
             "Content-Type: text/plain; charset=utf-8\r\n\r\n" + body).encode("utf-8")
 
 
-def _submission_raw(login="70005017", amount="30.00", date="Tue, 10 Nov 2026 06:38:58 +0000"):
-    body = (f"Your withdrawal has been submitted for account {login}.\r\nAmount: {amount}\r\n")
+def _submission_raw(login="70005017", amount="30.00", currency="", date="Tue, 10 Nov 2026 06:38:58 +0000"):
+    # ADR-0095: Vantage states the currency on its own "Currency Type:" line (value may be on the next line).
+    ccy = f"Currency Type:\r\n {currency}\r\n" if currency else ""
+    body = (f"Your withdrawal has been submitted for account {login}.\r\n{ccy}Amount: {amount}\r\n")
     return (f"From: no-reply@vantagemarkets.com\r\nTo: owner@x.invalid\r\n"
             f"Subject: Withdrawal Submitted\r\nAuthentication-Results: {_AR_VT}\r\nDate: {date}\r\n"
             "Content-Type: text/plain; charset=utf-8\r\n\r\n" + body).encode("utf-8")
@@ -91,7 +93,7 @@ class StaffCompletionBase(TestCase):
         comp_raw = _completion_raw()
         self.comp_blob, _ = self.store.put(comp_raw, content_type="message/rfc822", source="EMAIL",
                                            received_at=parse_rfc822(comp_raw)["received_at"])
-        sub_raw = _submission_raw()
+        sub_raw = _submission_raw(currency=getattr(self, "SUBMISSION_CURRENCY", ""))
         self.sub_blob, _ = self.store.put(sub_raw, content_type="message/rfc822", source="EMAIL",
                                           received_at=parse_rfc822(sub_raw)["received_at"])
 
@@ -276,6 +278,154 @@ class ProjectionContract(StaffCompletionBase):
         M = withdrawal_metrics([self.acct], owner=self.owner)
         self.assertNotIn("", M["completed_amount_by_currency"])
         self.assertEqual(M["completed_amount_by_currency"], {})
+
+
+class CurrencyResolution(StaffCompletionBase):
+    """ADR-0095 — the currency comes from the correlated SUBMISSION evidence (the completion need not state one)."""
+    SUBMISSION_CURRENCY = "GBP"
+
+    def test_full_completion_resolves_currency_from_submission(self):
+        plan = self._plan()
+        self.assertEqual(plan.currency, "GBP")
+        wd, changed = SCMP.apply_staff_completion(plan)
+        self.assertTrue(changed)
+        wd.refresh_from_db()
+        self.assertEqual(wd.currency, "GBP")
+        self.assertEqual(wd.status, Withdrawal.Status.COMPLETED)
+        self.assertEqual(wd.amount, Decimal("30.00"))
+
+    def test_expected_currency_match(self):
+        self.assertEqual(self._plan(expected_currency="gbp").currency, "GBP")   # case-insensitive
+
+    def test_expected_currency_mismatch_refused(self):
+        with self.assertRaises(SCMP.CompletionRefused) as ctx:
+            self._plan(expected_currency="USD")
+        self.assertEqual(ctx.exception.code, "CURRENCY_MISMATCH")
+        self.wd.refresh_from_db()
+        self.assertEqual(self.wd.status, Withdrawal.Status.REQUESTED)   # no mutation
+
+    def test_conflicting_request_currencies_refused(self):
+        usd_raw = _submission_raw(currency="USD", date="Tue, 10 Nov 2026 06:38:30 +0000")
+        usd_blob, _ = self.store.put(usd_raw, content_type="message/rfc822", source="EMAIL",
+                                     received_at=parse_rfc822(usd_raw)["received_at"])
+        c_usd = self._cand(usd_blob.sha256, received=timezone.now() - timedelta(hours=2, minutes=1))
+        self.dec.candidates.add(c_usd)
+        with self.assertRaises(SCMP.CompletionRefused) as ctx:
+            self._plan()
+        self.assertEqual(ctx.exception.code, "CONFLICTING_REQUEST_CURRENCY")
+
+    def test_projection_gbp_total_includes_vantage(self):
+        from broker_intelligence.metrics import withdrawal_history, withdrawal_metrics
+        Withdrawal.objects.create(owner=self.owner, trading_account=self.acct, amount=Decimal("15.00"), currency="GBP",
+                                  status=Withdrawal.Status.COMPLETED, requested_at=timezone.now() - timedelta(hours=3),
+                                  completed_at=timezone.now() - timedelta(hours=2), provenance="REAL",
+                                  correlation_method=Withdrawal.CorrelationMethod.REFERENCE_ID)
+        SCMP.apply_staff_completion(self._plan())
+        H = withdrawal_history([self.acct], owner=self.owner)
+        row = next(r for r in H["withdrawals"] if r["id"] == self.wd.id)
+        self.assertEqual(row["currency"], "GBP")
+        self.assertEqual(row["amount"], "30.00")
+        M = withdrawal_metrics([self.acct], owner=self.owner)
+        self.assertEqual(M["completed_amount_by_currency"].get("GBP"), "45.00")   # existing 15 + Vantage 30
+
+
+class CurrencyNotEvidenced(StaffCompletionBase):
+    SUBMISSION_CURRENCY = ""   # the submission states no currency
+
+    def test_full_completion_leaves_currency_blank(self):
+        plan = self._plan()
+        self.assertEqual(plan.currency, "")
+        wd, _ = SCMP.apply_staff_completion(plan)
+        wd.refresh_from_db()
+        self.assertEqual(wd.currency, "")   # never invented
+
+    def test_expected_currency_not_evidenced_refused(self):
+        with self.assertRaises(SCMP.CompletionRefused) as ctx:
+            self._plan(expected_currency="GBP")
+        self.assertEqual(ctx.exception.code, "CURRENCY_NOT_EVIDENCED")
+
+
+class CurrencyBackfill(StaffCompletionBase):
+    """ADR-0095 — a MISSING currency on an already-completed row can be backfilled from the correlated submission,
+    ONLY under an explicit --expected-currency, and NEVER overwriting a non-blank currency."""
+    SUBMISSION_CURRENCY = "GBP"
+
+    def _make_completed_blank_currency(self):
+        self.wd.status = Withdrawal.Status.COMPLETED
+        self.wd.trading_account = self.acct
+        self.wd.completed_at = self.c_comp.received_at
+        self.wd.amount = Decimal("30.00")
+        self.wd.currency = ""
+        self.wd.save()
+
+    def test_backfill_sets_currency_only(self):
+        self._make_completed_blank_currency()
+        plan = self._plan(expected_currency="GBP")
+        self.assertTrue(plan.currency_backfill_only)
+        self.assertEqual(plan.currency, "GBP")
+        wd, changed = SCMP.apply_staff_completion(plan)
+        self.assertTrue(changed)
+        wd.refresh_from_db()
+        self.assertEqual(wd.currency, "GBP")
+        self.assertEqual(wd.status, Withdrawal.Status.COMPLETED)
+        self.assertEqual(wd.amount, Decimal("30.00"))
+        self.assertEqual(wd.trading_account_id, self.acct.id)
+        plan2 = self._plan(expected_currency="GBP")
+        self.assertTrue(plan2.already_completed)          # now resolved -> pure no-op
+        self.assertFalse(SCMP.apply_staff_completion(plan2)[1])
+
+    def test_backfill_requires_expected_currency(self):
+        self._make_completed_blank_currency()
+        plan = self._plan()   # no --expected-currency
+        self.assertTrue(plan.already_completed)
+        self.assertFalse(plan.currency_backfill_only)
+        self.assertFalse(SCMP.apply_staff_completion(plan)[1])
+        self.wd.refresh_from_db()
+        self.assertEqual(self.wd.currency, "")
+
+    def test_backfill_currency_mismatch_refused(self):
+        self._make_completed_blank_currency()
+        with self.assertRaises(SCMP.CompletionRefused) as ctx:
+            self._plan(expected_currency="USD")
+        self.assertEqual(ctx.exception.code, "CURRENCY_MISMATCH")
+        self.wd.refresh_from_db()
+        self.assertEqual(self.wd.currency, "")
+
+    def test_backfill_never_overwrites_nonblank_currency(self):
+        self._make_completed_blank_currency()
+        self.wd.currency = "USD"
+        self.wd.save(update_fields=["currency"])
+        plan = self._plan(expected_currency="GBP")
+        self.assertTrue(plan.already_completed)            # already non-blank -> no backfill
+        self.assertFalse(plan.currency_backfill_only)
+        self.assertFalse(SCMP.apply_staff_completion(plan)[1])
+        self.wd.refresh_from_db()
+        self.assertEqual(self.wd.currency, "USD")          # never overwritten
+
+    def test_conflicting_candidate_currencies_do_not_break_noop(self):
+        # A pure idempotent no-op (already completed, currency already set) must NOT be refused even when the
+        # correlation's candidates state conflicting currencies (the no-op path never resolves currency).
+        self._make_completed_blank_currency()
+        self.wd.currency = "GBP"
+        self.wd.save(update_fields=["currency"])
+        usd_raw = _submission_raw(currency="USD", date="Tue, 10 Nov 2026 06:38:30 +0000")
+        usd_blob, _ = self.store.put(usd_raw, content_type="message/rfc822", source="EMAIL",
+                                     received_at=parse_rfc822(usd_raw)["received_at"])
+        self.dec.candidates.add(self._cand(usd_blob.sha256, received=timezone.now() - timedelta(hours=2, minutes=1)))
+        plan = self._plan(expected_currency="GBP")
+        self.assertTrue(plan.already_completed)
+        self.assertFalse(SCMP.apply_staff_completion(plan)[1])
+
+    def test_backfill_honors_suffix_and_amount_guards(self):
+        self._make_completed_blank_currency()
+        with self.assertRaises(SCMP.CompletionRefused) as a:
+            self._plan(expected_currency="GBP", expected_account_suffix="9999")
+        self.assertEqual(a.exception.code, "ACCOUNT_SUFFIX_MISMATCH")
+        with self.assertRaises(SCMP.CompletionRefused) as b:
+            self._plan(expected_currency="GBP", expected_amount="31")
+        self.assertEqual(b.exception.code, "AMOUNT_CONFLICTS_WITHDRAWAL")
+        self.wd.refresh_from_db()
+        self.assertEqual(self.wd.currency, "")             # no mutation on any refusal
 
 
 class PrivacyAndIsolation(StaffCompletionBase):

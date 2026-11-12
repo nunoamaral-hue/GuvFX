@@ -263,6 +263,20 @@ _UPGRADEABLE_TO_COMPLETED = frozenset({
 # `(?!\s*[-\d])` refuses a number that is only a FRAGMENT of a space-/dash-grouped sequence (e.g. a card PAN written
 # "4111 1111 1111 1111"), so a grouped PAN's first group is never captured as a login.
 _SINGLE_ACCOUNT = re.compile(r"(?i)\baccount\b[^\d\n]{0,12}?(\d{4,12})(?!\s*[-\d])")
+# ADR-0095 — Vantage's STANDALONE "Currency Type:" field (the value often on the NEXT line: "Currency Type:\n GBP"),
+# which `_extract_amount` (inline-currency only) misses. It is deliberately NARROW to defeat over-matching surfaced in
+# adversarial review:
+#   * LINE-ANCHORED (?im)^ with only leading whitespace before the label — so an "Account Currency: USD" /
+#     "Deposit Currency: EUR" line (a non-withdrawal field prefixed by another word) can never satisfy it;
+#   * the "Type" word is MANDATORY — so a bare "Currency: <code>" (base/account currency) is NOT read, only the
+#     transaction's "Currency Type" field;
+#   * BOUNDED whitespace, and the value must be on the SAME line or the IMMEDIATELY-FOLLOWING one (a single newline) —
+#     so an empty field cannot reach across blank lines to adopt a stray nearby code;
+#   * the 3-letter code is validated by `_norm_currency` (unsupported/prose token ⇒ blank, never invented).
+# Applied ONLY when the inline currency is absent and the broker opts in (`currency_from_field`, Vantage only);
+# existing brokers are byte-for-byte unchanged.
+_CURRENCY_FIELD = re.compile(
+    r"(?im)^[^\S\n]{0,8}currency[^\S\n]+type[^\S\n]{0,4}[:#]?[^\S\n]{0,4}(?:\n[^\S\n]{0,6})?([A-Za-z]{3})\b")
 
 
 def _norm_currency(tok: str) -> str:
@@ -360,7 +374,7 @@ class _GenericWithdrawalParser:
 
     def __init__(self, *, name: str, version: str, sender_domain: str, display: str, wants_html: bool = False,
                  requires_reference: bool = False, completion_processed_successfully: bool = False,
-                 account_from_body: bool = False):
+                 account_from_body: bool = False, currency_from_field: bool = False):
         self.name = name
         self.version = version
         self._sender_domain = sender_domain
@@ -371,6 +385,8 @@ class _GenericWithdrawalParser:
         # ADR-0093 Vantage completion semantics (per-broker, default OFF — existing brokers unchanged).
         self._completion_processed_successfully = bool(completion_processed_successfully)
         self._account_from_body = bool(account_from_body)
+        # ADR-0095 Vantage standalone "Currency Type:" field (per-broker, default OFF — existing brokers unchanged).
+        self._currency_from_field = bool(currency_from_field)
 
     @staticmethod
     def _reference_is_stable(reference: str) -> bool:
@@ -465,6 +481,10 @@ class _GenericWithdrawalParser:
             return None
         category = _classify_category(subject, body, lifecycle)
         amount, currency = _extract_amount(body)
+        if not currency and self._currency_from_field:
+            # ADR-0095: the currency is on its own labelled line ("Currency Type: GBP"), not inline on the amount.
+            cm = _CURRENCY_FIELD.search(body)
+            currency = (_norm_currency(cm.group(1)) if cm else "") or currency
         reference = self._extract_text_reference(body)
         pairs = {(m.group("src"), m.group("dst")) for m in _TRANSFER_CLAUSE.finditer(body)}
         source_account, destination_account = next(iter(pairs)) if len(pairs) == 1 else ("", "")
@@ -491,7 +511,8 @@ DOMINION = _GenericWithdrawalParser(name="dominion_markets", version="v1", sende
 VANTAGE = _GenericWithdrawalParser(name="vantage", version="v1", sender_domain="vantagemarkets.com",
                                    display="Vantage", requires_reference=True,   # ADR-0090: no ref => no auto-withdrawal
                                    completion_processed_successfully=True,        # ADR-0093: perfective completion
-                                   account_from_body=True)                        # ADR-0093: single stated login
+                                   account_from_body=True,                        # ADR-0093: single stated login
+                                   currency_from_field=True)                      # ADR-0095: "Currency Type: GBP" field
 
 STREAM_B_PARSERS = (PEPPERSTONE, DOMINION, VANTAGE)
 
