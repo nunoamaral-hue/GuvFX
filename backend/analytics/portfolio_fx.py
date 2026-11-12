@@ -40,6 +40,12 @@ CURRENCY_UNCONVERTIBLE = "currency_unconvertible"   # a non-USD figure with no a
 STALE_OBSERVATION = "stale_observation"             # the account's live read could not be completed (stale)
 MISSING_SNAPSHOT = "missing_snapshot"               # no observed figure to convert (balance/equity unavailable)
 READ_REFUSED = "read_refused"                        # an identity-firewall / permission refusal (reserved)
+# ── Live-position availability categories (GFX-DASHBOARD-INTEGRITY, ADR-0100) ───────────────────────────────────
+# A position read can be unavailable for reasons that are PERMANENT/STRUCTURAL — not a transient disconnect that
+# will self-heal by waiting. Collapsing these into "stale" made the dashboard imply "reconnecting" for an account
+# that structurally cannot serve positions through this path. These coarse, PII-free codes let the UI say *why*.
+POSITIONS_UNSUPPORTED_LIVE = "positions_unsupported_live"  # LIVE terminal: /mt5/positions is demo-gated (account_not_demo)
+ENDPOINT_UNAVAILABLE = "endpoint_unavailable"              # no per-tenant bridge endpoint resolved / agent unconfigured
 
 # A figure's low-level ``reason`` (from ``to_usd`` and the open-P/L path) -> its safe UI category.
 _REASON_CATEGORY = {
@@ -49,6 +55,32 @@ _REASON_CATEGORY = {
     "stale_read": STALE_OBSERVATION,
     "read_refused": READ_REFUSED,
 }
+
+# A live-position read's low-level ``reason`` -> its safe UI category. Unknown reasons fall back to the TRANSIENT
+# STALE_OBSERVATION rather than over-claiming a structural cause (fail-safe: never assert "permanent" when unsure).
+_POSITION_REASON_CATEGORY = {
+    "account_not_demo": POSITIONS_UNSUPPORTED_LIVE,
+    "identity_refused": READ_REFUSED,
+    "endpoint_unavailable": ENDPOINT_UNAVAILABLE,
+    "config_missing": ENDPOINT_UNAVAILABLE,
+    "bridge_unreachable": STALE_OBSERVATION,
+    "read_timeout_budget": STALE_OBSERVATION,
+    "stale_read": STALE_OBSERVATION,
+}
+
+# Categories that are PERMANENT for this read path (the account will not start serving live positions by merely
+# waiting/retrying — it needs an operator/structural change). The UI must NOT render "reconnecting…" for these.
+STRUCTURAL_CATEGORIES = frozenset({POSITIONS_UNSUPPORTED_LIVE, ENDPOINT_UNAVAILABLE, READ_REFUSED})
+
+
+def position_reason_category(reason: Optional[str]) -> str:
+    """Map a live-position read ``reason`` code to its safe, non-identifying UI category (TRANSIENT by default)."""
+    return _POSITION_REASON_CATEGORY.get(reason or "", STALE_OBSERVATION)
+
+
+def is_structural(category: Optional[str]) -> bool:
+    """True when ``category`` is a permanent/structural exclusion (not a transient disconnect)."""
+    return category in STRUCTURAL_CATEGORIES
 
 # Aggregate reporting states (machine codes the UI maps to labels):
 STATE_OK = "OK"                     # every item converted — a trustworthy measured USD total

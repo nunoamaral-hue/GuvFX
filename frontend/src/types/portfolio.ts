@@ -6,9 +6,21 @@
  *  INCLUDED subset, some excluded; UNAVAILABLE = items existed but NONE converted (total_usd is null — never a
  *  measured 0); EMPTY = no items at all. The frontend renders an explicit label for anything but OK/EMPTY. */
 export type AggregateState = "OK" | "PARTIAL" | "UNAVAILABLE" | "EMPTY";
-/** Safe, non-identifying exclusion category (no credentials/account-numbers/logins). "mixed" = more than one. */
+/** Safe, non-identifying exclusion category (no credentials/account-numbers/logins). "mixed" = more than one.
+ *  `positions_unsupported_live` + `endpoint_unavailable` are STRUCTURAL (permanent for this read path — the UI must
+ *  not imply "reconnecting"); `stale_observation` is a transient disconnect that may self-heal. */
 export type ExclusionReason =
-  | "currency_unconvertible" | "stale_observation" | "missing_snapshot" | "read_refused" | "mixed";
+  | "currency_unconvertible" | "stale_observation" | "missing_snapshot" | "read_refused"
+  | "positions_unsupported_live" | "endpoint_unavailable" | "mixed";
+
+/** Per-account reason an account's live positions could not be read (ADR-0100). `structural` = permanent for this
+ *  read path (e.g. a LIVE terminal whose /mt5/positions is demo-gated) — never a transient "reconnecting". */
+export type UnavailableAccount = {
+  account_id: number;
+  reason: string;                 // low-level code (e.g. "account_not_demo"), coarse + non-identifying
+  reason_category: ExclusionReason;
+  structural: boolean;
+};
 
 export type UsdAggregate = {
   total_usd: number | null;      // null when state === "UNAVAILABLE" (all eligible accounts excluded) — never 0
@@ -50,6 +62,13 @@ export type OpenTradesResult = {
   truncated?: boolean;           // true when the row list was capped server-side (count still reflects the full set)
   open_pl_usd: UsdAggregate;
   stale_accounts: number[];      // accounts whose live positions could not be read (excluded from the total)
+  // Per-account exclusion detail (ADR-0100): structural (permanent for this read path) vs transient. The panel
+  // uses this to explain WHY each account is unavailable instead of implying every one is "reconnecting".
+  unavailable_accounts?: UnavailableAccount[];
+  accounts_total?: number;
+  accounts_included?: number;
+  accounts_unavailable?: number;
+  accounts_structurally_unavailable?: number;
   trades: OpenTrade[];
 };
 
@@ -67,6 +86,30 @@ export type PortfolioAccountRow = {
   open_count: number;
   open_pl_usd: number | null;
   stale: boolean;
+  // Why this account's live positions are unavailable (ADR-0100); null category when read OK.
+  position_unavailable_category?: ExclusionReason | null;
+  position_structural?: boolean;
+};
+
+/** GET /api/analytics/portfolio/equity-curve/?scope=ALL|<id> — truthful observed equity curve (never fabricated).
+ *  Each point carries COVERAGE provenance so the UI can show partial-coverage honestly instead of a smooth line. */
+export type EquityCurvePoint = {
+  t: string;                     // ISO bucket timestamp
+  equity_usd: number;
+  basis: "USD" | "PARTIAL";
+  complete?: boolean;            // all in-scope accounts contributed a fresh, convertible observation
+  present?: number;              // accounts contributing to THIS point
+  total?: number;                // in-scope accounts
+  stale_accounts?: number[];     // accounts excluded from this point (stale/unconvertible)
+};
+export type EquityCurve = {
+  points: EquityCurvePoint[];
+  count: number;
+  // OK = ≥2 points; SINGLE = one point; BUILDING = no snapshots yet; PARTIAL = snapshots exist but none usable;
+  // EMPTY = no accounts. The UI must distinguish BUILDING ("history is building") from a real short/flat trend.
+  state: "OK" | "SINGLE" | "BUILDING" | "PARTIAL" | "EMPTY";
+  accounts: number;
+  reporting_currency: string;
 };
 
 /** Portfolio realized-performance metrics. Monetary/classified fields are null when the money `basis` is PARTIAL
@@ -117,6 +160,7 @@ export type PortfolioSummary = {
   account_count: number;
   trading_count: number;
   stale_accounts: number[];
+  unavailable_accounts?: UnavailableAccount[];
   accounts: PortfolioAccountRow[];
   aggregate: {
     balance_usd: UsdAggregate;
@@ -124,6 +168,11 @@ export type PortfolioSummary = {
     open_pl_usd: UsdAggregate;
     daily_realized_pnl_usd: number | null;      // null when non-USD/mixed; basis states it
     daily_realized_pnl_basis: "USD" | "PARTIAL";
+    // Daily-P&L coverage disclosure (ADR-0100): the day window and the USD-eligible account split it summed over.
+    daily_realized_pnl_window?: string;         // "broker_server_calendar_day"
+    daily_realized_pnl_included_count?: number;
+    daily_realized_pnl_excluded_count?: number;
+    daily_realized_pnl_excluded_accounts?: number[];
     metrics: PortfolioMetrics;
   };
   fx?: FxProvenance;            // present only when the DARK FX-conversion flag is ON

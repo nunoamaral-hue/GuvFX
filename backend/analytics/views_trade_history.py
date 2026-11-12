@@ -131,26 +131,36 @@ def _fetch_mt5_account_balance(account, windows_username: str, *, timeout: float
         logger.warning(f"Failed to fetch MT5 account balance: {e}")
         return None
 
-def _fetch_mt5_open_positions(account, windows_username: str, *, timeout: float = 10.0) -> Optional[list]:
+def _fetch_mt5_open_positions(account, windows_username: str, *, timeout: float = 10.0):
     """Fetch THIS account's OWN LIVE open positions (with floating P/L) from its per-tenant bridge — read-only,
     observation only (no order_send, no DB write). Same P0 data-isolation contract as ``_fetch_mt5_account_balance``:
     the destination is the account's OWN snapshot base (never the module-global agent), and the read is gated on the
     bridge's OBSERVED session identity — we verify identity via the account snapshot FIRST (the bridge is single-
     tenant, so ``/mt5/positions`` returns that verified account's positions) and refuse on any mismatch. The bridge
-    also refuses positions for a non-demo terminal. Fail-closed: any resolution/identity/parse failure returns None
-    (the dashboard then marks the account stale rather than showing a foreign or fabricated position).
+    also refuses positions for a non-demo terminal.
+
+    Fail-closed. On SUCCESS returns a ``list`` of positions (possibly empty). On FAILURE returns a REASON dict
+    ``{"unavailable": True, "reason": <code>}`` (ADR-0100) so the dashboard can distinguish a PERMANENT/structural
+    exclusion (e.g. ``account_not_demo`` — a LIVE terminal whose ``/mt5/positions`` is demo-gated) from a TRANSIENT
+    disconnect, instead of showing a misleading "reconnecting" for an account that is structurally ineligible. The
+    reason codes are coarse and carry no credentials/account identifiers; ``analytics.portfolio_fx`` maps each to a
+    safe UI category + a structural/transient flag (single source of truth).
 
     Each position: ``{ticket, symbol, type, side, volume, price_open, price_current, profit, magic, comment}``.
     """
     from execution.snapshot_transport import resolve_account_snapshot_base, verify_snapshot_identity
+
+    def _unavailable(reason):
+        return {"unavailable": True, "reason": reason}
+
     global_base, token = _get_windows_agent_config()
     if not token:
-        return None
+        return _unavailable("config_missing")
     st = resolve_account_snapshot_base(account, global_base_url=global_base)
     if not st.ok:
         logger.warning("MT5 positions transport unresolved for account %s: %s",
                        getattr(account, "id", None), st.reason_code)
-        return None
+        return _unavailable("endpoint_unavailable")
     base = st.base_url
     # 1) Identity firewall via the account snapshot BEFORE trusting positions from this base.
     try:
@@ -177,10 +187,10 @@ def _fetch_mt5_open_positions(account, windows_username: str, *, timeout: float 
                                         observed_trade_mode=obs_trade_mode, require_environment=True).ok \
                 or (_legacy and not str(obs_server or "").strip()):
             logger.warning("MT5 positions identity firewall refused for account %s", getattr(account, "id", None))
-            return None
+            return _unavailable("identity_refused")
     except Exception as e:  # noqa: BLE001
         logger.warning("MT5 positions identity read failed for account %s: %s", getattr(account, "id", None), e)
-        return None
+        return _unavailable("bridge_unreachable")
     # 2) Read live positions from the SAME identity-verified per-tenant base.
     try:
         purl = f"{base}/mt5/positions"
@@ -188,12 +198,19 @@ def _fetch_mt5_open_positions(account, windows_username: str, *, timeout: float 
         with urllib.request.urlopen(preq, timeout=timeout) as r:
             pdata = json.loads(r.read().decode("utf-8", "ignore") or "{}")
         if not (isinstance(pdata, dict) and pdata.get("ok")):
-            return None
+            # The bridge demo-gates positions for a LIVE terminal: ``{ok:false, error:"account_not_demo"}``. That is
+            # a STRUCTURAL exclusion (the account will not start serving positions here by waiting), not a transient
+            # disconnect — surface the specific reason so the UI does not imply "reconnecting". Any OTHER refusal
+            # maps to the fixed, safe TRANSIENT code ``positions_refused`` — the bridge-controlled ``error`` string is
+            # NEVER echoed verbatim into the reason (it is free text that could carry a login/server identifier, and
+            # could otherwise collide with a structural reason key and over-claim a permanent cause we can't confirm).
+            err = (pdata.get("error") or "").strip().lower() if isinstance(pdata, dict) else ""
+            return _unavailable("account_not_demo" if err == "account_not_demo" else "positions_refused")
         pos = pdata.get("positions")
         return pos if isinstance(pos, list) else []
     except Exception as e:  # noqa: BLE001
         logger.warning("MT5 positions read failed for account %s: %s", getattr(account, "id", None), e)
-        return None
+        return _unavailable("bridge_unreachable")
 
 
 # MT5 deal types on a balance-operation deal (NOT a trade): a DEPOSIT/WITHDRAWAL is DEAL_TYPE_BALANCE(2)
