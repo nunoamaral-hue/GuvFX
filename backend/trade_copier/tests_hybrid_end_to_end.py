@@ -9,9 +9,7 @@ out-of-order delivery; restart/replay; terminal close; and no late entry recover
 broker, no ExecutionJob — and the chain is asserted to create ZERO ExecutionJob throughout.
 """
 import json
-import os
 from datetime import timedelta
-from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -28,6 +26,7 @@ from trade_copier.models import (CopierIngestedRevision, CopierLifecycleDispatch
                                  CopierPositionLifecycle, MasterEvent)
 from trade_copier.observer import MasterReadResult, record_observation
 from trade_copier.replication import replicate_pending
+from trade_copier.verifier_window import verification_window
 from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
@@ -74,7 +73,7 @@ class HybridEndToEndTests(TestCase):
     def _observe(self, positions):
         # The real fast path projects promptly after each emission; project per cycle so each change reaches the
         # authoritative ledger as its own event (a delayed projection correctly COLLAPSES to the net state).
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             self.emitter.observe(positions)
             self.emitter.flush()
         run_event_projection_pass()
@@ -163,7 +162,7 @@ class HybridEndToEndTests(TestCase):
     def test_duplicate_delivery_is_idempotent(self):
         self._observe([self._pos(volume=0.1)])
         # Re-send the SAME signed envelope the emitter just produced (a redelivery) → 409, no new revision.
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             # force a resend by re-queuing: emit a change then nothing new, and flush twice
             self.emitter.observe([self._pos(volume=0.1)])   # no change → nothing enqueued
             self.emitter.flush()

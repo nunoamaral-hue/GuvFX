@@ -3,13 +3,13 @@ immutable revision → event projection → authoritative MasterEvent → lifecy
 broker open_time carried by the emitter) is ruled ENTRY_FAILED_FINAL (no late entry), and ZERO ExecutionJob is
 created throughout. No broker, no real MT5 — the transport posts to the Django test client."""
 import json
-import os
 from datetime import timedelta
-from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
+
+from trade_copier.verifier_window import verification_window
 
 from execution.models import ExecutionJob
 from trade_copier import bridge_emitter as be, services
@@ -66,7 +66,7 @@ class EmitterEndToEndTests(TestCase):
     def test_stale_open_no_late_entry_and_zero_execution_job(self):
         old = timezone.now() - timedelta(seconds=10_000)
         pos = be.ObservedMasterPosition(ticket=777, symbol="XAUUSD", side="BUY", volume=0.1, open_time=old)
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             out = self._app([pos]).observe_once()
         self.assertTrue(out["ok"], out)
         self.assertEqual(CopierIngestedRevision.objects.filter(ticket=777).count(), 1)
@@ -82,7 +82,7 @@ class EmitterEndToEndTests(TestCase):
     def test_fresh_open_is_observed_open_still_zero_jobs(self):
         pos = be.ObservedMasterPosition(ticket=778, symbol="XAUUSD", side="BUY", volume=0.1,
                                         open_time=timezone.now())
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             self._app([pos]).observe_once()
         run_event_projection_pass()
         run_lifecycle_pass(policy=LifecyclePolicy())

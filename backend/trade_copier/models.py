@@ -932,6 +932,69 @@ class CopierIngestNonce(models.Model):
         return f"IngestNonce(…{self.nonce[-8:]}, expires={self.expires_at:%Y-%m-%dT%H:%M:%SZ})"
 
 
+class CopierVerifierWindowState(models.TextChoices):
+    OPEN = "OPEN", "Open"
+    CLOSED = "CLOSED", "Closed"
+
+
+class CopierVerifierPurpose(models.TextChoices):
+    INGEST = "INGEST", "Event-ingestion verify"
+    ATTEST = "ATTEST", "Attestation verify"
+    BOTH = "BOTH", "Ingestion + attestation"
+
+
+class CopierVerifierWindow(models.Model):
+    """ADR-0101 — a bounded, single-flight, auto-expiring window that makes the backend's dedicated
+    ``COPIER_INGEST_HMAC_KEY`` readable to the gated verifier endpoints (ADR-0074 ingestion / ADR-0077
+    attestation) from an EPHEMERAL tmpfs key file — never the process environment — for one operator-driven
+    verification session, then guarantees cleanup (see ``trade_copier.verifier_window``).
+
+    The row is control-plane/audit metadata only: it stores the tmpfs ``key_path`` but NEVER the key value,
+    and no broker credential, token or endpoint secret. It grants NO execution/arm/admission authority — it
+    only governs WHEN two no-side-effect identity-proof endpoints can resolve their key. At most ONE window is
+    OPEN at a time (partial-unique on ``state=OPEN`` ⇒ concurrent opens are rejected); an expired window is
+    inert by evaluation and reaped on the next open/claim; an optional ``max_uses`` cap hard-limits
+    verifications and auto-closes the window. Default/no window ⇒ the key is unresolvable and the endpoints
+    fail closed (503), so normal backend operation holds no key."""
+
+    state = models.CharField(max_length=8, choices=CopierVerifierWindowState.choices,
+                             default=CopierVerifierWindowState.OPEN)
+    purpose = models.CharField(max_length=8, choices=CopierVerifierPurpose.choices,
+                               default=CopierVerifierPurpose.BOTH)
+    # The tmpfs PATH that holds the ephemeral key for this window — NEVER the key value.
+    key_path = models.CharField(max_length=512,
+                                help_text="tmpfs path holding the ephemeral key — never the key value.")
+    max_uses = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Hard cap on verifications; null = bounded only by expiry.")
+    uses = models.PositiveSmallIntegerField(default=0)
+    opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name="+")
+    opened_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(help_text="Window expiry — capped at MAX_WINDOW_TTL_SECONDS.")
+    closed_at = models.DateTimeField(null=True, blank=True)
+    close_reason = models.CharField(max_length=64, blank=True, default="")
+    # Opaque audit correlation id (never a secret).
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+    note = models.CharField(max_length=256, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Copier verifier window"
+        constraints = [
+            # Single-flight: at most ONE OPEN window exists at any moment (concurrent opens are rejected).
+            models.UniqueConstraint(
+                fields=["state"], condition=models.Q(state="OPEN"),
+                name="uq_copier_verifier_window_open"),
+        ]
+        indexes = [
+            models.Index(fields=["state"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return (f"CopierVerifierWindow(purpose={self.purpose}, state={self.state}, "
+                f"uses={self.uses}/{self.max_uses}, expires={self.expires_at:%Y-%m-%dT%H:%M:%SZ})")
+
+
 class CopierLifecycleDispatch(_ImmutableRawEvidence):
     """A SYNTHETIC, append-only record of a lifecycle→producer-boundary SHADOW dispatch decision (ADR-0074).
 

@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-SECURE-INGEST-CONSUMER-083",
+  "packet_id": "GFX-COPIER-SECURE-INGEST-CONSUMER-RESUME-083",
+  "created_at_utc": "2026-11-12T17:30:00Z",
+  "branch": "feat/copier-bounded-verifier-window",
+  "base_commit": "aea7f750ef79d05bd79503aaf415fa1117b25365",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK. The packet-080 corrective (SECURE_CONSUMER_PR_REQUIRED): the backend's two gated verifier endpoints (ADR-0074 signed event ingestion + ADR-0077 host-emitter attestation verify) resolved COPIER_INGEST_HMAC_KEY from os.environ, which the production backend does not hold and must not (docker inspect / /proc/environ / persisted env-file exposure). This adds a BOUNDED VERIFIER WINDOW (ADR-0101): the key is sourced from an ephemeral tmpfs file (0600, /dev/shm) made readable only while an operator-opened, single-flight, auto-expiring window is OPEN, then shredded. New module trade_copier.verifier_window + CopierVerifierWindow model (additive migration 0015) + copier_verifier_window operator command (key from STDIN only) + a PowerShell operator wrapper + corrected runbook. NO migration applied, NO deploy, NO host contact, NO real secret handled, NO flag enablement, NO authorization, NO broker order.",
+    "adr": "docs/architecture/ADR-0101-COPIER-BOUNDED-VERIFIER-WINDOW.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": true,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test --parallel 4) + governance (secret/PII scan + evidence lint) + frontend (lint/build, untouched) + research-foundation + market-data-foundation"
+  },
+  "commands": [
+    "cd backend && manage.py test trade_copier.tests_verifier_window trade_copier.tests_attestation_verify trade_copier.tests_event_ingestion  (Ran 52 OK)",
+    "cd backend && manage.py test trade_copier  (Ran 917 OK — full app suite incl. emitter subpackage + hybrid e2e/capacity, all converted to the window source)",
+    "cd backend && manage.py check  (System check identified no issues)",
+    "cd backend && manage.py makemigrations --check --dry-run trade_copier  (No changes detected — model/migration 0015 in sync)",
+    "cd backend && manage.py test core.tests_adr_governance  (Ran 3 OK — ADR-0101 unique programme-wide)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT: PASS, 71 manifests pre-add)",
+    "ASCII-only byte scan of both .ps1 files  (ASCII-ONLY — security.md RULE 9 corollary)"
+  ],
+  "expected_results": [
+    "With NO open window the two verifier endpoints fail closed (503) — the key is unresolvable. A key present in os.environ does NOT resolve it (env is never a source).",
+    "An operator opens exactly one window (single-flight; a concurrent second open is rejected); the key is read from STDIN only (never argv/env/log) and written 0600 to a tmpfs file.",
+    "Within an OPEN, unexpired, purpose-matching window the endpoints verify normally and create NO MasterEvent/ExecutionJob/CopierLiveArm/CopierLiveAuthorization/CopierReplication/broker contact (ADR-0074/0077 behaviour preserved).",
+    "Fail-closed on absent/symlinked/loose-permission/wrong-ownership/too-short/placeholder key file; expired window reaped+shredded; max_uses cap exhausts+auto-closes+shreds; close is idempotent; context/finally cleanup runs on every failure path; closed window returns the endpoint to 503.",
+    "No new ADR-number collision; manage.py check + makemigrations --check clean; secret scan + evidence lint PASS; the scheduled emitter task is never touched.",
+    "resolve_secret is NOT globally weakened — it stays the strict env-only, no-substitution resolver for every other credential; only the two copier verifier build_keyring() sites change."
+  ],
+  "actual_results": [
+    "trade_copier.verifier_window: open_window (single-flight via partial-unique state=OPEN + IntegrityError catch, TTL capped 30..900s, reaps expired first), claim_key (select_for_update, fail-closed read, use-count + optional max_uses auto-close+shred), _read_key_file (lstat: reject symlink/non-regular/group-other access/wrong uid; utf8 + min-32 + placeholder reject), write_key_file (O_NOFOLLOW|O_CREAT|O_TRUNC, 0600), _shred_file (random overwrite + unlink, idempotent, never raises), close_window/reap_expired/close_all (idempotent), window_status (no secret), verification_window (test/operator contextmanager, synthetic key, guaranteed cleanup).",
+    "CopierVerifierWindow model + migration 0015_copierverifierwindow (one CreateModel; partial-unique uq_copier_verifier_window_open; stores key_path NEVER the key value). attestation_verify.build_keyring() and event_ingestion.build_keyring() now source {copier-ingest: key} from ingest_keyring(purpose) — ATTEST / INGEST respectively — never os.environ. copier_verifier_window management command (--open reads STDIN, refuses a TTY; --close idempotent shred+close; --status redacted; key never in argv/output).",
+    "Tests: tests_verifier_window.py (NEW, 22 cases across unit/endpoint/command) + the existing attestation (9), ingestion (view 15 + pure), hybrid e2e (2 sites) and emitter e2e (2 sites) converted to provision the key through a window (synthetic key). Full trade_copier suite Ran 917 OK; focused trio Ran 52 OK. manage.py check clean; makemigrations --check clean; core.tests_adr_governance Ran 3 OK; secret scan no findings; evidence lint PASS.",
+    "Adversarial self-review (19 vectors): command-line/process-list/docker-inspect/env-file/image-layer disclosure (key STDIN-only, never env; env-not-a-source regression-tested), transcription/debug (wrapper refuses), permissions/ownership/symlink (rejected + tested), logs/exceptions (reason codes only), crash/restart (tmpfs RAM-backed, dangling OPEN row fails closed on absent file + self-expires), replay (nonce burn) + concurrency/exhaustion (single-flight + max_uses), stale-key reuse (expiry reap), cleanup-failure (idempotent + expiry/restart backstop), standing-verifier (default-OFF + no env path + guaranteed close), cross-tenant/credential-fallback (only COPIER_INGEST_HMAC_KEY, never GUVFX_AGENT_TOKEN), emitter-task activation (untouched), execution/broker side effects (asserted zero). 0 CRITICAL, 0 HIGH. Residual (documented): a hard SIGKILL between a max_uses auto-close commit and the tmpfs shred could leave the RAM-backed file for <=the window remainder until an operator --close or restart — fail-closed and erased on restart.",
+    "Diff scope: 4 NEW backend files (verifier_window.py, migration 0015, command, tests_verifier_window.py) + 2 MODIFIED backend resolvers + model + 5 MODIFIED test files + NEW ADR-0101 + corrected runbook + NEW PowerShell wrapper + Pester test + this manifest. No production mutation, no migration applied, no secret, no flag flip."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS) solely because the PowerShell gates could not run on this macOS authoring host (no pwsh): the RULE 9 parser check ([Parser]::ParseFile) and the Pester behavioural test (Test-VerifierWindowWrapper.Tests.ps1) are a SEPARATE pre-merge Windows-runner gate. Mitigation: both .ps1 files are verified ASCII-only (RULE 9 corollary — parse identically under any encoding, BOM or not). All Python/Django/governance checks ran and PASS.",
+    "Repository-only / DARK. Auto-merge OFF; NOT merged, NOT deployed; migration 0015 NOT applied. The real COPIER_INGEST_HMAC_KEY provisioning, the verifier-gate enablement and the real one-shot ingestion/attestation verification remain SEPARATE Sponsor gates. The agent handled NO real secret at any point.",
+    "The ownership check (st_uid == os.getuid()) could not be exercised by a real cross-uid file without privilege; it is covered by mocking os.getuid in test_wrong_ownership_fails_closed (the code branch is proven).",
+    "select_for_update requires PostgreSQL (the project's test + production DB); the window single-flight/claim semantics are not exercised on SQLite (not used here)."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/verifier_window.py (bounded ephemeral key source + lifecycle)",
+    "backend/trade_copier/models.py (CopierVerifierWindow + state/purpose choices)",
+    "backend/trade_copier/migrations/0015_copierverifierwindow.py (additive CreateModel)",
+    "backend/trade_copier/attestation_verify.py (build_keyring -> window source)",
+    "backend/trade_copier/event_ingestion.py (build_keyring -> window source)",
+    "backend/trade_copier/management/commands/copier_verifier_window.py (operator command, key from STDIN)",
+    "backend/trade_copier/tests_verifier_window.py (NEW mutation-killing tests)",
+    "backend/trade_copier/tests_attestation_verify.py / tests_event_ingestion.py / tests_hybrid_end_to_end.py / tests_hybrid_capacity.py / emitter/tests_e2e.py (converted to window source)",
+    "docs/architecture/ADR-0101-COPIER-BOUNDED-VERIFIER-WINDOW.md (NEW ADR)",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md (corrected: backend not keyed at rest; window provisioning + guaranteed teardown)",
+    "deploy/copier-emitter/operator/Open-GuvfxCopierVerifierWindow.ps1 (operator wrapper, hidden prompt + STDIN pipe + guaranteed close)",
+    "deploy/copier-emitter/operator/tests/Test-VerifierWindowWrapper.Tests.ps1 (Pester behavioural test — Windows-runner gate)",
+    "evidence/manifests/GFX-EVD-COPIER-SECURE-INGEST-CONSUMER-083.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/trade_copier/verifier_window.py": "sha256:f8773e004fc062964561ed1465f56b79b5a5613cd03523f4d35acfc3d819d1ea",
+    "backend/trade_copier/models.py": "sha256:c1fd7337a1187a4c4557f7710408b6680fc995c77a84c0b1e588d7c999833924",
+    "backend/trade_copier/migrations/0015_copierverifierwindow.py": "sha256:862e43b8e69b45c927751e425ff1f994bd2a6d056b9becbfdec8646661cb40ab",
+    "backend/trade_copier/attestation_verify.py": "sha256:fb015be6174a44f6bb53b82dc780bcef5832351367adbf8d4b39c07709b0933c",
+    "backend/trade_copier/event_ingestion.py": "sha256:49c3670a30ca1ab3c218b786c9f85f7683bfdb74c4467188ada31aeb1fa7f2df",
+    "backend/trade_copier/management/commands/copier_verifier_window.py": "sha256:c4262f59c1829e8ca076808da80e10cfe3c7a54d7ed9133f1806904d25b3066f",
+    "backend/trade_copier/tests_verifier_window.py": "sha256:4a5cb5183851bc5de7b687c1a834164805108b1b370ad452727df797f1cd469e",
+    "docs/architecture/ADR-0101-COPIER-BOUNDED-VERIFIER-WINDOW.md": "sha256:bed7374ae6cf796f31a322c7d20214f85023a99004a94d727c31b2f63145d797",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md": "sha256:b10bb79075cd53c27a6b9aa26712f11616ba085a632e984c056922e382609cf6",
+    "deploy/copier-emitter/operator/Open-GuvfxCopierVerifierWindow.ps1": "sha256:c54251da883e3516bc4a7d4860ecd6810f2f5ce7d5292049bbf93f639e3f8e12",
+    "deploy/copier-emitter/operator/tests/Test-VerifierWindowWrapper.Tests.ps1": "sha256:f349c9d513b06e89017db25c3b63881b037fc9d64bb2b27030b2daa9283d9bd9"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review across 19 adversarial vectors: 0 CRITICAL, 0 HIGH (1 documented tmpfs-shred residual, fail-closed + restart backstop). Sponsor review pending (auto-merge OFF, STOP before merge). PowerShell parse + Pester are a separate pre-merge Windows-runner gate."
+}
