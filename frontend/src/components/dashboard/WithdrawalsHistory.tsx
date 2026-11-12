@@ -23,6 +23,7 @@ const STR = {
   none: { en: "No withdrawals observed yet", ja: "出金はまだ検出されていません" },
   noneFilter: { en: "No withdrawals for this filter", ja: "この条件の出金はありません" },
   na: { en: "N/A", ja: "該当なし" },
+  currencyUnavailable: { en: "currency unavailable", ja: "通貨不明" },
   ref: { en: "ref", ja: "参照" },
   unresolvedNote: { en: "Unresolved — awaiting matching evidence", ja: "未解決 — 照合証跡待ち" },
   accountUnresolved: { en: "Account unresolved", ja: "口座未特定" },
@@ -172,7 +173,11 @@ export const WithdrawalsHistory: React.FC<{ lang?: Lang; embedded?: boolean; lim
                 background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ color: "#e9f4ff", fontSize: "0.85rem" }}>
-                    {w.amount !== null && w.currency ? `${w.amount} ${w.currency}` : STR.na[L]}
+                    {/* ADR-0093: a known amount with an UNKNOWN currency is shown with an explicit neutral marker,
+                        never coerced to GBP/USD/etc. Amount absent → N/A. */}
+                    {w.amount !== null
+                      ? (w.currency ? `${w.amount} ${w.currency}` : `${w.amount} · ${STR.currencyUnavailable[L]}`)
+                      : STR.na[L]}
                     <span style={{ ...meta, marginLeft: 8 }}>
                       {w.broker} · {w.account_unresolved
                         ? <span style={{ color: "#c9a24a" }} title={STR.accountUnresolvedNote[L]}>⚠ {STR.accountUnresolved[L]}</span>

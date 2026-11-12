@@ -175,7 +175,9 @@ _LIFECYCLE_RULES = (
         # "your withdrawal has been processed" notification. PAST-TENSE only — "is being processed" / "will be" /
         # "may be processed" stay NON-terminal (fall through to WITHDRAWAL_PROCESSING), never COMPLETED.
         r"\bwe(?:'ve|\s+have)\s+processed\s+your\s+withdrawal\b|"
-        r"\bwithdrawal(?:\s+request)?(?:\s+#?\w{1,20})?\s+(?:has\s+been|have\s+been|was|is\s+now)\s+processed\b",
+        # ADR-0093 review: the optional id slot is NUMERIC ONLY (matching the 'completed' alternative above) so a
+        # modal/future word ("withdrawal WILL have been processed") can never fill it and read as a completion.
+        r"\bwithdrawal(?:\s+request)?(?:\s+#?\d{1,20})?\s+(?:has\s+been|have\s+been|was|is\s+now)\s+processed\b",
         re.IGNORECASE)),
     ("WITHDRAWAL_EXPIRED", re.compile(
         r"\b(?:confirmation(?:\s+link|\s+window)?|withdrawal(?:\s+request)?)\s+(?:has\s+)?expired\b|"
@@ -226,6 +228,41 @@ _LIFECYCLE_RULES = (
 _EXTERNAL_ELIGIBLE = frozenset({
     "WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED",
     "WITHDRAWAL_PROCESSING", "WITHDRAWAL_APPROVED"})
+
+# ADR-0093 — Vantage genuine "processed successfully" completion, ANCHORED TO THE WITHDRAWAL. The Vantage completion
+# notification carries NO stable reference and (unlike Pepperstone) does NOT place "processed" adjacent to "withdrawal",
+# so the shared WITHDRAWAL_COMPLETED anchors above do not fire. A naive "...processed successfully" search over the
+# whole body would OVER-CLAIM: an unrelated success line in the same mail (identity verification / refund / internal
+# transfer / card payment) would complete a still-pending withdrawal. This anchor therefore requires ALL of:
+#   (1) a WITHDRAWAL-related noun, WORD-BOUNDED (so "reFUND" / "deposit" / "payment" / "transfer" never qualify);
+#   (2) in the SAME sentence as the phrase — the gap is `[^.\n]`, so an unrelated completion in a DIFFERENT sentence
+#       can never satisfy it;
+#   (3) NO future / modal / negation word in the gap (will/would/should/may/might/could/not/never/to be/once/…), so
+#       "will have been / should have been / has not been processed successfully" never match;
+#   (4) a PERFECTIVE auxiliary — has been / have been / was / is now — then "processed successfully". Bare "been" and
+#       "were" are intentionally excluded (they let "will have been" / "has not been" through); future ("will be…")
+#       and habitual/promotional ("are processed successfully") lack the perfective auxiliary and never match.
+# Verified privacy-safe against the genuine retained evidence (boolean phrase match only). Applied (see
+# `_classify`) only to UPGRADE a non-terminal base, and only with NO deposit/funding context. Under-claiming (a
+# genuine completion left non-terminal) is safe — it falls to staff review — so the guard/veto are deliberately broad.
+_PROCESSED_SUCCESSFULLY = re.compile(
+    r"\b(?:withdrawal|withdraw|payout|cash[\s-]?out|request|funds?)\b"
+    r"(?:(?!\b(?:will|would|should|may|might|could|not|never|unable|cannot|to\s+be|once|when|after|if)\b)[^.\n]){0,60}?"
+    r"(?:has\s+been|have\s+been|was|is\s+now)\s+processed\s+successfully\b", re.IGNORECASE)
+# The non-terminal base classifications that a perfective "processed successfully" phrase may upgrade to COMPLETED.
+# Terminal states (completed/rejected/cancelled/expired/failed) are absent, so a negative outcome is never upgraded.
+_UPGRADEABLE_TO_COMPLETED = frozenset({
+    None, "WITHDRAWAL_REQUESTED", "WITHDRAWAL_CONFIRMATION_REQUIRED", "WITHDRAWAL_CONFIRMED",
+    "WITHDRAWAL_PROCESSING", "WITHDRAWAL_APPROVED"})
+# ADR-0093 — a SINGLE broker-stated trading-account login from a plain-text body (Vantage states the account as
+# "account ... <digits>" with no ':' separator, which the structured _TRANSFER_CLAUSE / _LBL_ACCOUNT paths miss).
+# `\d{4,12}\b` structurally refuses a 13+ digit card/bank/PAN (no word boundary inside a longer digit run), exactly
+# like _TRANSFER_CLAUSE; the owner-scoped resolver still binds it ONLY on an EXACT account-number match, so a
+# spurious capture can never attach a wrong account. Used only when a broker opts in (account_from_body) and only a
+# UNIQUE value is kept — 0 or >1 distinct logins is left unresolved (fail closed), never guessed. The trailing
+# `(?!\s*[-\d])` refuses a number that is only a FRAGMENT of a space-/dash-grouped sequence (e.g. a card PAN written
+# "4111 1111 1111 1111"), so a grouped PAN's first group is never captured as a login.
+_SINGLE_ACCOUNT = re.compile(r"(?i)\baccount\b[^\d\n]{0,12}?(\d{4,12})(?!\s*[-\d])")
 
 
 def _norm_currency(tok: str) -> str:
@@ -322,7 +359,8 @@ class _GenericWithdrawalParser:
     text path, so the HTML preference never shadows a good text/plain body for them."""
 
     def __init__(self, *, name: str, version: str, sender_domain: str, display: str, wants_html: bool = False,
-                 requires_reference: bool = False):
+                 requires_reference: bool = False, completion_processed_successfully: bool = False,
+                 account_from_body: bool = False):
         self.name = name
         self.version = version
         self._sender_domain = sender_domain
@@ -330,6 +368,9 @@ class _GenericWithdrawalParser:
         self.WANTS_HTML_BODY = bool(wants_html)
         # ADR-0090 fail-closed correlation safeguard (per-broker, default OFF — existing brokers unchanged).
         self._requires_reference = bool(requires_reference)
+        # ADR-0093 Vantage completion semantics (per-broker, default OFF — existing brokers unchanged).
+        self._completion_processed_successfully = bool(completion_processed_successfully)
+        self._account_from_body = bool(account_from_body)
 
     @staticmethod
     def _reference_is_stable(reference: str) -> bool:
@@ -358,6 +399,19 @@ class _GenericWithdrawalParser:
             category = "UNKNOWN"
         return category, reference
 
+    def _classify(self, subject: str, text: str) -> Optional[str]:
+        """Lifecycle classification for this broker: the shared ordered rules, plus (ADR-0093, per-broker opt-in) an
+        UPGRADE of a NON-TERMINAL base to WITHDRAWAL_COMPLETED when a PERFECTIVE "...processed successfully" phrase is
+        present and there is no deposit/funding context. Terminal states (completed/rejected/cancelled/expired/failed)
+        are never upgraded, so a negative-outcome email is never flipped to a completion; brokers that do not opt in
+        (Pepperstone/Dominion) are byte-for-byte unchanged (they fall straight through to _classify_lifecycle)."""
+        base = _classify_lifecycle(subject, text)
+        if self._completion_processed_successfully and base in _UPGRADEABLE_TO_COMPLETED:
+            t = _norm_punct(f"{subject}\n{text}").lower()
+            if _PROCESSED_SUCCESSFULLY.search(t) and not _DEPOSIT_VETO.search(t):
+                return "WITHDRAWAL_COMPLETED"
+        return base
+
     def can_parse(self, *, subject: str, body: str, from_address: str) -> bool:
         if not domain_matches(_domain_of(from_address), self._sender_domain):
             return False
@@ -378,7 +432,7 @@ class _GenericWithdrawalParser:
     def _parse_html(self, *, subject: str, from_address: str, html_body: str) -> Optional[ParsedBrokerEvent]:
         structured = _html_structured_text(html_body)
         flat = _flatten(structured)
-        lifecycle = _classify_lifecycle(subject, flat)
+        lifecycle = self._classify(subject, flat)
         if lifecycle is None:
             return None
         cells = _ordered_cells(structured)
@@ -406,7 +460,7 @@ class _GenericWithdrawalParser:
         return "" if reference.lower().startswith("http") else reference
 
     def _parse_text(self, *, subject: str, body: str, from_address: str) -> Optional[ParsedBrokerEvent]:
-        lifecycle = _classify_lifecycle(subject, body)
+        lifecycle = self._classify(subject, body)
         if lifecycle is None:
             return None
         category = _classify_category(subject, body, lifecycle)
@@ -414,6 +468,12 @@ class _GenericWithdrawalParser:
         reference = self._extract_text_reference(body)
         pairs = {(m.group("src"), m.group("dst")) for m in _TRANSFER_CLAUSE.finditer(body)}
         source_account, destination_account = next(iter(pairs)) if len(pairs) == 1 else ("", "")
+        if not source_account and self._account_from_body:
+            # ADR-0093: a single broker-STATED trading-account login (Vantage). Keep it ONLY when exactly one
+            # distinct login is present; 0 or >1 is left unresolved for the owner-scoped resolver, which fails closed.
+            logins = {m.group(1) for m in _SINGLE_ACCOUNT.finditer(body)}
+            if len(logins) == 1:
+                source_account = next(iter(logins))
         category, reference = self._guard_reference(category, reference)   # ADR-0090 fail-closed (stable ref only)
         return ParsedBrokerEvent(
             event_type=lifecycle, transaction_category=category, broker=self._display,
@@ -429,7 +489,9 @@ PEPPERSTONE = _GenericWithdrawalParser(name="pepperstone", version="v1", sender_
 DOMINION = _GenericWithdrawalParser(name="dominion_markets", version="v1", sender_domain="dominionmarkets.com",
                                     display="Dominion Markets")
 VANTAGE = _GenericWithdrawalParser(name="vantage", version="v1", sender_domain="vantagemarkets.com",
-                                   display="Vantage", requires_reference=True)   # ADR-0090: no ref => no auto-withdrawal
+                                   display="Vantage", requires_reference=True,   # ADR-0090: no ref => no auto-withdrawal
+                                   completion_processed_successfully=True,        # ADR-0093: perfective completion
+                                   account_from_body=True)                        # ADR-0093: single stated login
 
 STREAM_B_PARSERS = (PEPPERSTONE, DOMINION, VANTAGE)
 
