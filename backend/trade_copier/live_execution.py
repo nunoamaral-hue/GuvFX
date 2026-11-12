@@ -262,6 +262,15 @@ def admit_open_live(replication, *, now=None) -> tuple[bool, str]:
     except Exception:  # noqa: BLE001
         return False, "broker_pause_unresolved"
 
+    # ARM (ADR-0097): the FINAL additional AND — an ENGAGED, unexpired, route-exact backend arm bound to THIS
+    # authorization is required, the single-action gate that replaced the per-demo multi-flag/worker ceremony.
+    # Checked last so every specific gate reason surfaces first; with no effective arm the LIVE OPEN is OFF.
+    # Never an OR bypass.
+    from trade_copier.arm import require_engaged_arm
+    ok, reason = require_engaged_arm(authz, now=now)
+    if not ok:
+        return False, reason
+
     return True, "ok"
 
 
@@ -322,6 +331,13 @@ def create_live_open_job(locked_replication) -> dict:
     if kill_switch_engaged():
         return {"replication_id": locked_replication.id, "produced": False,
                 "reason": "live_copier_kill_switch_engaged"}
+
+    # ARM (ADR-0097): re-check the ENGAGED, unexpired, route-exact arm UNDER the authorization lock, so an arm
+    # disengaged / expired mid-flight is seen and fails closed — a retry can never place an order without an arm.
+    from trade_copier.arm import require_engaged_arm
+    ok, reason = require_engaged_arm(authz, now=now)
+    if not ok:
+        return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
 
     # Concurrency cap re-checked UNDER the authorization row lock (which serializes all order creation for this
     # pair), so two near-simultaneous OPENs on different events cannot both slip past a stale preflight count
@@ -554,12 +570,12 @@ def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int
     ok, reason = _lifecycle_authority_ok(authz, op)
     if not ok:
         return False, None, 0, reason
-    ok, reason = _lifecycle_window_ok(authz, op, now)
+    ok, window_reason = _lifecycle_window_ok(authz, op, now)
     if not ok:
-        return False, None, 0, reason
-    ok, reason = _kill_switch_policy_ok(op)
+        return False, None, 0, window_reason
+    ok, killswitch_reason = _kill_switch_policy_ok(op)
     if not ok:
-        return False, None, 0, reason
+        return False, None, 0, killswitch_reason
 
     # 7. Exact pinned identities + structural binding (defence against drift/rebind/cross-user).
     ok, reason = _identities_match(authz, macct, facct)
@@ -607,6 +623,28 @@ def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int
             return False, None, 0, "broker_runtime_paused"
     except Exception:  # noqa: BLE001
         return False, None, 0, "broker_pause_unresolved"
+
+    # ARM (ADR-0097): the FINAL additional AND — an engaged, unexpired, route-exact backend arm bound to the
+    # GOVERNING authorization. Checked last so every specific gate reason surfaces first; a missing/expired/
+    # disengaged arm fails closed. Never an OR bypass.
+    #
+    # CONTAINMENT EXEMPTION (ADR-0083 preserved — adversarial review HIGH). A SAFETY-REDUCING close admitted
+    # specifically as containment — after the entry window expired (``close_only_after_expiry``) or while the
+    # kill switch is engaged (``contain_on_kill_switch``) — is NOT arm-gated. The arm's expiry is capped at the
+    # authorization expiry and the kill switch disengages every arm, so by construction NO live arm can exist in
+    # exactly these two states; yet the whole purpose of containment is to CLOSE an already-open live position
+    # once the window lapsed / the switch engaged. Blocking that close is the UNSAFE direction (exposure
+    # stranded). The authorization + the per-op close authority + the explicit policy flag (already checked at
+    # step 6) remain the sole authority; a MODIFY is never containment and is always arm-gated, and entry
+    # (OPEN) is arm-gated in ``admit_open_live``. The exemption widens nothing.
+    is_containment_close = (op in _CLOSE_OPS and
+                            (window_reason == "close_only_after_expiry" or
+                             killswitch_reason == "kill_switch_close_only_containment"))
+    if not is_containment_close:
+        from trade_copier.arm import require_engaged_arm
+        ok, reason = require_engaged_arm(authz, now=now)
+        if not ok:
+            return False, None, 0, reason
 
     return True, authz, ticket, "ok"
 

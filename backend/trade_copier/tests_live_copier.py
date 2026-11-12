@@ -108,7 +108,11 @@ class LiveAdmissionTests(TestCase):
             watermark_at=now - timedelta(hours=1), watermark_event_sequence=5,
             status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=self.staff, reason="test")
         d.update(over)
-        return CopierLiveAuthorization.objects.create(**d)
+        authz = CopierLiveAuthorization.objects.create(**d)
+        if authz.status in (CopierLiveAuthorizationStatus.ACTIVE, CopierLiveAuthorizationStatus.CONSUMED):  # ADR-0097: env+arm contract
+            from trade_copier.tests_copier_live_arm import attach_engaged_arm
+            attach_engaged_arm(authz)
+        return authz
 
     def _assert_denied(self, reason_prefix):
         ok, reason = admit_open(self.rep)

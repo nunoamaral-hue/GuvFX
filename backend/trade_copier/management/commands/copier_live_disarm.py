@@ -21,14 +21,26 @@ class Command(BaseCommand):
         parser.add_argument("--reason", default="", help="Why the disarm was engaged (recorded for audit).")
 
     def handle(self, *args, **o):
+        from django.utils import timezone
         from trade_copier.models import (
-            CopierLiveAuthorization, CopierLiveAuthorizationStatus, CopierLiveKillSwitch)
+            CopierLiveAuthorization, CopierLiveAuthorizationStatus, CopierLiveArm, CopierLiveArmState,
+            CopierLiveKillSwitch)
 
         actor = User.objects.filter(email__iexact=o["by"]).first() if o["by"] else None
         row = CopierLiveKillSwitch.objects.create(engaged=True, engaged_by=actor, reason=(o["reason"] or "")[:256])
         active = CopierLiveAuthorization.objects.filter(
             status=CopierLiveAuthorizationStatus.ACTIVE).count()
+        # ADR-0097: the emergency kill switch ALSO disengages every engaged backend arm, so the emergency path
+        # leaves NOTHING armed. The kill switch already blocks all dispatch independent of the arm; disengaging the
+        # arms makes the return-to-OFF unambiguous and audited. (The normal, non-emergency return-to-OFF is
+        # ``copier_live_arm --disengage``, which does NOT engage the durable kill switch.)
+        now = timezone.now()
+        disengaged = CopierLiveArm.objects.filter(state=CopierLiveArmState.ENGAGED).update(
+            state=CopierLiveArmState.DISENGAGED, disengaged_at=now, disengaged_by=actor,
+            disengage_reason=("kill_switch:" + (o["reason"] or ""))[:256], updated_at=now)
         self.stdout.write(self.style.SUCCESS(
             f"LIVE copier DISARMED: CopierLiveKillSwitch id={row.id} engaged at {row.engaged_at.isoformat()} "
             f"by={getattr(actor, 'email', o['by'] or 'unspecified')}. "
-            f"{active} ACTIVE authorization(s) preserved but now blocked. No new LIVE copier order can dispatch."))
+            f"{active} ACTIVE authorization(s) preserved but now blocked; {disengaged} engaged arm(s) disengaged. "
+            f"No new LIVE copier order can dispatch. NOTE: this does not restore Windows host admission — run the "
+            f"signed restore_copier_bridge_execution_off separately."))
