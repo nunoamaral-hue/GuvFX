@@ -91,7 +91,11 @@ class _LiveRT(TestCase):
             modify_authority=True, full_close_authority=True,
             status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=self.staff, reason="rt-test")
         d.update(over)
-        return CopierLiveAuthorization.objects.create(**d)
+        authz = CopierLiveAuthorization.objects.create(**d)
+        if authz.status in (CopierLiveAuthorizationStatus.ACTIVE, CopierLiveAuthorizationStatus.CONSUMED):  # ADR-0097: env+arm contract
+            from trade_copier.tests_copier_live_arm import attach_engaged_arm
+            attach_engaged_arm(authz)
+        return authz
 
     def _ingest(self, ticket, revision, *, closed=False, symbol="XAUUSD", side="SELL", volume="0.01",
                 sl="4000", tp="3980", price_open="3989", when=None):

@@ -1,5 +1,27 @@
 # GuvFX — Project Status
 
+> **2026-11-12 — Copy Trading one-action ARM/DISARM (GFX-COPIER-ONE-ACTION-ARM-DISARM-PR-076; ADR-0097;
+> repository-only / DARK; governed PR; auto-merge OFF; STOP before merge).** Off main `bc2e0c59`. Implements the
+> smallest control-plane correction from the 075 preflight: a single audited, authorization-bound, auto-expiring
+> backend ARM that replaces the per-demo ~15-flag/7-worker ceremony WITHOUT lowering any gate. **New
+> `CopierLiveArm` model** (+ additive migration `0014`) bound to exactly one `CopierLiveAuthorization` with an
+> immutable route snapshot, `ENGAGED/DISENGAGED` state, audit fields, and `expires_at` capped at the authorization
+> expiry; one engaged arm per route (partial-unique). **`trade_copier/arm.py`** runtime evaluator: fail-closed on
+> no-arm / expired / route-drift / owner-drift / duplicate / DB-error; auto-expiry by evaluation only (no cleanup
+> command). **`copier_live_arm` command**: one-action ARM (re-runs the preflight fail-closed; requires ACTIVE
+> unexpired sole authorization + staff approver + useful window + entry allowance + kill-switch clear + no
+> conflicting arm + identity match + no in-flight job + master flat) and `--disengage` one-action return-to-OFF
+> (no kill switch). **`copier_live_disarm`** extended: the emergency kill switch ALSO disengages all arms.
+> **`reconcile_expired_copier_authorizations`** extended: marks expired arms DISENGAGED (audit; runtime already
+> inert). **Gating**: `require_engaged_arm(authz)` threaded as the FINAL additional AND in `admit_open_live` and
+> `_live_lifecycle_preamble`, and re-checked UNDER the authorization lock in `create_live_open_job` — env gate is
+> condition 1, the route-exact arm is condition 2; never an OR bypass; kill switch always wins; PARTIAL_CLOSE
+> unchanged. Existing LIVE tests updated to the env+arm contract (shared `attach_engaged_arm` fixture). New
+> `tests_copier_live_arm.py` (arm evaluator + ARM/DISARM command matrix). Verified: full `trade_copier` **894 OK**;
+> `check` clean; `makemigrations --check` clean; ADR governance OK. No LLM live-trading path. Repository-only: NO
+> merge, NO deploy, NO migration applied, NO host mutation, NO secret, NO flag enablement, NO authorization, NO
+> broker order. STOP before merge.
+
 > **2026-11-12 — Copy Trading real-time SOURCE + post-fill reconcile (GFX-COPIER-REALTIME-SOURCE-AND-RECONCILE-073;
 > ADR-0096; repository-only / DARK; governed PR; auto-merge OFF; STOP before merge).** Off main `5c6e752c` (ADR-0094
 > #642). Closes the two gaps the 072 pre-demo readiness measured. **(1) Post-fill follower-ticket binding

@@ -682,6 +682,72 @@ class CopierLiveKillSwitch(models.Model):
         return f"CopierLiveKillSwitch(engaged={self.engaged}, at={self.engaged_at})"
 
 
+class CopierLiveArmState(models.TextChoices):
+    ENGAGED = "ENGAGED", "Engaged"
+    DISENGAGED = "DISENGAGED", "Disengaged"
+
+
+class CopierLiveArm(models.Model):
+    """ADR-0097 — the single-action, authorization-bound, auto-expiring backend ARM for LIVE copy execution.
+
+    An ENGAGED, unexpired arm is the ADDITIONAL, route-exact AND-condition the LIVE admission requires — alongside
+    the existing env/config gates (``copier_live_execute_enabled`` + per-op arms) AND the human-created
+    ``CopierLiveAuthorization``. It replaces the per-demo multi-flag/worker ceremony with ONE audited command
+    WITHOUT lowering any gate: it is never an OR bypass. Creating a row grants NO authority of its own, contacts
+    NO host, starts NO worker, provisions NO bridge, creates NO ``ExecutionJob``, places NO order, and stores NO
+    secret / broker credential / endpoint token / host-admission value — it is control-plane authority only.
+
+    It is bound to EXACTLY one ``CopierLiveAuthorization`` and carries an immutable route snapshot; the admission
+    re-verifies both the arm→authorization binding and the exact route at order time, so an arm for #46→#48 can
+    never enable another tenant/route/account/symbol/bridge. ``expires_at`` is capped at the authorization's
+    expiry and takes effect IMMEDIATELY via runtime evaluation (``trade_copier.arm``) — an expired arm is inert
+    with no cleanup command. At most ONE ENGAGED arm per governed route (a second is a fail-closed ambiguity)."""
+
+    authorization = models.ForeignKey(CopierLiveAuthorization, on_delete=models.CASCADE, related_name="arms")
+    # Immutable route snapshot — what the operator armed; drift from the authorization denies at admission.
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    master_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
+    follower_account = models.ForeignKey("trading.TradingAccount", on_delete=models.CASCADE, related_name="+")
+    source_symbol = models.CharField(max_length=64)
+    follower_symbol = models.CharField(max_length=64)
+
+    state = models.CharField(max_length=12, choices=CopierLiveArmState.choices,
+                             default=CopierLiveArmState.ENGAGED)
+    armed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                 related_name="+")
+    armed_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(help_text="Arm expiry — capped at the linked authorization's expiry.")
+    disengaged_at = models.DateTimeField(null=True, blank=True)
+    disengaged_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                      related_name="+")
+    disengage_reason = models.CharField(max_length=256, blank=True, default="")
+    # Opaque audit correlation id (never a secret); mirrors the authorization's where available.
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Copier LIVE arm"
+        constraints = [
+            # At most ONE engaged arm per governed route. A second engaged arm for the same pair is a governance
+            # error; the runtime evaluator additionally fails closed on any duplicate it sees.
+            models.UniqueConstraint(
+                fields=["master_account", "follower_account"],
+                condition=models.Q(state="ENGAGED"),
+                name="uq_copier_live_arm_engaged_route"),
+        ]
+        indexes = [
+            models.Index(fields=["state"]),
+            models.Index(fields=["authorization", "state"]),
+            models.Index(fields=["master_account", "follower_account", "state"]),
+        ]
+
+    def __str__(self) -> str:
+        return (f"CopierLiveArm(authz={self.authorization_id}, {self.master_account_id}->"
+                f"{self.follower_account_id}, {self.source_symbol}->{self.follower_symbol}, {self.state})")
+
+
 # ───────────────────── PER-MASTER-TICKET LIFECYCLE (ADR-0071 hybrid change propagation) ─────────────────────
 # A durable, additive PROJECTION of the per-(follower, master, master-ticket) lifecycle, derived by
 # ``trade_copier.lifecycle`` from the existing MasterEvent ledger + reconcile state. It is a DECISION/record
