@@ -2,6 +2,21 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copy Trading one-action ARM/DISARM — repository-only, NOT merged/deployed (GFX-COPIER-ONE-ACTION-ARM-DISARM-PR-076 / ADR-0097, 2026-11-12)
+
+- **What it adds.** A `CopierLiveArm` (migration `0014`) + `copier_live_arm` command make a single audited,
+  authorization-bound, auto-expiring arm the ADDITIONAL route-exact AND the LIVE admission requires. Until merged
+  + deployed + migrated, production is unchanged and the arm has no effect.
+- **Operator contract after deployment.** The base `COPIER_*` gates become deployment config; nothing dispatches
+  without an engaged arm. ARM requires an ACTIVE unexpired authorization + staff approver + a clean preflight;
+  DISARM (`--disengage`) returns the backend to OFF but does NOT restore Windows host admission (run the signed
+  `restore_copier_bridge_execution_off` separately). The emergency `copier_live_disarm` engages the kill switch
+  AND disengages all arms.
+- **Existing LIVE tests** now assert the env+arm contract via a shared `attach_engaged_arm` fixture; a LIVE OPEN /
+  MODIFY / FULL_CLOSE without an engaged, route-exact arm fails closed with `no_live_arm`.
+- **Still pending (separate Sponsor gates):** merge → DARK deploy + migration 0014 → base-flag config → host
+  emitter enablement + secret → `copier_live_arm` + signed host admission → Sponsor-present live demo.
+
 ## 🟡 Copy Trading real-time SOURCE not yet wired to #46; ADR-0096 binding merged-pending (GFX-COPIER-REALTIME-SOURCE-AND-RECONCILE-073 / ADR-0096, 2026-11-12)
 
 - **The real-time chain still has no master-side source on production #46.** `ingested_revisions_total = 0`: every

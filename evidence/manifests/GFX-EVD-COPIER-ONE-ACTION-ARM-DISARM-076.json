@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-COPIER-ONE-ACTION-ARM-DISARM-076",
+  "packet_id": "GFX-COPIER-ONE-ACTION-ARM-DISARM-PR-076",
+  "created_at_utc": "2026-11-12T00:00:00Z",
+  "branch": "feat/copier-one-action-arm-disarm",
+  "base_commit": "bc2e0c59f7aaa24d7d7f21b5b230c475c078e460",
+  "head_commit": "(feat commit on feat/copier-one-action-arm-disarm; see PR)",
+  "summary": "ADR-0097 — the smallest control-plane correction from the 075 preflight: a single audited, authorization-bound, auto-expiring backend ARM replaces the per-demo ~15-flag/7-worker ceremony WITHOUT lowering any gate. New CopierLiveArm model (additive migration 0014) bound to exactly one CopierLiveAuthorization with an immutable route snapshot, ENGAGED/DISENGAGED state, audit fields and expires_at capped at the authorization expiry; one engaged arm per route (partial-unique). New trade_copier/arm.py runtime evaluator fails closed on no-arm/expired/route-drift/owner-drift/duplicate/DB-error, auto-expiry by evaluation only. New copier_live_arm command: one-action ARM (re-runs the preflight fail-closed; requires ACTIVE unexpired sole authorization + staff approver + useful window + entry allowance + kill-switch clear + no conflicting arm + identity match + no in-flight job + master flat) and --disengage one-action return-to-OFF (no kill switch). copier_live_disarm extended: the emergency kill switch ALSO disengages all arms. reconcile_expired_copier_authorizations extended: marks expired arms DISENGAGED (audit; runtime already inert). require_engaged_arm threaded as the FINAL additional AND in admit_open_live and _live_lifecycle_preamble and re-checked UNDER the authorization lock in create_live_open_job (env gate is condition 1, route-exact arm is condition 2; never an OR bypass; kill switch always wins). A SAFETY-REDUCING containment close (after expiry / under kill switch) is EXEMPT from the arm so ADR-0083 containment is preserved. No LLM live-trading path. DARK/default-OFF; no deploy, no migration applied, no host contact, no secret, no flag enablement, no authorization, no broker order.",
+  "root_cause": "The GFX-COPIER-REALTIME-BACKEND-AND-EMITTER-PREFLIGHT-075 preflight found the control plane had NO one-action ARM/DISARM: arming a demo required injecting ~15 COPIER_* env flags + running 7 single-pass workers and re-running them between trade actions, with no single audited record of 'armed for this authorization/route/window' and no automatic expiry/return-to-OFF.",
+  "change": "1) New backend/trade_copier/models.py CopierLiveArm + CopierLiveArmState (+ migration 0014_copier_live_arm, additive CreateModel). 2) New backend/trade_copier/arm.py (engaged_arm_for_authorization / require_engaged_arm / arm_summary — fail-closed evaluator with auto-expiry). 3) New backend/trade_copier/management/commands/copier_live_arm.py (one-action ARM + --disengage DISARM). 4) backend/trade_copier/management/commands/copier_live_disarm.py extended (kill switch also disengages arms). 5) backend/trade_copier/management/commands/reconcile_expired_copier_authorizations.py extended (disengage expired arms for audit). 6) backend/trade_copier/live_execution.py: require_engaged_arm as the final AND in admit_open_live + _live_lifecycle_preamble, under-lock re-check in create_live_open_job, and a containment exemption (close_only_after_expiry / kill_switch_close_only_containment closes are not arm-gated). 7) LIVE test suites updated to the env+arm contract via a shared attach_engaged_arm fixture (tests_live_copier/tests_immediate_dispatch/tests_live_lifecycle/tests_live_bridge_provision). 8) New backend/trade_copier/tests_copier_live_arm.py. Docs: ADR-0097, COPIER_46_48_DEMO_RUNBOOK.md, COPIER_LIVE_WORKER_SEQUENCE.md, STATUS.md, KNOWN_ISSUES.md.",
+  "commands": [
+    "manage.py test trade_copier.tests_copier_live_arm",
+    "manage.py test trade_copier",
+    "manage.py test execution core.tests_adr_governance",
+    "manage.py check",
+    "manage.py makemigrations --check --dry-run trade_copier execution",
+    "scripts/check_evidence_manifests.py",
+    "secret scan over changed/new files",
+    "independent adversarial review (22 attack vectors) by a separate agent; HIGH fixed with regression tests"
+  ],
+  "expected_results": [
+    "arm evaluator + ARM/DISARM command matrix: pass",
+    "full trade_copier suite: pass",
+    "execution + ADR governance suites: pass",
+    "system check: no issues",
+    "makemigrations --check: no drift beyond the new 0014 migration",
+    "evidence lint: PASS",
+    "secret scan: clean",
+    "adversarial review: no unresolved CRITICAL/HIGH"
+  ],
+  "actual_results": [
+    "trade_copier.tests_copier_live_arm + tests_live_lifecycle: Ran 76 tests; OK",
+    "trade_copier (full): Ran 895 tests; OK",
+    "execution + core.tests_adr_governance: Ran 1592 tests; OK",
+    "system check: System check identified no issues (0 silenced)",
+    "makemigrations --check trade_copier execution: No changes detected (migration 0014 already created; no further drift)",
+    "evidence lint: EVIDENCE-LINT: PASS (68 manifests, pre-this-manifest)",
+    "secret scan: clean (no hardcoded secret literals; the arm holds no secret/credential/token)",
+    "adversarial review: no CRITICAL; 1 HIGH FIXED with regression tests; 2 LOW (one fixed, one documented) — see adversarial_review"
+  ],
+  "status": "PASS",
+  "status_detail": "PASS (repository-only / DARK). The arm is a genuine additional AND (never an OR bypass), default-OFF, fail-closed, route/owner/symbol/authorization-exact, auto-expiring by evaluation; it grants no authority, creates no job/order, contacts no host/broker, holds no secret. Every LIVE order-creation path is preceded by require_engaged_arm; a safety-reducing containment close is correctly exempt so ADR-0083 containment is preserved. No production mutation; no migration applied; all controls OFF.",
+  "adversarial_review": {
+    "reviewer": "independent agent (fresh context), 22 attack vectors; read arm.py + models.py + copier_live_arm.py + copier_live_disarm.py + reconcile command + the three live_execution.py admission threading points + the tests",
+    "critical": "NONE",
+    "high": "1 — FIXED",
+    "HIGH_vector12_containment_nullification": "FIXED. Because the arm's expiry is capped at the authorization expiry and copier_live_disarm disengages arms, the arm as an UNCONDITIONAL final AND would have blocked the ADR-0083 safety-reducing CLOSE of an already-open live position AFTER the entry window expired (close_only_after_expiry) or WHILE the kill switch is engaged (contain_on_kill_switch) — blocking the close is the UNSAFE direction (exposure stranded). Fix: _live_lifecycle_preamble now EXEMPTS a containment close (op in CLOSE_OPS AND window_reason=='close_only_after_expiry' OR killswitch_reason=='kill_switch_close_only_containment') from the arm requirement; the authorization + per-op close authority + the explicit policy flag remain the sole authority; a MODIFY is never exempt and OPEN entry is always arm-gated. Regression: the two containment tests were corrected to the production invariant (arm expires with the authz / is disengaged by the kill switch) and assert the close is admitted with NO live arm; new test_in_window_close_requires_arm asserts a normal in-window close with the arm disengaged fails closed no_live_arm.",
+    "LOW_vector16_concurrent_arm_toctou": "FIXED. The idempotency check was moved INSIDE the atomic block, after the authorization select_for_update, so two concurrent ARM calls for the same authorization serialize on the authz row and the second returns the first's arm (no duplicate, no IntegrityError race).",
+    "LOW_vector7_lifecycle_underlock_arm_recheck": "DOCUMENTED (residual, bounded). create_live_open_job re-checks the arm under the authorization lock; the lifecycle creators re-run the full admission (ending in the arm) on the select_for_update'd replication but do not re-check the arm a second time inside _relock_live_authz_for_lifecycle. A soft DISARM committing in the few-statement window between that admission and the job INSERT would not be seen for MODIFY/CLOSE (OPEN would catch it). The DURABLE kill switch — the emergency stop — IS re-checked under the lock, and a close is exposure-reducing, so the residual is a narrow, safe-direction timing gap; the next event re-evaluates. Not an open hole.",
+    "safe_vectors": "18/22 SAFE: replay/reuse, authorization substitution, cross-tenant/route, symbol substitution, stale authz, expiry race, duplicate engaged rows, kill-switch bypass, env-gate bypass, op-authority escalation, stale-ENGAGED-after-expiry, late-HTTP/UNKNOWN, one-order allowance race, DB failure (fail closed), audit/non-staff (ARM requires is_staff), log/secret leakage (none to leak), misleading-OFF (DISARM states host admission is separate), preflight bypass (fails closed on any backend blocker; host-probe items correctly separate), idempotency. No LIVE order path omits require_engaged_arm."
+  },
+  "migration_status": "One new migration trade_copier/0014_copier_live_arm.py (additive CreateModel CopierLiveArm + 3 indexes + one partial-unique constraint). NOT applied to any database. makemigrations --check introduces no further trade_copier/execution drift.",
+  "limitations": [
+    "Repository-only / DARK: not merged, not deployed; migration 0014 NOT applied; production unchanged; all copier/execution controls OFF; the arm has no effect until a Sponsor configures the base gates AND runs copier_live_arm.",
+    "The arm is the backend control-plane gate only; the signed Windows host admission (MT5_ALLOW_LIVE) is a SEPARATE operator action and backend DISARM does not restore it (stated in the command output).",
+    "Tests run with Python 3.11 against a local PostgreSQL; CI runs the authoritative suite. No broker, Windows host, terminal, production endpoint or genuine credential is contacted by any test (the preflight sub-call is patched to a known verdict).",
+    "Vector-7 under-lock arm re-check for lifecycle ops is a documented, bounded residual (the durable kill switch is the hard stop and IS re-checked under the lock)."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/arm.py",
+    "backend/trade_copier/models.py (CopierLiveArm + CopierLiveArmState)",
+    "backend/trade_copier/migrations/0014_copier_live_arm.py",
+    "backend/trade_copier/management/commands/copier_live_arm.py",
+    "backend/trade_copier/management/commands/copier_live_disarm.py",
+    "backend/trade_copier/management/commands/reconcile_expired_copier_authorizations.py",
+    "backend/trade_copier/live_execution.py",
+    "backend/trade_copier/tests_copier_live_arm.py",
+    "backend/trade_copier/tests_live_copier.py",
+    "backend/trade_copier/tests_immediate_dispatch.py",
+    "backend/trade_copier/tests_live_lifecycle.py",
+    "backend/trade_copier/tests_live_bridge_provision.py",
+    "docs/architecture/ADR-0097-copier-one-action-arm-disarm.md",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md",
+    "docs/COPIER_LIVE_WORKER_SEQUENCE.md",
+    "docs/STATUS.md",
+    "docs/KNOWN_ISSUES.md"
+  ],
+  "checksums": {
+    "backend/trade_copier/arm.py": "sha256:cbf048a58a707a40f3229707e14a31c11dcd16b6ad9eb0d66c3cc2236e62466f",
+    "backend/trade_copier/models.py": "sha256:d3365fa38762a9c83e9a7bb6efa3df1002e10070c0e69b6f002d11fc656a832c",
+    "backend/trade_copier/live_execution.py": "sha256:b7ec06b593328d670671b571204a07612f5d512e25e69b7b78fc3c86ba40827a",
+    "backend/trade_copier/management/commands/copier_live_arm.py": "sha256:e2ad1a1909f197bb230a73b48d6c6770ccccba7f53e9e9544885bfa62d1b5327",
+    "backend/trade_copier/migrations/0014_copier_live_arm.py": "sha256:4af478496049a10c7e9bc07c63336c8d2285b208e4367a87d46996940823f100",
+    "backend/trade_copier/tests_copier_live_arm.py": "sha256:246e9b0e7c19f7a9ce917f71e2777df4f9dee86aaff378df8e20097ca22cc4af",
+    "docs/architecture/ADR-0097-copier-one-action-arm-disarm.md": "sha256:ba22c5c2b6d79c983cc70a52fa8b8ac91c8b82a95c7549dd861295428a269fc6"
+  },
+  "reviewer": "Independent adversarial agent (22 attack vectors) + the author's deterministic mutation-killing suite. No CRITICAL; 1 HIGH (ADR-0083 containment nullification) FIXED with corrected + new regression tests; 1 LOW fixed (idempotency under lock), 1 LOW documented as a bounded residual. See adversarial_review.",
+  "production_host_broker_impact": "None. Repository-only / DARK. Production unchanged; migration 0014 NOT applied; all copier/execution controls OFF; the arm has no effect until base gates are configured AND copier_live_arm is run; no Windows-host or broker contact; zero broker orders; no authorization created; no host admission; no worker started.",
+  "truthfulness_note": "The backend arm state is distinct from Windows host admission. An engaged CopierLiveArm is a backend control-plane fact only; it does NOT set or imply MT5_ALLOW_LIVE on the follower bridge. Backend DISARM (copier_live_arm --disengage) returns the backend gates to OFF but does NOT restore host admission — the signed restore_copier_bridge_execution_off is a separate operator step. The command outputs state this explicitly; no complete system-wide OFF is claimed from the arm row alone.",
+  "remaining_gate": "Separate, NOT authorised here: 1) merge (Sponsor GO); 2) DARK deployment + apply migration 0014; 3) base COPIER_* gate configuration; 4) host emitter enablement + secret provisioning; 5) copier_live_arm + signed host admission; 6) Sponsor-present bounded live demo."
+}
