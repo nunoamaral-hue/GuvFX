@@ -228,6 +228,27 @@ def copier_event_projection_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_EVENT_PROJECTION_ENABLED")
 
 
+def copier_immediate_dispatch_enabled() -> bool:
+    """Gate for the SYNCHRONOUS, event-driven real-time dispatch trigger (ADR-0094 hybrid real-time). DEFAULT OFF,
+    ANDed with the master gate.
+
+    This is the ONLY flag that makes an accepted signed fast-path emission drive the follower IMMEDIATELY —
+    i.e. the signed ingestion endpoint, after persisting the immutable ``CopierIngestedRevision``, runs the
+    EXISTING governed passes in-line (project → replicate → execute → lifecycle → mutation-dispatch → bounded
+    reconcile) for just that master, instead of leaving the event inert until the next ~2-min scheduled worker.
+
+    It adds NO new authority and ORs past NOTHING: every sub-pass it triggers still re-reads its OWN gate
+    (``copier_event_projection_enabled`` / ``copier_replication_enabled`` / ``copier_execute_enabled`` /
+    ``copier_live_execute_enabled`` + the per-op arms / ``copier_mutation_dispatch_enabled`` /
+    ``copier_reconcile_enabled``) and the full per-pair live admission (``admit_open_live`` / the lifecycle
+    preamble) at dispatch time, exactly as the scheduled workers do. With it OFF the ingestion endpoint is
+    byte-identical to ADR-0074 (persist-only), so the fast-path remains pure evidence until a Sponsor arms this.
+    The slow observer stays the reconciliation/recovery path and is NEVER the normal OPEN/MODIFY/CLOSE trigger
+    once this is armed; both feed ONE shared MasterEvent ledger + baseline, so a push and a later poll of the
+    same ticket dedup automatically (no double copy)."""
+    return copier_enabled() and _flag("COPIER_IMMEDIATE_DISPATCH_ENABLED")
+
+
 def copier_alert_dispatch_enabled() -> bool:
     """Gate for the governed copier alert-DELIVERY dispatcher pass (ADR-0074 Phase-9 completion). DEFAULT OFF,
     ANDed with the master gate.

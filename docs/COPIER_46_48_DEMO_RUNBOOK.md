@@ -12,6 +12,18 @@ live path is DARK and default-OFF. Every step is labelled:
 position**. Authorization window **≤ 15 min**. Authorities: **MODIFY + FULL_CLOSE only** (no partial, no new
 entry after expiry). No credentials appear here.
 
+> **ADR-0094 update (real-time + arming corrections).** The 2026-11-12 demo exposed two facts corrected here:
+> (1) the ~2-min observer is **reconciliation only**, not the copy trigger — the primary path is now the signed
+> ingestion endpoint driving `dispatch_master_realtime` synchronously when `COPIER_IMMEDIATE_DISPATCH_ENABLED`
+> is armed (target ≤1s, ≤2s ceiling); and (2) the arming flag stack previously omitted the sub-gates
+> **`COPIER_OBSERVER_ENABLED`, `COPIER_REPLICATION_ENABLED`, `COPIER_LIFECYCLE_ENABLED`** (and, for the
+> real-time path, `COPIER_EVENT_PROJECTION_ENABLED`, `COPIER_RECONCILE_ENABLED`, `COPIER_IMMEDIATE_DISPATCH_ENABLED`),
+> so observe/replicate/lifecycle silently no-op'd. Use the authoritative per-worker stack in
+> `docs/COPIER_LIVE_WORKER_SEQUENCE.md`. The governed MODIFY/CLOSE still needs the **route-scoped** follower-read
+> authority (`COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED` + an active authorization for #48) — a separate
+> Sponsor-gated enablement; until then #48's `/mt5/positions` returns `account_not_demo` and a copied LIVE OPEN
+> needs manual close. All of this remains DARK/default-OFF; this runbook stays preparation-only.
+
 ## Timing / containment limits
 - Authorization window ≤ 15 min; disarm immediately after step 13 regardless of time left.
 - Per-step observe wait: **≤ 90 s** after each human MT5 action (observer cadence is 2 min — run the live-path

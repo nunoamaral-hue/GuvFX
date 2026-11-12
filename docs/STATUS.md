@@ -5430,3 +5430,20 @@ unchanged. Adversarial tests: `hosted_workspace/tests_live_bridge_dispatch.py` (
 `render_bridge_env` enforce/attest/refuse it; OFF clears both keys. New tests
 `execution/tests_bridge_live_expiry.py` + expiry cases added to the two ADR-0049 suites; existing D4b/startup
 tests updated to carry a valid bound. Still DARK/OFF; no authorization, no host change, no deploy by this packet.
+
+**ADR-0094 hybrid REAL-TIME replication (GFX-COPIER-REALTIME-HYBRID-REPLICATION-067, repository-only / DARK).**
+Closes the ADR-0074 wiring gap: the signed ingestion endpoint accepted an event and triggered nothing, so copy
+only happened on the ~2-min observer (the 2026-11-12 demo detected the master OPEN ~84s late — reconciliation,
+not real-time). New DARK flag `COPIER_IMMEDIATE_DISPATCH_ENABLED` makes ingestion the PRIMARY trigger:
+`trade_copier/immediate_dispatch.py` synchronously runs project→replicate→execute→lifecycle→mutation-dispatch→
+bounded-reconcile for that master (target ≤1s, ceiling ≤2s source→submission; broker fill measured separately),
+reusing every governed gate + per-pair admission unchanged. Push/poll dedup through the one shared `MasterEvent`
+ledger + baseline; the slow observer is reconciliation-only. New `CopierRealtimeDispatch` latency-evidence model
+(+ migration `0013`). The governed-close prerequisite is solved **route-scoped**: `readonly_positions_for_account`
+renders `MT5_LIVE_READONLY_POSITIONS_ENABLED` for a LIVE account only when the new default-OFF
+`COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED` is armed AND the account is the follower of a live, non-revoked,
+unexpired authorization (never global); `follower_positions_read_readiness` reports it on the preflight. Tests:
+`trade_copier/tests_immediate_dispatch.py` (19) + full `trade_copier` suite (850) + execution bridge/readonly
+(97). With the flag OFF (default) ingestion is byte-identical to ADR-0074. **DARK:** no deploy, no flag
+enablement, no authorization, no host contact, no broker order by this packet; production unchanged. See
+`docs/architecture/ADR-0094-copier-realtime-hybrid-replication.md`.
