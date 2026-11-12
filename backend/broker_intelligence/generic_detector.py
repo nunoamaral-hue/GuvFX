@@ -41,6 +41,12 @@ RC_AMOUNT_PRESENT = "amount_currency_extracted"
 RC_SUFFIX_PRESENT = "account_suffix_extracted"
 RC_UNSAFE_EVIDENCE = "unsafe_evidence_in_field"
 RC_COMPLETION_EXPLICIT = "explicit_completion_phrase"
+# ---- ADR-0099 (Lane A) certified-fingerprint reason codes --------------------------------------------
+RC_CERTIFIED_FINGERPRINT = "certified_fingerprint_match"        # exactly one active+certified fingerprint claimed it
+RC_MULTIPLE_FINGERPRINTS = "multiple_certified_fingerprint_match"  # >1 distinct certified broker matched => ambiguous
+RC_EXTERNAL_EVIDENCE = "external_withdrawal_evidence"           # positive money-left-the-broker evidence present
+RC_NO_EXTERNAL_EVIDENCE = "no_external_withdrawal_evidence"     # certified, but message lacks external evidence => UNKNOWN
+RC_REQUIRES_REFERENCE_MISSING = "certified_requires_reference_missing"  # semantic requires_reference but none extracted
 
 # ---- proposed lifecycle states (candidate vocabulary; NOT Withdrawal statuses) ----------------------
 S_REQUESTED = "REQUESTED"
@@ -127,6 +133,29 @@ _FAILED = (
     "has been rejected", "has been declined",
 )
 
+# ---- ADR-0099 transaction categories (mirrors models.TransactionCategory; the detector stays Django-free) ----
+CAT_EXTERNAL_WITHDRAWAL = "EXTERNAL_WITHDRAWAL"
+CAT_UNKNOWN = "UNKNOWN"
+
+# Positive EXTERNAL-money-out evidence (money LEFT the broker). A CERTIFIED fingerprint UNLOCKS the capability to
+# emit EXTERNAL_WITHDRAWAL, but emission still requires one of these per-message signals — certification never
+# bypasses the TransactionCategory rule ("never from the word 'withdrawal'/subject/sender/amount/account alone").
+# Deliberately a compact, conservative subset that mirrors the spirit of ``parsers_stream_b._EXTERNAL_RAILS``.
+_EXTERNAL_RAIL = (
+    "to your bank", "to your bank account", "sent to your bank", "bank transfer", "wire transfer", "bank wire",
+    "to your card", "to your credit card", "to your debit card", "to your visa", "to your mastercard",
+    "to your wallet", "to your e-wallet", "to your ewallet", "e-wallet", "skrill", "neteller", "paypal",
+    "iban", "swift", "to your crypto", "crypto wallet", "usdt", "to your paypal", "payment method",
+    "withdrawn to your", "sent to your card", "to your receiving", "to your external", "to your linked bank",
+)
+# Internal-movement veto: even with a "withdraw" word, these say money stayed INSIDE the broker (ADR TransactionCategory
+# / the TradersWay 'confirm your withdrawal request' = internal-transfer lesson). Any of these denies external evidence.
+_INTERNAL_VETO = (
+    "internal transfer", "between your accounts", "to your trading account", "to another of your accounts",
+    "transfer to account", "moved to your account", "to your mt4", "to your mt5", "to your wallet account",
+    "between accounts", "to your other account",
+)
+
 _SYMBOL_TO_ISO = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY"}
 _ISO = ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SEK", "NOK", "ZAR", "SGD", "HKD")
 _NUM = r"\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?"
@@ -166,20 +195,29 @@ def _any(text: str, phrases: Sequence[str]) -> bool:
     return any(p in text for p in phrases)
 
 
-def _classify_states(text: str) -> List[str]:
-    """Every lifecycle state whose explicit wording appears. Deterministic; order-independent."""
+def _extra_phrases(extra, state: str) -> List[str]:
+    """Normalised (lowercased, stripped) fingerprint lifecycle phrases for one state. A fingerprint's
+    ``lifecycle_phrases`` DRIVE classification — they are ADDED to the built-in sets, never subtract from them."""
+    if not extra:
+        return []
+    return [str(p).strip().lower() for p in (extra.get(state) or []) if str(p).strip()]
+
+
+def _classify_states(text: str, extra: Optional[dict] = None) -> List[str]:
+    """Every lifecycle state whose explicit wording appears (built-in sets UNION any fingerprint-supplied phrases).
+    Deterministic; order-independent. ``extra`` is a {STATE: [phrase]} dict from a matched certified fingerprint."""
     out = []
-    if _any(text, _COMPLETED):
+    if _any(text, _COMPLETED) or _any(text, _extra_phrases(extra, S_COMPLETED)):
         out.append(S_COMPLETED)
-    if _any(text, _FAILED):
+    if _any(text, _FAILED) or _any(text, _extra_phrases(extra, S_FAILED)):
         out.append(S_FAILED)
-    if _any(text, _CANCELLED):
+    if _any(text, _CANCELLED) or _any(text, _extra_phrases(extra, S_CANCELLED)):
         out.append(S_CANCELLED)
-    if _any(text, _PROCESSING):
+    if _any(text, _PROCESSING) or _any(text, _extra_phrases(extra, S_PROCESSING)):
         out.append(S_PROCESSING)
-    if _any(text, _CONFIRMATION):
+    if _any(text, _CONFIRMATION) or _any(text, _extra_phrases(extra, S_CONFIRMATION_REQUIRED)):
         out.append(S_CONFIRMATION_REQUIRED)
-    if _any(text, _REQUESTED):
+    if _any(text, _REQUESTED) or _any(text, _extra_phrases(extra, S_REQUESTED)):
         out.append(S_REQUESTED)
     return out
 
@@ -235,16 +273,171 @@ def _pattern_matches(pattern, domain: str, text: str) -> bool:
     return (not inds) or _any(text, inds)
 
 
+# ======================================================================================================
+# ADR-0099 (Lane A) — CERTIFIED broker-fingerprint matching + certified EXTERNAL_WITHDRAWAL emission.
+# A fingerprint is a model instance OR a dict (tests). The caller supplies ONLY active+certified fingerprints;
+# ``_fp_eligible`` is the detector's OWN independent fail-closed gate so a mis-filtered caller can never unlock
+# certified authority from an uncertified row.
+# ======================================================================================================
+
+def _fp_get(fp, attr, default):
+    return fp.get(attr, default) if isinstance(fp, dict) else getattr(fp, attr, default)
+
+
+def _norm_domains(values) -> List[str]:
+    out: List[str] = []
+    for v in (values or []):
+        d = str(v).strip().lower()
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def _domain_covered(domain: str, doms: Sequence[str]) -> bool:
+    d = (domain or "").strip().lower()
+    return bool(d) and any(d == x or d.endswith("." + x) for x in doms)
+
+
+def _fp_eligible(fp) -> bool:
+    """Default-DENY: a fingerprint grants CERTIFIED authority ONLY when active + certified_capability + status
+    CERTIFIED. (dict test shorthand: ``cert=True``.) Fail-closed independent of the caller's own filter."""
+    if isinstance(fp, dict):
+        if fp.get("cert") is True:
+            return True
+        return bool(fp.get("certified_capability") and fp.get("is_active")
+                    and str(fp.get("governance_status", "")).upper() == "CERTIFIED")
+    fn = getattr(fp, "is_certified_active", None)
+    return bool(callable(fn) and fn())
+
+
+def _fp_name(fp) -> str:
+    return str(_fp_get(fp, "name", "") or "")
+
+
+def _fingerprint_matches(fp, *, domain, dkim_domains, envelope_from_domain, reply_to_domain, text) -> bool:
+    """A certified fingerprint CLAIMS this message when every DECLARED constraint holds (an undeclared constraint is
+    not checked — a fingerprint may authenticate on domain alone). A DECLARED DKIM/envelope/reply-to set MUST align,
+    so a spoofed From domain without the signing/envelope alignment the fingerprint declares is rejected."""
+    doms = _norm_domains(_fp_get(fp, "authenticated_sender_domains", []))
+    if doms and not _domain_covered(domain, doms):
+        return False
+    dkim_decl = _norm_domains(_fp_get(fp, "dkim_signing_domains", []))
+    if dkim_decl and not any(_domain_covered(d, dkim_decl) for d in _norm_domains(dkim_domains)):
+        return False
+    env_decl = _norm_domains(_fp_get(fp, "envelope_from_domains", []))
+    if env_decl and not _domain_covered(envelope_from_domain, env_decl):
+        return False
+    rt_decl = _norm_domains(_fp_get(fp, "reply_to_domains", []))
+    if rt_decl and not _domain_covered(reply_to_domain, rt_decl):
+        return False
+    inds = [str(i).strip().lower() for i in (list(_fp_get(fp, "subject_indicators", []) or [])
+                                             + list(_fp_get(fp, "body_indicators", []) or [])) if str(i).strip()]
+    return (not inds) or _any(text, inds)
+
+
+def _external_evidence(text: str) -> bool:
+    """Positive evidence money LEFT the broker: an external rail present AND no internal-movement veto. Certification
+    UNLOCKS EXTERNAL_WITHDRAWAL; this per-message gate is what actually authorises it (never the word 'withdrawal')."""
+    return _any(text, _EXTERNAL_RAIL) and not _any(text, _INTERNAL_VETO)
+
+
+def _labelled_value(raw_text: str, label: str, value_rx: str) -> str:
+    """Extract the value after an operator-authored field LABEL (e.g. 'Transaction ID: ABC-9'). ReDoS-safe: the label
+    is escaped + length-bounded and the separator run is bounded. Case preserved (operates on the ORIGINAL text)."""
+    lab = (label or "").strip()
+    if not lab or len(lab) > 48:
+        return ""
+    rx = re.compile(re.escape(lab) + r"\s*[:#\-]?\s{0,4}(" + value_rx + r")", re.IGNORECASE)
+    m = rx.search(raw_text or "")
+    return m.group(1) if m else ""
+
+
+def _fp_reference(fp, raw_text: str) -> str:
+    """Reference extraction DRIVEN by the fingerprint's ``reference_hint`` label. Bounded; never a URL/token; '' when
+    the labelled field is absent (never guesses a mid-sentence number).
+
+    PRIVACY: a long PURE-DIGIT run is indistinguishable from a full account number (which must never be stored
+    un-masked — ``contains_sensitive`` does not flag bare digits). A genuine broker reference carries a non-digit
+    marker (a prefix or a hyphen, e.g. 'WD-5017', 'request #A12'); a bare run of 7+ digits captured under a
+    (possibly mis-chosen) label is dropped rather than persisted as a 'reference' that could be an account number."""
+    hint = _fp_get(fp, "reference_hint", "") or ""
+    ref = _labelled_value(raw_text, hint, r"[A-Za-z0-9\-]{3,32}").strip() if hint else ""
+    if not ref or ref.lower().startswith("http") or re.fullmatch(r"\d{7,}", ref):
+        return ""
+    return ref[:32]
+
+
+def _fp_currency_from_field(fp, raw_text: str) -> str:
+    """Currency from the fingerprint's ``currency_hint`` labelled field (ADR-0095 'Currency Type: GBP' shape),
+    validated against the known ISO set (never invented). Used only when the inline amount carried no currency."""
+    hint = _fp_get(fp, "currency_hint", "") or ""
+    if not hint:
+        return ""
+    val = _labelled_value(raw_text, hint, r"[A-Za-z]{3}").upper()
+    return val if val in _ISO else ""
+
+
+_FP_AMOUNT_MAX = 40   # a real amount field value is far under this; the cap keeps a crafted giant number out of the
+
+
+def _fp_amount_from_field(fp, raw_text: str) -> Tuple[Optional[Decimal], str]:
+    """Amount from the fingerprint's ``amount_hint`` labelled field (e.g. 'Withdrawal Amount: 30.00' or 'Amount:
+    GBP 30'). Returns (Decimal|None, currency). Used only when no currency-adjacent inline amount was found. Never
+    fabricates a number. The captured value is LENGTH-CAPPED (``_FP_AMOUNT_MAX``) before it reaches the amount regex,
+    so a crafted giant comma-grouped number in the field cannot drive the quadratic ``_AMOUNT_RE`` scan."""
+    hint = _fp_get(fp, "amount_hint", "") or ""
+    if not hint:
+        return None, ""
+    val = _labelled_value(raw_text, hint, r"[$€£¥]?\s?(?:" + _NUM + r")(?:\s?[A-Za-z]{3})?")[:_FP_AMOUNT_MAX]
+    if not val:
+        return None, ""
+    amt, cur = _extract_amount(val.lower())          # handles a symbol/ISO adjacent to the captured number
+    if amt is not None:
+        return amt, cur
+    m = re.search(_NUM, val)
+    if not m:
+        return None, ""
+    try:
+        return Decimal(m.group(0).replace(",", "").replace(" ", "")), ""
+    except (InvalidOperation, AttributeError):
+        return None, ""
+
+
+def _select_fingerprint(fingerprints, *, domain, dkim_domains, envelope_from_domain, reply_to_domain, text):
+    """Return (single_fp, ambiguous): the ONE eligible certified fingerprint that claims this message, or
+    (None, True) when two or more DISTINCT certified brokers claim it (fail-closed ambiguity => quarantine)."""
+    matched = [fp for fp in (fingerprints or [])
+               if _fp_eligible(fp) and _fingerprint_matches(
+                   fp, domain=domain, dkim_domains=dkim_domains, envelope_from_domain=envelope_from_domain,
+                   reply_to_domain=reply_to_domain, text=text)]
+    names = {_fp_name(fp) for fp in matched}
+    if len(names) >= 2:
+        return None, True
+    return (matched[0] if matched else None), False
+
+
 def detect(*, subject: str, body: str, from_domain: str, auth_verdict: Optional[str],
            sender_allowlisted: bool, patterns: Sequence = (), html_text: str = "",
-           broker_reference_id: str = "") -> GenericDetection:
-    """Pure deterministic detection. ``patterns`` are the ENABLED registry rows (model instances or dicts);
-    ``sender_allowlisted`` is the WP3b allowlist verdict for the From domain; ``auth_verdict`` the SPF/DKIM/DMARC
-    result. Fail-closed throughout."""
+           broker_reference_id: str = "", fingerprints: Sequence = (), dkim_domains: Sequence = (),
+           envelope_from_domain: str = "", reply_to_domain: str = "") -> GenericDetection:
+    """Pure deterministic detection. ``patterns`` are the ENABLED legacy registry rows (ADR-0088); ``fingerprints``
+    are the ACTIVE+CERTIFIED broker fingerprints (ADR-0099, model instances or dicts) the caller supplies —
+    a single matching certified fingerprint MAY unlock a certified ``EXTERNAL_WITHDRAWAL`` (with positive external
+    evidence in the message). ``sender_allowlisted`` is the WP3b allowlist verdict; ``auth_verdict`` the SPF/DKIM/
+    DMARC result; ``dkim_domains``/``envelope_from_domain``/``reply_to_domain`` feed a fingerprint's declared
+    alignment constraints. Fail-closed throughout. With ``fingerprints=()`` behaviour is byte-identical to ADR-0088."""
     text = _norm(subject, body, html_text)
+    raw_text = " ".join(x for x in (subject or "", body or "", html_text or "") if x)   # case-preserving (fp field extraction)
     reasons: List[str] = []
 
-    states = _classify_states(text)
+    # ADR-0099: pick the ONE certified fingerprint that claims this message (or flag cross-broker ambiguity). Its
+    # lifecycle phrases then DRIVE classification alongside the built-in sets.
+    fp, fp_ambiguous = _select_fingerprint(
+        fingerprints, domain=from_domain, dkim_domains=dkim_domains,
+        envelope_from_domain=envelope_from_domain, reply_to_domain=reply_to_domain, text=text)
+    fp_phrases = _fp_get(fp, "lifecycle_phrases", {}) if fp is not None else {}
+
+    states = _classify_states(text, fp_phrases)
     has_intent = _any(text, _INTENT) or bool(states)
 
     # 1) NOT a withdrawal: no intent, or a hard negative with NO withdrawal lifecycle wording.
@@ -265,6 +458,11 @@ def detect(*, subject: str, body: str, from_domain: str, auth_verdict: Optional[
         return GenericDetection(QUARANTINED, reason_codes=tuple(reasons + [RC_AUTH_FAIL]),
                                 proposed_state=(max(states, key=lambda s: _STATE_RANK[s]) if states else S_UNKNOWN))
 
+    # 3b) ADR-0099 ambiguity gate — two or more DISTINCT certified brokers claim one message => fail closed.
+    if fp_ambiguous:
+        return GenericDetection(QUARANTINED, reason_codes=tuple(reasons + [RC_MULTIPLE_FINGERPRINTS]),
+                                proposed_state=(max(states, key=lambda s: _STATE_RANK[s]) if states else S_UNKNOWN))
+
     # 4) Proposed state from explicit wording (most-advanced). No explicit lifecycle => REVIEW_REQUIRED.
     if not states:
         reasons.append(RC_NO_EXPLICIT_LIFECYCLE)
@@ -277,15 +475,26 @@ def detect(*, subject: str, body: str, from_domain: str, auth_verdict: Optional[
     if proposed == S_COMPLETED:
         reasons.append(RC_COMPLETION_EXPLICIT)
 
-    # 5) Safe extraction (redacted).
+    # 5) Safe extraction (redacted). A matched certified fingerprint's hints DRIVE the reference (and a field-only
+    #    currency), on the CASE-PRESERVING text; an explicit ``broker_reference_id`` from the caller wins.
     amount, currency = _extract_amount(text)
     suffix = _extract_masked_suffix(text)
+    fp_ref = ""
+    if fp is not None:
+        if amount is None:
+            fa, fc = _fp_amount_from_field(fp, raw_text)
+            if fa is not None:
+                amount, currency = fa, (currency or fc)
+        if not currency:
+            currency = _fp_currency_from_field(fp, raw_text)
+        fp_ref = _fp_reference(fp, raw_text)
+    reference = (broker_reference_id or "").strip() or fp_ref
     if amount is not None:
         reasons.append(RC_AMOUNT_PRESENT)
     if suffix:
         reasons.append(RC_SUFFIX_PRESENT)
 
-    # 6) Pattern match (registry) + sender allowlist decide Tier-1 auto-accept vs review.
+    # 6) Legacy pattern match (registry) + sender allowlist decide the ADR-0088 Tier-1 auto-accept vs review.
     matched = ""
     broker_name = _broker_name_from_domain(from_domain)
     for p in patterns:
@@ -304,12 +513,49 @@ def detect(*, subject: str, body: str, from_domain: str, auth_verdict: Optional[
         reasons.append(RC_SENDER_NOT_ALLOWLISTED)
 
     # Guard: never let an authorization URL/token reach a stored field (defence in depth; extraction already avoids it).
-    for fld in (broker_name, currency, suffix, broker_reference_id or ""):
+    for fld in (broker_name, currency, suffix, reference):
         if contains_sensitive(fld):
             return GenericDetection(QUARANTINED, reason_codes=tuple(reasons + [RC_UNSAFE_EVIDENCE]),
                                     proposed_state=proposed)
 
-    # 7) Disposition.
+    # 7a) ADR-0099 CERTIFIED path — a single active+certified fingerprint claimed the message, auth passed and there
+    #     is an explicit lifecycle. Certification unlocks the CAPABILITY to emit EXTERNAL_WITHDRAWAL; emission still
+    #     requires positive external-money-out evidence IN THE MESSAGE and (if the fingerprint's semantics require a
+    #     stable reference) a reference — otherwise the category stays UNKNOWN (a valid lifecycle event, never a
+    #     counted withdrawal). The fingerprint's certified domains ARE the sender authority (no separate code
+    #     allowlist entry needed — the scalability goal); ``auth_verdict == pass`` is still mandatory.
+    if fp is not None:
+        fp_name = _fp_name(fp)
+        fp_version = _fp_get(fp, "version", 1)
+        fp_broker = (_fp_get(fp, "broker_display_name", "") or broker_name)[:64]
+        semantics = _fp_get(fp, "semantic_overrides", {}) or {}
+        requires_reference = bool(semantics.get("requires_reference"))
+        # A certified EXTERNAL_WITHDRAWAL requires BOTH positive external-rail evidence AND an explicit withdrawal
+        # INTENT token in the message — never a lifecycle state alone. Otherwise a non-withdrawal broker email that
+        # merely says "has been completed … sent to your bank" (a rebate/refund) could be mis-counted as a withdrawal
+        # (financial-state over-count). Ambiguous ⇒ UNKNOWN (a valid lifecycle event, never a counted withdrawal).
+        external = _external_evidence(text) and _any(text, _INTENT)
+        cert_reasons = list(reasons) + [RC_CERTIFIED_FINGERPRINT]
+        if requires_reference and not reference:
+            category = CAT_UNKNOWN
+            cert_reasons.append(RC_REQUIRES_REFERENCE_MISSING)
+        elif external:
+            category = CAT_EXTERNAL_WITHDRAWAL
+            cert_reasons.append(RC_EXTERNAL_EVIDENCE)
+        else:
+            category = CAT_UNKNOWN
+            cert_reasons.append(RC_NO_EXTERNAL_EVIDENCE)
+        conf = Decimal("0.950") if (category == CAT_EXTERNAL_WITHDRAWAL
+                                    and proposed in (S_COMPLETED, S_CONFIRMATION_REQUIRED)) else Decimal("0.900")
+        parsed = ParsedBrokerEvent(
+            event_type=_STATE_TO_EVENT.get(proposed, "WITHDRAWAL_REQUESTED"), transaction_category=category,
+            broker=fp_broker, amount=amount, currency=currency, broker_reference_id=reference, confidence=conf)
+        return GenericDetection(GENERIC_HIGH_CONFIDENCE, proposed_state=proposed, reason_codes=tuple(cert_reasons),
+                                confidence=conf, amount=amount, currency=currency, masked_account_suffix=suffix,
+                                candidate_broker_name=fp_broker, matched_pattern=f"{fp_name}:{fp_version}:certified",
+                                broker_reference_id=reference, parsed_event=parsed)
+
+    # 7b) Legacy ADR-0088 disposition (no certified fingerprint matched).
     #    GENERIC_HIGH_CONFIDENCE requires: allowlisted sender (Tier 1) AND a matching enabled pattern AND an
     #    explicit lifecycle. Everything else that is a credible withdrawal is REVIEW_REQUIRED (never auto-accepted).
     if sender_allowlisted and matched:
@@ -319,11 +565,11 @@ def detect(*, subject: str, body: str, from_domain: str, auth_verdict: Optional[
             event_type=_STATE_TO_EVENT.get(proposed, "WITHDRAWAL_REQUESTED"),
             transaction_category="UNKNOWN",   # generic NEVER asserts EXTERNAL_WITHDRAWAL without certified evidence
             broker=broker_name, amount=amount, currency=currency,
-            broker_reference_id=broker_reference_id or "", confidence=conf)
+            broker_reference_id=reference, confidence=conf)
         return GenericDetection(GENERIC_HIGH_CONFIDENCE, proposed_state=proposed, reason_codes=tuple(reasons),
                                 confidence=conf, amount=amount, currency=currency,
                                 masked_account_suffix=suffix, candidate_broker_name=broker_name,
-                                matched_pattern=matched, broker_reference_id=broker_reference_id or "",
+                                matched_pattern=matched, broker_reference_id=reference,
                                 parsed_event=parsed)
 
     # Credible withdrawal but not auto-acceptable (no pattern, or unseen/non-allowlisted sender) => review candidate.
@@ -331,4 +577,4 @@ def detect(*, subject: str, body: str, from_domain: str, auth_verdict: Optional[
     return GenericDetection(REVIEW_REQUIRED, proposed_state=proposed, reason_codes=tuple(reasons),
                             confidence=conf, amount=amount, currency=currency,
                             masked_account_suffix=suffix, candidate_broker_name=broker_name,
-                            matched_pattern=matched, broker_reference_id=broker_reference_id or "")
+                            matched_pattern=matched, broker_reference_id=reference)

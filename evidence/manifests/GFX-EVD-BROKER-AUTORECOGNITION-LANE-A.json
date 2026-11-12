@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-BROKER-AUTORECOGNITION-LANE-A",
+  "packet_id": "GFX-BROKER-AUTORECOGNITION-IMPLEMENTATION-074",
+  "created_at_utc": "2026-11-12T00:00:00Z",
+  "branch": "feat/broker-autorecognition",
+  "base_commit": "bc2e0c59f7aaa24d7d7f21b5b230c475c078e460",
+  "head_commit": null,
+  "environment": "local dev (PostgreSQL); isolated test DB 'test_dev_lane_a' to avoid colliding with a concurrent workstream",
+  "ci": "GitHub Actions CI (backend, frontend, governance, market-data-foundation, research-foundation) — authoritative; driven to exact-head 5/5 before merge gate (STOP before merge)",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_intelligence",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> broker_intelligence.tests_broker_fingerprint",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> broker_intelligence",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check: 0 issues",
+    "Migration drift: no changes detected (migration 0032 captures the model exactly)",
+    "Lane A suite (tests_broker_fingerprint): all pass",
+    "Full broker_intelligence suite: all pass (non-regression of every existing per-broker parser test)",
+    "Secret scan: no findings",
+    "Evidence linter: PASS"
+  ],
+  "actual_results": [
+    "System check: identified no issues (0 silenced)",
+    "Migration drift: no changes detected in app 'broker_intelligence'",
+    "Lane A suite: Ran 61 tests — OK (model immutability incl. column-level + audit DB triggers, detector certified emission, external-evidence + withdrawal-intent gate, spoofing/DKIM/envelope fail-closed, cross-broker ambiguity quarantine, extraction hints, onboarding fail-closed gates incl. domain-only/negative-fixture/sensitive-config, rollback, bounded reprocessing, seed + Vantage #4 reproduction, end-to-end DARK-without-canary + owner-scoped certified event)",
+    "Full broker_intelligence suite: Ran 1170 tests — OK (post-review-fix; every existing per-broker parser test green)",
+    "Secret scan: check_no_secrets: no findings",
+    "Evidence linter: EVIDENCE-LINT: PASS"
+  ],
+  "status": "PASS",
+  "limitations": [
+    "DARK + repository-only: NO production seed/certify/activate was performed; migration 0032 seeds NO data; model defaults is_active=False/certified_capability=False, so a deployed-but-unseeded system is byte-identical to ADR-0088 (the active+certified query returns []).",
+    "Non-regression keystone is STRUCTURAL: the existing specific parsers (TradersWay, IS6, Pepperstone, Dominion, Vantage) run FIRST (select_parser), so the fingerprint path never runs for them; proven by the full suite + an explicit select_parser test.",
+    "DKIM/envelope/reply-to alignment is not yet surfaced by MailMessage (only an aggregate auth_verdict); a certified fingerprint DECLARING those constraints fails CLOSED until ingestion populates them (documented follow-up).",
+    "Bounded reprocessing: the APPLY path (writing events from retained evidence) is Sponsor-gated and not exercised against production here; the tested core is the pure dry-run planner.",
+    "PRE-EXISTING (NOT introduced by this packet, left untouched per no-drive-by-refactor): _NUM/_AMOUNT_RE in the ADR-0088 generic detector are quadratic on a long crafted digit run; the whole generic path is DARK/canary-only so the live risk is low; this packet fixed its OWN new exposure (_fp_amount_from_field length-caps the captured value) and filed a separate task for the shared regex.",
+    "Seed Vantage fixture uses the PERMITTED masked/projected forms of withdrawal #4 (last-4 '5017', amount 30.00, currency GBP) to prove reproduction; these are not raw PII (last-4 is the allowed representation; amount/currency are non-PII), and provenance is SYNTHETIC.",
+    "Admin registration of the new models is a deliberate non-goal; the governed management command is the operator surface."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/models.py (BrokerFingerprint + BrokerFingerprintAudit)",
+    "backend/broker_intelligence/migrations/0032_data_driven_broker_fingerprint.py (additive; PL/pgSQL immutability + append-only triggers)",
+    "backend/broker_intelligence/generic_detector.py (certified-fingerprint detection path)",
+    "backend/broker_intelligence/generic_detection.py (loads active+certified fingerprints; certified category)",
+    "backend/broker_intelligence/fingerprint_onboarding.py (propose/validate/certify/activate/deactivate/rollback/delta)",
+    "backend/broker_intelligence/fingerprint_reprocess.py (bounded owner-scoped version-pinned dry-run planner)",
+    "backend/broker_intelligence/fingerprint_seed.py (Stream-B seed mechanism + checksums)",
+    "backend/broker_intelligence/management/commands/broker_fingerprint.py (operator command)",
+    "backend/broker_intelligence/tests_broker_fingerprint.py (61 tests)",
+    "docs/architecture/ADR-0099-data-driven-certified-broker-fingerprint.md",
+    "docs/BROKER_FINGERPRINT_ONBOARDING_RUNBOOK.md"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/models.py": "sha256:969c537cdc1753e649396104dbf0d4582f9152f01d4b4af2606e1a1dc87cc171",
+    "backend/broker_intelligence/generic_detector.py": "sha256:f2e9ce93872e6388bc3a31f02c7071d584ca5cfd5ade38d7cf45eb5fe31cfc26",
+    "backend/broker_intelligence/generic_detection.py": "sha256:1fa38ecbbba59a6ce62e3aadc316d5cfff43e4824e8008fb8d826dac842c2f1c",
+    "backend/broker_intelligence/fingerprint_onboarding.py": "sha256:79c6ff8a1954a3272ae7cbc7c2176a372d98f9cf8b34f677920d28dea8ef2108",
+    "backend/broker_intelligence/fingerprint_seed.py": "sha256:56f9a5fd3fd0e1a9015033a11e09d01d88799c3627e4333a48255aa8fe691764",
+    "backend/broker_intelligence/fingerprint_reprocess.py": "sha256:e3c0cac3900d5fbd7eb2d13edcd1ade6a2f1ec28db34590ee09480e6fb851415",
+    "backend/broker_intelligence/management/commands/broker_fingerprint.py": "sha256:146a0ab5116c233a7e5903ee55751c76417aa157d621d6de45186bee5bd0d1ae",
+    "backend/broker_intelligence/migrations/0032_data_driven_broker_fingerprint.py": "sha256:96b922f7554558c10159bd7dabef9d8138b7c791b13207353a787a344bc754fa",
+    "backend/broker_intelligence/tests_broker_fingerprint.py": "sha256:dc620c9aa4ec1b3f8b65d1470a26b3e8c34d78076ce035f68e2670ee5c684bda",
+    "docs/architecture/ADR-0099-data-driven-certified-broker-fingerprint.md": "sha256:7a21ed838d45f7c6dea31f49e4d523f080768e717fd5871f1f7db23d5af9b2bd",
+    "docs/BROKER_FINGERPRINT_ONBOARDING_RUNBOOK.md": "sha256:13e84fba49e647fd431987784ce01b353ac90a1ee71ae0598b1956b46db98551"
+  },
+  "reviewer": "4-lens adversarial review (privacy/PII, certification-boundary+auth/spoofing, DB-integrity/migration/rollback, ReDoS/idempotency/regression). Findings fixed: DB CRITICAL (column-level immutability trigger; source_hash comparison was bypassable by bulk update), DB HIGH (append-only audit DB trigger), truthfulness MEDIUM (certified EXTERNAL_WITHDRAWAL now requires an explicit withdrawal-intent token, not a lifecycle state alone), privacy MEDIUM (pure-digit reference dropped — account-number-shaped), governance MEDIUM (domain-conflict scan covers inactive certified peers + activation re-check), new-code MEDIUM (_fp_amount_from_field length-caps the captured value), DB LOW (save() blocks revoking certified capability), certify hardening (reject domain-only fingerprint / require negative fixture / reject sensitive operator config). Each fix carries a regression test."
+}

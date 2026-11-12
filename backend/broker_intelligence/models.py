@@ -1403,3 +1403,241 @@ class StaffWithdrawalCorrelation(models.Model):
 
     def __str__(self) -> str:
         return f"StaffWithdrawalCorrelation({self.status}, owner={self.owner_id}, wd={self.resulting_withdrawal_id})"
+
+
+# ======================================================================================================
+# ADR-0099 (Lane A) — DATA-DRIVEN CERTIFIED broker fingerprint. A versioned, immutable-once-certified,
+# governance-tracked, privacy-safe CONFIG that lets the fail-closed GENERIC detector recognise a broker's
+# withdrawal-lifecycle emails WITHOUT shipping a code parser — so onboarding a genuinely new broker is a
+# governed data action, not per-broker Claude work.
+#
+# SAFETY BOUNDARY (the core of this ADR): CERTIFICATION is NOT activation. A fingerprint that is merely
+# PROPOSED/VALIDATED or even ``is_active`` must NEVER gain certified-withdrawal authority. Only a version whose
+# ``certified_capability`` was set by the audited certify command (version-bound, immutable thereafter) may let
+# the detector emit a CERTIFIED ``EXTERNAL_WITHDRAWAL`` — and even then ONLY with positive external-money-out
+# evidence IN THE MESSAGE (certification unlocks the capability; it never bypasses the per-message evidence rule).
+#
+# DARK + non-regressive: the detector consults fingerprints ONLY on the generic path (``select_parser`` → None)
+# and ONLY for a canary owner. Existing certified brokers (Pepperstone/Vantage/TradersWay) keep their SPECIFIC
+# parsers, which run FIRST — so seeding their fingerprints can never change their behaviour.
+#
+# PRIVACY: operator-authored matching config + SYNTHETIC examples only. No raw body, customer name, full account
+# number, email address, credential or mailbox token is ever stored here. Tenant isolation is at the EVENT layer
+# (owner-scoped BrokerEvent); a fingerprint is global broker config, never owner-scoped.
+# ======================================================================================================
+
+class BrokerFingerprint(models.Model):
+    class GovernanceStatus(models.TextChoices):
+        PROPOSED = "PROPOSED", "Proposed (not yet validated or certified)"
+        VALIDATED = "VALIDATED", "Dry-run validated; NOT certified (still review-only)"
+        CERTIFIED = "CERTIFIED", "Certified: MAY emit a certified EXTERNAL_WITHDRAWAL when active"
+        DEACTIVATED = "DEACTIVATED", "Deactivated / retired (never deleted)"
+        ROLLED_BACK = "ROLLED_BACK", "Superseded by a rollback to a prior certified version"
+        REJECTED = "REJECTED", "Rejected in review"
+
+    # The matching-relevant fields: FROZEN once ``certified_capability`` is set (a change needs a NEW version).
+    MATCHING_FIELDS = (
+        "name", "version", "broker_display_name", "authenticated_sender_domains", "envelope_from_domains",
+        "reply_to_domains", "dkim_signing_domains", "subject_indicators", "body_indicators", "lifecycle_phrases",
+        "amount_hint", "currency_hint", "reference_hint", "account_suffix_patterns", "semantic_overrides", "locale",
+    )
+    # The ONLY semantic-override keys a fingerprint may declare (data-driven equivalents of the per-broker code
+    # constants in ``parsers_stream_b``). An unknown key fails closed (ValidationError) — a fingerprint can never
+    # smuggle arbitrary behaviour. All values are booleans.
+    ALLOWED_SEMANTIC_KEYS = frozenset({
+        "requires_reference",                 # ADR-0090: no stable reference => never auto-EXTERNAL_WITHDRAWAL
+        "completion_processed_successfully",  # ADR-0093: perfective "processed successfully" completes
+        "account_from_body",                  # ADR-0093: a single broker-stated trading-account login
+        "currency_from_field",                # ADR-0095: currency on its own labelled line
+        "wants_html",                         # prefer the HTML projection for extraction
+    })
+
+    # ---- identity / versioning ----
+    name = models.CharField(max_length=64)                       # stable broker slug, e.g. "acme-fx"
+    version = models.PositiveIntegerField(default=1)
+    broker_display_name = models.CharField(max_length=64)
+    broker_profile = models.ForeignKey(BrokerProfile, on_delete=models.PROTECT, null=True, blank=True,
+                                       related_name="fingerprints")   # the broker relationship; REQUIRED to certify
+
+    # ---- authenticated identity constraints (domains only; never a full address) ----
+    authenticated_sender_domains = models.JSONField(default=list, blank=True)   # From domains this fingerprint claims
+    envelope_from_domains = models.JSONField(default=list, blank=True)          # optional Return-Path/envelope-from
+    reply_to_domains = models.JSONField(default=list, blank=True)               # optional Reply-To
+    dkim_signing_domains = models.JSONField(default=list, blank=True)           # optional DKIM d= signing domains
+
+    # ---- matching config ----
+    subject_indicators = models.JSONField(default=list, blank=True)            # case-insensitive phrases
+    body_indicators = models.JSONField(default=list, blank=True)
+    lifecycle_phrases = models.JSONField(default=dict, blank=True)             # {STATE: [explicit phrases]} — drives classification
+    amount_hint = models.CharField(max_length=128, blank=True, default="")    # field label/hint for the amount
+    currency_hint = models.CharField(max_length=128, blank=True, default="")  # field label/hint for the currency
+    reference_hint = models.CharField(max_length=128, blank=True, default="") # field label/hint for the reference
+    account_suffix_patterns = models.JSONField(default=list, blank=True)      # safe last-4 extraction patterns
+    semantic_overrides = models.JSONField(default=dict, blank=True)           # data-driven per-broker semantics (see ALLOWED_SEMANTIC_KEYS)
+    locale = models.CharField(max_length=16, blank=True, default="")
+
+    # ---- SYNTHETIC-only examples (NO PII; provenance-labelled) ----
+    positive_examples = models.JSONField(default=list, blank=True)
+    negative_examples = models.JSONField(default=list, blank=True)
+
+    # ---- governance / integrity ----
+    source_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)  # deterministic matching-snapshot hash
+    governance_status = models.CharField(max_length=12, choices=GovernanceStatus.choices,
+                                         default=GovernanceStatus.PROPOSED)
+    is_active = models.BooleanField(default=False)                 # activation (consulted by the detector) — DARK default
+    certified_capability = models.BooleanField(default=False)     # may emit a certified EXTERNAL_WITHDRAWAL (version-bound; immutable once True)
+    provenance = models.CharField(max_length=12, choices=Provenance.choices, default=Provenance.SYNTHETIC)
+
+    # ---- audit fields ----
+    created_by = models.CharField(max_length=128, blank=True, default="")      # staff/actor label, e.g. "user:3" / "seed"
+    approved_by = models.CharField(max_length=128, blank=True, default="")     # staff who CERTIFIED this version
+    approved_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.CharField(max_length=128, blank=True, default="")
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    ticket = models.CharField(max_length=64, blank=True, default="")           # certification reason/ticket reference
+    reason = models.CharField(max_length=256, blank=True, default="")          # sanitised reason; no PII
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "-version"]
+        constraints = [
+            models.UniqueConstraint(fields=["name", "version"], name="uniq_fingerprint_name_version"),
+            # Anti-ambiguity at the SOURCE: at most ONE active+certified version may exist per broker name, so the
+            # detector can never face two certified versions of the SAME broker. (Cross-broker ambiguity — two
+            # DIFFERENT names matching one message — is resolved fail-closed in the detector.)
+            models.UniqueConstraint(fields=["name"], condition=models.Q(is_active=True, certified_capability=True),
+                                    name="uniq_active_certified_fingerprint_per_name"),
+        ]
+        indexes = [
+            models.Index(fields=["is_active", "certified_capability"]),
+            models.Index(fields=["governance_status"]),
+            models.Index(fields=["name", "version"]),
+        ]
+
+    # -- normalisation / hashing ------------------------------------------------------------------------
+    @staticmethod
+    def _norm_domains(values):
+        """Deterministic domain normalisation: lowercased, stripped, de-duped, sorted. Pure."""
+        seen = []
+        for v in (values or []):
+            d = str(v).strip().lower()
+            if d and d not in seen:
+                seen.append(d)
+        return sorted(seen)
+
+    def domains(self):
+        return self._norm_domains(self.authenticated_sender_domains)
+
+    def envelope_domains(self):
+        return self._norm_domains(self.envelope_from_domains)
+
+    def reply_to_domain_list(self):
+        return self._norm_domains(self.reply_to_domains)
+
+    def dkim_domains(self):
+        return self._norm_domains(self.dkim_signing_domains)
+
+    @classmethod
+    def _canonical(cls, value):
+        """Recursively canonicalise a JSON-able value so content-identical fingerprints hash identically regardless
+        of list/key ordering (lists sorted by their canonical JSON; dict keys sorted). Pure, deterministic."""
+        import json as _json
+        if isinstance(value, dict):
+            return {str(k): cls._canonical(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+        if isinstance(value, (list, tuple)):
+            items = [cls._canonical(v) for v in value]
+            return sorted(items, key=lambda x: _json.dumps(x, sort_keys=True, ensure_ascii=True))
+        return value
+
+    def matching_snapshot(self) -> dict:
+        """The frozen-once-certified matching-relevant fields, canonicalised. NEVER includes governance/audit/
+        activation fields (those may legitimately change after certification)."""
+        snap = {}
+        for f in self.MATCHING_FIELDS:
+            snap[f] = self._canonical(getattr(self, f))
+        return snap
+
+    def compute_source_hash(self) -> str:
+        import hashlib as _hashlib
+        import json as _json
+        payload = _json.dumps(self.matching_snapshot(), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    # -- validation / immutability ----------------------------------------------------------------------
+    def _validate_semantic_overrides(self):
+        ov = self.semantic_overrides or {}
+        if not isinstance(ov, dict):
+            raise ValidationError("semantic_overrides must be an object of boolean flags")
+        bad = set(ov.keys()) - self.ALLOWED_SEMANTIC_KEYS
+        if bad:
+            raise ValidationError(f"unknown semantic_overrides key(s): {sorted(bad)}")
+        for k, v in ov.items():
+            if not isinstance(v, bool):
+                raise ValidationError(f"semantic_overrides[{k!r}] must be a boolean")
+
+    def save(self, *args, **kwargs):
+        self._validate_semantic_overrides()
+        # Keep the integrity hash in lock-step with the matching snapshot on every write.
+        self.source_hash = self.compute_source_hash()
+        if not self._state.adding:
+            # IMMUTABILITY: once a version carries certified capability, its MATCHING snapshot is frozen AND the
+            # capability itself is irrevocable — a change requires a NEW version. Governance/activation/audit fields
+            # may still change (activate/deactivate/roll back). Enforced here at the app layer AND, so a bulk
+            # QuerySet.update()/raw SQL cannot bypass it, by the migration-0032 column-level DB trigger.
+            prior = type(self).objects.filter(pk=self.pk).first()
+            if prior is not None and prior.certified_capability:
+                if not self.certified_capability:
+                    raise ValidationError(
+                        "BrokerFingerprint certified capability is version-bound and cannot be revoked")
+                if prior.matching_snapshot() != self.matching_snapshot():
+                    raise ValidationError(
+                        "BrokerFingerprint is immutable once certified; a matching-field change requires a NEW version")
+        super().save(*args, **kwargs)
+
+    def is_certified_active(self) -> bool:
+        return bool(self.certified_capability and self.is_active
+                    and self.governance_status == self.GovernanceStatus.CERTIFIED)
+
+    def __str__(self) -> str:
+        return (f"BrokerFingerprint({self.name} v{self.version}, {self.governance_status}, "
+                f"active={self.is_active}, certified={self.certified_capability})")
+
+
+class BrokerFingerprintAudit(models.Model):
+    """ADR-0099 — append-only lifecycle audit of a ``BrokerFingerprint`` (PROPOSE / VALIDATE / CERTIFY / ACTIVATE /
+    DEACTIVATE / ROLLBACK / REJECT). Write-once; never updated or deleted. Preserves the version's ``source_hash``
+    (integrity) and the actor; carries a sanitised reason/ticket only — NO body/PII."""
+
+    class Action(models.TextChoices):
+        PROPOSE = "PROPOSE", "Proposed"
+        VALIDATE = "VALIDATE", "Dry-run validated"
+        CERTIFY = "CERTIFY", "Certified (capability granted, version-bound)"
+        ACTIVATE = "ACTIVATE", "Activated"
+        DEACTIVATE = "DEACTIVATE", "Deactivated"
+        ROLLBACK = "ROLLBACK", "Rolled back to a prior certified version"
+        REJECT = "REJECT", "Rejected"
+
+    fingerprint = models.ForeignKey(BrokerFingerprint, on_delete=models.PROTECT, related_name="audit")
+    action = models.CharField(max_length=12, choices=Action.choices)
+    actor = models.CharField(max_length=128)                     # staff identity, e.g. "user:3" / "seed"
+    reason = models.CharField(max_length=256, blank=True, default="")   # sanitised; no PII
+    ticket = models.CharField(max_length=64, blank=True, default="")
+    source_hash = models.CharField(max_length=64, blank=True, default="")   # preserved from the fingerprint version
+    snapshot = models.JSONField(default=dict, blank=True)        # governance snapshot at the time of the action
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["fingerprint", "id"]), models.Index(fields=["action"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("BrokerFingerprintAudit is append-only; a correction is a new row")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("BrokerFingerprintAudit is append-only; it is never deleted")
+
+    def __str__(self) -> str:
+        return f"BrokerFingerprintAudit(fp={self.fingerprint_id}, {self.action}, {self.actor})"

@@ -16,7 +16,8 @@ from django.db import IntegrityError, transaction
 from . import generic_detector as gdx
 from .broker_senders import _domain_of, is_allowlisted_broker_sender
 from .flags import broker_generic_detection_enabled_for
-from .models import BrokerEvent, GenericWithdrawalPattern, Provenance, WithdrawalReviewCandidate
+from .models import (BrokerEvent, BrokerFingerprint, GenericWithdrawalPattern, Provenance,
+                     WithdrawalReviewCandidate)
 
 logger = logging.getLogger("guvfx.broker_intelligence.generic_detection")
 
@@ -44,10 +45,19 @@ def run_generic_detection(*, message, blob, owner, provenance=Provenance.SYNTHET
         auth_verdict = getattr(message, "auth_verdict", None)
         html_text = _html_to_text(getattr(message, "html_body", "") or "")
         patterns = list(GenericWithdrawalPattern.objects.filter(enabled=True))
+        # ADR-0099: the ACTIVE+CERTIFIED broker fingerprints. The model manager returns rows; the detector applies its
+        # OWN independent eligibility gate too (``_fp_eligible``), so a mis-scoped query can never unlock certified
+        # authority. DKIM/envelope/reply-to alignment is not yet surfaced by MailMessage (only an aggregate
+        # ``auth_verdict``) — a fingerprint that DECLARES those constraints therefore fails closed until the ingestion
+        # layer populates them; a domain+indicator fingerprint still recognises on domain + ``auth_verdict == pass``.
+        fingerprints = list(BrokerFingerprint.objects.filter(
+            is_active=True, certified_capability=True,
+            governance_status=BrokerFingerprint.GovernanceStatus.CERTIFIED))
 
         gd = gdx.detect(subject=getattr(message, "subject", "") or "", body=getattr(message, "body", "") or "",
                         from_domain=from_domain, auth_verdict=auth_verdict,
-                        sender_allowlisted=sender_allowlisted, patterns=patterns, html_text=html_text)
+                        sender_allowlisted=sender_allowlisted, patterns=patterns, html_text=html_text,
+                        fingerprints=fingerprints)
 
         if gd.disposition == gdx.NOT_WITHDRAWAL:
             return None   # not a withdrawal -> no candidate, no event (unparseable-as-today)
@@ -65,17 +75,23 @@ def run_generic_detection(*, message, blob, owner, provenance=Provenance.SYNTHET
 
 
 def _create_generic_event(gd, *, message, blob, owner, provenance) -> Optional[BrokerEvent]:
-    """Create ONE owner-scoped BrokerEvent from a GENERIC_HIGH_CONFIDENCE detection. Category stays UNKNOWN (generic
-    never asserts EXTERNAL_WITHDRAWAL without certified evidence), trading_account stays NULL (generic has only a
-    masked suffix, never a full account to resolve) — owner-attributed, account-UNRESOLVED. Idempotent per
-    (owner, evidence)."""
+    """Create ONE owner-scoped BrokerEvent from a GENERIC_HIGH_CONFIDENCE detection. The category comes from the
+    detector: UNKNOWN for a legacy ADR-0088 pattern match (generic never asserts EXTERNAL_WITHDRAWAL without certified
+    evidence), and the CERTIFIED EXTERNAL_WITHDRAWAL only when an active+certified ADR-0099 fingerprint matched AND the
+    message carried positive external-money-out evidence (the detector already enforced this). trading_account stays
+    NULL (generic has only a masked suffix, never a full account to resolve) — owner-attributed, account-UNRESOLVED.
+    Idempotent per (owner, evidence)."""
     pe = gd.parsed_event
+    # Fail-closed: only the detector's own TransactionCategory values are ever written here; anything unexpected
+    # degrades to UNKNOWN so a surprise value can never mint a counted withdrawal.
+    category = pe.transaction_category if pe.transaction_category in (
+        gdx.CAT_EXTERNAL_WITHDRAWAL, gdx.CAT_UNKNOWN) else gdx.CAT_UNKNOWN
     try:
         with transaction.atomic():
             return BrokerEvent.objects.create(
                 owner=owner, trading_account=None, broker=pe.broker,
                 source=BrokerEvent._meta.get_field("source").default,
-                event_type=pe.event_type, transaction_category="UNKNOWN",
+                event_type=pe.event_type, transaction_category=category,
                 occurred_at=None, received_at=message.received_at,
                 broker_reference_id=pe.broker_reference_id or "", amount=pe.amount, currency=pe.currency or "",
                 source_account="", destination_account="", fee=None, fee_currency="",
