@@ -30,6 +30,10 @@ class Command(BaseCommand):
         parser.add_argument("--expected-account-suffix", required=True,
                             help="Trailing digits the resolved owner-scoped account must end with (e.g. 5017).")
         parser.add_argument("--expected-amount", required=True, help="Expected completion amount (e.g. 30).")
+        parser.add_argument("--expected-currency", default="",
+                            help="Optional (ADR-0095): expected currency (e.g. GBP). When given, the currency the "
+                                 "correlated submission evidence states MUST match; it also enables a currency-BACKFILL "
+                                 "of an already-completed row whose currency is blank.")
         parser.add_argument("--approved-by", required=True, help="Named active staff reviewer (email or username).")
         parser.add_argument("--completion-sha", default="",
                             help="Optional: the completion candidate's evidence sha256 prefix (extra fail-closed check).")
@@ -59,7 +63,8 @@ class Command(BaseCommand):
             plan = plan_staff_completion(
                 withdrawal_id=opts["withdrawal_id"], owner=owner, broker_profile_id=opts["broker_profile_id"],
                 completion_candidate_id=opts["completion_candidate_id"], expected_account_suffix=suffix,
-                expected_amount=opts["expected_amount"], approved_by=opts["approved_by"])
+                expected_amount=opts["expected_amount"], approved_by=opts["approved_by"],
+                expected_currency=opts.get("expected_currency"))
         except CompletionRefused as exc:
             raise CommandError(f"REFUSED {exc.code}: {exc.detail}")
 
@@ -69,14 +74,15 @@ class Command(BaseCommand):
 
         # Mask from the RESOLVED account's real last-4 (never the operator-supplied suffix), so the display is
         # truthful even if the two ever differed.
+        completed_row = plan.already_completed or plan.currency_backfill_only
         masked_acct = ("••••" + plan.resolved_account_last4) if plan.resolved_account_last4 else "••••"
         prior_amount = str(plan.prior_amount) if plan.prior_amount is not None else None
         before = {
             "withdrawal_id": plan.withdrawal_id, "owner_id": plan.owner_id,
-            "status": ("COMPLETED" if plan.already_completed else "REQUESTED"), "correlation_method": "MANUAL_STAFF",
-            "trading_account_id": (plan.resolved_account_id if plan.already_completed else None),
+            "status": ("COMPLETED" if completed_row else "REQUESTED"), "correlation_method": "MANUAL_STAFF",
+            "trading_account_id": (plan.resolved_account_id if completed_row else None),
             "amount": prior_amount, "currency": plan.prior_currency,
-            "completed_at": (plan.completion_at.isoformat() if (plan.already_completed and plan.completion_at) else None),
+            "completed_at": (plan.completion_at.isoformat() if (completed_row and plan.completion_at) else None),
         }
         after = {
             "withdrawal_id": plan.withdrawal_id, "owner_id": plan.owner_id,
@@ -88,29 +94,36 @@ class Command(BaseCommand):
             "completed_at": plan.completion_at.isoformat() if plan.completion_at else None,
             "duration_seconds": plan.duration_seconds,
         }
-        # A truthful rollback recipe: list ONLY the fields apply() changes (amount/currency only when it set them).
-        amount_clause = " amount=NULL," if plan.prior_amount is None else ""
-        curr_clause = (" currency='',".replace("''", repr(plan.prior_currency))
-                       if (not plan.prior_currency and plan.currency) else "")
-        rollback = (f"set withdrawal id={plan.withdrawal_id} status=REQUESTED, trading_account=NULL, completed_at=NULL,"
-                    f"{amount_clause}{curr_clause} last_status_change_at=NULL — restores the BEFORE state above")
+        # A truthful rollback recipe: list ONLY the fields apply() changes.
+        if plan.currency_backfill_only:
+            rollback = (f"set withdrawal id={plan.withdrawal_id} currency={plan.prior_currency!r} "
+                        f"(restores the blank currency; no other field changes)")
+        else:
+            amount_clause = " amount=NULL," if plan.prior_amount is None else ""
+            curr_clause = (f" currency={plan.prior_currency!r}," if (not plan.prior_currency and plan.currency) else "")
+            rollback = (f"set withdrawal id={plan.withdrawal_id} status=REQUESTED, trading_account=NULL, completed_at=NULL,"
+                        f"{amount_clause}{curr_clause} last_status_change_at=NULL — restores the BEFORE state above")
 
-        emit("=== Staff-gated MANUAL_STAFF withdrawal completion (ADR-0093) ===")
+        title = "currency backfill" if plan.currency_backfill_only else "completion"
+        emit(f"=== Staff-gated MANUAL_STAFF withdrawal {title} (ADR-0093/0094) ===")
         emit(f"  reviewer:          {plan.reviewer}")
         emit(f"  owner:             {mask_email(owner_email)} (id={plan.owner_id})")
         emit(f"  withdrawal:        id={plan.withdrawal_id}")
         emit(f"  broker:            {plan.broker_display or '(as recorded)'} (profile id={plan.broker_profile_id})")
-        emit(f"  completion cand:   id={plan.completion_candidate_id} sha={plan.completion_sha12}… ts={after['completed_at']}")
+        if not completed_row:
+            emit(f"  completion cand:   id={plan.completion_candidate_id} sha={plan.completion_sha12}… ts={after['completed_at']}")
         emit(f"  resolved account:  id={plan.resolved_account_id} {masked_acct} (owner-scoped, single exact match)")
         emit(f"  amount/currency:   {after['amount']} / {after['currency']}")
         emit(f"  BEFORE: {json.dumps(before, sort_keys=True)}")
         emit(f"  AFTER:  {json.dumps(after, sort_keys=True)}")
 
         if plan.already_completed:
-            emit("  IDEMPOTENT no-op — withdrawal is already COMPLETED and account-resolved. No change.")
+            emit(f"  IDEMPOTENT no-op — withdrawal is already COMPLETED (currency {plan.prior_currency or '(blank)'}). "
+                 f"No change.")
             return
         if not opts["apply"]:
-            emit("  DRY-RUN — no changes written. Re-run with --apply to complete the withdrawal.")
+            verb = "backfill the currency" if plan.currency_backfill_only else "complete the withdrawal"
+            emit(f"  DRY-RUN — no changes written. Re-run with --apply to {verb}.")
             emit(f"  ROLLBACK (if needed after apply): {rollback}.")
             return
 
