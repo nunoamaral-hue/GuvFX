@@ -948,3 +948,267 @@ class CurrencyIntegrityTests(TestCase):
                                    rate_source=self._NULL, observed_currency={a.id: "GBP"})
         self.assertIsNone(per[a.id]["open_pl_usd"])              # not 0.0
         self.assertEqual(per[a.id]["open_pl_basis"], "PARTIAL")
+
+
+# ── ADR-0100: per-account live-position exclusion reason (structural vs transient) ──────────────────────────────
+def _pos_dict(profit, symbol="XAUUSD"):
+    return {"ticket": 1, "symbol": symbol, "side": "BUY", "volume": 1.0,
+            "price_open": 4000, "price_current": 4000, "profit": profit, "magic": 0}
+
+
+def _reason_fetch(mapping):
+    """fetch_positions fake: mapping {account_id: list | {"unavailable": True, "reason": code} | None}."""
+    def _f(account, timeout=None):
+        return mapping.get(account.id)
+    return _f
+
+
+class PositionReasonTaxonomyTests(TestCase):
+    def test_account_not_demo_is_structural(self):
+        cat = FX.position_reason_category("account_not_demo")
+        self.assertEqual(cat, FX.POSITIONS_UNSUPPORTED_LIVE)
+        self.assertTrue(FX.is_structural(cat))
+
+    def test_identity_endpoint_config_are_structural(self):
+        for r in ("identity_refused", "endpoint_unavailable", "config_missing"):
+            self.assertTrue(FX.is_structural(FX.position_reason_category(r)), r)
+
+    def test_bridge_budget_unknown_are_transient(self):
+        # An UNRECOGNISED reason must default to TRANSIENT — never over-claim a permanent cause we cannot confirm.
+        for r in ("bridge_unreachable", "read_timeout_budget", "unknown", "", None, "positions_refused"):
+            self.assertEqual(FX.position_reason_category(r), FX.STALE_OBSERVATION)
+            self.assertFalse(FX.is_structural(FX.position_reason_category(r)))
+
+
+class OpenPositionsReasonTests(TestCase):
+    _NULL = FX.NullFxRateSource()
+
+    def test_structural_account_not_demo(self):
+        u = _user("dr1"); a = _acct(u, broker="Pepperstone")
+        _, per = PF.open_positions([a], rate_source=self._NULL,
+                                   fetch_positions=_reason_fetch({a.id: {"unavailable": True, "reason": "account_not_demo"}}))
+        rec = per[a.id]
+        self.assertTrue(rec["stale"]); self.assertTrue(rec["structural"])
+        self.assertEqual(rec["unavailable_category"], FX.POSITIONS_UNSUPPORTED_LIVE)
+        self.assertEqual(rec["unavailable_reason"], "account_not_demo")
+        self.assertIsNone(rec["open_pl_usd"])                    # never a fabricated 0
+
+    def test_transient_bridge_unreachable(self):
+        u = _user("dr2"); a = _acct(u, broker="Pepperstone")
+        _, per = PF.open_positions([a], rate_source=self._NULL,
+                                   fetch_positions=_reason_fetch({a.id: {"unavailable": True, "reason": "bridge_unreachable"}}))
+        rec = per[a.id]
+        self.assertTrue(rec["stale"]); self.assertFalse(rec["structural"])
+        self.assertEqual(rec["unavailable_category"], FX.STALE_OBSERVATION)
+
+    def test_legacy_none_is_transient_stale(self):
+        u = _user("dr3"); a = _acct(u, broker="Pepperstone")
+        _, per = PF.open_positions([a], rate_source=self._NULL, fetch_positions=_reason_fetch({a.id: None}))
+        rec = per[a.id]
+        self.assertTrue(rec["stale"]); self.assertFalse(rec["structural"])
+
+    def test_successful_read_clears_flags(self):
+        u = _user("dr4"); a = _acct(u, broker="Pepperstone")
+        rows, per = PF.open_positions([a], rate_source=self._NULL, observed_currency={a.id: "USD"},
+                                      fetch_positions=_reason_fetch({a.id: [_pos_dict(5.0)]}))
+        rec = per[a.id]
+        self.assertFalse(rec["stale"]); self.assertFalse(rec["structural"])
+        self.assertIsNone(rec["unavailable_category"]); self.assertEqual(rec["open_count"], 1)
+
+    def test_unavailable_accounts_structured(self):
+        u = _user("dr5"); live = _acct(u, broker="IS6"); demo = _acct(u, broker="Pepperstone")
+        _, per = PF.open_positions([live, demo], rate_source=self._NULL, observed_currency={demo.id: "USD"},
+                                   fetch_positions=_reason_fetch({live.id: {"unavailable": True, "reason": "account_not_demo"},
+                                                                  demo.id: [_pos_dict(3.0)]}))
+        ua = PF.unavailable_accounts(per)
+        self.assertEqual([x["account_id"] for x in ua], [live.id])
+        self.assertTrue(ua[0]["structural"])
+        self.assertEqual(ua[0]["reason_category"], FX.POSITIONS_UNSUPPORTED_LIVE)
+
+
+class OpenTradesViewReasonTests(TestCase):
+    def test_view_distinguishes_structural_from_live(self):
+        from analytics.models import AccountEquitySnapshot
+        u = _user("dv1"); live = _acct(u, broker="IS6"); demo = _acct(u, broker="Pepperstone")
+        AccountEquitySnapshot.objects.create(trading_account=demo, observed_at=timezone.now(),
+                                             account_currency="USD", balance=100, equity=100)
+        mapping = {live.id: {"unavailable": True, "reason": "account_not_demo"}, demo.id: [_pos_dict(7.0)]}
+
+        def _fake(account, windows_username, timeout=10.0):
+            return mapping.get(account.id)
+        c = APIClient(); c.force_authenticate(u)
+        with mock.patch("analytics.views_portfolio._fetch_mt5_open_positions", side_effect=_fake), \
+                mock.patch("analytics.views_portfolio._account_windows_username", return_value="wu"):
+            r = c.get("/api/analytics/portfolio/open-trades/?scope=ALL")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["accounts_total"], 2)
+        self.assertEqual(body["accounts_unavailable"], 1)
+        self.assertEqual(body["accounts_structurally_unavailable"], 1)
+        ua = body["unavailable_accounts"]
+        self.assertEqual([x["account_id"] for x in ua], [live.id])
+        self.assertTrue(ua[0]["structural"])
+        self.assertEqual(ua[0]["reason_category"], "positions_unsupported_live")
+        # the live-reading account's position is shown (never hidden or zeroed) and summed truthfully
+        self.assertTrue(any(t["account_id"] == demo.id for t in body["trades"]))
+        self.assertEqual(body["open_pl_usd"]["total_usd"], 7.0)
+
+
+class BuildSummaryReasonTests(TestCase):
+    def test_summary_carries_structural_and_daily_counts(self):
+        u = _user("bs1"); live = _acct(u, broker="IS6"); demo = _acct(u, broker="Pepperstone")
+
+        def _bal(account, timeout=10.0):
+            return {"balance": 100, "equity": 100, "currency": "USD"}
+
+        def _pos(account, timeout=10.0):
+            return {"unavailable": True, "reason": "account_not_demo"} if account.id == live.id else []
+        payload, err = PF.build_summary(u, "ALL", fetch_balance=_bal, fetch_positions=_pos,
+                                        rate_source=FX.NullFxRateSource())
+        self.assertIsNone(err)
+        self.assertTrue(any(x["account_id"] == live.id and x["structural"]
+                            for x in payload["unavailable_accounts"]))
+        agg = payload["aggregate"]
+        self.assertEqual(agg["daily_realized_pnl_window"], "broker_server_calendar_day")
+        self.assertEqual(agg["daily_realized_pnl_included_count"], 2)   # both USD
+        self.assertEqual(agg["daily_realized_pnl_excluded_count"], 0)
+        live_acct = next(x for x in payload["accounts"] if x["account_id"] == live.id)
+        self.assertTrue(live_acct["position_structural"])
+        self.assertEqual(live_acct["position_unavailable_category"], "positions_unsupported_live")
+
+
+class FetcherReasonMappingTests(TestCase):
+    """The REAL _fetch_mt5_open_positions maps its failure modes to the reason contract (ADR-0100)."""
+
+    def test_config_missing_returns_reason_dict(self):
+        from analytics import views_trade_history as VTH
+        u = _user("fr1"); a = _acct(u, broker="Pepperstone")
+        with mock.patch.object(VTH, "_get_windows_agent_config", return_value=(None, None)):
+            res = VTH._fetch_mt5_open_positions(a, "wu")
+        self.assertEqual(res, {"unavailable": True, "reason": "config_missing"})
+
+    def test_live_terminal_account_not_demo_mapped_structural(self):
+        import json as _json
+        from contextlib import contextmanager
+        from analytics import views_trade_history as VTH
+
+        u = _user("fr2"); a = _acct(u, broker="IS6")
+
+        class _ST:
+            ok = True; base_url = "http://bridge.invalid"; per_tenant = True; reason_code = ""
+
+        class _Verify:
+            ok = True
+
+        @contextmanager
+        def _resp(payload):
+            class _R:
+                def read(self_inner):
+                    return _json.dumps(payload).encode()
+            yield _R()
+
+        calls = {"n": 0}
+
+        def _urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _resp({"account_login": a.account_number, "account_server": "IS6Technologies-Live",
+                              "trade_mode": 0})            # identity read (live terminal)
+            return _resp({"ok": False, "error": "account_not_demo"})   # positions read — demo-gated refusal
+
+        with mock.patch.object(VTH, "_get_windows_agent_config", return_value=("http://bridge.invalid", "tok")), \
+                mock.patch.object(VTH, "resolve_account_snapshot_base", return_value=_ST(), create=True), \
+                mock.patch("execution.snapshot_transport.resolve_account_snapshot_base", return_value=_ST()), \
+                mock.patch("execution.snapshot_transport.verify_snapshot_identity", return_value=_Verify()), \
+                mock.patch.object(VTH.urllib.request, "urlopen", side_effect=_urlopen):
+            res = VTH._fetch_mt5_open_positions(a, "wu")
+        self.assertEqual(res, {"unavailable": True, "reason": "account_not_demo"})
+        self.assertTrue(FX.is_structural(FX.position_reason_category(res["reason"])))
+
+    def test_arbitrary_bridge_refusal_is_transient_never_echoed(self):
+        # A non-account_not_demo refusal must map to the fixed TRANSIENT "positions_refused" — the bridge's free-text
+        # error is NEVER echoed (no identifier leak) and can NEVER mint a structural reason key (no over-claim).
+        import json as _json
+        from contextlib import contextmanager
+        from analytics import views_trade_history as VTH
+        u = _user("fr3"); a = _acct(u, broker="IS6")
+
+        class _ST:
+            ok = True; base_url = "http://bridge.invalid"; per_tenant = True; reason_code = ""
+
+        class _Verify:
+            ok = True
+
+        @contextmanager
+        def _resp(payload):
+            class _R:
+                def read(self_inner):
+                    return _json.dumps(payload).encode()
+            yield _R()
+
+        calls = {"n": 0}
+
+        def _urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _resp({"account_login": a.account_number, "account_server": "IS6Technologies-Live", "trade_mode": 0})
+            # Hostile/identifying + structural-key-colliding bridge error strings must both be neutralised.
+            return _resp({"ok": False, "error": "endpoint_unavailable login 1302587 on IS6Technologies-Live"})
+
+        with mock.patch.object(VTH, "_get_windows_agent_config", return_value=("http://bridge.invalid", "tok")), \
+                mock.patch("execution.snapshot_transport.resolve_account_snapshot_base", return_value=_ST()), \
+                mock.patch("execution.snapshot_transport.verify_snapshot_identity", return_value=_Verify()), \
+                mock.patch.object(VTH.urllib.request, "urlopen", side_effect=_urlopen):
+            res = VTH._fetch_mt5_open_positions(a, "wu")
+        self.assertEqual(res, {"unavailable": True, "reason": "positions_refused"})
+        self.assertNotIn("1302587", res["reason"])                               # no identifier leak
+        self.assertFalse(FX.is_structural(FX.position_reason_category(res["reason"])))  # transient, not over-claimed
+
+
+class DailyCoverageCountTests(TestCase):
+    """build_summary daily included/excluded counts must MATCH the figure daily_realized_pnl actually produced."""
+
+    def test_withheld_figure_covers_no_account(self):
+        # A mixed-trade-currency scope withholds the daily figure (None) — so the coverage is 0 included / all excluded,
+        # never a count claiming coverage of a withheld number.
+        u = _user("dc1"); a = _acct(u, broker="Pepperstone")
+        _closed_trade(a, 10.0, profit_currency="GBP")        # a non-USD trade currency -> daily value withheld
+
+        def _bal(account, timeout=10.0):
+            return {"balance": 100, "equity": 100, "currency": "USD"}
+
+        def _pos(account, timeout=10.0):
+            return []
+        payload, err = PF.build_summary(u, "ALL", fetch_balance=_bal, fetch_positions=_pos,
+                                        rate_source=FX.NullFxRateSource())
+        self.assertIsNone(err)
+        agg = payload["aggregate"]
+        self.assertIsNone(agg["daily_realized_pnl_usd"])                 # withheld
+        self.assertEqual(agg["daily_realized_pnl_included_count"], 0)    # covers nothing
+        self.assertEqual(agg["daily_realized_pnl_excluded_count"], 1)
+        self.assertEqual(agg["daily_realized_pnl_excluded_accounts"], [a.id])
+
+    def test_single_currency_conversion_includes_converted_accounts(self):
+        # ADR-0066: a single non-USD (GBP) scope with a vetted rate IS converted — so the GBP account is INCLUDED in
+        # the daily coverage, agreeing with the (present, USD-basis) figure, not blindly excluded as non-USD.
+        class _Rate:
+            rate = 1.25; as_of = "2026-11-01"; source = "TEST"
+
+        class _GbpSrc:
+            def get_rate(self, frm, to):
+                return _Rate() if (frm == "GBP" and to == "USD") else None
+        u = _user("dc2"); g = _acct(u, broker="Pepperstone")
+        _closed_trade(g, 8.0)                                 # USD-blank trade currencies (estate default) -> summable
+
+        def _bal(account, timeout=10.0):
+            return {"balance": 100, "equity": 100, "currency": "GBP"}    # observed GBP -> single-currency scope
+
+        def _pos(account, timeout=10.0):
+            return []
+        payload, err = PF.build_summary(u, "ALL", fetch_balance=_bal, fetch_positions=_pos, rate_source=_GbpSrc())
+        self.assertIsNone(err)
+        agg = payload["aggregate"]
+        self.assertIsNotNone(agg["daily_realized_pnl_usd"])             # converted, present
+        self.assertEqual(agg["daily_realized_pnl_basis"], "USD")
+        self.assertEqual(agg["daily_realized_pnl_included_count"], 1)   # the GBP account IS covered (converted)
+        self.assertEqual(agg["daily_realized_pnl_excluded_count"], 0)

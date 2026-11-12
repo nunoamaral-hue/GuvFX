@@ -36,6 +36,10 @@ const STR = {
   // may be reachable (its balance/equity read can succeed) — so this is "live positions unavailable", not the
   // broader, misleading "not reachable".
   staleAccts: { en: (n: number) => `${n} account${n === 1 ? "" : "s"}: live positions unavailable`, ja: (n: number) => `${n}口座: ポジション取得不可` },
+  // ADR-0100: distinguish a PERMANENT/structural exclusion (e.g. a live terminal whose positions are demo-gated —
+  // it will NOT self-heal, so never imply "reconnecting") from a transient one that may recover on the next poll.
+  structuralUnavail: { en: (n: number) => `${n} account${n === 1 ? "" : "s"}: live positions not available for live accounts`, ja: (n: number) => `${n}口座: ライブ口座はポジション非対応` },
+  transientUnavail: { en: (n: number) => `${n} account${n === 1 ? "" : "s"}: live positions temporarily unavailable`, ja: (n: number) => `${n}口座: ポジション一時取得不可` },
   showing: { en: (x: number, y: number) => `Showing ${x} of ${y}`, ja: (x: number, y: number) => `${y}件中${x}件を表示` },
   updated: { en: (s: number) => `Updated ${s}s ago`, ja: (s: number) => `${s}秒前に更新` },
   reconnecting: { en: "reconnecting", ja: "再接続中" },
@@ -142,6 +146,12 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
   const fullCount = data?.count ?? trades.length;          // full open count (list may be capped server-side)
   const staleAccts = data?.stale_accounts?.length ?? 0;    // accounts whose positions could not be read (M1)
   const truncated = !!data?.truncated;                     // row list capped (M3)
+  // Per-account exclusion reasons (ADR-0100): when the backend supplies them, split structural (permanent) from
+  // transient so the footer explains WHY. Fall back to the plain "unavailable" count for older payloads.
+  const unavailList = data?.unavailable_accounts ?? null;
+  const structuralCount = unavailList ? unavailList.filter((u) => u.structural).length : 0;
+  const transientCount = unavailList ? unavailList.length - structuralCount : staleAccts;
+  const unavailableCount = unavailList ? unavailList.length : staleAccts;
 
   return (
     <div style={{ ...card, flex: "1 1 auto", minWidth: 0 }} className="open-trades-tile" data-testid="open-trades-panel">
@@ -201,10 +211,18 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
           ))
         )}
       </div>
-      {(staleAccts > 0 || truncated) && (
+      {(unavailableCount > 0 || truncated) && (
         <div style={{ ...meta, marginTop: 6, flexShrink: 0 }}>
-          {staleAccts > 0 ? STR.staleAccts[L](staleAccts) : ""}
-          {staleAccts > 0 && truncated ? " · " : ""}
+          {unavailList ? (
+            <>
+              {structuralCount > 0 ? STR.structuralUnavail[L](structuralCount) : ""}
+              {structuralCount > 0 && transientCount > 0 ? " · " : ""}
+              {transientCount > 0 ? STR.transientUnavail[L](transientCount) : ""}
+            </>
+          ) : (
+            staleAccts > 0 ? STR.staleAccts[L](staleAccts) : ""
+          )}
+          {unavailableCount > 0 && truncated ? " · " : ""}
           {truncated ? STR.showing[L](trades.length, fullCount) : ""}
         </div>
       )}

@@ -123,12 +123,21 @@ class PortfolioOpenTradesView(APIView):
                         .values_list("account_currency", flat=True).first())
             reporting_currency = FX.normalise_currency(observed)
         from django.utils import timezone
+        # Per-account exclusion detail (ADR-0100): structural (e.g. a LIVE terminal whose /mt5/positions is
+        # demo-gated) vs transient disconnect, so the UI explains each unavailable account instead of implying
+        # every one is "reconnecting". Coverage counts make partial reads explicit.
+        unavailable = PF.unavailable_accounts(per_open)
         return Response({
             "reporting_currency": reporting_currency, "scope": scope, "generated_at": timezone.now().isoformat(),
             "count": total_count,                       # full number of open positions (floating-P/L covers all)
             "truncated": truncated,                     # True when the row LIST below was capped at _MAX_OPEN_ROWS
             "open_pl_usd": open_pl.as_dict(),
-            "stale_accounts": stale_ids,
+            "stale_accounts": stale_ids,                # retained (back-compat): the ids whose positions were unread
+            "unavailable_accounts": unavailable,        # [{account_id, reason, reason_category, structural}]
+            "accounts_total": len(accounts),
+            "accounts_included": len(accounts) - len(stale_ids),
+            "accounts_unavailable": len(stale_ids),
+            "accounts_structurally_unavailable": sum(1 for u in unavailable if u["structural"]),
             "trades": rows[:_MAX_OPEN_ROWS],
         })
 

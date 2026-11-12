@@ -431,6 +431,16 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
     per_account: dict = {}
     if deadline is None:
         deadline = time.monotonic() + _AGG_BUDGET_SECONDS
+
+    def _unavailable_entry(reason: str) -> dict:
+        # One place that turns a low-level read reason into the per-account record: the safe UI category and the
+        # structural/transient flag are derived in ``portfolio_fx`` (single source of truth), so the dashboard can
+        # say WHY an account is excluded (e.g. a LIVE terminal structurally can't serve positions) instead of a
+        # bare "stale" that reads as "reconnecting".
+        cat = FX.position_reason_category(reason)
+        return {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE", "stale": True, "pl_items": [],
+                "unavailable_reason": reason, "unavailable_category": cat, "structural": FX.is_structural(cat)}
+
     for a in accounts:
         # Currency-integrity: label this account's open-position P/L with the bridge-OBSERVED currency (passed in
         # by the caller from the verified equity-ledger / live snapshot), falling back to the stored account
@@ -445,21 +455,27 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
         # the budget nor starve the accounts after it.
         budget_left = deadline - time.monotonic()
         if budget_left <= 0:
-            per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE",
-                                 "stale": True, "pl_items": []}
+            # The shared wall-clock budget was exhausted before this account was read — a TRANSIENT condition
+            # (it would likely succeed on the next poll), so it stays in the "retrying" bucket, not structural.
+            per_account[a.id] = _unavailable_entry("read_timeout_budget")
             continue
         try:
             res = fetch_positions(a, timeout=min(_PER_READ_TIMEOUT_SECONDS, budget_left))
         except Exception:  # noqa: BLE001 — a broker read must never break the dashboard
             logger.warning("portfolio: open-positions fetch raised for account %s", a.id)
-            res = None
-        if res is None:
-            per_account[a.id] = {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE",
-                                 "stale": True, "pl_items": []}
+            res = {"unavailable": True, "reason": "bridge_unreachable"}
+        # The fetcher returns a position ``list`` on success, or a reason dict ``{"unavailable": True, "reason": …}``
+        # on failure (ADR-0100). ``None`` is still accepted (legacy/injected fetchers) and treated as an unknown —
+        # i.e. transient — exclusion, so prior behaviour is preserved.
+        if isinstance(res, list):
+            positions = res
+        else:
+            reason = (res.get("reason") if isinstance(res, dict) else None) or "unknown"
+            per_account[a.id] = _unavailable_entry(reason)
             continue
         acct_rows = []
         pl_items = []
-        for p in res:
+        for p in positions:
             try:
                 magic = p.get("magic")
                 native_pl = float(p.get("profit")) if p.get("profit") is not None else None
@@ -494,7 +510,8 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
                              "open_pl_basis": agg.basis, "stale": False,
                              # native per-position items kept so the TOP-LEVEL aggregate can preserve PARTIAL
                              # rather than re-summing an already-USD number (which would always read "USD"). (M1)
-                             "pl_items": pl_items}
+                             "pl_items": pl_items,
+                             "unavailable_reason": None, "unavailable_category": None, "structural": False}
     return rows, per_account
 
 
@@ -516,9 +533,31 @@ def portfolio_open_pl(per_account, rate_source: FX.FxRateSource):
     if stale_ids:
         agg.basis = "PARTIAL"
         for aid in stale_ids:
+            v = per_account.get(aid, {})
+            # Carry the SPECIFIC per-account reason/category (not a blanket "stale_read") so a structurally
+            # ineligible account (e.g. a LIVE terminal whose positions are demo-gated) is reported truthfully.
             agg.unconverted.append({"account_id": aid, "native": None, "native_currency": "",
-                                    "reason": "stale_read", "category": FX.STALE_OBSERVATION})
+                                    "reason": v.get("unavailable_reason") or "stale_read",
+                                    "category": v.get("unavailable_category") or FX.STALE_OBSERVATION,
+                                    "structural": bool(v.get("structural"))})
     return agg, stale_ids
+
+
+def unavailable_accounts(per_account) -> List[dict]:
+    """Per-account exclusion detail for accounts whose live positions could not be read, newest contract for the
+    dashboard (ADR-0100): ``[{account_id, reason, reason_category, structural}]``. Structural entries are permanent
+    for this read path (the UI must NOT render a transient "reconnecting" for them); transient entries are the
+    retryable disconnects. Pure; derived from the ``open_positions`` per-account records."""
+    out: List[dict] = []
+    for aid, v in per_account.items():
+        if not v.get("stale"):
+            continue
+        cat = v.get("unavailable_category") or FX.STALE_OBSERVATION
+        out.append({"account_id": aid,
+                    "reason": v.get("unavailable_reason") or "stale_read",
+                    "reason_category": cat,
+                    "structural": bool(v.get("structural")) or FX.is_structural(cat)})
+    return out
 
 
 # Dashboard data-integrity (GFX-DASHBOARD-DATA-INTEGRITY-001): the summary's balance/equity come from a LIVE
@@ -638,6 +677,11 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
                                        rate_source=rate_source, account_ccy=cur),
             "open_count": op.get("open_count", 0), "open_pl_usd": op.get("open_pl_usd"),
             "stale": stale or op.get("stale", False),
+            # Why this account's live positions are unavailable (ADR-0100): a safe category + a structural flag so
+            # the UI distinguishes a permanent structural exclusion from a transient disconnect. None when positions
+            # were read successfully (``position_structural`` is then False).
+            "position_unavailable_category": op.get("unavailable_category"),
+            "position_structural": bool(op.get("structural")),
         })
         bal_items.append({"account_id": a.id, "amount": balance, "currency": cur})
         eq_items.append({"account_id": a.id, "amount": equity, "currency": cur})
@@ -651,6 +695,21 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     daily_val, daily_basis = daily_realized_pnl(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids,
                                                 rate_source=rate_source, observed_ccy=observed_ccy)
 
+    # Daily realized-P&L coverage: report the split that MATCHES the figure actually produced (not a blind non-USD
+    # partition). ``daily_realized_pnl`` withholds the number entirely (None) when it cannot be expressed as one USD
+    # denomination (mixed trade currency, or non-USD with no vetted rate) — then NOTHING is covered; and under
+    # ADR-0066 a single non-USD scope with a vetted rate IS converted — then those non-USD accounts ARE included.
+    all_ids = {a.id for a in accounts}
+    nonusd_ids = sorted(observed_nonusd_ids & all_ids)
+    usd_ids = all_ids - set(nonusd_ids)
+    if daily_val is None:
+        daily_included_ids, daily_excluded = [], sorted(all_ids)           # figure withheld — covers no account
+    elif not usd_ids and nonusd_ids:
+        daily_included_ids, daily_excluded = nonusd_ids, []                # ADR-0066 single-currency conversion
+    else:
+        daily_included_ids, daily_excluded = sorted(usd_ids), nonusd_ids   # USD subset summed; non-USD excluded
+    daily_included_count = len(daily_included_ids)
+
     payload = {
         "reporting_currency": FX.USD,
         "scope": (scope or "ALL"),
@@ -658,6 +717,9 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         "account_count": len(accounts),
         "trading_count": trading_count,
         "stale_accounts": open_stale,
+        # Structured per-account reasons for accounts whose live positions could not be read (ADR-0100):
+        # ``[{account_id, reason, reason_category, structural}]`` — the UI uses this to explain each exclusion.
+        "unavailable_accounts": unavailable_accounts(per_open),
         "accounts": acct_payloads,
         "aggregate": {
             "balance_usd": bal_agg.as_dict(),
@@ -665,6 +727,12 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             "open_pl_usd": open_pl_agg.as_dict(),
             "daily_realized_pnl_usd": daily_val,            # None when non-USD/mixed; basis states it (H1)
             "daily_realized_pnl_basis": daily_basis,
+            # Day window is the stored broker-server ``close_time`` calendar date (≈UTC); named so the client never
+            # mislabels the timezone. included/excluded = the USD-eligible account split the figure was summed over.
+            "daily_realized_pnl_window": "broker_server_calendar_day",
+            "daily_realized_pnl_included_count": daily_included_count,
+            "daily_realized_pnl_excluded_count": len(daily_excluded),
+            "daily_realized_pnl_excluded_accounts": daily_excluded,
             "metrics": metrics,
         },
     }

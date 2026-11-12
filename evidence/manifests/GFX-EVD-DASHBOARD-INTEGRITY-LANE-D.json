@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-INTEGRITY-LANE-D",
+  "packet_id": "GFX-WITHDRAWAL-AND-DASHBOARD-PROGRAMME-ACCELERATION-073",
+  "created_at_utc": "2026-11-12T12:20:00Z",
+  "branch": "feat/dashboard-integrity",
+  "base_commit": "bc2e0c59f7aaa24d7d7f21b5b230c475c078e460",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only Lane D (dashboard integrity, ADR-0100). Additive, read-only projection + UI honesty: the live open-positions read now carries a per-account reason (STRUCTURAL e.g. a LIVE terminal whose /mt5/positions is demo-gated, vs TRANSIENT disconnect) so the UI never implies a structural exclusion will 'reconnect'; the daily-P&L response names its day window + included/excluded account split; the equity-curve frontend consumes the backend's existing per-point coverage provenance (present/total/basis) instead of plotting a bare sparkline. NO migration, NO model, NO feature flag, NO production mutation, NO Copy Trading change.",
+    "adr": "docs/architecture/ADR-0100-dashboard-live-position-reason-and-coverage.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (analytics suite, serial) + governance-check + secret/PII scan + evidence lint + frontend parity/lint/build + vitest"
+  },
+  "commands": [
+    "cd backend && manage.py test analytics  (Ran 269 OK; distinct test DB to avoid collision with a concurrent Copy-Trading test run on the shared default test DB)",
+    "cd backend && manage.py check  (System check identified no issues)",
+    "cd backend && manage.py makemigrations analytics --check --dry-run  (No changes detected — migration-free proof)",
+    "cd frontend && npx vitest run src/components/dashboard/OpenTradesPanel.test.tsx  (24 passed incl. 4 new ADR-0100 structural/transient cases)",
+    "cd frontend && npx eslint <changed files>  (0 errors; 3 pre-existing unused-var warnings in page.tsx, not introduced by this change)",
+    "cd frontend && npm run build  (Next build OK — TypeScript valid across the changed types/components/page)",
+    "python3 scripts/check_no_secrets.py ; python3 scripts/check_evidence_manifests.py ; manage.py test core.tests_adr_governance"
+  ],
+  "expected_results": [
+    "A live-position read failure returns a reason; portfolio_fx maps account_not_demo -> positions_unsupported_live (STRUCTURAL), identity_refused -> read_refused (STRUCTURAL), endpoint_unavailable/config_missing -> endpoint_unavailable (STRUCTURAL), bridge_unreachable/read_timeout_budget -> stale_observation (TRANSIENT); an UNRECOGNISED reason defaults to TRANSIENT (never over-claims permanence).",
+    "open_positions records per-account unavailable_reason/unavailable_category/structural; the open-trades endpoint and build_summary expose unavailable_accounts [{account_id, reason, reason_category, structural}] + accounts_total/included/unavailable/structurally_unavailable. A legacy fetcher returning None is still a transient stale read (back-compat).",
+    "The OpenTradesPanel renders a structural exclusion as 'live positions not available for live accounts' (never 'reconnecting'/'temporarily'), a transient one as 'temporarily unavailable', both when mixed, and the plain legacy wording when the payload omits reasons.",
+    "The summary names the daily day window (broker_server_calendar_day) and the USD-eligible included/excluded account split; the realized figure is unchanged (closed-today net, deposits/withdrawals excluded, non-USD/mixed withheld, never a measured 0).",
+    "The equity-curve frontend discloses 'Partial coverage · latest N of M accounts' when any bucket is PARTIAL (present<total), so a varying-subset curve is not read as a whole-portfolio line; BUILDING stays distinct; no fabricated/forward-filled points.",
+    "No migration, no model, no feature flag, no production mutation; tenant isolation + null-never-zero invariants preserved; Copy Trading untouched; no PII."
+  ],
+  "actual_results": [
+    "portfolio_fx.py: NEW POSITIONS_UNSUPPORTED_LIVE + ENDPOINT_UNAVAILABLE categories, _POSITION_REASON_CATEGORY map, STRUCTURAL_CATEGORIES set, position_reason_category() + is_structural() (single source of truth). views_trade_history.py: _fetch_mt5_open_positions returns a list on success or {'unavailable': True, 'reason': <code>} on each failure mode (config_missing/endpoint_unavailable/identity_refused/bridge_unreachable/account_not_demo). portfolio.py: open_positions interprets list|reason-dict|None, records per-account structural reason; NEW unavailable_accounts() helper; portfolio_open_pl carries the specific reason; build_summary adds unavailable_accounts + daily window/included/excluded counts + per-account position_structural. views_portfolio.py: open-trades payload carries unavailable_accounts + coverage counts.",
+    "Frontend: types/portfolio.ts adds UnavailableAccount + ExclusionReason values + EquityCurve types + the new payload fields. OpenTradesPanel.tsx renders structural vs transient wording (JA + EN). dashboard/page.tsx consumes per-point equity-curve coverage and shows a partial-coverage disclosure.",
+    "Tests: analytics suite Ran 272 OK (incl. 15 new backend tests across 6 classes); OpenTradesPanel.test.tsx 24 OK (incl. 4 new ADR-0100 cases); makemigrations --check clean; system check clean; next build OK; eslint clean on changed files.",
+    "Adversarial review (2 independent reviewers, distinct lenses): correctness/tenancy reviewer found 3 MEDIUM (0 HIGH/CRITICAL) — ALL fixed with regression tests: (1+2) the positions fetcher echoed the raw bridge error string verbatim as the reason code, which could leak an owner-scoped identifier AND collide with a structural reason key (over-claim) -> now only account_not_demo / positions_refused are emitted (bridge free text never echoed); (3) the daily included/excluded counts were computed blindly from the non-USD partition, contradicting the ADR-0066 single-currency conversion and the withheld-figure case -> now derived from the figure daily_realized_pnl actually produced. presentation/regression reviewer: NONE FOUND (false-reconnecting, equity-curve mislead, layout stability, i18n, type-degradation, count-consistency all cleared with evidence).",
+    "Diff scope: 8 code/test files changed (5 backend analytics + 3 frontend) + NEW OpenTradesPanel reason tests (in the existing file) + NEW ADR-0100 + this manifest. No migration, no model, no metrics fabrication, no config, no secret."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. The operational gap itself (LIVE terminals cannot serve /mt5/positions through the demo-gated read; per-tenant bridge reachability) is DIAGNOSED and surfaced truthfully, NOT repaired — terminal/bridge connectivity remains a separate backlog item (as the packet directs).",
+    "The broker-server-day vs true-UTC/member-local daily boundary is named + disclosed but unchanged (a documented platform-wide follow-up requiring an ingest-time correction + backfill).",
+    "Local vitest has a PRE-EXISTING jsdom env failure (window.localStorage.clear is not a function) in the full-dashboard localization.test.tsx — reproduced identically on base with this change stashed, so it is environment-only and NOT caused by Lane D; CI is authoritative. The focused OpenTradesPanel.test.tsx (which does not hit that harness) passes.",
+    "The analytics backend suite was run against a DISTINCT test database (test_dev_laned) because a concurrent Copy-Trading session was running manage.py test on the shared default test DB; this is a test-isolation convenience only and changes no product code."
+  ],
+  "artefact_locations": [
+    "backend/analytics/portfolio_fx.py (structural position-exclusion taxonomy + helpers)",
+    "backend/analytics/views_trade_history.py (_fetch_mt5_open_positions reason contract)",
+    "backend/analytics/portfolio.py (open_positions reason, unavailable_accounts, build_summary coverage)",
+    "backend/analytics/views_portfolio.py (open-trades payload reasons + counts)",
+    "backend/analytics/tests_portfolio.py (ADR-0100 backend tests)",
+    "frontend/src/types/portfolio.ts (UnavailableAccount + EquityCurve + payload fields)",
+    "frontend/src/components/dashboard/OpenTradesPanel.tsx (structural vs transient wording)",
+    "frontend/src/components/dashboard/OpenTradesPanel.test.tsx (ADR-0100 frontend tests)",
+    "frontend/src/app/(app)/dashboard/page.tsx (equity-curve partial-coverage disclosure)",
+    "docs/architecture/ADR-0100-dashboard-live-position-reason-and-coverage.md (NEW ADR)",
+    "evidence/manifests/GFX-EVD-DASHBOARD-INTEGRITY-LANE-D.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/analytics/portfolio.py": "sha256:0001f184b7a122a5fb30adbe6d0d8f7841390ac51ad944769e00804cd96be361",
+    "backend/analytics/portfolio_fx.py": "sha256:527658381eb49624a5eb11843caf2c5df7b89e98c6165fa416c175e290cacea8",
+    "backend/analytics/views_portfolio.py": "sha256:de61941fe6e723b14734d6ed54777ae1f992f9a86773f0f7f6e08e86a41167db",
+    "backend/analytics/views_trade_history.py": "sha256:9fbd02992d50e4e91baceb26dd004bd194821a2bd69e2a6f6db31b3691c0368e",
+    "backend/analytics/tests_portfolio.py": "sha256:3e3a4088ca3a1e404cd2b87284883f4aa1baebd56224995209fd5050c0c5e400",
+    "frontend/src/types/portfolio.ts": "sha256:ed622ed5126830901a15999f67aa4b4621bd031a64f8fff6b2f8e1d1de2be04a",
+    "frontend/src/components/dashboard/OpenTradesPanel.tsx": "sha256:e1d663c80a104d4f7e6df020160d1ac204dbf866023ba9a39fd882314785913b",
+    "frontend/src/components/dashboard/OpenTradesPanel.test.tsx": "sha256:0b5c916a36ac0ba77e56f5744f565f3601c4c533ab0a78b89cc87c007c8f2089",
+    "frontend/src/app/(app)/dashboard/page.tsx": "sha256:0f5a440ed5e8e24e296169fe1699a285795c65e8a09be92188c7d6c881ad11c0",
+    "docs/architecture/ADR-0100-dashboard-live-position-reason-and-coverage.md": "sha256:c45202951a711d0b2868211bfa7e6190f6c5232cbb2ce094a35fec9a40689fd6"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review + 2 independent adversarial reviewers (correctness/tenancy + presentation/regression): 3 MEDIUM (0 HIGH/CRITICAL) found and ALL fixed with regression tests; presentation reviewer clean. Sponsor review pending (auto-merge OFF, STOP before merge)."
+}
