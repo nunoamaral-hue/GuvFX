@@ -172,7 +172,11 @@ class LiveLifecycleFixture(TestCase):
             modify_authority=True, partial_close_authority=True, full_close_authority=True,
             close_only_after_expiry=False)
         d.update(over)
-        return CopierLiveAuthorization.objects.create(**d)
+        authz = CopierLiveAuthorization.objects.create(**d)
+        if authz.status in (CopierLiveAuthorizationStatus.ACTIVE, CopierLiveAuthorizationStatus.CONSUMED):  # ADR-0097: env+arm contract
+            from trade_copier.tests_copier_live_arm import attach_engaged_arm
+            attach_engaged_arm(authz)
+        return authz
 
     def assertNoNewJobs(self):
         # Only the fixture's OPEN (entry) job may exist — the lifecycle op created nothing.
@@ -296,9 +300,17 @@ class FullCloseAdmissionTests(LiveLifecycleFixture):
 
     @override_settings(**{**LIVE, "COPIER_LIVE_CLOSE_ONLY_AFTER_EXPIRY_ENABLED": "1"})
     def test_full_close_after_expiry_allowed_with_policy(self):
-        self.authz.expires_at = timezone.now() - timedelta(seconds=1)
+        # Production invariant: the arm expiry is capped at the authorization expiry, so when the window lapses
+        # the arm is ALSO expired. Expire both — the ADR-0097 containment exemption must still admit the
+        # safety-reducing close with NO live arm (blocking it would strand live exposure).
+        from trade_copier.arm import engaged_arm_for_authorization
+        from trade_copier.models import CopierLiveArm
+        past = timezone.now() - timedelta(seconds=1)
+        self.authz.expires_at = past
         self.authz.close_only_after_expiry = True
         self.authz.save(update_fields=["expires_at", "close_only_after_expiry"])
+        CopierLiveArm.objects.filter(authorization=self.authz).update(expires_at=past)
+        self.assertIsNone(engaged_arm_for_authorization(self.authz))   # no live arm (expired with the authz)
         self.assertEqual(admit_full_close_live(self._close_rep()), (True, FOLLOWER_TICKET, "ok"))
 
     @override_settings(**{**LIVE, "COPIER_LIVE_CLOSE_ONLY_AFTER_EXPIRY_ENABLED": "1"})
@@ -320,8 +332,23 @@ class FullCloseAdmissionTests(LiveLifecycleFixture):
 
     @override_settings(**{**LIVE, "COPIER_LIVE_CONTAIN_ON_KILL_SWITCH_ENABLED": "1"})
     def test_full_close_under_kill_switch_allowed_with_policy(self):
+        # Production invariant: copier_live_disarm disengages every arm when the kill switch engages. Disengage
+        # the arm — the ADR-0097 containment exemption must still admit the safety-reducing close with NO live arm.
+        from trade_copier.arm import engaged_arm_for_authorization
+        from trade_copier.models import CopierLiveArm, CopierLiveArmState
+        CopierLiveArm.objects.filter(authorization=self.authz).update(state=CopierLiveArmState.DISENGAGED)
         CopierLiveKillSwitch.objects.create(engaged=True, engaged_by=self.staff)
+        self.assertIsNone(engaged_arm_for_authorization(self.authz))   # no live arm (disengaged by the kill switch)
         self.assertEqual(admit_full_close_live(self._close_rep()), (True, FOLLOWER_TICKET, "ok"))
+
+    def test_in_window_close_requires_arm(self):
+        # The containment exemption is ONLY for after-expiry / under-kill-switch closes. A normal IN-WINDOW full
+        # close with the arm disengaged must fail closed (no_live_arm) — the exemption never widens the in-window path.
+        from trade_copier.models import CopierLiveArm, CopierLiveArmState
+        CopierLiveArm.objects.filter(authorization=self.authz).update(state=CopierLiveArmState.DISENGAGED)
+        ok, _t, reason = admit_full_close_live(self._close_rep())
+        self.assertFalse(ok)
+        self.assertEqual(reason, "no_live_arm")
 
 
 class PartialCloseAdmissionTests(LiveLifecycleFixture):

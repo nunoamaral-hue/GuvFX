@@ -71,6 +71,29 @@ class Command(BaseCommand):
                 row.save(update_fields=["status", "revoked_at", "revoked_by", "revoke_reason"])
                 reconciled.append(row.id)
 
+        # ADR-0097: also terminalise EXPIRED ENGAGED arms for audit. An expired arm is ALREADY inert for admission
+        # (``trade_copier.arm`` evaluates ``expires_at`` live), so this changes NO runtime behaviour — it only
+        # records the DISENGAGED state. Idempotent; route-scoped when requested; no broker/host contact.
+        from trade_copier.models import CopierLiveArm, CopierLiveArmState
+        arm_qs = CopierLiveArm.objects.filter(state=CopierLiveArmState.ENGAGED, expires_at__lt=now)
+        if o["master_account_id"] is not None:
+            arm_qs = arm_qs.filter(master_account_id=o["master_account_id"])
+        if o["follower_account_id"] is not None:
+            arm_qs = arm_qs.filter(follower_account_id=o["follower_account_id"])
+        arm_disengaged = []
+        for arm_id in list(arm_qs.values_list("id", flat=True).order_by("id")):
+            with transaction.atomic():
+                arm = CopierLiveArm.objects.select_for_update().filter(pk=arm_id).first()
+                if arm is None or arm.state != CopierLiveArmState.ENGAGED or arm.expires_at >= timezone.now():
+                    continue
+                arm.state = CopierLiveArmState.DISENGAGED
+                arm.disengaged_at = timezone.now()
+                arm.disengaged_by = actor
+                arm.disengage_reason = "expired_arm_reconciled (inert since expires_at<now; audit only)"
+                arm.save(update_fields=["state", "disengaged_at", "disengaged_by", "disengage_reason", "updated_at"])
+                arm_disengaged.append(arm.id)
+
         self.stdout.write(self.style.SUCCESS(
-            "reconciled %s expired-ACTIVE authorization(s) -> REVOKED: %s. "
-            "Kill switch untouched; no row deleted; no job/order created." % (len(reconciled), reconciled)))
+            "reconciled %s expired-ACTIVE authorization(s) -> REVOKED: %s; %s expired arm(s) -> DISENGAGED: %s. "
+            "Kill switch untouched; no row deleted; no job/order created." % (
+                len(reconciled), reconciled, len(arm_disengaged), arm_disengaged)))

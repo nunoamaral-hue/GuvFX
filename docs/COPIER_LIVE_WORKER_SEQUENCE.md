@@ -1,5 +1,13 @@
 # Copier LIVE worker sequence — authoritative (2026-11-10, control-plane completion)
 
+> **Superseded for ARMING by ADR-0097 (2026-11-12).** The per-demo "inject ~15 flags + run 7 workers + re-run
+> between trade actions" arming is replaced by one audited command, `copier_live_arm` (and `--disengage` to
+> return to OFF). The base `COPIER_*` gates become deployment config; the engaged, authorization-bound
+> `CopierLiveArm` is the additional AND that enables the LIVE path, and the real-time pipeline (immediate dispatch
+> + ADR-0096 post-fill binding) drives OPEN/MODIFY/CLOSE event-driven, so no worker is re-run between trade
+> actions. The worker descriptions below remain accurate as the underlying governed passes; they are no longer the
+> operator's arming procedure. See ADR-0097 and `COPIER_46_48_DEMO_RUNBOOK.md`.
+
 The single authoritative worker sequence for a governed LIVE copy of OPEN → MODIFY SL/TP → CLOSE (PARTIAL
 is additive, not used by the #46→#48 demo). Every worker is DARK: inert unless its gates are on, re-read at
 send time. File/line references are to this PR's tree.
