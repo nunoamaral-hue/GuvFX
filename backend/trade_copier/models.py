@@ -976,3 +976,100 @@ class CopierAlertDeliveryAttempt(_ImmutableRawEvidence):
 
     def __str__(self) -> str:
         return f"DeliveryAttempt(delivery={self.delivery_id}, n={self.attempt}, transmitted={self.transmitted})"
+
+
+class CopierRealtimeDispatch(models.Model):
+    """Per-event latency evidence for the ADR-0094 hybrid real-time dispatch path. One row per master event that
+    the SYNCHRONOUS immediate-dispatch orchestrator handled (or attempted), capturing the honest end-to-end
+    timestamp chain so a ``source → follower-submission`` latency can be measured and the ≤2s acceptance gate
+    asserted WITHOUT attributing broker fill time to GuvFX.
+
+    Privacy-safe: ids, reason codes, the master position ticket (an audit identifier, never a credential/login)
+    and plain timestamps only — never a login, secret, credential or raw payload. Mutable (a later reconcile/ack
+    fills ``broker_acknowledged_at`` / ``completed_at``);
+    it holds NO authority and is never read by an order path — it is evidence only. Written only when
+    ``copier_immediate_dispatch_enabled`` armed the synchronous path (so with the gate OFF this table is inert)."""
+
+    class Source(models.TextChoices):
+        EVENT_PUSH = "EVENT_PUSH", "Immediate signed push"
+        FAST_POLL = "FAST_POLL", "Fast bounded poll (emitter fallback)"
+        RECONCILE = "RECONCILE", "Slow observer reconciliation (recovery only)"
+
+    class Outcome(models.TextChoices):
+        OPEN_SUBMITTED = "OPEN_SUBMITTED", "Follower OPEN order submitted"
+        MODIFY_SUBMITTED = "MODIFY_SUBMITTED", "Follower MODIFY submitted"
+        CLOSE_SUBMITTED = "CLOSE_SUBMITTED", "Follower CLOSE submitted"
+        NO_ACTION = "NO_ACTION", "No follower action (dedup / gated / no qualifying event)"
+        CONTAINED = "CONTAINED", "Fail-closed containment (UNKNOWN / mismatch / unreadable)"
+
+    master = models.ForeignKey(CopierMaster, on_delete=models.CASCADE, related_name="realtime_dispatches")
+    master_event = models.ForeignKey(MasterEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    replication = models.ForeignKey(CopierReplication, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="+")
+    follower_account_id = models.BigIntegerField(null=True, blank=True)
+    master_ticket = models.BigIntegerField(null=True, blank=True, help_text="Master position ticket (audit).")
+    event_type = models.CharField(max_length=16, blank=True, default="", help_text="OPEN / MODIFY / FULL_CLOSE.")
+    dispatch_source = models.CharField(max_length=12, choices=Source.choices, default=Source.EVENT_PUSH)
+    outcome = models.CharField(max_length=16, choices=Outcome.choices, default=Outcome.NO_ACTION)
+    reason = models.CharField(max_length=64, blank=True, default="", help_text="Sanitised reason code.")
+    correlation_id = models.CharField(max_length=40, blank=True, default="")
+
+    # The HONEST timestamp chain (any may be null when genuinely unknown — NEVER invented).
+    event_detected_at = models.DateTimeField(null=True, blank=True, help_text="Master broker_event_time / open_time.")
+    emitted_at = models.DateTimeField(null=True, blank=True, help_text="Emitter observed/emitted the revision.")
+    backend_received_at = models.DateTimeField(null=True, blank=True, help_text="Ingestion persisted the revision.")
+    accepted_at = models.DateTimeField(null=True, blank=True, help_text="Event accepted into the authoritative ledger.")
+    dispatch_started_at = models.DateTimeField(null=True, blank=True)
+    follower_submitted_at = models.DateTimeField(null=True, blank=True, help_text="Follower job created / command sent.")
+    broker_acknowledged_at = models.DateTimeField(null=True, blank=True, help_text="Broker ack/fill — measured separately.")
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    # Derived, stored for queryability (ms). GuvFX-attributable latency excludes broker ack/fill.
+    source_to_submission_ms = models.IntegerField(null=True, blank=True)
+    detection_to_received_ms = models.IntegerField(null=True, blank=True)
+    received_to_submission_ms = models.IntegerField(null=True, blank=True)
+    is_late = models.BooleanField(default=False, help_text="source→submission exceeded the 2000ms acceptance ceiling.")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # The acceptance ceiling (ms). GuvFX source→follower-submission must sit at or under this under healthy
+    # synthetic/test conditions; anything above is flagged ``is_late`` and must NOT be reported as meeting the gate.
+    ACCEPTANCE_CEILING_MS = 2000
+    TARGET_MS = 1000
+
+    class Meta:
+        verbose_name = "Copier real-time dispatch"
+        ordering = ["id"]
+        indexes = [
+            models.Index(fields=["master", "id"]),
+            models.Index(fields=["dispatch_source", "outcome"]),
+            models.Index(fields=["is_late"]),
+        ]
+
+    @staticmethod
+    def _ms(a, b):
+        """Milliseconds from ``a`` to ``b`` (both aware datetimes), or None when either is missing — NEVER 0 for
+        a missing endpoint (a fabricated zero would understate latency)."""
+        if a is None or b is None:
+            return None
+        return int(round((b - a).total_seconds() * 1000))
+
+    def recompute_latencies(self):
+        """Fill the derived ms fields + ``is_late`` from the honest timestamp chain. The acceptance gate is
+        measured from the TRUE broker detection time (``event_detected_at``) when known — NOT the emitter's
+        self-reported ``emitted_at``, which a buffered or clock-skewed emitter could understate (RULE 11). A
+        missing source/submission leaves the latency None (unknown), and a physically-impossible NEGATIVE
+        (forward clock skew) is a data-quality fault — both FAIL the ≤ceiling gate (``is_late``), never a silent
+        zero or a flattering 'on time'."""
+        src = self.event_detected_at or self.emitted_at
+        self.source_to_submission_ms = self._ms(src, self.follower_submitted_at)
+        self.detection_to_received_ms = self._ms(src, self.backend_received_at)
+        self.received_to_submission_ms = self._ms(self.backend_received_at, self.follower_submitted_at)
+        s2s = self.source_to_submission_ms
+        self.is_late = bool(s2s is None or s2s < 0 or s2s > self.ACCEPTANCE_CEILING_MS)
+        return self
+
+    def __str__(self) -> str:
+        return (f"RealtimeDispatch(master={self.master_id}, {self.event_type}, {self.outcome}, "
+                f"src2sub_ms={self.source_to_submission_ms}, late={self.is_late})")

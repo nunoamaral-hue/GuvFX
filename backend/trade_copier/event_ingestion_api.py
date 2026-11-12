@@ -106,12 +106,24 @@ class SignedEventIngestView(APIView):
 
         if not outcome.identity_ok:
             _raise_ingest_alert("identity_mismatch", account_id=account_id, correlation_id=correlation_id)
+
+        # ADR-0094 — REAL-TIME: when the immediate-dispatch gate is ARMED, drive the governed pipeline for this
+        # master in-line so the follower order is submitted now (target ≤1s) instead of waiting for the ~2-min
+        # scheduled worker. DARK/default-OFF: when the gate is off we add zero work and this response is
+        # byte-identical to ADR-0074. Fail-safe: a dispatch fault never breaks this response or the immutable
+        # evidence already committed (the slow reconciler stays the safety net); every downstream gate + the
+        # full per-pair live admission are re-read inside the pass.
+        realtime = None
+        if outcome.identity_ok and outcome.accepted and _immediate_dispatch_armed():
+            realtime = _trigger_immediate_dispatch(account_id=account_id, correlation_id=correlation_id)
+
         return Response({
             "status": "accepted",
             "accepted": outcome.accepted,
             "duplicates": outcome.duplicates,
             "rejected": [{"ticket": t, "revision": r, "reason": why} for (t, r, why) in outcome.rejected],
             "changes": list(outcome.changes),
+            "realtime": realtime,
         }, status=200)
 
 
@@ -130,3 +142,27 @@ def _raise_ingest_alert(reason: str, *, account_id: int, correlation_id: str) ->
         failure_alerts.raise_ingest_rejection(reason, account_id=account_id, correlation_id=correlation_id)
     except Exception:  # noqa: BLE001 — alerting must never break ingestion
         logger.exception("copier ingest alert routing failed")
+
+
+def _immediate_dispatch_armed() -> bool:
+    """Cheap pre-check so the ADR-0074 OFF path stays byte-identical (we only reach the orchestrator when armed)."""
+    try:
+        from trade_copier.flags import copier_immediate_dispatch_enabled
+        return bool(copier_immediate_dispatch_enabled())
+    except Exception:  # noqa: BLE001 — fail closed to the inert persist-only path
+        return False
+
+
+def _trigger_immediate_dispatch(*, account_id: int, correlation_id: str):
+    """Resolve the master for this signed account scope and run the governed real-time pipeline. Fully fail-safe:
+    the orchestrator is itself contained, and any resolution error here is swallowed so ingestion never breaks."""
+    try:
+        from trade_copier.immediate_dispatch import dispatch_master_realtime
+        from trade_copier.models import CopierMaster
+        master = CopierMaster.objects.filter(trading_account_id=account_id).only("id").first()
+        if master is None:
+            return {"enabled": True, "reason": "no_master_for_account", "submitted": 0}
+        return dispatch_master_realtime(master.pk, source="EVENT_PUSH", correlation_id=correlation_id)
+    except Exception:  # noqa: BLE001 — a real-time trigger fault must never break ingestion
+        logger.exception("copier immediate-dispatch trigger contained")
+        return {"enabled": True, "reason": "trigger_contained", "submitted": 0}

@@ -96,26 +96,91 @@ def allow_live_for_account(account) -> bool:
 
 
 def readonly_positions_for_account(account) -> bool:
-    """GFX-LIVE-POSITIONS-READONLY-001 (ADR-0072) — fail-closed per-tenant decision for whether a bridge may be
-    rendered with ``MT5_LIVE_READONLY_POSITIONS_ENABLED``. TRUE only when BOTH hold:
+    """GFX-LIVE-POSITIONS-READONLY-001 (ADR-0072) + ADR-0094 route-scoping — fail-closed per-tenant decision for
+    whether a bridge may be rendered with ``MT5_LIVE_READONLY_POSITIONS_ENABLED``. TRUE only when the account is
+    authoritatively LIVE (a DEMO account reads positions unconditionally, so never needs this flag) AND EITHER:
 
-      * the account is authoritatively LIVE (``is_live_environment`` — a DEMO account never needs this flag; it
-        reads positions unconditionally), AND
-      * the dedicated, default-OFF monitoring authority is armed
-        (``LIVE_READONLY_POSITIONS_MONITORING_ENABLED``, settings- or env-sourced).
+      * the broad, default-OFF monitoring authority is armed
+        (``LIVE_READONLY_POSITIONS_MONITORING_ENABLED``), OR
+      * (ADR-0094) the dedicated, default-OFF FOLLOWER-read authority is armed
+        (``COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED``) AND this account is the FOLLOWER of a live, non-revoked,
+        unexpired ``CopierLiveAuthorization`` — i.e. the read is bound to the EXACT authorized follower for the
+        duration of its reviewed window only. This is NOT a global relaxation: with no authorization, or for any
+        other account, it is False, and it auto-expires with the authorization.
 
     This authority is SEPARATE from every execution gate (``MT5_ALLOW_LIVE`` / ``live_execution_permitted`` /
     ``copier_live_execution_authorized`` / ``LiveExecutionAuthorization`` / ``HOSTED_LIVE_EXECUTION_ENABLED``):
-    arming it can never place, size or approve an order, and it is never consulted by the order path. Any error
-    => False. The emitted flag is a READ gate only; the bridge's own ``fetch_positions`` enforcement is the
-    backend-independent final authority."""
+    arming it can never place, size, modify, close or approve an order, and it is never consulted by the order
+    path. Any error => False. The emitted flag is a READ gate only; the bridge's own ``fetch_positions``
+    enforcement is the backend-independent final authority. Production enablement of either flag remains a
+    separate Sponsor-gated deploy step."""
     try:
         from trading.account_policy import is_live_environment
         if not is_live_environment(account):
             return False
-        return _live_readonly_positions_monitoring_armed()
+        if _live_readonly_positions_monitoring_armed():
+            return True
+        return _copier_follower_readonly_positions_armed() and _account_is_authorized_live_follower(account)
     except Exception:  # noqa: BLE001 — fail closed
         return False
+
+
+def _copier_follower_readonly_positions_armed() -> bool:
+    """ADR-0094 default-OFF authority for the ROUTE-SCOPED follower-position read. Independent of every execution
+    flag and of the broad monitoring flag; settings override, else env; absent/blank/falsey => OFF."""
+    import os
+    val = None
+    try:
+        from django.conf import settings
+        val = getattr(settings, "COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED", None)
+    except Exception:  # noqa: BLE001 — settings unavailable => fall back to env
+        val = None
+    if val is None:
+        val = os.getenv("COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED", "")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _account_is_authorized_live_follower(account) -> bool:
+    """True iff this account is the FOLLOWER of a live, NON-REVOKED, UNEXPIRED ``CopierLiveAuthorization`` (ACTIVE
+    or CONSUMED — the single entry allowance is consumed once the OPEN is placed, but the bound position is still
+    managed under that reviewed grant through MODIFY/CLOSE). Route-scoped: binds the read to the exact authorized
+    follower during its window ONLY; confers NO order authority. Any error => False (fail closed)."""
+    try:
+        from django.utils import timezone
+        from trade_copier.models import CopierLiveAuthorization, CopierLiveAuthorizationStatus
+        acct_id = getattr(account, "id", account)
+        now = timezone.now()
+        return CopierLiveAuthorization.objects.filter(
+            follower_account_id=acct_id,
+            status__in=(CopierLiveAuthorizationStatus.ACTIVE, CopierLiveAuthorizationStatus.CONSUMED),
+            revoked_at__isnull=True, expires_at__gt=now).exists()
+    except Exception:  # noqa: BLE001 — fail closed
+        return False
+
+
+def follower_positions_read_readiness(account) -> tuple:
+    """Backend-derived readiness for reading a follower's live positions (used by preflight/reconcile). Returns
+    ``(code, detail)`` where code is one of:
+
+      * ``FOLLOWER_POSITIONS_READ_OK``            — the bridge would serve positions (DEMO, or LIVE + authorized),
+      * ``FOLLOWER_POSITIONS_READ_NOT_AUTHORIZED``— LIVE but no read authority (the live-safety wall applies; a
+        reconcile would be refused ``account_not_demo``) — the bound follower ticket cannot be linked yet,
+      * ``FOLLOWER_POSITIONS_READ_UNAVAILABLE``   — the account is missing/unresolvable (fail-closed).
+
+    This is a decision mirror: the bridge's own ``fetch_positions`` remains the final authority."""
+    try:
+        from trading.account_policy import is_live_environment
+        if account is None:
+            return ("FOLLOWER_POSITIONS_READ_UNAVAILABLE", "account_absent")
+        if not is_live_environment(account):
+            return ("FOLLOWER_POSITIONS_READ_OK", "demo_reads_unconditionally")
+        if _live_readonly_positions_monitoring_armed():
+            return ("FOLLOWER_POSITIONS_READ_OK", "global_monitoring_armed")
+        if _copier_follower_readonly_positions_armed() and _account_is_authorized_live_follower(account):
+            return ("FOLLOWER_POSITIONS_READ_OK", "route_scoped_authorized_follower")
+        return ("FOLLOWER_POSITIONS_READ_NOT_AUTHORIZED", "live_read_authority_off")
+    except Exception:  # noqa: BLE001 — fail closed
+        return ("FOLLOWER_POSITIONS_READ_UNAVAILABLE", "readiness_error")
 
 
 def _live_readonly_positions_monitoring_armed() -> bool:

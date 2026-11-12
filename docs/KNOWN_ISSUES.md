@@ -1648,3 +1648,17 @@ Japanese editorial pass and mobile-width visual certification also remain. Full 
   (`primitive_runner.verify_scripts`). They have not been executed on a Windows host (DARK; no deploy).
 - **Enablement is multi-gate + Sponsor-RED per step** (arm flags, grant, `--commit`, then one manual master
   order) per `docs/MT5_COPIER_LIVE_EXACT_PAIR_RUNBOOK.md`.
+
+- **Real-time latency (ADR-0094, resolved in design; enablement gated).** Before ADR-0094 the ONLY copy trigger
+  was the ~2-min poll observer (the 2026-11-12 demo detected the master OPEN ~84s late). ADR-0094 adds the DARK
+  `COPIER_IMMEDIATE_DISPATCH_ENABLED` synchronous trigger on the signed ingestion endpoint (target ≤1s, ceiling
+  ≤2s source→submission). It is **default-OFF and repository-only**: not deployed, not armed; production still
+  copies only on the slow observer until a separate Sponsor-gated deploy + enablement.
+- **LIVE MODIFY/FULL-CLOSE — governed path now exists, but the follower read is gated.** The previous "LIVE
+  close/modify unimplemented, operator closes manually" limitation is superseded by ADR-0083/0086 (producers +
+  dispatcher) + ADR-0094 (the real-time trigger). The remaining blocker is that `reconcile` cannot link the
+  follower ticket while the LIVE bridge refuses `/mt5/positions` (`account_not_demo`). ADR-0094 adds a
+  **route-scoped, default-OFF** read authority (`COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED` + an active
+  authorization for that exact follower); **production enablement + backend recreate is a separate Sponsor-gated
+  deploy packet**, so governed LIVE MODIFY/CLOSE is not yet effective in production and a copied LIVE OPEN still
+  requires manual close there until that gate is passed. PARTIAL_CLOSE remains out of scope.

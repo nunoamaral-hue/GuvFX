@@ -58,3 +58,38 @@ stack + a valid authorization + the host admission are all present.
 With all copier flags OFF (default), every worker above is a no-op and the per-tenant transport is inert — no
 `ExecutionJob` is created on the live path, no broker is contacted, and the money-function demo wall is
 byte-identical. This is the standing production posture.
+
+## Real-time trigger (ADR-0094) — immediate push primary, slow observer reconciliation-only
+
+The sequence above is the *governed work*. ADR-0094 changes *when* it runs. The documented demo cadence was the
+~2-minute **poll observer**; that path is now **reconciliation/recovery only** and must never be the normal
+OPEN/MODIFY/CLOSE trigger once the real-time path is armed.
+
+- **PRIMARY — immediate push.** When `COPIER_IMMEDIATE_DISPATCH_ENABLED` is armed, the signed ingestion
+  endpoint (`POST /api/copy-trading/event-ingest/`), after persisting the immutable `CopierIngestedRevision`,
+  calls `trade_copier.immediate_dispatch.dispatch_master_realtime(master_pk)` which runs the **whole sequence
+  above in-line for that master**: `project_master_events` → `replicate_pending` → `produce_pending` (OPEN) →
+  `run_lifecycle_pass` → `produce_pending_modifies` / `produce_pending_closes` → `run_mutation_dispatch_pass` →
+  a **bounded immediate reconcile** (a few fast attempts, NOT the ~2-min schedule) that links the OPEN
+  `follower_ticket`. Target ≤1s, ceiling ≤2s source→follower-submission (broker ack/fill measured separately).
+- **FALLBACK — fast bounded poll.** The ADR-0077 host emitter delivers through the SAME signed endpoint; the
+  backend path is identical.
+- **RECONCILIATION — slow observer.** `run_copier_observer` / `run_copier_reconcile` stay recovery/audit/
+  restart-safety only.
+
+**Required flags per worker are UNCHANGED** — the real-time trigger re-reads every gate + the full per-pair
+admission exactly as the scheduled path does, and `COPIER_IMMEDIATE_DISPATCH_ENABLED` only decides WHEN the
+sequence runs. Note the previously-omitted sub-gates the arming must also include where a pass is used:
+`COPIER_OBSERVER_ENABLED` (observe), `COPIER_REPLICATION_ENABLED` (replicate), `COPIER_EVENT_PROJECTION_ENABLED`
+(promote ingested → MasterEvent), `COPIER_LIFECYCLE_ENABLED` (project MODIFY/CLOSE), `COPIER_RECONCILE_ENABLED`
+(link the follower ticket). With `COPIER_IMMEDIATE_DISPATCH_ENABLED` OFF (default) the ingestion endpoint is
+byte-identical to ADR-0074 (persist-only) and `CopierRealtimeDispatch` stays empty.
+
+### Governed-close prerequisite — route-scoped follower read
+The OPEN `follower_ticket` is linked only by `reconcile`, which reads the follower's live positions — refused
+`account_not_demo` on a LIVE bridge unless rendered with `MT5_LIVE_READONLY_POSITIONS_ENABLED`. ADR-0094 renders
+that flag **route-scoped**: LIVE account + the default-OFF `COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED` armed +
+the account being the follower of a live, non-revoked, unexpired `CopierLiveAuthorization`. It is a READ gate
+only (no order authority), never global, and auto-expires with the authorization. `follower_positions_read_readiness`
+reports `FOLLOWER_POSITIONS_READ_OK | NOT_AUTHORIZED | UNAVAILABLE` on the preflight. Production enablement of
+that flag is a separate Sponsor-gated deploy.

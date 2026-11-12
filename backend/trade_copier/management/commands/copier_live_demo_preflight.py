@@ -157,6 +157,18 @@ class Command(BaseCommand):
         except Exception as e:  # noqa: BLE001
             gate("follower_endpoint", False, "ENDPOINT_RESOLVE_ERROR", detail=type(e).__name__)
 
+        # 11b — ADR-0094 follower live-position READ readiness (governed MODIFY/CLOSE ticket-linkage capability).
+        # Informational, NOT a blocker: the dedicated follower-read authority is DARK/default-OFF in production,
+        # so NOT_AUTHORIZED is the expected posture until a separate Sponsor-gated enablement. Reported directly
+        # (not via gate()) so it never adds to ``blockers`` or flips the verdict.
+        try:
+            from execution.bridge_config import follower_positions_read_readiness
+            fr_code, fr_detail = follower_positions_read_readiness(facct)
+        except Exception as e:  # noqa: BLE001
+            fr_code, fr_detail = ("FOLLOWER_POSITIONS_READ_UNAVAILABLE", type(e).__name__)
+        gates["follower_positions_read"] = {"ok": fr_code == "FOLLOWER_POSITIONS_READ_OK",
+                                            "code": fr_code, "detail": fr_detail}
+
         # 12 — worker availability (the authoritative command sequence)
         from django.core.management import get_commands
         cmds = set(get_commands().keys())
