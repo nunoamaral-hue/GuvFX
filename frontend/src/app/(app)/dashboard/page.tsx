@@ -422,7 +422,13 @@ export default function DashboardPage() {
   const summaryError = summaryErrorScope === scope;   // the CURRENT scope's summary fetch failed/timed out
   // Truthful equity curve from the durable snapshot ledger (ALL = portfolio curve; account = that account's curve).
   // Empty/one-point ledger -> state BUILDING/SINGLE so the UI shows "history is building", never a fake trend.
-  type EquityCurve = { state?: string; count?: number; points?: { equity_usd?: number; equity?: number | null }[] };
+  // Per-point COVERAGE provenance (ADR-0100) so a portfolio curve stitched from a VARYING account subset is not
+  // misread as a smooth whole-portfolio line: ``present``/``total`` = accounts contributing to that point; a
+  // ``PARTIAL`` basis means some in-scope account was stale/unconvertible at that bucket (never fabricated).
+  type EquityCurve = {
+    state?: string; count?: number; accounts?: number;
+    points?: { equity_usd?: number; equity?: number | null; basis?: string; present?: number; total?: number }[];
+  };
   const [eqCurve, setEqCurve] = useState<{ forScope: string; data: EquityCurve } | null>(null);
   useEffect(() => {
     let live = true;
@@ -693,6 +699,15 @@ export default function DashboardPage() {
   const curveValues = (curve?.points || [])
     .map((p) => (isAll ? p.equity_usd : p.equity))
     .filter((v): v is number => typeof v === "number");
+  // Coverage disclosure (ADR-0100, ALL scope): is the portfolio curve stitched from a partial account subset? If
+  // any bucket is PARTIAL (or present<total), the smooth line does NOT represent the whole portfolio at every
+  // point — surface the latest point's "N of M accounts" so it is read honestly rather than as a complete trend.
+  const curvePts = curve?.points || [];
+  const curvePartial = isAll && curvePts.some(
+    (p) => p.basis === "PARTIAL" || (typeof p.present === "number" && typeof p.total === "number" && p.present < p.total));
+  const lastCurvePt = curvePts.length ? curvePts[curvePts.length - 1] : null;
+  const curveCoverage = (isAll && lastCurvePt && typeof lastCurvePt.present === "number" && typeof lastCurvePt.total === "number")
+    ? { present: lastCurvePt.present, total: lastCurvePt.total } : null;
 
   // ── Derived: Market Focus ──
   const ms = selection?.market_state;
@@ -964,6 +979,16 @@ export default function DashboardPage() {
               : (!isAll && snap.series.length > 1)
                 ? <Sparkline values={snap.series} color={trend.color} w={230} h={42} />
                 : <div style={{ ...muted, fontSize: "0.68rem" }}>{lang === "ja" ? "エクイティ履歴を構築中…" : "Equity history is building…"}</div>}
+            {isAll && curvePartial && curveValues.length > 1 && (
+              <div data-testid="equity-curve-partial" style={{ fontSize: "0.58rem", color: "#fbbf24", marginTop: 3, whiteSpace: "nowrap" }}
+                   title={lang === "ja"
+                     ? "一部の口座が一部の時点で欠落しています。線は常に全口座を表すわけではありません。"
+                     : "Some accounts were missing at some points — the line does not represent all accounts at every point."}>
+                {lang === "ja"
+                  ? (curveCoverage ? `一部カバレッジ · 最新 ${curveCoverage.present}/${curveCoverage.total} 口座` : "一部カバレッジ")
+                  : (curveCoverage ? `Partial coverage · latest ${curveCoverage.present} of ${curveCoverage.total} accounts` : "Partial coverage")}
+              </div>
+            )}
           </div>
         </div>
       </div>

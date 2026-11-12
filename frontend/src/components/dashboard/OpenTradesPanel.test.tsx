@@ -260,3 +260,51 @@ describe("OpenTradesPanel — layout stability & accessibility (Dashboard P0 UX)
     expect(screen.getByText(/Floating P\/L/)).toBeTruthy();         // fixed floating P/L label
   });
 });
+
+describe("OpenTradesPanel — per-account exclusion reasons (ADR-0100)", () => {
+  it("explains a STRUCTURAL exclusion (live positions demo-gated) and never implies it will reconnect", async () => {
+    api.apiFetch.mockResolvedValue(result([trade({ position_id: "2:1", account_id: 2 })], {
+      stale_accounts: [1],
+      unavailable_accounts: [{ account_id: 1, reason: "account_not_demo",
+                               reason_category: "positions_unsupported_live", structural: true }],
+      accounts_total: 2, accounts_included: 1, accounts_unavailable: 1, accounts_structurally_unavailable: 1,
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText(/live positions not available for live accounts/)).toBeTruthy());
+    // A structural exclusion must NOT be framed as transient / self-healing.
+    expect(screen.queryByText(/temporarily unavailable/)).toBeNull();
+  });
+
+  it("marks a TRANSIENT exclusion as temporarily unavailable (may recover)", async () => {
+    api.apiFetch.mockResolvedValue(result([trade({ position_id: "2:1", account_id: 2 })], {
+      stale_accounts: [1],
+      unavailable_accounts: [{ account_id: 1, reason: "bridge_unreachable",
+                               reason_category: "stale_observation", structural: false }],
+      accounts_total: 2, accounts_included: 1, accounts_unavailable: 1, accounts_structurally_unavailable: 0,
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText(/live positions temporarily unavailable/)).toBeTruthy());
+    expect(screen.queryByText(/not available for live accounts/)).toBeNull();
+  });
+
+  it("shows both structural and transient when a mix is unavailable", async () => {
+    api.apiFetch.mockResolvedValue(result([trade({ position_id: "3:1", account_id: 3 })], {
+      stale_accounts: [1, 2],
+      unavailable_accounts: [
+        { account_id: 1, reason: "account_not_demo", reason_category: "positions_unsupported_live", structural: true },
+        { account_id: 2, reason: "bridge_unreachable", reason_category: "stale_observation", structural: false },
+      ],
+      accounts_total: 3, accounts_included: 1, accounts_unavailable: 2, accounts_structurally_unavailable: 1,
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText(/not available for live accounts/)).toBeTruthy());
+    expect(screen.getByText(/temporarily unavailable/)).toBeTruthy();
+  });
+
+  it("falls back to the plain 'unavailable' wording for an older payload without reasons", async () => {
+    api.apiFetch.mockResolvedValue(result([trade({ position_id: "2:1", account_id: 2 })],
+      { stale_accounts: [1] }));                    // no unavailable_accounts field (legacy backend)
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText(/1 account: live positions unavailable/)).toBeTruthy());
+  });
+});
