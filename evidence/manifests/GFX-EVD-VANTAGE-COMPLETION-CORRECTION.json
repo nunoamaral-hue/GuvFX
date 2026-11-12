@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-VANTAGE-COMPLETION-CORRECTION",
+  "packet_id": "GFX-WITHDRAWAL-VANTAGE-COMPLETION-CORRECTION-063",
+  "created_at_utc": "2026-11-12T07:15:00Z",
+  "branch": "fix/vantage-completion-correction",
+  "base_commit": "f3950427c60755a37b208ae559a2a5262851cd33",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only corrective implementation. Root cause (read-only, privacy-safe) of production withdrawal #4 (owner 29) stuck REQUESTED/pending/account-unresolved: (1) the vantage/v1 parser has no completion template so the genuine 'processed successfully' email classifies as WITHDRAWAL_REQUESTED (prod events #16/#17 both REQUESTED, amount 30); (2) completion correlation is reference-only and Vantage carries no stable reference; (3) the external account login (ending 5017) is never extracted so the owner-scoped Vantage account TA#52 is never bound; (4) the record is MANUAL_STAFF, which the autonomous engine excludes by design (ADR-0092). Fix: Vantage perfective 'processed successfully' completion + single-login extraction (per-broker, additive); a STAFF-GATED completion service + management command (dry-run default) that re-parses the already-linked, already-retained completion evidence, resolves the account owner-scoped (fail-closed), and advances the withdrawal to COMPLETED; currency-safe projection (amount with explicit neutral marker; no cross-currency aggregation). ADR-0093. NO model/schema change, NO migration, NO production mutation, NO deploy. The autonomous correlation engine is intentionally UNCHANGED (ADR-0092 invariant preserved).",
+    "adr": "docs/architecture/ADR-0093-staff-gated-withdrawal-completion.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test, serial for broker_intelligence) + governance-check + secret/PII scan + evidence lint + frontend parity/lint/build"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_vantage_completion broker_intelligence.tests_parsers_stream_b broker_intelligence.tests_vantage_correlation   (Ran 51 OK — 13 NEW Vantage-completion + existing Stream-B + Vantage-correlation, no regression)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_staff_completion   (Ran 20 OK — NEW: positive flow, fail-closed matrix, projection contract, privacy/isolation)",
+    "cd backend && .venv/bin/python manage.py test broker_intelligence   (FULL app, serial: Ran 1085 OK = 1046 baseline + 39 new, after adversarial-review fixes)",
+    "Workflow adversarial-review-063 (6 dimensions, per-finding verification): 8 real findings (1 HIGH, 2 MEDIUM, 5 LOW) — ALL fixed with mutation-killing regression tests; re-verified privacy-safe against the genuine evidence.",
+    "cd backend && .venv/bin/python manage.py check   (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations broker_intelligence --check --dry-run   (No changes detected in app 'broker_intelligence' — migration-free proof)",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance   (Ran 3 OK — ADR-0093 unique across docs/architecture/ + docs/ADRs/)",
+    "python3 scripts/check_no_secrets.py   (no findings)",
+    "python3 scripts/check_evidence_manifests.py   (EVIDENCE-LINT: PASS)",
+    "cd frontend && npx eslint src/components/dashboard/WithdrawalsHistory.tsx   (clean, exit 0)",
+    "cd frontend && npx vitest run src/components/dashboard/WithdrawalIntelligenceSection.test.tsx   (passed)"
+  ],
+  "expected_results": [
+    "A genuine Vantage COMPLETION email ('...has been processed successfully') classifies as WITHDRAWAL_COMPLETED (perfective, deposit-vetoed), while the SUBMISSION ('Withdrawal Submitted') and the bare 'request successful' stay WITHDRAWAL_REQUESTED; future ('will be processed successfully'), habitual/promotional ('are processed successfully') and terminal-negative emails are NEVER upgraded to a completion. The single stated login is extracted (unique only), and a 13+ digit PAN is never captured.",
+    "The completion parsing and single-login extraction are PER-BROKER (Vantage only); Pepperstone/Dominion/TradersWay parsing is byte-for-byte unchanged.",
+    "A staff reviewer can advance ONE MANUAL_STAFF / reference-less withdrawal to COMPLETED from its already-linked completion candidate: the stored blob re-parses to WITHDRAWAL_COMPLETED for the selected broker, the login resolves to EXACTLY ONE owner-scoped account whose suffix matches, amount equals the expected amount, completion post-dates the request within a bounded window; status becomes COMPLETED with completed_at = the completion evidence timestamp, requested_at preserved, currency left as the evidence states it (unknown => '' , never invented), completed_event None (candidate-based evidence model). Idempotent; transaction + row lock; dry-run by default.",
+    "Fail-closed (no mutation) on: non-staff reviewer; owner mismatch; not REQUESTED / not MANUAL_STAFF / not REAL / already account-resolved / already completed; completion candidate not linked to the withdrawal's correlation; broker-profile mismatch; evidence that re-parses to something other than WITHDRAWAL_COMPLETED (e.g. the submission candidate); amount mismatch; account unresolved / cross-owner / suffix mismatch; completion before the request.",
+    "Projection truthfulness: the completed row renders broker (Vantage), state Completed, masked account suffix (never the full login), no 'Account unresolved' warning after resolution, no fabricated reference, amount shown with an explicit neutral currency marker when currency is unknown, and the unknown-currency amount is NEVER summed into any currency total.",
+    "Migration-free, no production mutation, autonomous correlation engine unchanged (ADR-0092 invariant preserved); no raw email body / name / full account number read into any output, commit, test, log or manifest."
+  ],
+  "actual_results": [
+    "parsers_stream_b.py: VANTAGE gains completion_processed_successfully=True + account_from_body=True. _classify() upgrades a NON-TERMINAL base to WITHDRAWAL_COMPLETED only on the perfective _PROCESSED_SUCCESSFULLY anchor and only without _DEPOSIT_VETO; _SINGLE_ACCOUNT keeps a unique \\d{4,12} login. Verified against the genuine retained evidence via a privacy-safe boolean phrase probe (no body into output): completion matched perfective+not-deposit=True, submission=False; account ...5017 extracted; future/habitual/deposit negatives rejected.",
+    "staff_completion.py (plan_staff_completion/apply_staff_completion) + management/commands/complete_staff_withdrawal.py: fail-closed plan (stable CompletionRefused codes), re-parse of the candidate's immutable blob, owner-scoped resolve_transaction_account (exactly-one, suffix + broker verified), transaction + select_for_update advance re-validated under the lock, idempotent no-op path, masked/JSON before-after output + rollback instructions.",
+    "tests_vantage_completion.py (13) + tests_staff_completion.py (20, incl. ProjectionContract + PrivacyAndIsolation): all green. Full broker_intelligence suite Ran 1079 OK (serial). makemigrations --check: No changes detected. System check: no issues. core.tests_adr_governance: Ran 3 OK. Secret scan: no findings. eslint on the changed component: clean. WithdrawalIntelligenceSection.test.tsx: passed.",
+    "Frontend WithdrawalsHistory.tsx: a known amount with unknown currency now renders '<amount> · currency unavailable' (localised EN/JA) instead of being hidden as N/A or coerced to a currency.",
+    "Diff scope: 4 code/test files changed/added in backend (parsers_stream_b.py, NEW staff_completion.py, NEW management/commands/complete_staff_withdrawal.py), 2 NEW backend test modules (tests_vantage_completion.py, tests_staff_completion.py), 1 frontend component (WithdrawalsHistory.tsx), 1 NEW ADR (ADR-0093), this manifest. No migration, no model field, no new enum, no config, no secret, no production file."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production migration, deploy, correlation, broker approval, publication, cursor movement, mailbox/ingestion action, money movement or raw-email access. Production stays at f3950427 with migration tip 0031; withdrawal #4 and all production data are UNTOUCHED by this packet.",
+    "The autonomous correlation engine is deliberately NOT changed: a reference-less / MANUAL_STAFF withdrawal advances to COMPLETED ONLY via the explicit staff-gated command (ADR-0093 extends the ADR-0092 invariant). Auto-completion by amount/time was rejected as a wrong-merge risk.",
+    "completed_event stays None on the completed MANUAL_STAFF withdrawal: the (evidence, owner) BrokerEvent is unique and event_type is immutable, so the stale REQUESTED event for the completion blob cannot be retyped and no second event can be created for it. The completion evidence remains linked via the StaffWithdrawalCorrelation candidates; duration/broker/amount render correctly without a completed_event FK.",
+    "The vantage/v1 parser is corrected in place (the completion stage is added to the existing ADR-0090 adapter; name/version unchanged) to avoid a BrokerProfile.parser_version coupling and a migration.",
+    "Adversarial-review fix: the SHARED _LIFECYCLE_RULES WITHDRAWAL_COMPLETED anchor had its optional id slot restricted from any word (\\w{1,20}) to NUMERIC (\\d{1,20}) so a modal ('withdrawal WILL have been processed') cannot read as a completion. This is a cross-broker (Pepperstone/Dominion/Vantage) correctness tightening of a PRE-EXISTING over-match; verified non-regressing by the full serial suite (1085 OK, incl. the Pepperstone/Dominion/TradersWay parser + scenario tests).",
+    "The genuine Vantage completion anchor and account pattern were established by a PRIVACY-SAFE boolean phrase probe on the retained evidence (match booleans + masked suffix only); no raw body was read into any output, and committed fixtures are SYNTHETIC. The gated production dry-run re-parses the real blob and FAILS CLOSED if it does not classify as a completion with the expected account/amount.",
+    "Local frontend vitest shows 17 PRE-EXISTING failures (localization/login/support page tests: 'window.localStorage.clear is not a function') on the base commit f3950427, unrelated to this change (verified by stashing the one edited component — the failures persist). These are a local jsdom/env artifact; CI remains authoritative. The changed component's own test (WithdrawalIntelligenceSection) passes and this change adds no new failure.",
+    "The full backend suite was run SERIALLY (not --parallel, per the known GFX-WITHDRAWAL-CI-HYGIENE hang history). Full `make check` / frontend build was not run locally; CI is authoritative."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/parsers_stream_b.py (Vantage completion upgrade + single-login extraction; per-broker opt-in; other brokers unchanged)",
+    "backend/broker_intelligence/staff_completion.py (NEW: plan_staff_completion / apply_staff_completion; fail-closed, idempotent, row-locked)",
+    "backend/broker_intelligence/management/commands/complete_staff_withdrawal.py (NEW: dry-run-by-default staff command; masked before/after JSON + rollback)",
+    "backend/broker_intelligence/tests_vantage_completion.py (NEW: 13 parser completion + extraction + per-broker-gating tests)",
+    "backend/broker_intelligence/tests_staff_completion.py (NEW: 20 positive + fail-closed matrix + projection-contract + privacy tests)",
+    "frontend/src/components/dashboard/WithdrawalsHistory.tsx (amount with unknown currency rendered '<amount> · currency unavailable')",
+    "docs/architecture/ADR-0093-staff-gated-withdrawal-completion.md (NEW ADR)",
+    "evidence/manifests/GFX-EVD-VANTAGE-COMPLETION-CORRECTION.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/parsers_stream_b.py": "sha256:9088614633285871e35e779c941898b2901443a9cc5b1c4fe5aac466609cda39",
+    "backend/broker_intelligence/staff_completion.py": "sha256:ccaa8181e830d4c37a9a1075680e01148a0739108bc5b49b022258e032a76106",
+    "backend/broker_intelligence/management/commands/complete_staff_withdrawal.py": "sha256:13f005296fc814008d4398a9df259193cdcdb876bf91cb6d1b77b16052e81f84",
+    "backend/broker_intelligence/tests_vantage_completion.py": "sha256:7fbc62d271b989a3ac8bb4edf451437a27919aff4d11e352637f9e80601fa5a4",
+    "backend/broker_intelligence/tests_staff_completion.py": "sha256:8e3422e541b565eb5a59f7341e90119850cee5b314a6920706c9603d3aefffb3",
+    "frontend/src/components/dashboard/WithdrawalsHistory.tsx": "sha256:b56f0b4effe1889e54f055fabdd658e8ea88d54e34cba49d82b7c60328f648b2",
+    "docs/architecture/ADR-0093-staff-gated-withdrawal-completion.md": "sha256:a9d251e1099382289d96a9c989a15f985ed894cda5e9f710065712f6ed9197cb"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) — self-review + independent adversarial review (false completion, duplicate withdrawal, cross-tenant account attachment, suffix collision, amount/currency fabrication, timestamp fabrication, raw-email/PII leakage, replay non-idempotence, conflicting completion, Pepperstone/TradersWay regression, public-statistics contamination, direct-DB dependency). Sponsor review pending (auto-merge OFF, STOP before merge)."
+}
