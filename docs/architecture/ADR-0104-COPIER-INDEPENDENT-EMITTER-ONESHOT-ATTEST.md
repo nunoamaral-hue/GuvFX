@@ -135,6 +135,28 @@ task). Contract:
 - **Never** enables or runs the task, provisions or reads the real HMAC key, opens a verifier window, contacts the
   backend or broker, or alters the run-mode emitter task. Output is a redacted structured result with no secret.
 
+### Native-schtasks correction (packet GFX-COPIER-ONESHOT-INSTALLER-NATIVE-SCHTASKS-FIX-103, repository-only)
+
+The first separately-gated Windows-host rollout (`GFX-COPIER-WINDOWS-EMITTER-ROLLOUT-PREFLIGHT-100`) aborted at the
+installer's PLAN: the installer's default schtasks invoker ran `& schtasks ... 2>$null` while function-scope
+`$ErrorActionPreference='Stop'` was in force, so the ordinary "task not found" stderr line from the absent-task
+idempotency `/query` was promoted to a terminating error on Windows PowerShell 5.1 before `$LASTEXITCODE` could be
+read -- the exact GFX-COPIER-PARITY-VALIDATOR-FIX-013 lesson, missed because the Pester suite injected a fake
+schtasks and ParseFile only checks syntax. No task was registered; the rollout rolled back and the host stayed DARK.
+
+The correction is behaviour-preserving and additive: every real `schtasks.exe` call now routes through a single
+top-level helper `Invoke-GuvfxSchtasksNative`, which scopes `$ErrorActionPreference='Continue'` for the native call
+only and restores the caller's prior preference in `finally` (even on an exception). Under EAP=Continue it merges
+native stderr into the output stream (`2>&1`) so a "task not found" line is a non-terminating `ErrorRecord` that is
+discarded (never thrown, never printed), keeps only the stdout lines, and reads `$LASTEXITCODE`; it never redirects
+native stderr to the null stream under EAP=Stop, never throws on a non-zero exit, and touches no filesystem.
+Absence is still inferred by the caller from the `/query` exit code (not from swallowing an exception), and every
+install invariant above is unchanged. Coverage adds a Linux-CI source-level mutation-killing suite
+(`OneShotInstallerNativeSchtasksFixTests`) and a real-`schtasks` Windows regression
+(`Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1`) that exercises the absent-task path under EAP=Stop
+plus a RULE 11 positive control. The rollout's byte-recoverable rollback gap (the account-46 `MANIFEST.json` not
+backed up before replacement) is closed in `docs/COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md` section 5a.
+
 ## Not in this packet (separate Sponsor/human gates)
 
 Merge · deploy · install/enable/trigger the one-shot task on the host · open the ADR-0101 verifier window ·

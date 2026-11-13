@@ -1,5 +1,40 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-13 — One-shot installer native-schtasks PS 5.1 fix (GFX-COPIER-ONESHOT-INSTALLER-NATIVE-SCHTASKS-FIX-103; ADR-0104 amended; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-COPIER-ONESHOT-INSTALLER-SCHTASKS-FIX
+Packet ID: GFX-COPIER-ONESHOT-INSTALLER-NATIVE-SCHTASKS-FIX-103
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge) - all local acceptance passed; independent adversarial review NO CRIT/HIGH/MED (2 LOW addressed, 2 NIT); Windows PS 5.1 ParseFile + Pester (mocked + real-schtasks) + mutation-discrimination run on the non-production windows-latest gate (run/job IDs in the packet return / PR body).
+
+Base commit: a6ed0a81 (current canonical main - #655 ADR-0106 monitoring-health, a disjoint workstream; re-fetched, not an assumed SHA)
+Branch: fix/copier-oneshot-installer-native-schtasks (fresh off a6ed0a81; NOT off stale c5d76868)
+
+Defect (why this packet exists): the one-shot installer's default $InvokeSchtasks ran `& schtasks @argList 2>$null` under function-scope $ErrorActionPreference='Stop'. On Windows PowerShell 5.1 the absent-task idempotency /query writes "task not found" to stderr, which under EAP=Stop + that redirect is promoted to a TERMINATING error before $LASTEXITCODE is read -> the packet-100 Windows-host rollout aborted at PLAN (no task created; rolled back; host DARK). The Pester suite injected a FAKE schtasks and ParseFile only checks syntax, so it escaped two review rounds + CI (the exact GFX-COPIER-PARITY-VALIDATOR-FIX-013 lesson).
+
+Fix: one top-level helper Invoke-GuvfxSchtasksNative scopes $ErrorActionPreference='Continue' for the native call only and restores the prior EAP in finally; under Continue it merges native stderr via 2>&1 and discards the non-terminating ErrorRecord, keeping stdout + reading $LASTEXITCODE; filesystem-independent (no temp file). The default seam routes through it; no `2>$null` under EAP=Stop. Behaviour-preserving: account-46 pin, 48/CZ/reserved refusals, PLAN/APPLY, disabled+triggerless render, authoritative read-back, idempotency/drift-Replace rollback, no-secret/no-enable invariants all unchanged.
+
+Coverage: Linux CI OneShotInstallerNativeSchtasksFixTests (7, source-level mutation-killing) in backend/trade_copier/emitter/tests_bundle.py; Windows gate deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1 (real schtasks absent-path under EAP=Stop + RULE 11 positive control) + a gate-only mutation-discrimination step.
+
+Rollback completeness: packet-100 residual (on-host account-46 MANIFEST.json replaced without a prior backup) closed in docs/COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md section 5a (back-up-before-replace, record SHA+ACL, restore on rollback, include in byte comparison, pre-existing(restore) vs new(remove), preserve rollback dir, separate staging cleanup, never back up a secret).
+
+Exact tests run (local, non-parallel):
+- cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging -> Ran 51, OK (44 baseline + 7 new)
+- ... manage.py test trade_copier -> Ran 954, OK (no regression)
+- ... manage.py test core.tests_adr_governance -> Ran 3, OK (ADR-0104 amended in place; no duplicate number)
+- ... manage.py makemigrations trade_copier --check --dry-run -> No changes detected
+- python3 scripts/check_no_secrets.py -> no findings; python3 scripts/check_evidence_manifests.py -> EVIDENCE-LINT PASS (78); python3 -m unittest discover -s tests -p 'test_no_secrets.py' -> Ran 18, OK
+- mutation-kill: unsafe `2>$null` mutant -> 2/7 guards FAIL; fix restored (installer sha256 9e47f153...2171) -> 7/7 OK
+
+Changed files (7, narrow): deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1; deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1 (new); backend/trade_copier/emitter/tests_bundle.py; deploy/copier-emitter/MANIFEST.json (installer hash bump); docs/COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md (section 5a); docs/architecture/ADR-0104-...md (native-schtasks amendment); evidence/manifests/GFX-EVD-COPIER-ONESHOT-INSTALLER-SCHTASKS-FIX.json (new); + this HANDOFF entry. No migration, no workflow in the PR inventory (the Windows gate lives only on a throwaway scratch branch), no secret, no production config.
+
+Production/host unchanged: backend remains 355d88ab (image b4f8d5f4); copier execution + copier_emitter_oneshot flag OFF; account-46 Windows host DARK (one-shot task absent after the packet-100 rollback). No deploy, no migration, no host contact, no secret, no verifier window, no #48/Customer Zero contact, no broker order.
+
+One bounded next action: Sponsor merge GO for the PR; then re-attempt the Windows-host rollout (packet-100 successor) with the FIXED installer, following COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md section 5a for byte-recoverable rollback.
+```
+
 ## 2026-11-13 — Governed one-shot task installer (GFX-COPIER-ONESHOT-TASK-INSTALLER-097; ADR-0104; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```
