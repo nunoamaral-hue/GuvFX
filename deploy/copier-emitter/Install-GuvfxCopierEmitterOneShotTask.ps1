@@ -22,6 +22,32 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+function Invoke-GuvfxSchtasksNative {
+    # The ONLY site that runs the real schtasks.exe. Windows PowerShell 5.1 promotes a native command's stderr to a
+    # TERMINATING PowerShell error while $ErrorActionPreference is 'Stop' (the normal first-install state), so the
+    # ordinary "task not found" line emitted by an absent-task /query would throw BEFORE $LASTEXITCODE could be read
+    # (the GFX-COPIER-PARITY-VALIDATOR-FIX-013 lesson). This helper scopes EAP to 'Continue' for the native call ONLY
+    # and ALWAYS restores the caller's prior EAP in finally (even on an exception). Under EAP='Continue' it merges
+    # native stderr into the output stream (2>&1) so a "task not found" line is a NON-terminating ErrorRecord that is
+    # discarded (never thrown, never printed to the console) rather than a terminating error; it keeps only the stdout
+    # lines and reads the native exit code. It never redirects native stderr to the null stream while EAP is 'Stop',
+    # never throws on a non-zero exit, and touches no filesystem (no temp file to fail on). Classification of "absent"
+    # vs a mandatory-success failure stays with the caller, which reads ExitCode; this helper neither suppresses an
+    # unexpected failure nor labels every failure "absent".
+    param([Parameter(Mandatory = $true)][string[]]$ArgList)
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $merged = & schtasks.exe @ArgList 2>&1
+        $code = $LASTEXITCODE
+        $stdout = @($merged | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        return [ordered]@{ ExitCode = $code; Out = (@($stdout) -join [Environment]::NewLine) }
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
 function Install-GuvfxCopierEmitterOneShotTask {
     [CmdletBinding()]
     param(
@@ -139,7 +165,8 @@ function Install-GuvfxCopierEmitterOneShotTask {
 
     # ---- idempotency: compare any existing task's security-relevant fields -------------------------------
     if ($null -eq $InvokeSchtasks) {
-        $InvokeSchtasks = { param($argList) $o = (& schtasks @argList 2>$null); return [ordered]@{ ExitCode = $LASTEXITCODE; Out = (@($o) -join [Environment]::NewLine) } }
+        # route the real schtasks through the EAP-scoped helper so an absent-task /query cannot throw on PS 5.1
+        $InvokeSchtasks = { param($argList) return (Invoke-GuvfxSchtasksNative -ArgList $argList) }
     }
     function Read-TaskXml([string]$name) {
         $res = & $InvokeSchtasks @('/query', '/tn', ('\' + $name), '/xml', 'ONE')

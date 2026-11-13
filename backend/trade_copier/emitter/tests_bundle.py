@@ -19,6 +19,7 @@ _BUNDLE = _ROOT / "deploy" / "copier-emitter"
 _PS1 = sorted(_BUNDLE.glob("*.ps1"))
 _PARITY = _BUNDLE / "tests" / "Test-TaskXmlSchtasksParity.ps1"
 _OPWRAP = _BUNDLE / "operator" / "Invoke-GuvfxCopierOneShotAttestation.ps1"
+_ONESHOT_INSTALLER = _BUNDLE / "Install-GuvfxCopierEmitterOneShotTask.ps1"
 _ORDER_VERBS = ("order_send", "place_order", "ordersend", "broker_order", "close_position", "modify_position")
 _SECRET_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
 
@@ -261,6 +262,95 @@ class ParityValidatorPs51FixTests(SimpleTestCase):
         self.assertNotIn("PT0M", t)                                  # the literal never appears in the asset
         self.assertIn("finally", t)                                  # self-clean on success and failure
         self.assertIn("PARITYTEST", t)                               # non-production task name
+
+
+class OneShotInstallerNativeSchtasksFixTests(SimpleTestCase):
+    """GFX-COPIER-ONESHOT-INSTALLER-NATIVE-SCHTASKS-FIX-103 - the governed one-shot task installer must survive the
+    Windows PowerShell 5.1 native-stderr trap. The absent-task /query that every first install performs writes to
+    stderr; under $ErrorActionPreference='Stop' with a `2>$null` redirect, PS 5.1 promotes that stderr into a
+    TERMINATING error before $LASTEXITCODE is read - which failed the real rollout's PLAN (packet 100). The fix routes
+    every real schtasks.exe call through one EAP-scoped helper that reads the native exit code and restores the prior
+    EAP in finally. These are source-level (mutation-killing) regressions; the live absent-task sequence + a RULE 11
+    positive control are exercised on a Windows runner (no Windows in CI)."""
+
+    def _t(self):
+        return _ONESHOT_INSTALLER.read_text()
+
+    def test_present_ascii_no_bom_ps51(self):
+        self.assertTrue(_ONESHOT_INSTALLER.exists(), "one-shot installer missing")
+        data = _ONESHOT_INSTALLER.read_bytes()
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf"), "BOM in one-shot installer")
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII byte in one-shot installer")
+        self.assertIn("#Requires -Version 5.1", self._t())
+
+    def test_native_schtasks_routed_through_one_eap_scoped_helper(self):
+        t = self._t()
+        self.assertIn("function Invoke-GuvfxSchtasksNative", t, "missing the single EAP-scoped native helper")
+        self.assertIn("$ErrorActionPreference = 'Continue'", t, "helper must scope EAP to Continue for the native call")
+        self.assertIn("$LASTEXITCODE", t, "native exit code must be READ, not thrown")
+        # the raw native invocation exists exactly ONCE (inside the helper); every other site uses the injected seam
+        self.assertEqual(t.count("& schtasks"), 1, "the real schtasks.exe must be invoked from exactly one helper site")
+        self.assertIn("$InvokeSchtasks = { param($argList) return (Invoke-GuvfxSchtasksNative -ArgList $argList) }", t,
+                      "the default schtasks invoker must route through the safe helper")
+
+    def test_no_terminating_redirect_of_native_stderr_to_null(self):
+        # `2>$null` under EAP=Stop is the exact PS 5.1 terminating-error defect (packet 100). It must not appear
+        # anywhere in the installer (not even in a comment) so a naive scan cannot be fooled.
+        self.assertNotIn("2>$null", self._t(), "2>$null reintroduces the PS 5.1 native-stderr terminating trap")
+
+    def test_helper_restores_prior_eap_in_finally(self):
+        t = self._t()
+        self.assertIn("$prevEap = $ErrorActionPreference", t, "the helper must snapshot the caller's prior EAP")
+        self.assertIn("$ErrorActionPreference = $prevEap", t, "the helper must restore the prior EAP")
+        self.assertIn("finally", t, "EAP restore + temp-file cleanup must live in a finally")
+        # the restore happens inside the finally (after the final 'finally {' in the helper region)
+        helper = t[t.index("function Invoke-GuvfxSchtasksNative"):t.index("function Install-GuvfxCopierEmitterOneShotTask")]
+        self.assertLess(helper.index("finally"), helper.index("$ErrorActionPreference = $prevEap"),
+                        "the EAP restore must be in the finally block, not the try body")
+
+    def test_absent_is_not_a_blanket_catch(self):
+        # the fix must NOT paper over every failure as "task absent". The native helper never returns a sentinel from a
+        # catch (its only catch guards reading the stderr temp file and assigns a default); absence is inferred by the
+        # CALLER from a non-zero /query exit code. (The 3 `catch { return (Fail ...)` sites are JSON-parse fail-closed
+        # guards OUTSIDE the helper, which is why this check is scoped to the helper region.)
+        t = self._t()
+        helper = t[t.index("function Invoke-GuvfxSchtasksNative"):t.index("function Install-GuvfxCopierEmitterOneShotTask")]
+        self.assertNotIn("catch { return", helper, "the native helper must not relabel a caught failure as a soft pass")
+        self.assertIn("finally", helper, "the helper uses try/finally for EAP restore + temp-file cleanup")
+        self.assertIn("if ($null -eq $res -or $res.ExitCode -ne 0 -or -not $res.Out) { return $null }", t,
+                      "absence must be inferred from the query exit code, not from swallowing an exception")
+
+    def test_preserves_governed_install_invariants(self):
+        t = self._t()
+        self.assertIn("$PINNED = 46", t)                                   # account-46 pin
+        self.assertIn("$EXPLICIT_REFUSE = @(48)", t)                       # account-48 refused
+        self.assertIn("$RESERVED = @(0, 1, 18)", t)                        # Customer Zero + reserved refused
+        self.assertIn("if (-not $Apply)", t)                               # PLAN dry-run default
+        self.assertIn("'GuvFX_CopierEmitterOneShot_'", t)                  # fixed task name
+        self.assertIn("rendered_not_disabled", t)                          # disabled render enforced
+        self.assertIn("rendered_has_triggers", t)                          # triggerless enforced
+        self.assertIn("readback_verified", t)                              # authoritative read-back
+        self.assertFalse(_SECRET_RE.search(t), "secret-looking literal in the one-shot installer")
+
+    def test_real_schtasks_regression_asset_present_ascii_and_safe(self):
+        asset = _BUNDLE / "tests" / "Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1"
+        self.assertTrue(asset.exists(), "real-schtasks absent-path regression asset missing")
+        data = asset.read_bytes()
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf"), "BOM in real-schtasks regression asset")
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII byte in real-schtasks regression asset")
+        text = asset.read_text()
+        low = text.lower()
+        self.assertIn("invoke-guvfxschtasksnative", low)          # exercises the real helper
+        self.assertIn("$erroractionpreference = 'stop'", low)     # reproduces the trap condition
+        self.assertIn("/query", low)                              # the absent-task query path
+        self.assertIn("poscontrol", low)                          # RULE 11 positive control
+        self.assertIn("finally", low)                             # defensive cleanup
+        # a clearly non-production, collision-resistant test task name (never a real GuvFX task)
+        self.assertIn("GuvFxPesterAbsent", text)
+        self.assertNotIn("GuvFX_CopierEmitterOneShot_46", text, "must not reference the real production task name")
+        for forbidden in ("COPIER_INGEST_HMAC_KEY", "GUVFX_AGENT_TOKEN", "api.guvfx.com", "100.79.101.19"):
+            self.assertNotIn(forbidden, text, f"regression asset must not reference {forbidden}")
+        self.assertFalse(_SECRET_RE.search(text), "secret-looking literal in real-schtasks regression asset")
 
 
 class OperatorWrapperTests(SimpleTestCase):

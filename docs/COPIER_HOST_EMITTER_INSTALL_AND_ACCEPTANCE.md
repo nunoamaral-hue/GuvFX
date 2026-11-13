@@ -65,6 +65,46 @@ recorded PARTIAL/FAIL with the reason. No real account/position/broker order is 
   `COPIER_ATTESTATION_VERIFY_ENABLED` (no migration, no schema change — nothing to roll back DB-side; this
   packet adds no model/migration).
 
+## 5a. One-shot emitter bundle rollout — byte-recoverable rollback (ADR-0104)
+
+Scope: the separately Sponsor-gated Windows-host rollout of the account-46 one-shot attest bundle (the emitter
+bundle + hosted-executor daemon update + the DISABLED, triggerless `GuvFX_CopierEmitterOneShot_46` task). Governs
+packet `GFX-COPIER-WINDOWS-EMITTER-ROLLOUT-PREFLIGHT-100` and its successors. The installer itself is fixed under
+`GFX-COPIER-ONESHOT-INSTALLER-NATIVE-SCHTASKS-FIX-103` (the PS 5.1 absent-task native-stderr defect that aborted the
+first rollout's PLAN; see `deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1` and its real-schtasks
+regression).
+
+**Lesson paid for (packet 100 residual).** The first rollout replaced the on-host account-46 bundle manifest
+(`...\46\MANIFEST.json`) **without backing up the prior file first**, so that one file was not byte-recoverable on
+rollback. It was non-runtime and harmless in that instance, but the rollback set was therefore incomplete. The next
+rollout MUST close this gap:
+
+1. **Back up every file before it is replaced.** Before overwriting any pre-existing on-host file -- the daemon files,
+   the account-46 bundle `MANIFEST.json` included -- copy the current file into the rollback directory
+   (`C:\GuvFX\_rollback\<rollout-id>\`), preserving its relative path. No pre-existing file is replaced before its
+   backup copy exists.
+2. **Record each backed-up file's SHA-256 and ACL** (owner + DACL, e.g. `Get-Acl | ConvertTo-...`/`icacls ... /save`)
+   in a rollback inventory alongside the copies, so a restore can verify byte- and permission-fidelity.
+3. **Restore every backed-up file on rollback** from the rollback directory, reapplying the recorded ACL, not just
+   the daemon files. The account-46 `MANIFEST.json` is restored like any other pre-existing file.
+4. **Include every restored file in the post-rollback byte comparison.** Rollback is complete only when each restored
+   path hashes equal to its recorded pre-rollout SHA-256 and carries its recorded ACL.
+5. **Distinguish pre-existing files from newly-added files in the plan.** Pre-existing files are *restored* on
+   rollback; newly-added files (the `Trigger-*` primitive, the bundle one-shot artefacts, the new task) are *removed*
+   on rollback. Each file in the rollout plan is tagged `pre-existing (restore)` or `new (remove)` before mutation.
+6. **Preserve the rollback directory as evidence.** Do not delete `C:\GuvFX\_rollback\<rollout-id>\` or its inventory
+   on rollback or on success; it is retained until a later packet explicitly authorizes its cleanup.
+7. **Treat staging cleanup separately from operational rollback.** The staging directory
+   (`C:\GuvFX\_staging\<rollout-id>\`) is a transfer buffer, not the rollback set; cleaning or leaving it is a
+   separate, independently authorized step and never part of the fail-closed rollback.
+8. **Never copy or back up a secret.** The HMAC ingest key and any credential are out of scope for both the rollout
+   and the backup set; the rollback directory holds only non-secret bundle/daemon/task artefacts. If a candidate file
+   to back up could contain a secret, it is excluded and flagged, not copied.
+
+The task remains DISABLED and triggerless throughout; rollback removes the newly-created one-shot task and new
+primitive, restores the prior daemon files and the account-46 `MANIFEST.json` with their ACLs, restarts the executor,
+and re-verifies the original state. No flag, key, verifier window, trigger or broker action is part of this rollout.
+
 ## 6. HARD STOP — separate future Sponsor gates
 Continuous emitter operation; scheduler enablement; ingestion/projection/dispatch/alert flag enablement; a real
 alert transport; follower activation; read-only/shadow production observation; any live one-order acceptance.
