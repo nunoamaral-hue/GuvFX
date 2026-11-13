@@ -48,6 +48,31 @@ function Invoke-GuvfxSchtasksNative {
     }
 }
 
+function Resolve-GuvfxPrincipalSid {
+    # Canonicalise a Windows principal reference to its SID string so the APPLY read-back compares identities by SID,
+    # not by string form. schtasks stores a task's principal as a SID, so a read-back returns e.g.
+    # 'S-1-5-21-...-1065' while the installer rendered the bare local name 'guvfx_u_46' -- a raw string compare then
+    # wrongly reports a mismatch (GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108). Accepts a SID string
+    # ('S-1-...'), a bare local account name ('guvfx_u_46') or a machine-qualified name ('HOST\guvfx_u_46'), and
+    # returns the canonical SID string. Returns $null on ANY lookup/translation failure (FAIL CLOSED). Translation is
+    # authoritative Windows identity resolution (NTAccount/SecurityIdentifier) -- NEVER a lowercase/substring/suffix
+    # match. A SID string must round-trip to a real account (an unresolved/dangling SID fails). No value is logged;
+    # the function performs no mutation and resolves nothing implicitly to a group or well-known alias.
+    param([Parameter(Mandatory = $true)][string]$Reference)
+    $v = ([string]$Reference).Trim()
+    if (-not $v) { return $null }
+    try {
+        if ($v -match '^S-1-[0-9-]+$') {
+            $sid = New-Object System.Security.Principal.SecurityIdentifier($v)
+            $null = $sid.Translate([System.Security.Principal.NTAccount])   # a dangling SID (no account) throws -> fail closed
+            return $sid.Value
+        }
+        $nt = New-Object System.Security.Principal.NTAccount($v)
+        $sid = $nt.Translate([System.Security.Principal.SecurityIdentifier])
+        return $sid.Value
+    } catch { return $null }
+}
+
 function Install-GuvfxCopierEmitterOneShotTask {
     [CmdletBinding()]
     param(
@@ -56,7 +81,8 @@ function Install-GuvfxCopierEmitterOneShotTask {
         [string]$PythonExe = 'python',
         [switch]$Apply,
         [switch]$Replace,
-        [scriptblock]$InvokeSchtasks = $null   # injectable for tests; $null => the real schtasks
+        [scriptblock]$InvokeSchtasks = $null,   # injectable for tests; $null => the real schtasks
+        [scriptblock]$ResolvePrincipalSid = $null   # injectable for tests; $null => the real canonical-SID resolver
     )
     $ErrorActionPreference = 'Stop'
 
@@ -168,6 +194,17 @@ function Install-GuvfxCopierEmitterOneShotTask {
         # route the real schtasks through the EAP-scoped helper so an absent-task /query cannot throw on PS 5.1
         $InvokeSchtasks = { param($argList) return (Invoke-GuvfxSchtasksNative -ArgList $argList) }
     }
+    if ($null -eq $ResolvePrincipalSid) {
+        $ResolvePrincipalSid = { param($ref) return (Resolve-GuvfxPrincipalSid -Reference $ref) }
+    }
+    # canonical SID-to-SID principal check: the read-back principal (schtasks returns a SID) must resolve to the SAME
+    # SID as the pinned guvfx_u_46 principal. Fail closed if EITHER side cannot be resolved (unresolved identity never
+    # passes). Account-46 stays pinned because $PRINCIPAL is fixed to guvfx_u_46; a different account's SID never matches.
+    function Test-PrincipalCanonical([string]$actualUserId) {
+        $expectedSid = & $ResolvePrincipalSid $PRINCIPAL
+        $actualSid = & $ResolvePrincipalSid $actualUserId
+        return ([bool]$expectedSid -and [bool]$actualSid -and ($expectedSid -eq $actualSid))
+    }
     function Read-TaskXml([string]$name) {
         $res = & $InvokeSchtasks @('/query', '/tn', ('\' + $name), '/xml', 'ONE')
         if ($null -eq $res -or $res.ExitCode -ne 0 -or -not $res.Out) { return $null }
@@ -182,7 +219,7 @@ function Install-GuvfxCopierEmitterOneShotTask {
         return ((('' + $t.Task.Settings.Enabled) -eq 'false') -and ($tTrig -eq 0) -and
                 (('' + $t.Task.Actions.Exec.Command) -eq $PythonExe) -and
                 (('' + $t.Task.Actions.Exec.Arguments) -eq $expectedArgs) -and
-                (('' + $t.Task.Principals.Principal.UserId) -eq $PRINCIPAL) -and
+                (Test-PrincipalCanonical ('' + $t.Task.Principals.Principal.UserId)) -and
                 (-not ($taskXml -match '[0-9a-fA-F]{40,}')) -and (-not ($taskXml -match 'COPIER_INGEST_HMAC_KEY')))
     }
 
@@ -231,7 +268,7 @@ function Install-GuvfxCopierEmitterOneShotTask {
                     $rbEnabled = (('' + $rx.Task.Settings.Enabled) -eq 'false')
                     $rbCmd = (('' + $rx.Task.Actions.Exec.Command) -eq $PythonExe)
                     $rbArgs = (('' + $rx.Task.Actions.Exec.Arguments) -eq $expectedArgs)
-                    $rbUid = (('' + $rx.Task.Principals.Principal.UserId) -eq $PRINCIPAL)
+                    $rbUid = (Test-PrincipalCanonical ('' + $rx.Task.Principals.Principal.UserId))
                     $rbSecret = (($rb -match '[0-9a-fA-F]{40,}') -or ($rb -match 'COPIER_INGEST_HMAC_KEY'))
                     $r.disabled = $rbEnabled
                     $r.trigger_count = $rbTrig

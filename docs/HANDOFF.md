@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-13 — One-shot installer principal-SID read-back fix (GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108; ADR-0104 amended; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-COPIER-ONESHOT-INSTALLER-PRINCIPAL-SID-FIX
+Packet ID: GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge) - all local acceptance passed; independent adversarial review requested; Windows PS 5.1 ParseFile + Pester (mocked matrix + real-schtasks SID) + mutation-discrimination run on the non-production windows-latest gate (run/job IDs in the packet return / PR body).
+
+Base commit: 19a9005445fcf3cb85a8dcf7eb334a526b158328 (canonical main; PR #656 native-schtasks fix)
+Branch: fix/copier-oneshot-installer-principal-sid (fresh off 19a90054)
+
+Defect (packet 105 live rollout): APPLY correctly registered a DISABLED, triggerless, account-46 task, but the authoritative read-back compared Task.Principals.Principal.UserId to the bare 'guvfx_u_46' while schtasks STORES the principal as a SID (S-1-5-21-2216203845-1747098376-1637942580-1065) -> readback_mismatch -> installer fail-closed-deleted the correct task -> host rolled back to DARK. The GFX-COPIER-PARITY-VALIDATOR-FIX-013 Defect-2 (principal resolution) in the installer read-back.
+
+Fix: top-level Resolve-GuvfxPrincipalSid canonicalizes a SID string / bare local name / HOST\name to its SID via authoritative Windows NTAccount/SecurityIdentifier translation, $null on any failure (fail closed), never lowercase/substring/suffix match, a SID string must round-trip to a real account. Nested Test-PrincipalCanonical resolves BOTH the pinned guvfx_u_46 and the returned principal to SIDs and compares SID-to-SID; both read-back sites use it; injectable $ResolvePrincipalSid for tests. Account-46 pin, DISABLED, zero triggers, fixed action/args, no-secret, fail-closed deletion all unchanged; render-validation still string-checks the rendered bare name.
+
+Exact tests run (local, non-parallel):
+- cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging -> Ran 56, OK (44 baseline + 7 pkt-103 + 5 new OneShotInstallerPrincipalSidFixTests)
+- ... manage.py test trade_copier -> Ran 959, OK (no regression)
+- ... manage.py test core.tests_adr_governance -> Ran 3, OK
+- ... manage.py makemigrations trade_copier --check --dry-run -> No changes detected
+- python3 scripts/check_no_secrets.py -> no findings; check_evidence_manifests.py -> EVIDENCE-LINT PASS (79); test_no_secrets.py -> Ran 18, OK
+- mutation-kill (source-level): raw '($UserId) -eq $PRINCIPAL' read-back FAILS test_readback_uses_canonical_sid_not_raw_string; fix restored (installer sha256 826ff7f6...d9cd) -> guards green
+
+Changed files (7, narrow): deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1; deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1; deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1; deploy/copier-emitter/MANIFEST.json (installer hash 9e47f153 -> 826ff7f6); backend/trade_copier/emitter/tests_bundle.py; docs/architecture/ADR-0104-...md (amendment); evidence/manifests/GFX-EVD-COPIER-ONESHOT-INSTALLER-PRINCIPAL-SID-FIX.json; + this HANDOFF entry. NO backend runtime change, NO migration, NO workflow in the PR inventory, NO production/host mutation, NO secret.
+
+Production/host unchanged: backend a6ed0a81 (dashboard monitoring-health deploy); copier execution + copier_emitter_oneshot flag OFF; account-46 Windows host DARK (one-shot task absent after the packet-105 rollback). No deploy, no migration, no host contact, no secret, no verifier window, no #48/Customer Zero contact, no broker order.
+
+One bounded next action: Sponsor merge GO for the PR; then re-attempt the Windows-host rollout (packet-105 successor) with the principal-SID-corrected installer per COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md section 5a.
+```
+
 ## 2026-11-13 — One-shot installer native-schtasks PS 5.1 fix (GFX-COPIER-ONESHOT-INSTALLER-NATIVE-SCHTASKS-FIX-103; ADR-0104 amended; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```

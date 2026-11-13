@@ -53,12 +53,35 @@ BeforeAll {
         return [ordered]@{ State = $state; Invoke = $sb }
     }
 
+    # ---- principal-SID fix (GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108): the installer now
+    #      compares task principals by CANONICAL SID (schtasks stores a SID, not the submitted name). The mock returns
+    #      the rendered bare 'guvfx_u_46', so inject a deterministic fake resolver (via $PSDefaultParameterValues) that
+    #      maps the pinned-account forms -> one canonical test SID; the EXISTING regression tests then exercise the
+    #      SID-to-SID path without a real account. The matrix tests below pass their OWN resolver + crafted read-back
+    #      to prove accept/reject; the real-schtasks test proves live Windows SID normalization.
+    $script:PinnedSid = 'S-1-5-21-TEST-GUVFX-46'
+    $script:Resolve = {
+        param($ref)
+        $v = ('' + $ref).Trim()
+        if ($v -match '(?i)^guvfx_u_46$' -or $v -match '(?i)^WIN-TEST\\guvfx_u_46$') { return 'S-1-5-21-TEST-GUVFX-46' }
+        if ($v -eq 'S-1-5-21-TEST-GUVFX-46') { return 'S-1-5-21-TEST-GUVFX-46' }
+        if ($v -match '(?i)unresolved') { return $null }        # explicit unresolved/dangling marker -> fail closed
+        if ($v -match '^S-1-[0-9-]+$') { return $v }             # any other real SID -> itself (a DIFFERENT identity)
+        return $null                                             # any other name -> unresolved -> fail closed
+    }.GetNewClosure()
+    if (-not $global:PSDefaultParameterValues) { $global:PSDefaultParameterValues = @{} }
+    $global:PSDefaultParameterValues['Install-GuvfxCopierEmitterOneShotTask:ResolvePrincipalSid'] = $script:Resolve
+
     # a known-compliant rendered task XML (captured from one successful synthetic install) for idempotency/drift
     $script:pkgRef = New-SyntheticPackage
     $fx0 = New-FakeSchtasks
     $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $script:pkgRef -Apply -InvokeSchtasks $fx0.Invoke
     $script:compliantXml = [string]$fx0.State.CreatedXml
     $script:src = Get-Content -LiteralPath $script:Installer -Raw
+}
+
+AfterAll {
+    if ($global:PSDefaultParameterValues) { [void]$global:PSDefaultParameterValues.Remove('Install-GuvfxCopierEmitterOneShotTask:ResolvePrincipalSid') }
 }
 
 Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task installer' {
@@ -267,5 +290,102 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
         $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -InvokeSchtasks $fx.Invoke
         $res.action | Should -BeExactly 'plan'
         ($fx.State.Calls | Where-Object { $_ -match '/create' -or $_ -match '/delete' -or $_ -match '/change' }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Install-GuvfxCopierEmitterOneShotTask - canonical SID principal read-back (packet 108)' {
+    # APPLY registers under the bare rendered name 'guvfx_u_46'; schtasks stores a SID, so the read-back returns a SID.
+    # These tests drive APPLY with a crafted read-back UserId + an explicit resolver and assert canonical SID-to-SID
+    # accept/reject + fail-closed. The default $PSDefaultParameterValues resolver maps the pinned-account forms -> one
+    # test SID (S-1-5-21-TEST-GUVFX-46); other SIDs -> themselves; names with an 'unresolved' marker or any other
+    # name -> $null (fail closed).
+    function Invoke-ApplyReadbackUserId {
+        param([string]$UserId, [scriptblock]$Resolver)
+        $fx = New-FakeSchtasks
+        $fx.State.ReadBackXml = ($script:compliantXml -replace '<UserId>[^<]*</UserId>', ('<UserId>' + $UserId + '</UserId>'))
+        $p = @{ PackageRoot = $script:pkgRef; Apply = $true; InvokeSchtasks = $fx.Invoke }
+        if ($Resolver) { $p['ResolvePrincipalSid'] = $Resolver }
+        return @{ res = (Install-GuvfxCopierEmitterOneShotTask @p); fx = $fx }
+    }
+
+    # ---- POSITIVE: all three accepted forms of the pinned account resolve to the same SID -> read-back verified ----
+    It '(P1) read-back bare guvfx_u_46 -> canonical SID matches -> installed+verified' {
+        $o = Invoke-ApplyReadbackUserId 'guvfx_u_46'
+        $o.res.ok | Should -BeTrue
+        $o.res.readback_verified | Should -BeTrue
+        $o.res.action | Should -BeExactly 'installed'
+    }
+    It '(P2) read-back machine-qualified WIN-TEST\guvfx_u_46 -> same SID -> verified' {
+        $o = Invoke-ApplyReadbackUserId 'WIN-TEST\guvfx_u_46'
+        $o.res.ok | Should -BeTrue
+        $o.res.readback_verified | Should -BeTrue
+    }
+    It '(P3) read-back as the canonical local-account SID -> verified (schtasks normalization)' {
+        $o = Invoke-ApplyReadbackUserId 'S-1-5-21-TEST-GUVFX-46'
+        $o.res.ok | Should -BeTrue
+        $o.res.readback_verified | Should -BeTrue
+    }
+    It '(P4) a SID-verified install remains DISABLED and triggerless' {
+        $o = Invoke-ApplyReadbackUserId 'S-1-5-21-TEST-GUVFX-46'
+        $o.res.disabled | Should -BeTrue
+        $o.res.trigger_count | Should -Be 0
+    }
+
+    # ---- NEGATIVE: any identity whose canonical SID differs, or cannot be resolved, FAILS and deletes the task ----
+    It '(N1) a different local user SID -> mismatch -> fail-closed delete' {
+        $o = Invoke-ApplyReadbackUserId 'S-1-5-21-2216203845-1747098376-1637942580-9999'
+        $o.res.ok | Should -BeFalse
+        $o.res.reason | Should -BeExactly 'readback_mismatch'
+        ($o.fx.State.Calls | Where-Object { $_ -match '/delete' }) | Should -Not -BeNullOrEmpty
+    }
+    It '(N2) a machine-qualified DIFFERENT user -> unresolved -> fail-closed delete' {
+        $o = Invoke-ApplyReadbackUserId 'WIN-OTHER\someone_else'
+        $o.res.ok | Should -BeFalse
+        $o.res.reason | Should -BeExactly 'readback_mismatch'
+    }
+    It '(N3) an unresolved/dangling SID -> fail-closed delete' {
+        $o = Invoke-ApplyReadbackUserId 'S-1-5-21-UNRESOLVED-0-0-0'
+        $o.res.ok | Should -BeFalse
+        $o.res.reason | Should -BeExactly 'readback_mismatch'
+    }
+    It '(N4) an UNRESOLVED EXPECTED principal fails before acceptance (resolver returns null for guvfx_u_46)' {
+        $nullResolver = { param($ref) return $null }
+        $o = Invoke-ApplyReadbackUserId 'guvfx_u_46' $nullResolver
+        $o.res.ok | Should -BeFalse
+        $o.res.readback_verified | Should -BeFalse
+    }
+    It '(N5) a fake-suffix substring evil_guvfx_u_46 is NOT accepted (no substring match)' {
+        $o = Invoke-ApplyReadbackUserId 'evil_guvfx_u_46'
+        $o.res.ok | Should -BeFalse
+        $o.res.readback_verified | Should -BeFalse
+    }
+    It '(N6) account substitution guvfx_u_48 in the read-back is refused' {
+        $o = Invoke-ApplyReadbackUserId 'guvfx_u_48'
+        $o.res.ok | Should -BeFalse
+        $o.res.readback_verified | Should -BeFalse
+    }
+    It '(N7) a DIFFERENT name that authoritatively resolves to the SAME SID is accepted (SID-to-SID, not string)' {
+        # an alias name the resolver maps to the pinned SID -> accepted (proves comparison is by SID, not by string)
+        $aliasResolver = {
+            param($ref)
+            $v = ('' + $ref).Trim()
+            if ($v -match '(?i)^guvfx_u_46$') { return 'S-1-5-21-TEST-GUVFX-46' }
+            if ($v -match '(?i)^WIN-TEST\\legacy_alias_46$') { return 'S-1-5-21-TEST-GUVFX-46' }
+            return $null
+        }
+        $o = Invoke-ApplyReadbackUserId 'WIN-TEST\legacy_alias_46' $aliasResolver
+        $o.res.ok | Should -BeTrue
+        $o.res.readback_verified | Should -BeTrue
+    }
+
+    It '(src) the read-back resolves BOTH sides to a SID and compares SID-to-SID (no raw string equality on UserId)' {
+        # mutation-killing: the raw-string comparison must be gone; the canonical resolver + SID compare must be present
+        $script:src | Should -Match 'Resolve-GuvfxPrincipalSid'
+        $script:src | Should -Match 'function Test-PrincipalCanonical'
+        $script:src | Should -Match 'Translate\(\[System\.Security\.Principal\.SecurityIdentifier\]\)'
+        # the read-back no longer compares the returned UserId to the bare $PRINCIPAL by string equality
+        $script:src | Should -Not -Match "Principal\.UserId\) -eq \`$PRINCIPAL"
+        # account pin preserved
+        $script:src | Should -Match "\`$PINNED = 46"
     }
 }

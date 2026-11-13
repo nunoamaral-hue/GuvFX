@@ -21,7 +21,7 @@
     "Uninstall-GuvfxCopierEmitter.ps1": "8512ed4147235beb52ec7ebd1fdab4759cdb82c8a53831ffe1c5d31008140570",
     "Status-GuvfxCopierEmitter.ps1": "8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",
     "Attest-GuvfxCopierEmitter.ps1": "cccbf1416ed5c798f2c6b62320b588194ee64fdbbfce31fbd99c79ae6cf63378",
-    "Install-GuvfxCopierEmitterOneShotTask.ps1": "9e47f1537fe4305b30e80337ec55e034c037359ae98e04e34f3f39ce654f2171",
+    "Install-GuvfxCopierEmitterOneShotTask.ps1": "826ff7f6fdb3a01d8abefe73a65c4bc9ebaf5a6489fa2e305a04e13c2f47d9cd",
     "run_oneshot_attest.py": "97ec0844abd4432129638b114333892d2b73ae5761833c5d1326e572e0b0096f",
     "emitter_task_template.xml": "76f2eec7b7fedf13ae1b407b6177a99a3220055504d0a804404260a78130a724",
     "oneshot_attest_task_template.xml": "cd778354947504cb671d2900b29ae0062e09f2624d16100ba8931fae0ba38e84",

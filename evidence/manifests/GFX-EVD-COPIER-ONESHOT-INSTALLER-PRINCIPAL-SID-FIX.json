@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-ONESHOT-INSTALLER-PRINCIPAL-SID-FIX",
+  "packet_id": "GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108 (ADR-0104, amended)",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "fix/copier-oneshot-installer-principal-sid",
+  "base_commit": "19a9005445fcf3cb85a8dcf7eb334a526b158328",
+  "head_commit": null,
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging",
+    "cd backend && .venv/bin/python manage.py test trade_copier",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py'",
+    "[non-production windows-latest, Windows PowerShell 5.1] ParseFile over the installer + both Pester test files",
+    "[non-production windows-latest, Windows PowerShell 5.1] Pester 5.x over Install-GuvfxCopierEmitterOneShotTask.Tests.ps1 (mocked 26 + canonical-SID matrix)",
+    "[non-production windows-latest, Windows PowerShell 5.1] Pester 5.x over Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1 (real schtasks absent-path + RULE 11 positive control + real Windows SID normalization)",
+    "[non-production windows-latest, Windows PowerShell 5.1] mutation discrimination: force a raw-string read-back principal compare and prove the real-schtasks SID test fails; restore and prove it passes"
+  ],
+  "expected_results": [
+    "emitter bundle + daemon packaging tests green incl. the new OneShotInstallerPrincipalSidFixTests",
+    "full trade_copier suite green (no regression)",
+    "ADR governance green (ADR-0104 amended in place; no new/duplicate ADR number)",
+    "no trade_copier model/migration drift (NO migration)",
+    "secret scan + evidence lint + governance no-secrets suite clean/PASS",
+    "Windows PS 5.1 ParseFile 0 errors for the installer + both Pester files",
+    "Pester (mocked): existing 26 cases + the canonical-SID matrix (positive: bare / HOST\\name / SID all accept; negative: different-user SID, qualified other user, unresolved SID, null-expected, fake-suffix, account substitution all fail-closed delete; a different name that resolves to the SAME SID accepts)",
+    "Pester (real schtasks): the real resolver canonicalizes bare/qualified/SID of the runner's own account to one SID, fails closed on dangling SID + non-existent name, a different identity resolves to a different SID, and a REAL registered task read-back (stored as a SID) canonicalizes to the submitted principal with the task DISABLED + triggerless",
+    "mutation discrimination proves the real-schtasks SID regression is non-vacuous"
+  ],
+  "actual_results": [
+    "PASS - trade_copier.emitter.tests_bundle + hosted_workspace.tests_host_daemon_packaging: Ran 56 tests, OK (44 baseline + 7 pkt-103 native-schtasks guards + 5 new OneShotInstallerPrincipalSidFixTests; MANIFEST installer hash updated 9e47f153...2171 -> 826ff7f6...d9cd to match the corrected installer)",
+    "PASS - full trade_copier: Ran 959 tests, OK (no regression; +5 vs the pkt-103 baseline of 954)",
+    "PASS - core.tests_adr_governance: Ran 3 tests, OK (ADR-0104 amended in place)",
+    "PASS - makemigrations trade_copier --check --dry-run: No changes detected (no migration)",
+    "PASS - check_no_secrets: no findings; check_evidence_manifests: EVIDENCE-LINT PASS; governance no-secrets unittest: Ran 18 tests, OK",
+    "PASS - mutation-killing (Linux source-level): reverting the read-back to a raw '($UserId) -eq $PRINCIPAL' string compare FAILS OneShotInstallerPrincipalSidFixTests.test_readback_uses_canonical_sid_not_raw_string; restoring the Test-PrincipalCanonical SID comparison (installer sha256 826ff7f6...d9cd) returns all guards green",
+    "PENDING-AT-AUTHORING - Windows PS 5.1 ParseFile + both Pester suites (mocked matrix + real-schtasks SID) + the mutation-discrimination step: run on a throwaway, non-production GitHub windows-latest gate pinned to the exact PR head; run/job IDs + pass counts recorded in docs/HANDOFF.md and the packet return. NOT run on the macOS authoring host (no pwsh) and NEVER on the production Windows host."
+  ],
+  "status": "PARTIAL",
+  "fix_summary": {
+    "defect": "The APPLY read-back (and the idempotency compliance check) compared the task Principal.UserId to the bare string 'guvfx_u_46'. schtasks STORES a task principal as a SID, so a read-back returns e.g. S-1-5-21-2216203845-1747098376-1637942580-1065. The string compare then reported readback_mismatch for a CORRECT task; the installer fail-closed-deleted it, and the rollout-retry (packet 105) rolled the host back to DARK. Root cause: principal representation mismatch after a successful native task registration - the GFX-COPIER-PARITY-VALIDATOR-FIX-013 Defect-2 (principal resolution) resurfacing in the installer read-back.",
+    "fix": "A top-level Resolve-GuvfxPrincipalSid canonicalizes a principal reference (SID string / bare local name / HOST\\name) to its SID via authoritative Windows identity translation (System.Security.Principal.NTAccount / SecurityIdentifier .Translate), returning $null on ANY lookup/translation failure (FAIL CLOSED) - never a lowercase/substring/suffix match; a SID string must round-trip to a real account (a dangling SID fails). A nested Test-PrincipalCanonical resolves BOTH the pinned $PRINCIPAL ('guvfx_u_46', derived from $PINNED=46) and the returned principal to SIDs and compares SID-to-SID; both read-back sites use it. The resolver is injectable ($ResolvePrincipalSid) for deterministic tests. Behaviour-preserving: exact task name, account-46 pin, DISABLED, zero triggers, fixed action/arguments, no-secret, and fail-closed deletion on a genuine mismatch are all unchanged; the render-validation still string-checks the RENDERED UserId == the bare 'guvfx_u_46' (it validates what the installer wrote). #48/Customer Zero/reserved/arbitrary principals are never reachable (a different account's SID never equals the pinned SID).",
+    "coverage": "Linux CI: OneShotInstallerPrincipalSidFixTests in backend/trade_copier/emitter/tests_bundle.py (source-level mutation-killing: resolver present + authoritative NTAccount/SecurityIdentifier translation + fail-closed catch; no lowercase/substring match; both read-back sites canonicalize; raw '($UserId) -eq $PRINCIPAL' removed; render check preserved; account pin + disabled/triggerless preserved; real-schtasks SID asset present/ASCII/safe). Windows gate: the mocked matrix (positive bare/HOST\\name/SID; negatives) + the real-schtasks 'real Windows SID normalization' Describe (registers a REAL disabled/triggerless task under the runner's OWN current user, reads back the stored SID, asserts Resolve-GuvfxPrincipalSid(returned) == Resolve-GuvfxPrincipalSid(submitted) == current-user SID; fails closed on dangling SID + non-existent name; LocalSystem S-1-5-18 != current user). A gate-only mutation-discrimination step forces a raw string compare and proves the real SID test fails.",
+    "manifest_impact": "deploy/copier-emitter/MANIFEST.json files['Install-GuvfxCopierEmitterOneShotTask.ps1'] updated 9e47f153...2171 -> 826ff7f6...d9cd. The Pester test files are test tooling under deploy/copier-emitter/tests/ and are NOT vendored/hashed bundle files.",
+    "scope": "NO backend runtime change, NO migration, NO workflow in the PR inventory, NO production configuration, NO emitter behaviour/flag/authorization/broker-execution change, NO host/production contact. Repository-only, DARK. STOP before merge (auto-merge OFF)."
+  },
+  "limitations": [
+    "Repository-only. No production deployment, no production-host contact, no install, no scheduled-task creation/enable/trigger, no backend/DB mutation, no migration, no secret, no verifier window, no flag, no #48/Customer Zero contact, no broker action.",
+    "Windows PowerShell 5.1 ParseFile + Pester (mocked matrix + real-schtasks SID) + the mutation-discrimination step cannot run on the macOS authoring host (no pwsh). They run on a throwaway, non-production GitHub windows-latest gate pinned to the exact PR head, synthetic fixtures + the runner's OWN current user only (NEVER the pinned guvfx_u_46, never a real account/key). Run/job IDs + results are in docs/HANDOFF.md and the packet return.",
+    "The installer remains DARK and installs nothing by itself (PLAN is the default). This packet does NOT re-attempt the Windows-host rollout; that remains a separate Sponsor gate using the FIXED installer.",
+    "Canonical main is 19a90054 (PR #656, the native-schtasks fix). Production backend remains a6ed0a81 (the dashboard monitoring-health deploy); copier execution + the copier_emitter_oneshot flag remain OFF; the account-46 Windows host remains DARK after the packet-105 rollback.",
+    "M1 (review MEDIUM): the REAL Resolve-GuvfxPrincipalSid + live schtasks SID normalization are exercised ONLY on the Windows runner; Linux CI greps the source and the mocked suite injects a fake resolver. Functional proof is therefore DEFERRED to the non-production windows-latest gate (ParseFile + mocked matrix + real-schtasks SID + mutation discrimination) and that gate MUST pass before any Windows-host rollout of the fixed installer.",
+    "L1 (review LOW, fail-safe): the expected-side principal is resolved from the bare name guvfx_u_46; on a domain-joined host a local-vs-domain name collision could resolve to a different SID and cause a false REJECT (fail-closed delete), never a false accept. The GuvFX MT5 host (WIN-RD8VDS93DK7) is standalone, so this does not arise; if it is ever domain-joined, qualify the expected principal as COMPUTERNAME\\guvfx_u_46."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1 (Resolve-GuvfxPrincipalSid + Test-PrincipalCanonical + injectable $ResolvePrincipalSid; both read-back sites compare by canonical SID)",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1 (canonical-SID matrix + injected resolver via $PSDefaultParameterValues, cleaned up in AfterAll)",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1 (real Windows SID normalization Describe)",
+    "deploy/copier-emitter/MANIFEST.json (installer hash bumped)",
+    "backend/trade_copier/emitter/tests_bundle.py (OneShotInstallerPrincipalSidFixTests)",
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md (principal-SID read-back correction amendment)",
+    "evidence/manifests/GFX-EVD-COPIER-ONESHOT-INSTALLER-PRINCIPAL-SID-FIX.json"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1": "sha256:826ff7f6fdb3a01d8abefe73a65c4bc9ebaf5a6489fa2e305a04e13c2f47d9cd",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1": "sha256:dcc2c23a44a50603dcdb292e9f96656ed334084647fca4e9b35b9b0874c4d279",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1": "sha256:8d4d77e616d16d65e37d9770d7c6abc881789fea66f9bc1bb6722471f2521a64",
+    "deploy/copier-emitter/MANIFEST.json": "sha256:ac55ba114c6989d047b9128471ad386356443c541ec60a84f553bb997a38ae79",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:51cf7f84541cc88a52d29cd2deec13be7469be6ab456c20987466b9c6c1d59ab",
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md": "sha256:d34575a3062f77071b65df9231632231855e902e456a6c8ba15096952c5fbff9"
+  },
+  "reviewer": "Independent adversarial review (fresh agent; 4 files read in full, diff isolated vs HEAD, manifest hash verified, 45 Python guards re-run 0-fail): NO CRITICAL, NO HIGH. Confirmed authoritative SID-to-SID comparison (no lowercase/substring/prefix/suffix path; misclassified values fail New-Object SecurityIdentifier -> catch -> null), fail-closed on any unresolved identity (Test-PrincipalCanonical ANDs [bool]expected -and [bool]actual -and equal), dangling SID rejected via .Translate([NTAccount]) round-trip, task still fail-closed-deleted on readback_mismatch, account-46 pin + #48/CZ/reserved never reachable (different account -> different SID), no secret leakage, render check correctly preserved, PS 5.1 compatible, and the matrix is mutation-killing (P2/P3/N7 fail if reverted to a raw string compare; N1-N6 kill fail-open mutants). MEDIUM M1: the REAL resolver + schtasks SID normalization run ONLY on the Windows runner (Linux CI greps source + injects a fake resolver), so functional proof is DEFERRED to the non-production windows-latest gate and MUST gate any host rollout - inherent to the Windows-only artifact, disclosed here and in the handoff, not a merge blocker. LOW L1: expected-side bare-name resolution could be ambiguous on a DOMAIN-JOINED host, but fails SAFE (false reject, never false accept); the GuvFX MT5 box is standalone (WIN-RD8VDS93DK7) - if ever domain-joined, qualify the expected name as $env:COMPUTERNAME\\guvfx_u_46. NITs (PSDefaultParameterValues injection surface - not reachable via CLI since the run-directly param block omits the resolver; synthetic SID shape) accepted.",
+  "production_unchanged": "no deploy, no migration, no host contact, no secret, no broker order, no flag change; production backend a6ed0a81; copier execution + copier_emitter_oneshot flag OFF; account-46 Windows host DARK (one-shot task absent after the packet-105 rollback)"
+}
