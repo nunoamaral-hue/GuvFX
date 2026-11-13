@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPIER ONE-SHOT TASK INSTALLER (2026-11-13; GFX-COPIER-ONESHOT-TASK-INSTALLER-097; ADR-0104; repository-only PR)
+Governed installer `deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1` off main `10f89d0d` — the sole
+blocker from the pkt-095 DARK deploy. PS 5.1; PLAN default; account-46 pinned (refuses 48/CZ/reserved + non-python
+exe); manifest-hash + ParseFile gated; renders the reviewed template; registers the task DISABLED/triggerless;
+authoritative read-back fail-closed; idempotent + rollback-on-drift; never enables/runs, never handles the key,
+never alters the run-mode task. 25+1 Pester cases; bundle+packaging 44 OK; secret-scan clean; evidence-lint PASS;
+Windows PS 5.1 ParseFile+Pester on a throwaway non-production windows-latest gate. Repository-only/DARK; prod stays
+`355d88ab`.
+**One bounded next action:** governed review and, on a Sponsor `GO`, the pinned squash-merge; then the separately
+Sponsor/human-gated Windows-host rollout (stage the bundle on the #46 host, run this installer `-Apply` to register
+the DISABLED task), host-local ephemeral secret, ADR-0101 verifier window, flag enable, single trigger. STOP before
+merge.
+
 ## ★ MONITORING STAGE-ACCURACY FIX (2026-11-13; GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0105; repository-only PR)
 Corrects the ADR-0103 projection deployed in PR #651 off canonical main `d800b78d`. The stage no longer gates on
 `workspace_confirmed_at` (an ADR-0034 execution-arming ACK, not a monitoring-data precondition); monitored == connected

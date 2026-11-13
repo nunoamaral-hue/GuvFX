@@ -1,5 +1,26 @@
 # GuvFX — Project Status
 
+> **2026-11-13 — One-shot task installer (GFX-COPIER-ONESHOT-TASK-INSTALLER-097; ADR-0104; repository-only;
+> migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main `10f89d0d`. Removes
+> the sole blocker from the pkt-095 deploy: there was no governed installer for the DISABLED, triggerless,
+> account-46-pinned task `GuvFX_CopierEmitterOneShot_46` that the ADR-0104 primitive triggers. Adds
+> `deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1` (PS 5.1): PLAN is the default (installs nothing
+> unless `-Apply`); pinned to account 46 (refuses 48, Customer Zero and every reserved id; refuses a non-python
+> interpreter; accepts no arbitrary task name / exe / script / endpoint / account / operation / command — all
+> derived from account 46 + the reviewed staged package); validates the required runtime files against
+> `MANIFEST.json` SHA-256 and ParseFile-gates the bundle `.ps1` before touching the scheduler; renders only the
+> reviewed template placeholders (XML-escaped); registers DISABLED; and **authoritatively reads the task back**,
+> failing closed unless it is exactly named, disabled, triggerless, carries the fixed action, is pinned to
+> `guvfx_u_46`, and holds no secret (XML booleans, not locale text — RULE 11). Idempotent (byte-identical ⇒
+> no-change; drift needs `-Replace`, which first exports a rollback; a failed replacement restores it disabled);
+> a `try/finally` with no `exit` in the register/read-back region means the cleanup/rollback can never be skipped.
+> It never enables/runs the task, never provisions/reads the real key, never opens a verifier window or contacts
+> the backend/broker, and never alters the run-mode emitter task. 25+1 Pester cases + the installer registered in
+> the bundle manifest. Verified: bundle+packaging **44 OK**, secret-scan clean, evidence-lint PASS; Windows PS 5.1
+> ParseFile + Pester on a throwaway non-production windows-latest gate (run IDs in HANDOFF). No Windows-host
+> contact, no task install, no secret, no deploy. Production stays `355d88ab` DARK (main advanced to `10f89d0d`
+> via the disjoint dashboard #653). STOP before merge.
+
 > **2026-11-13 — Monitoring stage-accuracy fix (GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0105;
 > repository-only; migration-free; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
 > `d800b78d`, on `fix/dashboard-monitoring-stage-accuracy`. Corrects the ADR-0103 Layer-1 projection deployed in

@@ -21,11 +21,12 @@
     "Uninstall-GuvfxCopierEmitter.ps1": "8512ed4147235beb52ec7ebd1fdab4759cdb82c8a53831ffe1c5d31008140570",
     "Status-GuvfxCopierEmitter.ps1": "8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",
     "Attest-GuvfxCopierEmitter.ps1": "cccbf1416ed5c798f2c6b62320b588194ee64fdbbfce31fbd99c79ae6cf63378",
+    "Install-GuvfxCopierEmitterOneShotTask.ps1": "eefe72b2c0669b916d452e7ff7f7bd324c5fc17a25b97b219368d40a9b45449b",
     "run_oneshot_attest.py": "97ec0844abd4432129638b114333892d2b73ae5761833c5d1326e572e0b0096f",
     "emitter_task_template.xml": "76f2eec7b7fedf13ae1b407b6177a99a3220055504d0a804404260a78130a724",
     "oneshot_attest_task_template.xml": "cd778354947504cb671d2900b29ae0062e09f2624d16100ba8931fae0ba38e84",
     "config.template.json": "56f1bd86e6ba23314b32262b442190e5f998a1cfee6dac0c0ebd9a55f5662d85",
-    "README.md": "c9fbf1bf4f925b633693b8cb8b5613100886c2d75e93e5422025e8b1253bf7fb"
+    "README.md": "eebd425c80ba9cf887f0792510193a3350a79bc5e247690cef8345e1444e5d1a"
   },
   "lib_subset": [
     "backend/trade_copier/__init__.py",

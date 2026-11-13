@@ -1,5 +1,46 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-13 — Governed one-shot task installer (GFX-COPIER-ONESHOT-TASK-INSTALLER-097; ADR-0104; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-COPIER-ONESHOT-TASK-INSTALLER
+Packet ID: GFX-COPIER-ONESHOT-TASK-INSTALLER-097
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge) - all local acceptance passed; Windows PS 5.1 ParseFile/Pester ran on the non-production windows-latest gate (run IDs in the packet return).
+
+Initial branch/HEAD/status: feat/copier-oneshot-task-installer off canonical main 10f89d0d (origin/main; advanced past the pkt-094 merge 355d88ab by the disjoint dashboard fix #653/ADR-0105); clean worktree
+Convergence base: 10f89d0d (current canonical main - re-fetched, not an assumed SHA)
+Convergence branch: feat/copier-oneshot-task-installer
+Preservation cherry-pick commit: None (branched off current main; no reconcile needed)
+Governance commit: ada5b05d feat(copier-emitter): governed installer for the DISABLED account-46 one-shot attest task (ADR-0104, DARK)
+Files added: deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1; deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1; evidence/manifests/GFX-EVD-COPIER-ONESHOT-TASK-INSTALLER.json
+Files modified: deploy/copier-emitter/MANIFEST.json; deploy/copier-emitter/README.md; docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md; docs/STATUS.md; docs/NEXT.md; docs/HANDOFF.md
+Exact ignored local .claude files: None touched (the worktree's gitignored backend/.env is local test-run only; never staged)
+Original draft hash verification: N/A (no supplied draft)
+Scoped rules verification: architecture (additive host tool; realises ADR-0104's pre-installed DISABLED task; Windows-primitive boundary untouched; no new model/migration), security (installs nothing by default; account-46 pinned + 48/CZ/reserved refused; no arbitrary task/exe/path/endpoint/command; never enables/runs; never provisions/reads the real key; no secret in args/env/output/XML/logs/repo; redacted result), evidence (machine-readable manifest; commands + results; limitations stated), handoff (this block)
+Secret-scan result: check_no_secrets: no findings
+Unit-test result: trade_copier.emitter.tests_bundle + hosted_workspace.tests_host_daemon_packaging 44 OK (installer registered in MANIFEST.json, ASCII/no-BOM, structurally balanced, no order/secret); 25+1 Pester cases authored (run on the Windows gate)
+Make governance-check result: check_no_secrets clean; test_no_secrets / test_data_root / test_evidence_manifests / test_evidence_factuality OK; evidence-lint PASS (76)
+Make check result: no backend runtime code changed (only deploy/copier-emitter assets + docs/ADR/evidence); no migration; frontend untouched. Windows PS 5.1 ParseFile + Pester not runnable on macOS (no pwsh) -> non-production windows-latest gate pinned to the exact PR head (run IDs in the return).
+Evidence/privacy validation: evidence-lint PASS; secret-scan clean; synthetic fixtures only; no PII; no host contact; no real key
+Commit identity/message validation: conventional commit feat(copier-emitter): ...; Co-Authored-By Claude Opus 4.8
+Final branch/HEAD/status: feat/copier-oneshot-task-installer @ <this HANDOFF commit> (on ada5b05d); clean
+Flow A ref unchanged: Yes (no Notion lifecycle status advanced; Notion connector absent this session)
+Branch pushed: pending (push + PR immediately after this commit)
+
+Commands executed: manage.py test trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging; scripts/check_no_secrets.py; scripts/check_evidence_manifests.py; unittest test_no_secrets/test_data_root/test_evidence_manifests/test_evidence_factuality; [windows-latest] ParseFile + Pester
+Verified facts: the installer is PLAN-by-default; account 46 is pinned at the first gates (48/CZ/reserved refused with distinct reasons); only the python interpreter is an accepted executable; required runtime files are hash-validated against the bundle manifest and the bundle .ps1 ParseFile-gated before any scheduler call; the reviewed template is rendered with only the fixed placeholders (XML-escaped), re-parsed and structurally validated (disabled, zero triggers, fixed action, guvfx_u_46, no secret); the task is registered DISABLED and authoritatively read back (fail-closed); idempotent no-change on a byte-identical compliant task; drift requires -Replace which exports a rollback first; a failed replacement restores the previous definition disabled; no exit inside the function can skip the finally
+Assumptions made: the future host-rollout step stages the reviewed bundle (hash-validated against the repo at stage time) before running this installer - the installer's own manifest check is defence-in-depth against corruption/partial staging, not the sole authenticity anchor (it runs from within its package)
+Deviations from packet: None
+Amber decisions proposed: None
+Red decisions requiring Nuno: merge; the Windows-host rollout (stage the bundle + run this installer -Apply on the #46 host to register the DISABLED task); host-local ephemeral secret; ADR-0101 verifier window; flag enablement; the single signed trigger
+Risks discovered: the installer validates runtime files against the bundle's OWN manifest (it runs from within the package); the primary bundle-authenticity anchor is therefore the staging step, with the installer's manifest check + the post-render + post-register structural validation as defence-in-depth (they defeat corruption, a template TOCTOU, and any deviation from the fixed expected task). Documented in ADR-0104, the evidence manifest and this handoff.
+Out-of-scope access performed: No
+Rollback/recovery: trivial - reverting the PR removes the installer, its test and the manifest entry; nothing was installed/deployed/contacted, so there is no host/task/secret state to unwind
+Recommended next packet: on a Sponsor GO, the pinned squash-merge of this PR, then a separate Sponsor-gated Windows-host rollout packet (stage the bundle on the #46 host, run this installer -Apply to register the DISABLED task, authoritative read-back; the host-local secret, verifier window, flag and trigger each remain their own gate)
+```
+
 ## 2026-11-13 — Independent host-emitter one-shot attestation trigger (GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093; ADR-0104; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```
