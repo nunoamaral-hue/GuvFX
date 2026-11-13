@@ -35,7 +35,11 @@ throw "stub ssh: unexpected remote command"
         }
 
         Mock -CommandName Read-Host -MockWith {
-            if ($args -contains '-AsSecureString' -or $PSBoundParameters.ContainsKey('AsSecureString')) {
+            param([string]$Prompt, [switch]$AsSecureString)
+            # The hidden key prompt must return a SecureString (the wrapper passes it to SecureStringToBSTR);
+            # the confirmation phrase returns the plain phrase. A Pester mock binds switches via a param block,
+            # not via $args / $PSBoundParameters.
+            if ($AsSecureString) {
                 return (ConvertTo-SecureString $script:SYNTH -AsPlainText -Force)
             }
             return 'OPEN-VERIFIER-WINDOW'
