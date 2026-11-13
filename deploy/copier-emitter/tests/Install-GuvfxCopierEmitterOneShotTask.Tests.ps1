@@ -55,10 +55,12 @@ BeforeAll {
 
     # ---- principal-SID fix (GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108): the installer now
     #      compares task principals by CANONICAL SID (schtasks stores a SID, not the submitted name). The mock returns
-    #      the rendered bare 'guvfx_u_46', so inject a deterministic fake resolver (via $PSDefaultParameterValues) that
-    #      maps the pinned-account forms -> one canonical test SID; the EXISTING regression tests then exercise the
-    #      SID-to-SID path without a real account. The matrix tests below pass their OWN resolver + crafted read-back
-    #      to prove accept/reject; the real-schtasks test proves live Windows SID normalization.
+    #      the rendered bare 'guvfx_u_46', so every schtasks-exercising Install call below EXPLICITLY injects a
+    #      deterministic fake resolver ($script:Resolve) via -ResolvePrincipalSid that maps the pinned-account forms
+    #      -> one canonical test SID; the EXISTING regression tests then exercise the SID-to-SID path without a real
+    #      account. (Explicit injection, not $PSDefaultParameterValues, because Pester shadows that variable.) The
+    #      matrix tests below pass their OWN resolver + crafted read-back to prove accept/reject; the real-schtasks
+    #      test proves live Windows SID normalization.
     $script:PinnedSid = 'S-1-5-21-TEST-GUVFX-46'
     $script:Resolve = {
         param($ref)
@@ -69,26 +71,20 @@ BeforeAll {
         if ($v -match '^S-1-[0-9-]+$') { return $v }             # any other real SID -> itself (a DIFFERENT identity)
         return $null                                             # any other name -> unresolved -> fail closed
     }.GetNewClosure()
-    if (-not $global:PSDefaultParameterValues) { $global:PSDefaultParameterValues = @{} }
-    $global:PSDefaultParameterValues['Install-GuvfxCopierEmitterOneShotTask:ResolvePrincipalSid'] = $script:Resolve
 
     # a known-compliant rendered task XML (captured from one successful synthetic install) for idempotency/drift
     $script:pkgRef = New-SyntheticPackage
     $fx0 = New-FakeSchtasks
-    $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $script:pkgRef -Apply -InvokeSchtasks $fx0.Invoke
+    $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $script:pkgRef -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx0.Invoke
     $script:compliantXml = [string]$fx0.State.CreatedXml
     $script:src = Get-Content -LiteralPath $script:Installer -Raw
-}
-
-AfterAll {
-    if ($global:PSDefaultParameterValues) { [void]$global:PSDefaultParameterValues.Remove('Install-GuvfxCopierEmitterOneShotTask:ResolvePrincipalSid') }
 }
 
 Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task installer' {
 
     It '(1) installs the exact account-46 task name, pinned' {
         $pkg = New-SyntheticPackage; $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $pkg -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $pkg -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeTrue
         $res.task | Should -BeExactly 'GuvFX_CopierEmitterOneShot_46'
         $res.account_pinned | Should -BeTrue
@@ -97,7 +93,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
 
     It '(2) refuses account 48 explicitly, before any schtasks call' {
         $pkg = New-SyntheticPackage; $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -AccountId 48 -PackageRoot $pkg -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -AccountId 48 -PackageRoot $pkg -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeFalse
         $res.reason | Should -BeExactly 'account_48_refused'
         $fx.State.Calls.Count | Should -Be 0
@@ -105,13 +101,13 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
 
     It '(3) refuses Customer Zero (account 1)' {
         $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -AccountId 1 -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -AccountId 1 -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.reason | Should -BeExactly 'reserved_identity_refused'
         $fx.State.Calls.Count | Should -Be 0
     }
 
     It '(4) refuses an arbitrary account (47)' {
-        $res = Install-GuvfxCopierEmitterOneShotTask -AccountId 47 -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks (New-FakeSchtasks).Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -AccountId 47 -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks (New-FakeSchtasks).Invoke
         $res.reason | Should -BeExactly 'account_not_emitter_pinned'
     }
 
@@ -123,48 +119,48 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
     It '(6) accepts no arbitrary executable/script path, and refuses a non-python interpreter' {
         $p = (Get-Command Install-GuvfxCopierEmitterOneShotTask).Parameters.Keys
         foreach ($bad in 'EntryPoint', 'ScriptPath', 'ConfigPath', 'KeyFile', 'ResultFile', 'ExePath') { $p | Should -Not -Contain $bad }
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -PythonExe 'C:\evil\mal.exe' -Apply -InvokeSchtasks (New-FakeSchtasks).Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -PythonExe 'C:\evil\mal.exe' -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks (New-FakeSchtasks).Invoke
         $res.reason | Should -BeExactly 'python_exe_untrusted'
     }
 
     It '(7) fails closed on a missing manifest' {
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage -NoManifest) -Apply -InvokeSchtasks (New-FakeSchtasks).Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage -NoManifest) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks (New-FakeSchtasks).Invoke
         $res.reason | Should -BeExactly 'manifest_missing'
     }
 
     It '(8) fails closed on a manifest/hash mismatch' {
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage -CorruptHash) -Apply -InvokeSchtasks (New-FakeSchtasks).Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage -CorruptHash) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks (New-FakeSchtasks).Invoke
         $res.reason | Should -BeExactly 'hash_mismatch:run_oneshot_attest.py'
     }
 
     It '(9) fails closed on a PowerShell parse error in the bundle' {
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage -BadPs1) -Apply -InvokeSchtasks (New-FakeSchtasks).Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage -BadPs1) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks (New-FakeSchtasks).Invoke
         $res.reason | Should -BeExactly 'parse_error:broken.ps1'
     }
 
     It '(10) the rendered/registered task has zero triggers' {
         $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.trigger_count | Should -Be 0
         ([xml]$fx.State.CreatedXml).Task.Triggers.ChildNodes.Count | Should -Be 0
     }
 
     It '(11) the rendered/registered task is disabled' {
         $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.disabled | Should -BeTrue
         ('' + ([xml]$fx.State.CreatedXml).Task.Settings.Enabled) | Should -BeExactly 'false'
     }
 
     It '(12) never starts/runs/enables the task' {
         $fx = New-FakeSchtasks
-        $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         ($fx.State.Calls | Where-Object { $_ -match '/run' -or $_ -match '/enable' }) | Should -BeNullOrEmpty
     }
 
     It '(13) registration is followed by an authoritative read-back query' {
         $fx = New-FakeSchtasks
-        $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $calls = @($fx.State.Calls)
         ($calls -join '||') | Should -Match '/create'
         # a /query (authoritative read-back) occurs AFTER the /create
@@ -179,7 +175,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
     It '(14) a read-back mismatch fails closed and removes the task' {
         $fx = New-FakeSchtasks
         $fx.State.ReadBackXml = ($script:compliantXml -replace '<Enabled>false</Enabled>', '<Enabled>true</Enabled>')
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeFalse
         $res.reason | Should -BeExactly 'readback_mismatch'
         ($fx.State.Calls | Where-Object { $_ -match '/delete' }) | Should -Not -BeNullOrEmpty   # fail-closed cleanup
@@ -189,7 +185,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
         # the compliant XML was captured from $script:pkgRef, so install against that SAME package (its derived
         # action paths match the existing task) to prove the no-change path
         $fx = New-FakeSchtasks; $fx.State.QueryXml = $script:compliantXml
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $script:pkgRef -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $script:pkgRef -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeTrue
         $res.action | Should -BeExactly 'no_change'
         $res.idempotent_nochange | Should -BeTrue
@@ -199,7 +195,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
     It '(16) drift requires an explicit -Replace switch' {
         $fx = New-FakeSchtasks
         $fx.State.QueryXml = ($script:compliantXml -replace '<Enabled>false</Enabled>', '<Enabled>true</Enabled>')
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeFalse
         $res.drift_detected | Should -BeTrue
         $res.reason | Should -BeExactly 'drift_requires_replace'
@@ -209,7 +205,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
     It '(17) replacement exports a rollback of the previous definition' {
         $fx = New-FakeSchtasks
         $fx.State.QueryXml = ($script:compliantXml -replace '<Enabled>false</Enabled>', '<Enabled>true</Enabled>')
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -Replace -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -Replace -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.rollback_exported | Should -BeTrue
         $res.action | Should -BeExactly 'replaced'
         ($fx.State.Calls -join '||') | Should -Match '/delete'
@@ -220,7 +216,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
         $fx = New-FakeSchtasks
         $fx.State.QueryXml = ($script:compliantXml -replace '<Enabled>false</Enabled>', '<Enabled>true</Enabled>')
         $fx.State.ReadBackXml = ($script:compliantXml -replace 'guvfx_u_46', 'attacker')   # read-back no longer matches
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -Replace -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -Replace -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeFalse
         $res.readback_verified | Should -BeFalse
         # the finally restored the exported previous definition and left it disabled
@@ -236,7 +232,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
 
     It '(20) prints no secret-like value; the result carries no key and no long hex' {
         $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $json = ($res | ConvertTo-Json -Compress -Depth 6)
         $json | Should -Not -Match '[0-9a-fA-F]{40,}'
         $json | Should -Not -Match 'COPIER_INGEST_HMAC_KEY'
@@ -245,7 +241,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
 
     It '(21) never references or changes the run-mode emitter task' {
         $fx = New-FakeSchtasks
-        $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         # the run-mode task name is GuvFX_CopierEmitter_<id> (no "OneShot"); it must never appear in any call
         ($fx.State.Calls | Where-Object { $_ -match 'GuvFX_CopierEmitter_\d' }) | Should -BeNullOrEmpty
         # and the installer CODE (comments stripped) never constructs the run-mode task name
@@ -278,7 +274,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
 
     It '(25) a successful install leaves the task disabled and never enabled/run' {
         $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeTrue
         $res.disabled | Should -BeTrue
         $res.readback_verified | Should -BeTrue
@@ -287,7 +283,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
 
     It '(bonus) PLAN is the dry-run default: no schtasks mutation without -Apply' {
         $fx = New-FakeSchtasks
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -ResolvePrincipalSid $script:Resolve -InvokeSchtasks $fx.Invoke
         $res.action | Should -BeExactly 'plan'
         ($fx.State.Calls | Where-Object { $_ -match '/create' -or $_ -match '/delete' -or $_ -match '/change' }) | Should -BeNullOrEmpty
     }
@@ -304,7 +300,7 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - canonical SID principal read-b
         $fx = New-FakeSchtasks
         $fx.State.ReadBackXml = ($script:compliantXml -replace '<UserId>[^<]*</UserId>', ('<UserId>' + $UserId + '</UserId>'))
         $p = @{ PackageRoot = $script:pkgRef; Apply = $true; InvokeSchtasks = $fx.Invoke }
-        if ($Resolver) { $p['ResolvePrincipalSid'] = $Resolver }
+        $p['ResolvePrincipalSid'] = if ($Resolver) { $Resolver } else { $script:Resolve }
         return @{ res = (Install-GuvfxCopierEmitterOneShotTask @p); fx = $fx }
     }
 
