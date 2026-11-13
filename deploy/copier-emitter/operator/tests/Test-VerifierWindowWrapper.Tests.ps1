@@ -1,10 +1,10 @@
 # ASCII-only (security.md RULE 9). Pester behavioural test for the backend bounded-verifier-window operator wrapper
 # (ADR-0101; GFX-COPIER-SECURE-INGEST-CONSUMER-RESUME-083). SYNTHETIC key only. Run on a Windows PowerShell 5.1 runner
-# with Pester installed. It mocks the secret prompt and injects a STUB ssh (no real host, no real secret, no real
+# with Pester 5.x installed (the 5.1 built-in Pester 3.4 does NOT support BeforeAll / Should -BeTrue):
+#   Install-Module Pester -MinimumVersion 5.0 -Force -SkipPublisherCheck ; Invoke-Pester -Path .\Test-VerifierWindowWrapper.Tests.ps1 -Output Detailed
+# It mocks the secret prompt and injects a STUB that stands in for `ssh` (no real host, no real secret, no real
 # endpoint). It proves: the key is PIPED (never an argument), the window is opened exactly once, the window is ALWAYS
 # closed (success AND failure in the attestation step), cleanup is verified, and the key is never printed.
-#
-#   Invoke-Pester -Path .\Test-VerifierWindowWrapper.Tests.ps1
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
@@ -46,10 +46,10 @@ Describe 'backend bounded-verifier-window wrapper (synthetic)' {
         $argvLog = Join-Path $env:TEMP ('argv_' + [guid]::NewGuid().ToString('N') + '.log')
         $stdinLog = Join-Path $env:TEMP ('stdin_' + [guid]::NewGuid().ToString('N') + '.log')
         $stub = New-StubSsh $argvLog $stdinLog
-        $out = & $wrapper -BackendSshTarget 'x@h' -SshExe 'pwsh' -Purpose ingest -AssumeYes `
+        # Point -SshExe at the stub script so the wrapper invokes it (via `& $SshExe $target $remote`) instead of
+        # a real ssh/host; the stub records argv + stdin and returns canned JSON.
+        $out = & $wrapper -BackendSshTarget 'x@h' -SshExe $stub -Purpose ingest -AssumeYes `
             -RemotePython 'python' 2>&1
-        # Pester note: on a 5.1 runner, replace -SshExe 'pwsh' with 'powershell' pointing at the stub via a shim;
-        # the assertions below hold regardless of which engine runs the stub.
         $result = ($out | Out-String | ConvertFrom-Json)
         $result.opened | Should -BeTrue
         $result.closed | Should -BeTrue
@@ -69,7 +69,7 @@ Describe 'backend bounded-verifier-window wrapper (synthetic)' {
         $stub = New-StubSsh $argvLog $stdinLog
         $threw = $false
         try {
-            & $wrapper -BackendSshTarget 'x@h' -SshExe 'pwsh' -Purpose attest -AssumeYes `
+            & $wrapper -BackendSshTarget 'x@h' -SshExe $stub -Purpose attest -AssumeYes `
                 -AttestationStep { throw 'emitter failure' } 2>&1 | Out-Null
         } catch { $threw = $true }
         $argv = Get-Content -LiteralPath $argvLog -Raw
