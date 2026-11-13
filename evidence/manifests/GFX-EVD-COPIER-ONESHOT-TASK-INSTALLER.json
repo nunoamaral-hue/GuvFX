@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-ONESHOT-TASK-INSTALLER",
+  "packet_id": "GFX-COPIER-ONESHOT-TASK-INSTALLER-097",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "feat/copier-oneshot-task-installer",
+  "base_commit": "10f89d0d48ed808af0950c282b4758ab848c26a3",
+  "head_commit": null,
+  "commands": [
+    "backend/.venv/bin/python manage.py test trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py'",
+    "[non-production windows-latest] Windows PowerShell 5.1 ParseFile over Install-GuvfxCopierEmitterOneShotTask.ps1",
+    "[non-production windows-latest] Pester 5.x over tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1"
+  ],
+  "expected_results": [
+    "bundle + packaging tests pass (installer registered in MANIFEST.json, ASCII, structurally balanced)",
+    "secret scan clean; evidence lint PASS",
+    "Windows PowerShell 5.1 ParseFile: 0 errors for the installer and its Pester test",
+    "Pester: all installer cases pass (account-46 pin, 48/CZ refusal, manifest/hash/parse fail-closed, disabled+triggerless render, authoritative read-back, idempotency, rollback, no-secret, no enable/run, no run-mode-task change)"
+  ],
+  "actual_results": [
+    "trade_copier.emitter.tests_bundle + hosted_workspace.tests_host_daemon_packaging: Ran 44 tests OK (installer in MANIFEST.json with matching SHA-256, ASCII/no-BOM, structurally balanced, no order/secret)",
+    "check_no_secrets.py: no findings; check_evidence_manifests.py: EVIDENCE-LINT PASS; test_evidence_manifests: OK",
+    "Windows PowerShell 5.1 ParseFile + Pester: run on the non-production windows-latest gate pinned to the exact PR head; results (run/job IDs, PS version, Pester version, pass count) recorded in the PM handoff (docs/HANDOFF.md) and the packet return"
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "Windows PowerShell 5.1 ParseFile + Pester could not run on the macOS dev host (no pwsh); they run on a throwaway, non-production GitHub windows-latest gate pinned to the exact PR head, synthetic fixtures only - never the production Windows host, a real account, or a real key. The authoritative run/job IDs + results are in the handoff and the packet return.",
+    "The installer is repository-only and DARK: it installs nothing by itself (PLAN is the default); this packet does NOT contact the Windows host, stage assets, register the task, provision or read the real key, open a verifier window, enable a flag, send a signed operation, contact #48, or perform any broker action.",
+    "Production backend remains 355d88ab (the pkt-095 DARK deploy); canonical main advanced to 10f89d0d via the disjoint dashboard-monitoring workstream (#653/ADR-0105) - this packet is based on 10f89d0d and touches none of that scope.",
+    "No backend runtime code changed (only deploy/copier-emitter assets + docs/ADR/evidence); no migration; no production configuration; no secret."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1",
+    "deploy/copier-emitter/MANIFEST.json",
+    "deploy/copier-emitter/README.md",
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1": "sha256:eefe72b2c0669b916d452e7ff7f7bd324c5fc17a25b97b219368d40a9b45449b",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1": "sha256:92613e09ec7582f22724d807b21ff9a951755ae9c817ccc7d4b7869a8b70ac92",
+    "deploy/copier-emitter/MANIFEST.json": "sha256:71030943fe38949d99bf22a7a36cb03a16df1fa4504e3442e77f24e460f112d9",
+    "deploy/copier-emitter/README.md": "sha256:eebd425c80ba9cf887f0792510193a3350a79bc5e247690cef8345e1444e5d1a",
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md": "sha256:4b78d0b56110c13d7c4274d87f0610f53f2d7e6c461cdc35e056025ae8b576a1"
+  },
+  "reviewer": null
+}

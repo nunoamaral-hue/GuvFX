@@ -108,6 +108,33 @@ keyring/base_url), so with the flag on but the executor unconfigured the command
 - With the flag OFF and the executor unconfigured (the production default), the command refuses before any host
   contact and everything is byte-identical to pre-ADR-0104.
 
+## Governed one-shot task installer (packet GFX-COPIER-ONESHOT-TASK-INSTALLER-097, repository-only)
+
+The primitive above triggers a **pre-installed** DISABLED task. `deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1`
+is the governed installer a future, separately Sponsor-gated host step runs to register that task
+(`GuvFX_CopierEmitterOneShot_46`). It realises this ADR's "pre-installed DISABLED one-shot task" and is itself
+repository-only / DARK (it installs nothing unless `-Apply`, and even then only registers a DISABLED, triggerless
+task). Contract:
+
+- **Pinned to account 46.** Refuses account 48 explicitly, Customer Zero and every reserved identity; accepts no
+  arbitrary task name, executable, script path, endpoint, account, operation or free-form command (the only
+  caller-influenced executable is the Python interpreter, refused unless it is `python`/`py`/`pythonw[.exe]`). Every
+  identity and path is derived from account 46 plus the reviewed staged package.
+- **Integrity before the scheduler.** Validates the required runtime files (`run_oneshot_attest.py`,
+  `oneshot_attest_task_template.xml`) against `MANIFEST.json` SHA-256, ParseFile-gates the bundle `.ps1` (RULE 9),
+  and validates the account-46 `config.json`, before any registration.
+- **Reviewed render + authoritative read-back.** Substitutes only the fixed template placeholders (XML-escaped),
+  structurally validates the rendered XML (disabled, zero triggers, the fixed action, `guvfx_u_46` principal, no
+  secret), registers DISABLED, then reads the registered task back and fails closed unless every one of those
+  invariants holds. Verification is from XML booleans (`<Enabled>false</Enabled>`), never locale-dependent status
+  text (RULE 11).
+- **Idempotent + rollback.** A byte-identical compliant task is a no-change; drift requires an explicit `-Replace`,
+  which first exports a rollback of the previous definition; a failed replacement restores that export, left
+  disabled. A `try/finally` with no `exit` in the register/read-back region guarantees the cleanup/rollback can
+  never be skipped.
+- **Never** enables or runs the task, provisions or reads the real HMAC key, opens a verifier window, contacts the
+  backend or broker, or alters the run-mode emitter task. Output is a redacted structured result with no secret.
+
 ## Not in this packet (separate Sponsor/human gates)
 
 Merge · deploy · install/enable/trigger the one-shot task on the host · open the ADR-0101 verifier window ·
