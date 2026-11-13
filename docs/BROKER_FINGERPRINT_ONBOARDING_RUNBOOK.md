@@ -42,7 +42,7 @@ This creates a **PROPOSED** version (next version for that name). Nothing is act
 ## 4. Dry-run (validate)
 
 ```
-manage.py broker_fingerprint validate --name <name> --version <v> --actor user:<id>
+manage.py broker_fingerprint validate --name <name> --fingerprint-version <v> --actor user:<id>
 ```
 
 The redacted report shows, per SYNTHETIC example: would-match, lifecycle classification, extraction-field presence,
@@ -58,7 +58,7 @@ it (narrow the domains, or retire the other) before certifying. Certification is
 ## 6. Certify (version-bound, audited)
 
 ```
-manage.py broker_fingerprint certify --name <name> --version <v> --actor user:<id> \
+manage.py broker_fingerprint certify --name <name> --fingerprint-version <v> --actor user:<id> \
     --reason "<attestation>" --ticket "<TICKET>" --broker-profile-id <id>
 ```
 
@@ -70,7 +70,7 @@ recognised, no negative auto-accepted). On success the version becomes **CERTIFI
 ## 7. Activate
 
 ```
-manage.py broker_fingerprint activate --name <name> --version <v> --actor user:<id>
+manage.py broker_fingerprint activate --name <name> --fingerprint-version <v> --actor user:<id>
 ```
 
 Only ONE active+certified version may exist per broker (DB-enforced) — deactivate the prior one first, or use
@@ -92,7 +92,7 @@ external-money-out evidence.
 ## 10. Rollback / deactivate if results are wrong
 
 ```
-manage.py broker_fingerprint deactivate --name <name> --version <v> --actor user:<id> --reason "<why>"
+manage.py broker_fingerprint deactivate --name <name> --fingerprint-version <v> --actor user:<id> --reason "<why>"
 manage.py broker_fingerprint rollback  --name <name> --target-version <prior_v> --actor user:<id> \
     --reason "<why>" --ticket "<TICKET>"
 ```
