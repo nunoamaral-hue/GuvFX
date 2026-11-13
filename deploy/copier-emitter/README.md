@@ -19,9 +19,23 @@ attestation on a live host, and any enablement are SEPARATE Sponsor gates.
 - Uninstall-GuvfxCopierEmitter.ps1 idempotent, account-scoped, reversible removal (task only)
 - Status-GuvfxCopierEmitter.ps1    read-only task state probe
 - Attest-GuvfxCopierEmitter.ps1    one-shot identity attestation (no positions, no loop)
+- run_oneshot_attest.py            NON-INTERACTIVE one-shot attest+POST entrypoint (ADR-0104); host-local ephemeral key, SECRET_UNAVAILABLE fail-closed, one POST, no retry
 - emitter_task_template.xml        canonical DISABLED task shape (Settings.Enabled=false, no Triggers)
+- oneshot_attest_task_template.xml canonical DISABLED one-shot ATTEST task (ADR-0104); enabled for one invocation + re-disabled by the host primitive
 - config.template.json             account-scoped config; no secrets (env-var names only); all gates OFF
 - MANIFEST.json                    bundle file hashes + the pinned source subset to vendor into lib/
+
+## Independent one-shot attestation path (ADR-0104) - DARK
+`run_oneshot_attest.py` + `oneshot_attest_task_template.xml` let an authorized operator run account 46's emitter
+identity attestation WITHOUT an interactive PowerShell desktop (the #46 web workspace is MT5-only). The signed
+host-executor op `TRIGGER_EMITTER_ONESHOT_ATTEST` (backend command `request_copier_emitter_oneshot_attest`)
+enables the pre-installed DISABLED one-shot task for EXACTLY ONE invocation, triggers it, and ALWAYS re-disables
+it (`Trigger-GuvfxCopierEmitterOneShot.ps1`). The task entrypoint reads the ingest secret ONLY from a host-local
+EPHEMERAL key file (shredded after one use); absent => SECRET_UNAVAILABLE and nothing is attested or posted. It
+builds the attestation (identity only), POSTs it ONCE (no retry) to the backend ATTEST verifier (never the
+event-ingest route), and writes a SANITISED result (no envelope/secret). It is attestation-only: it arms no
+observation/replication/execution/event-ingestion, contacts no follower account, and places no order. Everything
+is default-OFF and repository-only: nothing here installs, enables, triggers, or contacts a host.
 
 ## Packaging
 At bundle-build time lib/ is populated with the pinned source subset listed in MANIFEST.json.lib_subset (the

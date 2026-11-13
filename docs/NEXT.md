@@ -1,6 +1,6 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ MONITORING STAGE-ACCURACY FIX (2026-11-13; GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0104; repository-only PR)
+## ★ MONITORING STAGE-ACCURACY FIX (2026-11-13; GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0105; repository-only PR)
 Corrects the ADR-0103 projection deployed in PR #651 off canonical main `d800b78d`. The stage no longer gates on
 `workspace_confirmed_at` (an ADR-0034 execution-arming ACK, not a monitoring-data precondition); monitored == connected
 + matched + READY endpoint + fresh equity. The production-shaped support@ cohort now reads **5 monitored / 6 snapshot
@@ -13,6 +13,21 @@ build OK, eslint clean, evidence-lint PASS, secret-scan clean. Repository-only; 
 squash-merge; a DARK re-deploy of the corrected projection (replacing the d800b78d projection; existing figures
 unchanged) is a separate Sponsor-gated step. STOP before merge. (The 6 snapshot-stale accounts' stale bridges are a
 SEPARATE infrastructure gap, not this packet.)
+
+## ★ COPIER INDEPENDENT EMITTER ONE-SHOT ATTESTATION (2026-11-13; GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093; ADR-0104; repository-only PR)
+Signed host-executor op `TRIGGER_EMITTER_ONESHOT_ATTEST` off base `d800b78d`, so an authorized operator can run
+account #46's emitter identity attestation WITHOUT an interactive PowerShell desktop (the #46 web workspace is
+MT5-only; packet 090 proved only the backend verifier). Account-generic + Customer-Zero-refused on the wire;
+account-46 pinned at the command + executor + `.ps1`. The host primitive enables a pre-installed DISABLED one-shot
+task for ONE invocation and ALWAYS re-disables it in a finally (fail-closed); the entrypoint reads the ingest
+secret from a host-local ephemeral key file (absent ⇒ SECRET_UNAVAILABLE), attests + POSTs once, writes a sanitised
+result, shreds the key. DARK flag default OFF. Migration-free. new module 30 OK; trade_copier 947 OK;
+hosted_workspace+terminal_provisioning 2764 OK (2 pre-existing env failures in untouched tests_observer_attach.py);
+evidence-lint PASS; secret-scan clean. Repository-only/DARK; prod untouched.
+**One bounded next action:** governed review and, on a Sponsor `GO — merge PR`, the pinned squash-merge; then (each
+a separate Sponsor/human-gated step) a DARK deploy, pre-installing the DISABLED one-shot task on the #46 host,
+provisioning a host-local ephemeral ingest secret, opening the ADR-0101 verifier window, enabling the flag, and the
+real one-shot #46 emitter attestation. STOP before merge.
 
 ## ★ DASHBOARD AUTO-MONITORING ENROLMENT (2026-11-13; GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103; repository-only PR)
 Generic idempotent monitoring-enrolment reconciler + truthful dashboard enrolment projection off canonical main

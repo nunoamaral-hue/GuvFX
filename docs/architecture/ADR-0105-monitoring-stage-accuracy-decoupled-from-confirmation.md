@@ -1,9 +1,12 @@
-# ADR-0104 — Monitoring stage accuracy: decouple the dashboard enrolment stage from the execution-confirmation ACK
+# ADR-0105 — Monitoring stage accuracy: decouple the dashboard enrolment stage from the execution-confirmation ACK
 
 - **Status:** Accepted (repository-only; additive; migration-free; corrects the ADR-0103 Layer-1 projection only;
   no flag change, no route/endpoint mutation, no host contact, Copy Trading untouched).
 - **Packet:** GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095.
 - **Date:** 2026-11-13.
+- **Numbering note:** originally drafted as ADR-0104; renumbered to **0105** during packet 096 CI reconciliation
+  because PR #652 (`feat(trade_copier): signed one-shot emitter attestation`) merged to main first and took 0104.
+  The initial commit `a502f559` and PR #653 body therefore reference the old number; this file (0105) is canonical.
 - **Relates to / corrects (never replaces):** ADR-0103 (the auto-monitoring enrolment projection + reconciler —
   this corrects a single over-strict precedence rule in its Layer-1 projection and leaves Layer-2 and the whole
   architecture intact), ADR-0034 (`workspace_confirmed_at` — the customer-confirmation human ACK, a genuine

@@ -293,6 +293,29 @@ class SignedHostExecutor:
         identity/path is host-derived from ``account_id``. It NEVER logs in, NEVER trades, NEVER mutates."""
         return self._send("OBSERVE_WORKSPACE")
 
+    # The sole account the independent one-shot emitter attestation is pinned to (ADR-0104). The bootstrap exists
+    # only for account #46; the signed op + host dispatcher stay account-generic (Customer-Zero-refused), and this
+    # method + the backend command + the .ps1 are the policy edges that pin #46. Defence in depth, not the wire.
+    EMITTER_ONESHOT_ACCOUNT_ID = 46
+
+    def trigger_emitter_oneshot_attest(self, rdp_host=None) -> dict:
+        """ADR-0104 — ask the host to run THIS account's INDEPENDENT one-shot emitter identity-attestation WITHOUT
+        an interactive PowerShell desktop (the #46 web workspace is MT5-only). Like ``observe()`` it carries NO
+        confinement args: every identity/path is host-derived from ``account_id`` in the signed request, and the
+        host refuses Customer Zero, enables the pre-installed DISABLED one-shot task for exactly ONE invocation,
+        triggers it, ALWAYS re-disables it, and returns a SANITISED verdict (``ok`` + http_status/verified/reason
+        — never the envelope, signature, broker login or the ingest secret, which stays host-local).
+
+        DEFENCE IN DEPTH: this bootstrap exists only for account #46, so the method refuses any other account_id
+        BEFORE contacting the host (the host dispatcher stays account-generic + Customer-Zero-refused; the fixed
+        .ps1 re-pins #46). It arms NO replication/execution/event-ingestion, contacts NO follower (#48), and
+        places/modifies/closes NO order — it is identity-attestation only, one invocation, no auto-retry. A
+        transport/host failure, an unknown outcome, or a missing host-local secret all fail closed
+        (``ok: False`` / ``SECRET_UNAVAILABLE``)."""
+        if self.account_id != self.EMITTER_ONESHOT_ACCOUNT_ID:
+            return {"ok": False, "reason": "account_not_emitter_pinned"}
+        return self._send("TRIGGER_EMITTER_ONESHOT_ATTEST")
+
     def probe_session(self, rdp_host=None) -> dict:
         """P4 READ-ONLY reboot-recovery probe: ask the host for THIS account's OWN Windows RDS session state via the
         PROBE_SESSION op (qwinsta). Like ``observe()``, it carries NO confinement args — the identity is host-derived
@@ -404,7 +427,14 @@ _DEFAULT_HTTP_TIMEOUT_S = 30
 # the 30s default and left cleanup FAILED_RETRYABLE). 660s mirrors MATERIALISE_RUNTIME (> the daemon's 600s
 # primitive timeout + margin, > its 630s drain). There is NO repost/retry — exactly one POST per cleanup attempt —
 # so a longer wait can NEVER re-run the destructive teardown, which is idempotent (already-absent => step ok).
-_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120, "DECOMMISSION_RUNTIME": 660}
+# ADR-0104 TRIGGER_EMITTER_ONESHOT_ATTEST is served SYNCHRONOUSLY: the primitive enables the disabled one-shot
+# task, triggers it, and blocks polling for a fresh result (the task runs the emitter attest + one bounded POST to
+# the backend verifier) before re-disabling the task, so the client must wait longer than that whole host budget
+# or a legitimately slow-but-successful attestation is falsely reported host_unavailable. 120s mirrors
+# OBSERVE_WORKSPACE (> the host wait + margin, < the daemon's 600s primitive timeout). There is NO repost/retry —
+# exactly one POST per invocation — so a longer wait can NEVER re-run the one-shot.
+_OP_HTTP_TIMEOUTS_S = {"MATERIALISE_RUNTIME": 660, "OBSERVE_WORKSPACE": 120, "DECOMMISSION_RUNTIME": 660,
+                      "TRIGGER_EMITTER_ONESHOT_ATTEST": 120}
 # P0 bounded observation: when HOSTED_BOUNDED_OBSERVATION_ENABLED is on, the scheduler observes every workspace
 # CONCURRENTLY, so each OBSERVE_WORKSPACE must fail FAST (a busy first-run terminal must not consume the whole
 # host wait and starve others). This client read-timeout is deliberately > the (flag-shortened) host observer
