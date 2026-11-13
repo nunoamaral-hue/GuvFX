@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099",
+  "packet_id": "GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "feat/monitoring-health-observability",
+  "base_commit": "10f89d0d48ed808af0950c282b4758ab848c26a3",
+  "head_commit": null,
+  "environment": "local dev (PostgreSQL); isolated test DB; prod read-only diagnosis via SSH (no mutation, no host/bridge contact)",
+  "ci": "GitHub Actions CI (backend, frontend, governance, market-data, research) — to be driven to exact-head 5/5; STOP before merge",
+  "diagnosis_summary": "The scalable dynamic monitoring mechanism ALREADY EXISTS in production and runs: capture_equity_snapshots (dynamic enumeration filter(disconnected_at__isnull=True), */5 cron, EQUITY_SNAPSHOT_LEDGER_ENABLED=1) + ingest_monitored_deals (*/15) + live positions. A newly connected identity-matched account with a serving bridge auto-enters monitoring (5 fresh accounts ~150s old prove it). The 6 stale accounts (50,53,54,56,57,58) have READY endpoints + matched identity but their per-tenant bridges stopped serving fresh reads days ago (54/56/57 share ~7.0d staleness = a shared host/bridge event) — an INFRASTRUCTURE condition, NOT a code gap, requiring a one-time operational bridge repair (outside this packet's HARD STOP). #58's live trade is absent because its per-tenant bridge is not serving the backend read (break at bridge->backend reachability), not because of a code defect; its classification SNAPSHOT_STALE is correct. MonitoringRoute=0 does not affect dashboard monitoring (routes belong to the DARK gateway subsystem).",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run execution analytics trading",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> execution.tests_monitoring_enrolment",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <full-runner> (all backend apps, mirroring CI)",
+    "cd frontend && npx vitest run src/components/dashboard/OpenTradesPanel.test.tsx (frontend UNCHANGED)",
+    "python3 scripts/check_no_secrets.py ; python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check: 0 issues",
+    "Migration drift: no changes in execution/analytics/trading (NO new model/field — migration-free)",
+    "Enrolment suite: all pass incl. the 7 new observability tests (health rollup 5/6/1, per-dimension freshness age, dynamic discovery without hard-coded id, automatic recovery, no execution authority, no added query, owner-scoped no cross-tenant)",
+    "Full backend suite: pass (local macOS Windows-CIM + stray-sync-dup failures are pre-existing/environment-only, as in packets 096/098; the relevant positive control is CI Linux)",
+    "Governance: evidence-lint PASS; secret-scan clean"
+  ],
+  "actual_results": [
+    "System check: no issues. makemigrations --check execution/analytics/trading: 'No changes detected' (migration-free; the new EnrolmentContext.equity_age_s is an in-memory dataclass field).",
+    "Enrolment suite (execution.tests_monitoring_enrolment): Ran 55 tests — OK (48 prior + 7 new MonitoringHealthObservabilityTests). The health rollup over the production-shaped owner cohort resolves monitored=5, snapshot_stale=6, eligible=11, recovery_candidates=6, login_required=1, by_dimension.equity={fresh:5,stale:6,never:1}, endpoint.ready=12; per-account equity_age_s is an int within the freshness window for fresh and None for never-observed; a new connected account is enumerated by the SAME dynamic selector and immediately monitored (no hard-coded id); a stale account auto-recovers to monitored on the next fresh snapshot; monitoring_health source references no execution/Copy-Trading surface; the rollup adds ZERO query; the rollup is owner-scoped with no cross-tenant leakage.",
+    "Full backend suite: Ran 8473 tests (8466 + 7 new observability) — 3 failures, ALL pre-existing LOCAL-ONLY and none from this PR (identical to packets 096/098): core.tests_adr_governance.test_no_new_duplicate_adr_numbers flags a stray UNTRACKED 'docs/architecture/ADR-0097-copier-one-action-arm-disarm 2.md' sync-tool dup (ADR-0097, NOT mine; absent from git/CI; it did NOT flag ADR-0106, confirming the new ADR is unique) + two hosted_workspace.tests_observer_attach Windows-CIM controls that fail on local macOS. Positive control: all three pass on CI Linux (prior packets' CI showed none of them). Frontend OpenTradesPanel.test.tsx: 29 OK (UNCHANGED). Governance: evidence-lint PASS (77), secret-scan clean.",
+    "Production diagnosis was strictly READ-ONLY (SSH inspection of docker/git/report + read-only DB counts); NO mutation, NO host/bridge/Tailscale/Windows contact, NO Copy Trading change, NO --apply."
+  ],
+  "status": "PASS",
+  "status_note": "All applicable acceptance criteria ran and met locally: system check (0 issues), migration drift (none — migration-free), enrolment suite (55 OK incl. 7 new observability tests), full backend suite (8473; the only 3 failures are pre-existing LOCAL-ONLY — a stray untracked ADR-0097 sync dup + two Windows-CIM controls — which pass on CI Linux), frontend (29 OK, unchanged), evidence-lint PASS (77), secret-scan clean. CI exact-head 5/5 to be driven on the governed PR (STOP before merge).",
+  "limitations": [
+    "Repository-only. NO production deployment, NO migration, NO scheduler install, NO flag change, NO report --apply, NO endpoint/route/account mutation, NO monitoring enrolment application, NO #58 production repair, NO Windows/Tailscale/bridge contact, NO Copy Trading change, NO broker action.",
+    "Additive + observation-only: one in-memory context field (equity_age_s), one new per-account coverage key (equity_age_s), and one pure read-only rollup (monitoring_health) carried under coverage_rollup['health']. No new model/migration, no new flag or scheduler, no execution/live/Copy-Trading authority. Execution gates are byte-identical (only backend/execution/monitoring_enrolment.py changes in product code).",
+    "The scalable dynamic discovery/refresh mechanism was found to ALREADY EXIST (see diagnosis_summary); this packet adds the missing observability layer, it does NOT build a parallel monitoring subsystem (architecture rule: no speculative infrastructure).",
+    "The 6 stale accounts (50,53,54,56,57,58) are stale due to their per-tenant bridges not serving — a one-time OPERATIONAL repair (contact the hosts) that is OUT OF SCOPE here and listed as the separate post-code production action. Once a bridge serves again the existing */5 collector recovers the account automatically.",
+    "Frontend is UNCHANGED: the dashboard already distinguishes monitored/stale/login-required via by_stage; the new health block is additive backend data an older frontend safely ignores."
+  ],
+  "artefact_locations": [
+    "backend/execution/monitoring_enrolment.py (equity_age_s per-dimension freshness + monitoring_health rollup + coverage_rollup['health'])",
+    "backend/execution/tests_monitoring_enrolment.py (MonitoringHealthObservabilityTests — 7 new)",
+    "docs/architecture/ADR-0106-monitoring-health-observability.md (decision record + diagnosis conclusion)",
+    "evidence/manifests/GFX-EVD-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/execution/monitoring_enrolment.py": "sha256:d6d345ac8ec5d08a8d33844b045e28427d454a9e734093383a9a3746951189dd",
+    "backend/execution/tests_monitoring_enrolment.py": "sha256:a6503adc29d10148a5384a1fa4f15a072d4c80ed3fb5850ba4cf984d6f6e9fcc",
+    "docs/architecture/ADR-0106-monitoring-health-observability.md": "sha256:a5db0dbba850b56b5732da8ddcdb0fafa0780f6f57a007355dd743cc38b61d0f"
+  },
+  "reviewer": "Adversarial self-review (packet Phase 6), all CLEAN: no cross-tenant leakage (health derives only from the owner-scoped statuses passed in; test_health_is_owner_scoped_no_cross_tenant); stale never marked fresh (equity_age_s/stage from the existing equity-bearing freshness anchor, unchanged); unavailable never zero (positions structurally_unavailable; equity_age_s None when never observed — never 0); no execution authority granted (monitoring_health is pure, references no order/ExecutionJob/reserve_route/trade_copier/arm surface — test asserted; readiness.py byte-identical); monitoring route never confused with a Copy-Trading route (route dimension is observational; no route created); no unbounded polling (no scheduler added; the rollup is pure over already-projected statuses, adds 0 query — test asserted); no duplicate collectors (none added); no account enumeration outside owner scope (select_accounts owner filter unchanged); no hard-coded account ids (dynamic select_accounts; test ids are fixtures only); no worker-restart dependency (no worker changed); partial data does not overwrite good data (dimensions independent, additive keys); no daily-P&L double counting / currency drift (financial paths untouched); no equity-curve fabrication (no curve code touched); no schema/version skew (additive keys; frontend ignores them); no production config committed."
+}

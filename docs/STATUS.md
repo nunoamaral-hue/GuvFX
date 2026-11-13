@@ -1,5 +1,25 @@
 # GuvFX — Project Status
 
+> **2026-11-13 — Monitoring health observability (GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106;
+> repository-only; migration-free; observation-only; governed PR; auto-merge OFF; STOP before merge).** Off canonical
+> main `10f89d0d`, on `feat/monitoring-health-observability`. **Read-only prod diagnosis (no host contact) found the
+> scalable DYNAMIC monitoring mechanism ALREADY EXISTS and runs:** `capture_equity_snapshots` (dynamic
+> `filter(disconnected_at__isnull=True)`, `*/5` cron, `EQUITY_SNAPSHOT_LEDGER_ENABLED=1`) + `ingest_monitored_deals`
+> (`*/15`) + live positions — a new connected+matched account with a serving bridge auto-enters monitoring (5 fresh
+> accounts ~150s old prove it; no hard-coded ids). The **6 stale accounts (50,53,54,56,57,58)** have READY endpoints +
+> matched identity but their **per-tenant bridges stopped serving reads days ago** (54/56/57 share ~7.0d = a shared
+> host event) — an **INFRASTRUCTURE** condition (one-time bridge repair, out of this packet's HARD STOP), NOT a code
+> gap; #58's live trade is absent for the same reason (bridge→backend reachability), classification SNAPSHOT_STALE is
+> correct. The genuine code gap = no durable per-dimension/aggregate operational-health surface. **Fix (additive,
+> observation-only, migration-free):** per-dimension freshness age (`equity_age_s`) + a pure read-only
+> `monitoring_health(statuses)` rollup (eligible/monitored/snapshot_stale/unreachable/identity_mismatch/
+> recovery_candidates/by_dimension) carried under `coverage_rollup['health']`, surfaced by the dashboard `monitoring`
+> block + the read-only report. No new model/flag/scheduler; execution gates byte-identical (only
+> `monitoring_enrolment.py` changes). Verified: system check 0, migrations none (execution/analytics/trading),
+> enrolment suite **55 OK** (+7 observability), frontend **29 OK** (unchanged), evidence-lint PASS (77), secret-scan
+> clean. **One bounded next action:** governed review + exact-head CI 5/5, then Sponsor `GO — merge PR`; the 6 stale
+> bridges are a SEPARATE one-time production repair. STOP before merge.
+
 > **2026-11-13 — Monitoring stage-accuracy fix (GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0105;
 > repository-only; migration-free; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
 > `d800b78d`, on `fix/dashboard-monitoring-stage-accuracy`. Corrects the ADR-0103 Layer-1 projection deployed in

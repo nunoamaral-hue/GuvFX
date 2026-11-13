@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ MONITORING HEALTH OBSERVABILITY (2026-11-13; GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106; repository-only PR)
+Read-only prod diagnosis found the scalable dynamic monitoring mechanism ALREADY exists (dynamic `capture_equity_snapshots`
+`*/5` + `ingest_monitored_deals` `*/15`, flags ON; new accounts auto-appear). The 6 stale accounts are an INFRASTRUCTURE
+condition (per-tenant bridges not serving — one-time repair, out of scope), not a code gap. Added the missing observability
+layer off main `10f89d0d`: per-dimension freshness age (`equity_age_s`) + pure read-only `monitoring_health` rollup
+(eligible/stale-by-dimension/unreachable/recovery/by_dimension) under `coverage_rollup['health']`. Additive, observation-only,
+migration-free, execution gates byte-identical; enrolment 55 OK, frontend 29 OK (unchanged), governance clean.
+**One bounded next action:** governed review + exact-head CI 5/5, then Sponsor `GO — merge PR`. **Separate one-time PRODUCTION
+repair (NOT code):** restore the per-tenant bridges for accounts 50,53,54,56,57,58 so the existing `*/5` collector resumes
+fresh reads (they then auto-recover). STOP before merge.
+
 ## ★ MONITORING STAGE-ACCURACY FIX (2026-11-13; GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0105; repository-only PR)
 Corrects the ADR-0103 projection deployed in PR #651 off canonical main `d800b78d`. The stage no longer gates on
 `workspace_confirmed_at` (an ADR-0034 execution-arming ACK, not a monitoring-data precondition); monitored == connected
