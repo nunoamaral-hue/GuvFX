@@ -41,7 +41,7 @@
   ],
   "checksums": {
     "deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1": "sha256:eefe72b2c0669b916d452e7ff7f7bd324c5fc17a25b97b219368d40a9b45449b",
-    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1": "sha256:92613e09ec7582f22724d807b21ff9a951755ae9c817ccc7d4b7869a8b70ac92",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1": "sha256:a7c48134d6ac028fdd5cca30f71b85a8813a80dbda0c057d25666f80940ff8a2",
     "deploy/copier-emitter/MANIFEST.json": "sha256:71030943fe38949d99bf22a7a36cb03a16df1fa4504e3442e77f24e460f112d9",
     "deploy/copier-emitter/README.md": "sha256:eebd425c80ba9cf887f0792510193a3350a79bc5e247690cef8345e1444e5d1a",
     "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md": "sha256:4b78d0b56110c13d7c4274d87f0610f53f2d7e6c461cdc35e056025ae8b576a1"

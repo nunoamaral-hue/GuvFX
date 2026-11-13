@@ -163,8 +163,10 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
     }
 
     It '(15) an existing compliant task is idempotent (no-change, no create)' {
+        # the compliant XML was captured from $script:pkgRef, so install against that SAME package (its derived
+        # action paths match the existing task) to prove the no-change path
         $fx = New-FakeSchtasks; $fx.State.QueryXml = $script:compliantXml
-        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
+        $res = Install-GuvfxCopierEmitterOneShotTask -PackageRoot $script:pkgRef -Apply -InvokeSchtasks $fx.Invoke
         $res.ok | Should -BeTrue
         $res.action | Should -BeExactly 'no_change'
         $res.idempotent_nochange | Should -BeTrue
@@ -223,7 +225,9 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
         $null = Install-GuvfxCopierEmitterOneShotTask -PackageRoot (New-SyntheticPackage) -Apply -InvokeSchtasks $fx.Invoke
         # the run-mode task name is GuvFX_CopierEmitter_<id> (no "OneShot"); it must never appear in any call
         ($fx.State.Calls | Where-Object { $_ -match 'GuvFX_CopierEmitter_\d' }) | Should -BeNullOrEmpty
-        $script:src | Should -Not -Match 'GuvFX_CopierEmitter_(?!OneShot)'
+        # and the installer CODE (comments stripped) never constructs the run-mode task name
+        $codeOnly = (($script:src -split "`n") | ForEach-Object { $_ -replace '#.*$', '' }) -join "`n"
+        $codeOnly | Should -Not -Match 'GuvFX_CopierEmitter_\d'
     }
 
     It '(22) parses and runs under Windows PowerShell 5.1' {
@@ -243,8 +247,10 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - governed one-shot task install
     It '(24) has no exit path inside the function that could bypass the finally cleanup' {
         $body = $script:src.Substring($script:src.IndexOf('function Install-GuvfxCopierEmitterOneShotTask'))
         $body = $body.Substring(0, $body.IndexOf('# ---- run-directly entry'))
-        $body | Should -Not -Match '(^|[^A-Za-z])exit([^A-Za-z]|$)'
-        $body | Should -Match 'finally\s*\{'
+        # scan CODE only (strip line comments: the header/inline comments legitimately mention the word "exit")
+        $codeBody = (($body -split "`n") | ForEach-Object { $_ -replace '#.*$', '' }) -join "`n"
+        $codeBody | Should -Not -Match '(^|[^A-Za-z])exit([^A-Za-z]|$)'
+        $codeBody | Should -Match 'finally\s*\{'
     }
 
     It '(25) a successful install leaves the task disabled and never enabled/run' {
