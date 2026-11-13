@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-BROKER-FINGERPRINT-CLI-FIX-084",
+  "packet_id": "GFX-WI-BROKER-FINGERPRINT-CLI-FIX-084",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "fix/broker-fingerprint-cli-version",
+  "base_commit": "aea7f750ef79d05bd79503aaf415fa1117b25365",
+  "head_commit": null,
+  "environment": "local dev (PostgreSQL); isolated test DB 'test_dev_lane_a'",
+  "ci": "GitHub Actions CI (backend, frontend, governance, market-data-foundation, research-foundation) — driven to exact-head 5/5; STOP before merge",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_intelligence",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> broker_intelligence.tests_broker_fingerprint_cli",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> broker_intelligence",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "cd backend && .venv/bin/python manage.py broker_fingerprint --version   # prints Django version (built-in preserved)",
+    "cd backend && .venv/bin/python manage.py broker_fingerprint --help      # builds (exit 0)"
+  ],
+  "expected_results": [
+    "System check: 0 issues",
+    "Migration drift: no changes (migration-free)",
+    "CLI regression suite (tests_broker_fingerprint_cli): all pass",
+    "Full broker_intelligence suite: all pass (no regression)",
+    "Secret scan: no findings; Evidence linter: PASS",
+    "broker_fingerprint --version prints the Django framework version (built-in not shadowed)"
+  ],
+  "actual_results": [
+    "Root cause reproduced: Command().create_parser() raised argparse.ArgumentError 'conflicting option string: --version' (custom int --version vs Django built-in).",
+    "Fix: renamed the custom option to --fingerprint-version (dest fingerprint_version), type=_positive_int (rejects 0/negative/non-numeric); --target-version same guard; Django built-in --version preserved (prints 5.1.2).",
+    "System check: no issues; makemigrations --check: No changes detected in app 'broker_intelligence' (MIGRATION-FREE).",
+    "CLI regression suite: Ran 16 tests — OK (parser builds without collision, Django --version preserved + collision-free, --help builds, --fingerprint-version parses, missing/unknown action fail closed, invalid/negative version rejected, dispatch reaches list/certify/activate/validate/rollback/seed handlers fail-closed, read-only paths never certify/activate, seed idempotent).",
+    "Focused fingerprint modules (old+new): Ran 77 tests — OK.",
+    "Full broker_intelligence suite: Ran 1186 tests — OK (no regression; post-fix).",
+    "Secret scan: no findings; Evidence linter: PASS.",
+    "broker_fingerprint --version -> 5.1.2 (Django built-in); --help -> exit 0."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only corrective PR; NOT merged, NOT deployed. Production remains at aea7f750 with migration 0032 applied, fingerprint tables empty, 0 certified / 0 active (DARK) — unchanged by this PR (no production hotfix).",
+    "MIGRATION-FREE: no model/schema change; scope = management command + parser-level tests + runbook examples + this manifest.",
+    "The broker_fingerprint command has no 'reprocess' action (reprocessing is a separate planner module, fingerprint_reprocess, tested in tests_broker_fingerprint.ReprocessPlanner); the packet's 'reprocess dry-run reaches handler' item is N/A to this CLI.",
+    "Oversized fingerprint-version values (beyond the DB integer range) are handled fail-closed (no match / DB error → CommandError via the command's try/except), not by an explicit upper bound.",
+    "Copy Trading untouched; no fingerprint seed/certify/activate; no reprocessing; no publication; no mailbox cursor movement; no withdrawal mutation; no secret handling; no broker action."
+  ],
+  "artefact_locations": [
+    "backend/broker_intelligence/management/commands/broker_fingerprint.py (rename --version -> --fingerprint-version + _positive_int guard)",
+    "backend/broker_intelligence/tests_broker_fingerprint_cli.py (16 parser-level + dispatch regression tests)",
+    "docs/BROKER_FINGERPRINT_ONBOARDING_RUNBOOK.md (examples updated to --fingerprint-version)"
+  ],
+  "checksums": {
+    "backend/broker_intelligence/management/commands/broker_fingerprint.py": "sha256:b0827b1b1726f08fa9e86f2edbfaaffa1826b203fe7ff7b6574eb29093f3ee90",
+    "backend/broker_intelligence/tests_broker_fingerprint_cli.py": "sha256:2abc3e36c3fdd40c90f15b134a74f3f8990d1ad0abd1fb42fabd8ff4e357bb83",
+    "docs/BROKER_FINGERPRINT_ONBOARDING_RUNBOOK.md": "sha256:118fd3fa6ac3d7df70b879f746ae116a9d8acec3ea70e0f61e5532b4fc1de5b4"
+  },
+  "reviewer": "Inline adversarial review (parser collision, help/dry-run no-certify, activation-without-certification, Django global-option collision, default-version safety, invalid/negative/oversized version, cross-broker substitution, duplicate-active, audit, PII exposure, runbook examples). No material findings beyond the fixed collision; each invariant has a parser-level or service-level regression test. The parser-build test fails against the original conflicting implementation."
+}

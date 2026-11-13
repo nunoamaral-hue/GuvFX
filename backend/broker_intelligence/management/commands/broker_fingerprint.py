@@ -19,9 +19,23 @@ It is the reviewable mechanism, not an authorisation to run it against productio
 """
 from __future__ import annotations
 
+import argparse
 import json
 
 from django.core.management.base import BaseCommand, CommandError
+
+
+def _positive_int(value):
+    """argparse type for a fingerprint version: a positive integer (>= 1). Rejects 0/negative/non-numeric at parse
+    time. The declared DEFAULT is 0 (the 'not supplied' sentinel); argparse does not apply this type to an int
+    default, so an omitted option stays 0 while an explicitly supplied invalid value is rejected."""
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    if iv < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {iv}")
+    return iv
 
 
 class Command(BaseCommand):
@@ -31,11 +45,15 @@ class Command(BaseCommand):
         parser.add_argument("fp_action", choices=[
             "list", "propose", "validate", "certify", "activate", "deactivate", "rollback", "delta", "seed"])
         parser.add_argument("--name", default="")
-        parser.add_argument("--version", type=int, default=0)
+        # Renamed from --version to avoid colliding with Django's built-in management-command --version option
+        # (which prints the framework version). This is the FINGERPRINT schema version; dest stays `fingerprint_version`.
+        parser.add_argument("--fingerprint-version", dest="fingerprint_version", type=_positive_int, default=0,
+                            help="The fingerprint version (>= 1), e.g. for list/validate/certify/activate/deactivate.")
         parser.add_argument("--actor", default="", help="Staff actor label, e.g. 'user:3' (required for mutations).")
         parser.add_argument("--reason", default="")
         parser.add_argument("--ticket", default="")
-        parser.add_argument("--target-version", type=int, default=0, help="rollback: prior certified version to restore.")
+        parser.add_argument("--target-version", type=_positive_int, default=0,
+                            help="rollback: prior certified version (>= 1) to restore.")
         parser.add_argument("--broker-profile-id", type=int, default=0)
         parser.add_argument("--spec-file", default="", help="propose/delta: path to a JSON spec (fields/examples).")
         parser.add_argument("--no-activate", action="store_true", help="seed: certify but do NOT activate.")
@@ -51,11 +69,11 @@ class Command(BaseCommand):
             self.stdout.write(json.dumps(obj, indent=2, sort_keys=True, default=str))
 
         def resolve_fp():
-            if not opts["name"] or not opts["version"]:
-                raise CommandError("this action requires --name and --version")
-            fp = BrokerFingerprint.objects.filter(name=opts["name"], version=opts["version"]).first()
+            if not opts["name"] or not opts["fingerprint_version"]:
+                raise CommandError("this action requires --name and --fingerprint-version")
+            fp = BrokerFingerprint.objects.filter(name=opts["name"], version=opts["fingerprint_version"]).first()
             if fp is None:
-                raise CommandError(f"no fingerprint {opts['name']} v{opts['version']}")
+                raise CommandError(f"no fingerprint {opts['name']} v{opts['fingerprint_version']}")
             return fp
 
         try:
