@@ -1,5 +1,29 @@
 # GuvFX — Project Status
 
+> **2026-11-13 — Monitoring stage-accuracy fix (GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0104;
+> repository-only; migration-free; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
+> `d800b78d`, on `fix/dashboard-monitoring-stage-accuracy`. Corrects the ADR-0103 Layer-1 projection deployed in
+> PR #651: it short-circuited to `LOGIN_REQUIRED` whenever `TradingAccount.workspace_confirmed_at` was `None`,
+> which is an **execution-arming** ACK (ADR-0034), not a monitoring-data precondition. The read-only packet-094
+> production report proved all 12 support@ accounts are unconfirmed, so the deployed projection reported them all
+> `LOGIN_REQUIRED` / `monitored 0` while 5 have a READY endpoint + fresh equity the dashboard still shows — the
+> "Monitoring 0 of 12" line contradicted the equity. **Fix:** `execution.monitoring_enrolment` no longer reads
+> `workspace_confirmed_at`; the monitoring stage follows connection → identity → endpoint → equity-snapshot
+> freshness, and `monitored` == connected + matched + READY endpoint + fresh equity. Each status now carries
+> `detail['coverage']` — independent per-dimension coverage (connection/endpoint/identity/equity/positions/deals/
+> route) so live POSITIONS are reported on their own axis (`structurally_unavailable` for a LIVE account even when
+> equity is fresh — fresh equity never implies positions, never a zero). The production-shaped cohort now resolves
+> **5 monitored / 6 snapshot stale / 1 not connected** (#58 = SNAPSHOT_STALE, not LOGIN_REQUIRED). **Preserved:**
+> every `workspace_confirmed_at` EXECUTION gate (`readiness.evaluate` → RW_NOT_CONFIRMED, `readiness.evaluate_monitoring`,
+> `hosted_workspace.provisioning`/`capability_recovery`/`liveness_recovery`/`eligibility`, `trading.managed_start`) is
+> untouched; a regression test proves the SAME unconfirmed account is READY/monitored for the dashboard yet
+> `RW_NOT_CONFIRMED` for arming. Component source UNCHANGED (the deployed panel already renders the corrected
+> numbers and is skew-safe). Migration-free; system check 0 issues, `execution+analytics` **1908 OK**, enrolment
+> suite **47 OK**, frontend panel **29 OK**, build OK, eslint clean, evidence-lint PASS (75), secret-scan clean.
+> Repository-only; prod untouched. **One bounded next action:** governed review + exact-head CI 5/5, then on a
+> Sponsor `GO — merge PR` the pinned squash-merge; a DARK re-deploy of the corrected projection is a separate
+> Sponsor-gated step. STOP before merge.
+
 > **2026-11-13 — Dashboard auto-monitoring enrolment (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103;
 > repository-only; migration-free; DARK route-mutation / default-safe projection; governed PR; auto-merge OFF;
 > STOP before merge).** Off canonical main `5c1eda76`. Fixes the systemic defect that a newly broker-connected MT5

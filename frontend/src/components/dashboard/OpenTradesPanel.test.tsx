@@ -74,6 +74,57 @@ describe("OpenTradesPanel", () => {
     expect(screen.queryByTestId("monitoring-coverage")).toBeNull();
   });
 
+  // STAGE-ACCURACY-FIX-095: the corrected production-shaped support@ cohort reads 5 monitored / 6 snapshot stale /
+  // 1 login required — NOT the pre-fix "0 of 12 · 12 login required" that contradicted the shown equity.
+  it("renders the corrected 5-of-12 cohort (5 monitored · 6 snapshot stale · 1 login required)", async () => {
+    api.apiFetch.mockResolvedValue(result([], {
+      monitoring: { total: 12, monitored: 5, not_monitored: 7,
+        by_stage: { READY: 5, SNAPSHOT_STALE: 6, LOGIN_REQUIRED: 1 } },
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByTestId("monitoring-coverage")).toBeTruthy());
+    const cov = screen.getByTestId("monitoring-coverage");
+    expect(cov.textContent).toContain("Monitoring 5 of 12 accounts");
+    expect(cov.textContent).toContain("6 snapshot stale");
+    expect(cov.textContent).toContain("1 login required");
+    expect(cov.textContent).not.toContain("5 ready");      // monitored accounts are the numerator, not a problem
+    expect(cov.textContent).not.toContain("0 of 12");       // the pre-fix contradiction must never appear
+  });
+
+  // Fresh equity (monitored) must NOT imply live positions are available: the positions caveat is a SEPARATE line.
+  it("keeps live-positions availability on a separate line from monitoring coverage", async () => {
+    api.apiFetch.mockResolvedValue(result([], {
+      monitoring: { total: 12, monitored: 5, not_monitored: 7,
+        by_stage: { READY: 5, SNAPSHOT_STALE: 6, LOGIN_REQUIRED: 1 } },
+      stale_accounts: [46, 48, 49, 51, 52],
+      unavailable_accounts: [46, 48, 49, 51, 52].map((id) => ({
+        account_id: id, reason: "account_not_demo",
+        reason_category: "positions_unsupported_live", structural: true })),
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByTestId("monitoring-coverage")).toBeTruthy());
+    // Both truths coexist: 5 accounts are MONITORED for data, yet their live POSITIONS are separately unavailable.
+    expect(screen.getByTestId("monitoring-coverage").textContent).toContain("Monitoring 5 of 12");
+    expect(screen.getByText(/live positions not available for live accounts/)).toBeTruthy();
+  });
+
+  // Version skew — API older than the frontend (no monitoring block) and newer (an unknown stage) both stay stable.
+  it("is stable across API/frontend version skew (missing block hidden; unknown stage degrades gracefully)", async () => {
+    api.apiFetch.mockResolvedValue(result([]));                 // older API: no `monitoring` field at all
+    const { rerender } = render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText("No open trades")).toBeTruthy());
+    expect(screen.queryByTestId("monitoring-coverage")).toBeNull();   // no crash, no empty line
+    api.apiFetch.mockResolvedValue(result([], {
+      monitoring: { total: 4, monitored: 1, not_monitored: 3,
+        by_stage: { READY: 1, FUTURE_STAGE_X: 3 } },               // newer API: a stage this frontend predates
+    }));
+    rerender(<OpenTradesPanel scope="5" />);
+    await waitFor(() => expect(screen.getByTestId("monitoring-coverage")).toBeTruthy());
+    const cov = screen.getByTestId("monitoring-coverage");
+    expect(cov.textContent).toContain("Monitoring 1 of 4 accounts");
+    expect(cov.textContent).toContain("3 future stage x");          // unknown stage → readable lowercased fallback
+  });
+
   it("keeps a single internally-scrolling body for many positions (no page jump)", async () => {
     const many = Array.from({ length: 12 }, (_, i) =>
       trade({ position_id: `1:${i}`, ticket: i, symbol: `SYM${i}` }));
