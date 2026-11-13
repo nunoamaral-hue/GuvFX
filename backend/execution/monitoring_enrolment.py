@@ -147,6 +147,7 @@ class EnrolmentContext:
     route: object = None               # non-TOMBSTONED MonitoringRoute, or None (only loaded when gateway on)
     snapshot_fresh: bool = False       # latest equity-bearing AccountEquitySnapshot within SNAPSHOT_FRESHNESS_S
     snapshot_observed_at: object = None  # instant of that latest equity-bearing snapshot (None ⇒ never observed)
+    equity_age_s: object = None        # age in seconds of that latest equity-bearing snapshot (None ⇒ never observed)
     has_deals: bool = False            # ≥1 ingested trade exists (realized-P&L / deal evidence; present vs absent)
     is_demo_env: bool = False          # DEMO per the canonical policy gate (fail-closed False ⇒ treat as LIVE)
     hosted: bool = False               # per-tenant (PERSISTENT_WORKSPACE) path vs legacy global-agent account
@@ -360,6 +361,9 @@ def _coverage_dimensions(account, ctx: EnrolmentContext) -> dict:
     return {
         "connection": connection, "endpoint": endpoint, "identity": identity,
         "equity": equity, "positions": positions, "deals": deals, "route": route,
+        # Per-dimension freshness age (seconds) for the latest equity-bearing observation — None when never
+        # observed. Lets ops/dashboards show "stale for N minutes" and track recovery, never a fabricated zero.
+        "equity_age_s": ctx.equity_age_s,
     }
 
 
@@ -480,6 +484,7 @@ def _build_contexts(accts, ids) -> Dict[int, EnrolmentContext]:
             if c is not None and observed_at is not None:
                 c.snapshot_observed_at = observed_at
                 age = (now - observed_at).total_seconds()
+                c.equity_age_s = round(age) if age >= 0 else None   # per-dimension freshness age (observability)
                 c.snapshot_fresh = (0 <= age <= SNAPSHOT_FRESHNESS_S)
     except Exception:  # noqa: BLE001
         logger.warning("enrolment: snapshot prefetch failed", exc_info=True)
@@ -523,6 +528,50 @@ def _build_contexts(accts, ids) -> Dict[int, EnrolmentContext]:
     return ctx_by_id
 
 
+def monitoring_health(statuses) -> dict:
+    """Observation-only operational-health rollup over a collection of ``EnrolmentStatus`` (pure, read-only).
+
+    Aggregates the INDEPENDENT per-dimension coverage into actionable operator metrics — how many eligible
+    accounts are producing fresh data, how many are stale by dimension, unreachable, identity-mismatched or not
+    connected, and how many are recovery candidates (accounts that will self-heal automatically when their
+    per-tenant bridge next serves fresh data, via the EXISTING dynamic collectors — no deploy or manual step).
+    Derives ONLY from the stage + each account's already-projected ``detail['coverage']``; it enumerates nothing
+    itself, contacts no host, mutates nothing and grants NO execution/trading/Copy-Trading authority."""
+    sts = list(statuses)
+    by_dim: Dict[str, Dict[str, int]] = {}
+    for s in sts:
+        cov = (s.detail or {}).get("coverage") or {}
+        for dim in ("connection", "endpoint", "identity", "equity", "positions", "deals", "route"):
+            val = cov.get(dim)
+            if not isinstance(val, str):
+                continue
+            by_dim.setdefault(dim, {})
+            by_dim[dim][val] = by_dim[dim].get(val, 0) + 1
+
+    def _stage(st: str) -> int:
+        return sum(1 for s in sts if s.stage == st)
+
+    not_connected = sum(1 for s in sts
+                        if (s.detail or {}).get("coverage", {}).get("connection") == "not_connected")
+    return {
+        # "eligible" = connected + identity-matched + endpoint-READY (the accounts that SHOULD produce data):
+        # exactly the READY (fresh) ∪ SNAPSHOT_STALE (endpoint ready, data stale) union.
+        "eligible": _stage(READY) + _stage(SNAPSHOT_STALE),
+        "monitored": _stage(READY),
+        "snapshot_stale": _stage(SNAPSHOT_STALE),
+        "unreachable": _stage(UNREACHABLE),
+        "identity_mismatch": _stage(IDENTITY_MISMATCH),
+        "endpoint_missing": _stage(ENDPOINT_MISSING),
+        "provisioning": _stage(PROVISIONING),
+        "login_required": _stage(LOGIN_REQUIRED),
+        "not_connected": not_connected,
+        "structurally_excluded": _stage(STRUCTURALLY_EXCLUDED),
+        # Self-heal automatically on the next successful bridge read (no deploy / manual step / hard-coded id).
+        "recovery_candidates": _stage(SNAPSHOT_STALE) + _stage(UNREACHABLE),
+        "by_dimension": by_dim,
+    }
+
+
 def coverage_rollup(statuses) -> dict:
     """Summarise a collection of ``EnrolmentStatus`` into truthful coverage counts for the dashboard: the total
     account universe, how many are monitored (covered), and the per-stage breakdown. Never hides an account —
@@ -539,6 +588,9 @@ def coverage_rollup(statuses) -> dict:
         "monitored": monitored,
         "not_monitored": len(sts) - monitored,
         "by_stage": by_stage,
+        # Observation-only operational-health rollup (eligible / stale-by-dimension / unreachable / recovery +
+        # per-dimension aggregate). ADDITIVE: existing consumers read monitored/total/by_stage and are unaffected.
+        "health": monitoring_health(sts),
     }
 
 

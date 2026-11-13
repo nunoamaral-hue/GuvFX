@@ -669,3 +669,94 @@ class EnrolmentCoverageDimensionTests(TestCase):
         cov = self._ctx_status(acct).detail["coverage"]
         self.assertEqual(cov["equity"], "fresh")
         self.assertEqual(cov["positions"], "structurally_unavailable")  # fail-closed, never a false "available"
+
+
+# ── GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099 — observation-only per-dimension freshness + health rollup ─────
+
+class MonitoringHealthObservabilityTests(TestCase):
+    """Additive, observation-only operational metrics on the DYNAMIC enrolment projection: per-dimension freshness
+    age, an aggregate health rollup (eligible/stale-by-dimension/unreachable/recovery), dynamic account discovery
+    with no hard-coded ids, automatic recovery, and ZERO execution/Copy-Trading authority. No new model/migration."""
+
+    def setUp(self):
+        self.node = make_node()
+        self.owner = get_user_model().objects.create_user(username="hobsowner", email="ho@x.invalid", password="x")
+
+    def _acct(self, login, port, *, connected=True, matched=True, fresh=None, is_demo=False):
+        acct, ws = make_tenant(login, node=self.node, is_demo=is_demo)
+        make_endpoint(acct, ws, self.node, port=port, state=HostedExecutionEndpoint.State.READY)
+        _connect(ws, connected=connected, matched=matched)
+        if fresh is True:
+            _snapshot(acct)
+        elif fresh is False:
+            _snapshot(acct, age_s=E.SNAPSHOT_FRESHNESS_S + 5000)   # stale (days old)
+        acct.user = self.owner
+        acct.save(update_fields=["user"])
+        return acct
+
+    def _cohort(self):
+        mon = [self._acct(f"91{i}", 9100 + i, fresh=True) for i in range(5)]       # 5 fresh/monitored
+        stale = [self._acct(f"92{i}", 9110 + i, fresh=False) for i in range(6)]    # 6 snapshot-stale
+        nc = [self._acct("93", 9120, connected=False, matched=False)]             # 1 login-required/not-connected
+        return mon, stale, nc
+
+    def test_health_rollup_production_shaped(self):
+        self._cohort()
+        accts = E.select_accounts(owner=self.owner)
+        self.assertEqual(len(accts), 12)
+        cov = E.coverage_rollup(E.evaluate_enrolment_for_accounts(accts).values())
+        h = cov["health"]
+        self.assertEqual(h["monitored"], 5)
+        self.assertEqual(h["snapshot_stale"], 6)
+        self.assertEqual(h["eligible"], 11)                     # 5 fresh + 6 stale (endpoint-ready union)
+        self.assertEqual(h["recovery_candidates"], 6)           # the 6 stale self-heal on the next bridge read
+        self.assertEqual(h["login_required"], 1)
+        # Per-dimension aggregate is truthful: equity split fresh/stale/never; every account has a READY endpoint.
+        self.assertEqual(h["by_dimension"]["equity"], {"fresh": 5, "stale": 6, "never": 1})
+        self.assertEqual(h["by_dimension"]["endpoint"]["ready"], 12)
+
+    def test_equity_age_present_per_account(self):
+        fresh = self._acct("940", 9140, fresh=True)
+        st = E.evaluate_enrolment_for_accounts([fresh])[fresh.id]
+        self.assertIsInstance(st.detail["coverage"]["equity_age_s"], int)
+        self.assertLessEqual(st.detail["coverage"]["equity_age_s"], E.SNAPSHOT_FRESHNESS_S)
+        never = self._acct("941", 9141, fresh=None)
+        self.assertIsNone(E.evaluate_enrolment_for_accounts([never])[never.id].detail["coverage"]["equity_age_s"])
+
+    def test_dynamic_discovery_new_account_no_hardcoded_id(self):
+        before = {a.id for a in E.select_accounts(owner=self.owner)}
+        new = self._acct("950", 9150, fresh=True)               # a brand-new connected account
+        after = {a.id for a in E.select_accounts(owner=self.owner)}
+        self.assertIn(new.id, after - before)                   # enumerated by the SAME dynamic selector
+        h = E.coverage_rollup(E.evaluate_enrolment_for_accounts(E.select_accounts(owner=self.owner)).values())["health"]
+        self.assertEqual(h["monitored"], 1)                     # immediately monitored, no code/config change
+
+    def test_recovery_stale_to_monitored(self):
+        a = self._acct("960", 9160, fresh=False)                # stale
+        h0 = E.coverage_rollup(E.evaluate_enrolment_for_accounts([a]).values())["health"]
+        self.assertEqual((h0["monitored"], h0["snapshot_stale"], h0["recovery_candidates"]), (0, 1, 1))
+        _snapshot(a)                                            # per-tenant bridge serves fresh data again
+        h1 = E.coverage_rollup(E.evaluate_enrolment_for_accounts([a]).values())["health"]
+        self.assertEqual((h1["monitored"], h1["snapshot_stale"]), (1, 0))   # auto-recovered, no manual step
+
+    def test_health_grants_no_execution_authority(self):
+        src = inspect.getsource(E.monitoring_health)
+        for forbidden in ("order_send", "order_check", "ExecutionJob", "execution_enabled",
+                          "reserve_route", "trade_copier", "CopierLiveArm", "evaluate_binding"):
+            self.assertNotIn(forbidden, src)
+
+    def test_health_rollup_adds_no_query(self):
+        accts = [self._acct(str(9700 + i), 9300 + i, fresh=True) for i in range(6)]
+        statuses = E.evaluate_enrolment_for_accounts(accts).values()
+        with CaptureQueriesContext(connection) as q:
+            _ = E.coverage_rollup(statuses)["health"]           # pure over already-projected statuses
+        self.assertEqual(len(q.captured_queries), 0)
+
+    def test_health_is_owner_scoped_no_cross_tenant(self):
+        self._acct("980", 9180, fresh=True)
+        other = get_user_model().objects.create_user(username="other99", email="o99@x.invalid", password="x")
+        a2, ws2 = make_tenant("981", node=self.node)
+        make_endpoint(a2, ws2, self.node, port=9181); _connect(ws2); _snapshot(a2)
+        a2.user = other; a2.save(update_fields=["user"])
+        h = E.coverage_rollup(E.evaluate_enrolment_for_accounts(E.select_accounts(owner=self.owner)).values())["health"]
+        self.assertEqual(h["monitored"], 1)                     # only THIS owner's account, never the other tenant's
