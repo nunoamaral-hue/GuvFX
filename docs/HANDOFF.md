@@ -1,5 +1,46 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-13 — Dashboard auto-monitoring enrolment (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103; repository-only; migration-free; DARK route-mutation / default-safe projection; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-DASHBOARD-AUTO-MONITORING-ENROLMENT-087
+Packet ID: GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087
+Status: PASS (PR ready; auto-merge OFF; STOP before merge)
+
+Initial branch/HEAD/status: feat/dashboard-auto-monitoring-enrolment off canonical main 5c1eda76 (origin/main; copier #648 merged on top of 52d111e2); clean worktree
+Convergence base: 5c1eda76 (current canonical main; local `main` was stale b5ea8922 and ignored)
+Convergence branch: feat/dashboard-auto-monitoring-enrolment
+Preservation cherry-pick commit: None (new branch; no reconcile needed — main did not advance during the packet)
+Governance commit: d79c8596 feat(execution): generic monitoring-enrolment reconciler + truthful dashboard stage projection (ADR-0103, DARK)
+Files added: backend/execution/monitoring_enrolment.py; backend/execution/management/commands/reconcile_monitoring_enrolment.py; backend/execution/tests_monitoring_enrolment.py; deploy/monitoring-enrolment-scheduler/{install_monitoring_enrolment_cron.sh,crontab.monitoring-enrolment,README.md}; docs/architecture/ADR-0103-dashboard-auto-monitoring-enrolment.md; evidence/manifests/GFX-EVD-DASHBOARD-AUTO-MONITORING-ENROLMENT-087.json
+Files modified: backend/execution/monitoring_flags.py; backend/analytics/portfolio.py; backend/analytics/views_portfolio.py; frontend/src/types/portfolio.ts; frontend/src/components/dashboard/OpenTradesPanel.tsx; frontend/src/components/dashboard/OpenTradesPanel.test.tsx; docs/STATUS.md; docs/NEXT.md; docs/KNOWN_ISSUES.md
+Exact ignored local .claude files: None touched
+Original draft hash verification: N/A (no supplied draft)
+Scoped rules verification: architecture (extend, no competing onboarding; no new model; Windows-primitive boundary untouched), data (point-in-time; no raw data in Git), security (no secret/login/account-number in stage/reason/alert/log; least privilege; no host contact), evidence (machine-readable manifest; exact commands + results; limitations stated), handoff (this block)
+Secret-scan result: check_no_secrets: no findings
+Unit-test result: execution 1626 OK (incl. 37 new tests_monitoring_enrolment); analytics 272 OK (no regression); frontend OpenTradesPanel.test.tsx 26 OK (+2 ADR-0103)
+Make governance-check result: secret-scan tests 18 OK; data-root tests 7 OK; evidence-manifest tests 6 OK; evidence-lint PASS (74)
+Make check result: manage.py check 0 issues; makemigrations --check execution+analytics = no changes (migration-free). (A pre-existing strategies index-rename drift exists on base 5c1eda76 and is untouched by this packet; CI's backend job runs tests, not a global makemigrations --check.)
+Evidence/privacy validation: evidence-lint PASS; secret-scan clean; synthetic fixtures only; no PII; no host contact; no production DB query
+Commit identity/message validation: conventional commit feat(execution): ...; Co-Authored-By Claude Opus 4.8
+Final branch/HEAD/status: feat/dashboard-auto-monitoring-enrolment @ d79c8596 (+ this HANDOFF commit); clean
+Flow A ref unchanged: Yes (no Notion lifecycle status advanced)
+Branch pushed: pending (push + PR immediately after this commit)
+
+Commands executed: manage.py check; makemigrations --check; laned test runner (execution.tests_monitoring_enrolment; execution; analytics) on isolated DB test_dev_087; npx vitest run OpenTradesPanel.test.tsx; npm run build; eslint; check_no_secrets.py; check_evidence_manifests.py; governance unittest discovery; 5-lens adversarial-review workflow + HIGH/CRITICAL verification
+Verified facts: Root cause of #58 "counted but not covered" = one record (per-tenant HostedExecutionEndpoint READY) gates all three ingest paths while owned_accounts keeps the account in the universe; no allowlist/static-route/env gate exists; the ADR-0075 enrolment primitives existed but were unwired. The change is additive + migration-free; Layer-1 projection is read-only/no-host-contact and never shrinks the universe; Layer-2 route mutation is two-level dark and never marks a route READY.
+Assumptions made: The live per-account 12-account readiness table was NOT re-probed against production (HARD STOP forbids host contact); the per-account stages are produced by the same code-level projection and are obtainable via the read-only `reconcile_monitoring_enrolment report` once run with production DB access.
+Deviations from packet: None material. Alert management is run in --apply independent of the dark route-mutation flags (a review-driven robustness fix, MEDIUM-1) rather than gated with the route writes; still reconciliation-safe (idempotent, dedup, resolve-only-on-READY, no account/bridge mutation) and inert until the default-OFF cron is installed.
+Amber decisions proposed: None (no shared-structure/gate/security-posture change; the dashboard summary/open-trades additions are additive read-only fields).
+Red decisions requiring Nuno: Merge (GO — merge PR); the subsequent DARK deploy of the truthful projection; the read-only production `report` dry-run; and — a further separate step — flipping MONITORING_GATEWAY_ENABLED + MONITORING_ENROLMENT_RECONCILE_ENABLED for the apply backfill and marking routes READY via the gateway.
+Risks discovered: None new. The underlying operational gap (an endpoint only reaches READY via the cron+flag-gated hosted-provisioning chain, which needs host contact) is surfaced, not repaired here.
+Out-of-scope access performed: No (no host contact, no production DB query, no Copy-Trading change, no broker action)
+Rollback/recovery: Repository-only; nothing deployed. Revert the single commit to remove entirely; the change is migration-free, so no DB rollback is involved.
+Recommended next packet: On a Sponsor merge GO, pinned squash-merge of the PR; then a DARK deploy packet that (1) ships the truthful projection, (2) runs the read-only `report` dry-run against production to produce the live 12-account stage table, and only later (separate Sponsor gate) flips the two flags for the apply backfill.
+```
+
 ## 2026-11-06 — Broker-Intelligence Stream C: privacy-safe public withdrawal intelligence (GFX-BROKER-INTELLIGENCE-STREAM-C-004; ADR-0080; repository-only; DARK; PR; NOT merged)
 
 ```

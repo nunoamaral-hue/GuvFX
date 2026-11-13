@@ -20,6 +20,28 @@ export type UnavailableAccount = {
   reason: string;                 // low-level code (e.g. "account_not_demo"), coarse + non-identifying
   reason_category: ExclusionReason;
   structural: boolean;
+  // Account-level monitoring ENROLMENT stage (ADR-0103), enriching the positions reason with the whole-account
+  // "why no data" cause + its safe customer copy. Optional for back-compat with older payloads.
+  enrolment_stage?: MonitoringStage;
+  enrolment_ui_state?: string;
+  enrolment_structural?: boolean;
+};
+
+/** Monitoring-enrolment stage (ADR-0103): the per-account "is this account producing dashboard data, and if not,
+ *  why" taxonomy. READY = monitored (counts toward coverage); every other stage is surfaced with its reason and
+ *  safe UI copy, NEVER hidden and NEVER rendered as a measured zero. STRUCTURALLY_EXCLUDED / IDENTITY_MISMATCH /
+ *  LOGIN_REQUIRED will not self-heal by waiting (the UI must not imply "reconnecting"). */
+export type MonitoringStage =
+  | "READY" | "PROVISIONING" | "LOGIN_REQUIRED" | "ENDPOINT_MISSING" | "UNREACHABLE"
+  | "IDENTITY_MISMATCH" | "SNAPSHOT_STALE" | "STRUCTURALLY_EXCLUDED" | "TEMPORARILY_UNAVAILABLE" | "UNKNOWN";
+
+/** Truthful monitoring coverage over the account universe (ADR-0103): monitored N of M, with the per-stage
+ *  breakdown that EXPLAINS the partial — so "latest 3 of 12" is never an unexplained smooth line. */
+export type MonitoringCoverage = {
+  total: number;
+  monitored: number;
+  not_monitored: number;
+  by_stage: Partial<Record<MonitoringStage, number>>;
 };
 
 export type UsdAggregate = {
@@ -69,6 +91,7 @@ export type OpenTradesResult = {
   accounts_included?: number;
   accounts_unavailable?: number;
   accounts_structurally_unavailable?: number;
+  monitoring?: MonitoringCoverage;   // ADR-0103 coverage rollup (monitored N of M + per-stage breakdown)
   trades: OpenTrade[];
 };
 
@@ -89,6 +112,12 @@ export type PortfolioAccountRow = {
   // Why this account's live positions are unavailable (ADR-0100); null category when read OK.
   position_unavailable_category?: ExclusionReason | null;
   position_structural?: boolean;
+  // Account-level monitoring ENROLMENT stage (ADR-0103): the "producing data / why not" projection + safe copy.
+  // `monitored` drives the coverage numerator; `monitoring_structural` tells the UI not to imply "reconnecting".
+  monitoring_stage?: MonitoringStage;
+  monitoring_ui_state?: string;
+  monitoring_structural?: boolean;
+  monitored?: boolean;
 };
 
 /** GET /api/analytics/portfolio/equity-curve/?scope=ALL|<id> — truthful observed equity curve (never fabricated).
@@ -161,6 +190,7 @@ export type PortfolioSummary = {
   trading_count: number;
   stale_accounts: number[];
   unavailable_accounts?: UnavailableAccount[];
+  monitoring?: MonitoringCoverage;   // ADR-0103 coverage rollup (monitored N of M + per-stage breakdown)
   accounts: PortfolioAccountRow[];
   aggregate: {
     balance_usd: UsdAggregate;

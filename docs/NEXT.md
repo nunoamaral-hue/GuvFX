@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ DASHBOARD AUTO-MONITORING ENROLMENT (2026-11-13; GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103; repository-only PR)
+Generic idempotent monitoring-enrolment reconciler + truthful dashboard enrolment projection off canonical main
+`5c1eda76`. Fixes "a newly connected account (acceptance #58) does not auto-become a dashboard data source": one
+record (per-tenant `HostedExecutionEndpoint` READY) gates all three ingest paths; the ADR-0075 enrolment primitives
+existed but were unwired. Migration-free; Layer-1 read-only projection (production-safe, no host contact) + Layer-2
+two-level-dark reconciler (`--apply` needs `MONITORING_GATEWAY_ENABLED` + new `MONITORING_ENROLMENT_RECONCILE_ENABLED`,
+reserves/registers routes only, never marks READY / contacts a host / touches Copy Trading) + default-OFF cron.
+`execution` 1620 OK (+31 new), `analytics` 272 OK (no regression), frontend panel 26 OK, build OK, evidence-lint PASS,
+secret-scan clean. 2-lens+ adversarial review. Repository-only/DARK; prod untouched.
+**One bounded next action:** governed review and, on a Sponsor `GO — merge PR`, the pinned squash-merge; then (each a
+separate Sponsor-gated step) a DARK deploy of the truthful projection, the read-only `report` dry-run, and only later
+flipping the two flags for the apply backfill. STOP before merge.
+
 ## ★ BROKER-INTELLIGENCE STREAM C (2026-11-06; GFX-BROKER-INTELLIGENCE-STREAM-C-004; ADR-0080; repository-only PR)
 Privacy-safe PUBLIC broker withdrawal intelligence, built ADDITIVELY on the `broker_public` engine, off main
 `4408241733` (Stream B). A central disclosure layer (reason codes, complete 11-status lifecycle map, text/URL safety,

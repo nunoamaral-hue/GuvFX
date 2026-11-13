@@ -51,6 +51,29 @@ describe("OpenTradesPanel", () => {
     expect(screen.getByText(/0 open/)).toBeTruthy();
   });
 
+  it("renders the monitoring-enrolment coverage line with per-stage reasons (ADR-0103)", async () => {
+    api.apiFetch.mockResolvedValue(result([], {
+      monitoring: { total: 12, monitored: 3, not_monitored: 9,
+        by_stage: { READY: 3, PROVISIONING: 4, LOGIN_REQUIRED: 1, SNAPSHOT_STALE: 4 } },
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByTestId("monitoring-coverage")).toBeTruthy());
+    const cov = screen.getByTestId("monitoring-coverage");
+    expect(cov.textContent).toContain("Monitoring 3 of 12 accounts");   // truthful "N of M", never a silent gap
+    expect(cov.textContent).toContain("setting up monitoring");          // PROVISIONING stage copy
+    expect(cov.textContent).toContain("login required");                 // LOGIN_REQUIRED — never "reconnecting"
+    expect(cov.textContent).not.toContain("READY");                      // monitored accounts aren't shown as a problem
+  });
+
+  it("omits the monitoring coverage line when every account is monitored", async () => {
+    api.apiFetch.mockResolvedValue(result([], {
+      monitoring: { total: 3, monitored: 3, not_monitored: 0, by_stage: { READY: 3 } },
+    }));
+    render(<OpenTradesPanel scope="ALL" />);
+    await waitFor(() => expect(screen.getByText("No open trades")).toBeTruthy());
+    expect(screen.queryByTestId("monitoring-coverage")).toBeNull();
+  });
+
   it("keeps a single internally-scrolling body for many positions (no page jump)", async () => {
     const many = Array.from({ length: 12 }, (_, i) =>
       trade({ position_id: `1:${i}`, ticket: i, symbol: `SYM${i}` }));

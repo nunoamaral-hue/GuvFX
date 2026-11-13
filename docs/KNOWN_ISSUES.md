@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Dashboard auto-monitoring enrolment — repository-only, NOT merged/deployed (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087 / ADR-0103, 2026-11-13)
+
+- **The underlying operational gap is DIAGNOSED + SURFACED, not repaired here.** A connected account only becomes a
+  dashboard data source once its per-tenant `HostedExecutionEndpoint` reaches `state=READY` (the hosted-provisioning
+  chain that marks it READY is cron+flag-gated and needs host contact — out of scope for this repo-only packet). This
+  change makes the dashboard tell the TRUTH about each account's stage and ships the reconciler that will enrol routes,
+  but it does not itself bring an endpoint to READY or contact a host.
+- **Two-level DARK apply.** The reconciler's route-mutation (`reconcile_monitoring_enrolment --apply`) is inert until
+  BOTH `MONITORING_GATEWAY_ENABLED` and `MONITORING_ENROLMENT_RECONCILE_ENABLED` are on; even then it only
+  reserves/registers `MonitoringRoute` rows + writes alerts. Marking routes READY + live identity verification remain
+  the ADR-0075 gateway's job and a separate Sponsor-gated deploy. The read-only dashboard PROJECTION is always on.
+- **LIVE positions demo gate unchanged.** A LIVE account's `/mt5/positions` stays demo-gated (`account_not_demo`,
+  ADR-0072) — NOT lifted here. Such an account reads `READY` (equity/deals flow) with a positions-unsupported note.
+- **Local-only test-env quirk:** 3 frontend dashboard page test files fail locally with
+  `window.localStorage.clear is not a function` — PRE-EXISTING on the clean base commit (verified by stash),
+  unrelated to this change; CI's frontend environment is unaffected.
+
 ## 🟡 Copy Trading one-action ARM/DISARM — repository-only, NOT merged/deployed (GFX-COPIER-ONE-ACTION-ARM-DISARM-PR-076 / ADR-0097, 2026-11-12)
 
 - **What it adds.** A `CopierLiveArm` (migration `0014`) + `copier_live_arm` command make a single audited,

@@ -620,6 +620,16 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     # currency and a non-USD account is excluded from the USD total, never defaulted to USD (currency-integrity).
     open_rows, per_open = open_positions(accounts, fetch_positions=fetch_positions, rate_source=rate_source,
                                          deadline=deadline, observed_currency=observed_currency_map(accounts))
+    # Per-account monitoring ENROLMENT stage (ADR-0103): a pure, read-only projection of why an account does or
+    # does not currently produce dashboard data (READY / Setting up monitoring / Login required / Snapshot stale /
+    # …). ONE bounded prefetch for the whole scope (no N+1); read-only, no host contact; NEVER changes which
+    # accounts are in scope — it annotates them so "unavailable" is never indistinguishable from "zero".
+    try:
+        from execution import monitoring_enrolment as ENROL
+        enrol_by_id = ENROL.evaluate_enrolment_for_accounts(accounts)
+    except Exception:  # noqa: BLE001 — the enrolment annotation must never break the summary
+        logger.warning("portfolio: enrolment projection failed", exc_info=True)
+        ENROL, enrol_by_id = None, {}
 
     bal_items, eq_items = [], []
     acct_payloads = []
@@ -664,6 +674,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         if state == "TRADING":
             trading_count += 1
         op = per_open.get(a.id, {})
+        est = enrol_by_id.get(a.id)
         acct_payloads.append({
             "account_id": a.id, "broker": a.broker_name, "account_masked": mask_account(a.account_number),
             "currency": cur, "is_active": a.is_active,
@@ -682,6 +693,13 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             # were read successfully (``position_structural`` is then False).
             "position_unavailable_category": op.get("unavailable_category"),
             "position_structural": bool(op.get("structural")),
+            # Monitoring enrolment stage (ADR-0103): the account-level "why no data / data flowing" projection,
+            # with safe customer copy. ``monitored`` drives the coverage numerator; ``monitoring_structural``
+            # tells the UI not to imply "reconnecting" for a stage that will not self-heal by waiting.
+            "monitoring_stage": (est.stage if est else "UNKNOWN"),
+            "monitoring_ui_state": (est.ui_state if est else "Status unknown"),
+            "monitoring_structural": bool(est.structural) if est else False,
+            "monitored": bool(est.monitored) if est else False,
         })
         bal_items.append({"account_id": a.id, "amount": balance, "currency": cur})
         eq_items.append({"account_id": a.id, "amount": equity, "currency": cur})
@@ -720,6 +738,10 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         # Structured per-account reasons for accounts whose live positions could not be read (ADR-0100):
         # ``[{account_id, reason, reason_category, structural}]`` — the UI uses this to explain each exclusion.
         "unavailable_accounts": unavailable_accounts(per_open),
+        # Monitoring-enrolment coverage (ADR-0103): the truthful "monitored N of M" rollup + per-stage breakdown
+        # over the SAME account universe, so partial coverage is always explained by stage, never silently implied.
+        "monitoring": (ENROL.coverage_rollup(enrol_by_id.values()) if ENROL else
+                       {"total": len(accounts), "monitored": 0, "not_monitored": len(accounts), "by_stage": {}}),
         "accounts": acct_payloads,
         "aggregate": {
             "balance_usd": bal_agg.as_dict(),

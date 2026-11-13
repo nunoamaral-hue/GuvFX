@@ -72,3 +72,16 @@ def monitoring_readiness_api_enabled() -> bool:
     ready' from 'unavailable' from 'unsupported' instead of collapsing unavailable into zero. It NEVER
     mutates state, contacts a host, or authorises an order."""
     return _flag("MONITORING_READINESS_API_ENABLED")
+
+
+def monitoring_enrolment_reconcile_enabled() -> bool:
+    """Gate for the APPLY (route-writing) half of the ADR-0103 enrolment reconciler. DEFAULT OFF, and DISTINCT
+    from the master gate (two-level darkness, like ``monitoring_route_reconcile_enabled``): the reconciler's
+    ``--apply`` is a dormant no-op unless BOTH this and ``monitoring_gateway_enabled`` are on (and the underlying
+    ``reserve_route_for_workspace`` is itself gated on the master flag). Even on, ``apply`` only RESERVES and
+    REGISTERS deterministic ``MonitoringRoute`` rows from each account's EXISTING endpoint and raises governed
+    reliability alerts — it NEVER marks a route READY (that needs the gateway's live identity probe), contacts a
+    host, mutates a bridge/ACL/account/workspace, or places any trading action. The read-only enrolment
+    PROJECTION (the dashboard's per-account stage) is NOT gated by this — truthful presentation is always on;
+    only the route mutation is dark."""
+    return _flag("MONITORING_ENROLMENT_RECONCILE_ENABLED")

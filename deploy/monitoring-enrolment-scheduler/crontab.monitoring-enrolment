@@ -1,0 +1,30 @@
+# DASHBOARD AUTO-MONITORING ENROLMENT (ADR-0103) — periodic idempotent enrolment reconciler.
+#
+# Schedules `reconcile_monitoring_enrolment reconcile --apply` every 5 minutes — the ONE
+# idempotent pass that ensures every eligible broker-connected account is enrolled into
+# dashboard monitoring (reserves/registers a deterministic MonitoringRoute from the account's
+# existing per-tenant endpoint) and raises governed alerts for any account STUCK in a
+# non-ready stage. It replaces the need for a bespoke manual packet per new account.
+#
+# WHY THIS FILE EXISTS: the ADR-0075 monitoring-gateway foundation shipped the enrolment
+# primitives but left them unwired (reserve_route_for_workspace had zero production callers),
+# and the route-reconcile command had NO deployable scheduler artefact. A newly connected
+# account therefore never became a complete dashboard data source on its own. This cron is the
+# missing wire for the reconciler (ADR-0103).
+#
+# SAFE AT CURRENT DEFAULTS — TWO-LEVEL DARK. `reconcile_monitoring_enrolment --apply` is a
+# DORMANT no-op unless BOTH MONITORING_GATEWAY_ENABLED and MONITORING_ENROLMENT_RECONCILE_ENABLED
+# are on (it self-gates in reconcile_enrolment; the underlying reserve primitive is itself gated
+# on the gateway master flag). Even then it only RESERVES/REGISTERS MonitoringRoute rows from
+# EXISTING endpoints and writes reliability alerts; it NEVER marks a route READY, contacts a
+# host, mutates a Tailscale policy / bridge / account / workspace, or places any trading action.
+# The read-only dashboard enrolment PROJECTION is unaffected by this cron (truthful presentation
+# is always on). Installing this cron therefore changes NOTHING until the operator flips BOTH flags.
+#
+# Managed by deploy/monitoring-enrolment-scheduler/install_monitoring_enrolment_cron.sh
+# (identified by the end-anchored marker below).
+# Install:  deploy/monitoring-enrolment-scheduler/install_monitoring_enrolment_cron.sh
+# Remove:   deploy/monitoring-enrolment-scheduler/install_monitoring_enrolment_cron.sh --remove
+#
+# One idempotent reconcile pass every 5 minutes:
+*/5 * * * * cd /home/ubuntu/guvfx-prod && docker compose exec -T guvfx-backend python manage.py reconcile_monitoring_enrolment reconcile --apply >> /var/log/guvfx/monitoring_enrolment.log 2>&1 # guvfx-monitoring-enrolment
