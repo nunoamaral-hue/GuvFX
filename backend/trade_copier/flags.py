@@ -289,6 +289,23 @@ def copier_attestation_verify_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_ATTESTATION_VERIFY_ENABLED")
 
 
+def copier_emitter_oneshot_enabled() -> bool:
+    """DARK gate for the INDEPENDENT host-emitter one-shot identity-attestation TRIGGER (ADR-0104). DEFAULT OFF,
+    ANDed with the master gate.
+
+    This governs ONLY whether the backend operator command may ask the signed host executor to run account #46's
+    pre-installed, DISABLED one-shot emitter attestation task once (so an authorized operator can bootstrap the
+    #46 emitter identity WITHOUT an interactive PowerShell desktop — the #46 web workspace is MT5-only). It is
+    attestation-only and arms NOTHING: it creates NO lifecycle state, ``MasterEvent``, ``ExecutionJob``, alert or
+    broker contact; it never enables observation/replication/execution/event-ingestion, never contacts follower
+    #48, and never places/modifies/closes an order. It is distinct from — and never ORs past —
+    ``copier_attestation_verify_enabled`` (the backend's verify SURFACE must be separately armed for the one POST
+    to be accepted) and the execute/arm gates. When OFF the command refuses before any host contact, and the
+    signed host executor is separately gated (host-executor flag + keyring/base_url), so with this on but the
+    executor unconfigured the command still contacts no host."""
+    return copier_enabled() and _flag("COPIER_EMITTER_ONESHOT_ENABLED")
+
+
 # ───────────────────── LIVE lifecycle completion (ADR-0083) — per-operation DARK arms ─────────────────────
 # ADR-0057 implemented the LIVE follower OPEN only; LIVE modify / partial-close / full-close stayed fail-closed.
 # ADR-0083 completes them behind THESE additional, independent, default-OFF arms. Each is ANDed with the whole

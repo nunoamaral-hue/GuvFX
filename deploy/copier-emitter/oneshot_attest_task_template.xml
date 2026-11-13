@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- GuvFX Copy Trading INDEPENDENT one-shot emitter identity-attestation task - canonical DISABLED/DARK form
+     (ADR-0104). This is the task the signed host-executor op TRIGGER_EMITTER_ONESHOT_ATTEST enables for EXACTLY
+     ONE invocation and ALWAYS re-disables afterwards (Trigger-GuvfxCopierEmitterOneShot.ps1). The installer
+     produces exactly this shape: Settings.Enabled=false, NO Triggers (never scheduled), NO restart-on-failure
+     element (its absence IS "never auto-restart"; a zero-duration restart interval is rejected by schtasks and
+     must never be added), AllowStartOnDemand=true (the primitive enables + /run), MultipleInstancesPolicy=
+     IgnoreNew (never overlap), LeastPrivilege, start-on-demand only.
+
+     The action runs the NON-INTERACTIVE one-shot attest entrypoint (run_oneshot_attest.py) AS the tenant
+     ({{PRINCIPAL}} = guvfx_u_46): it reads the HOST-LOCAL ephemeral ingest-secret file ({{KEY_FILE}}), fails
+     closed with SECRET_UNAVAILABLE if that file is absent, otherwise builds+self-verifies the attestation and
+     POSTs it ONCE (no retry) to the backend ATTEST verifier ({{VERIFIER_URL}} = the attest-verify route, NEVER
+     the event-ingest route), and writes a SANITISED result to {{RESULT_FILE}} (never the envelope or the
+     secret). This task NEVER enables observation/replication/execution/event-ingestion, contacts no follower
+     account, and places no order. Placeholders {{...}} are substituted per account at install time; the primitive
+     verifies the installed action still references run_oneshot_attest.py, the result file, and the attest-verify
+     route (and not event-ingest) before it will enable the task. -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>GuvFX Copy Trading one-shot emitter attestation (account {{ACCOUNT_ID}}) - DISABLED/DARK</Description>
+  </RegistrationInfo>
+  <Triggers />
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{PRINCIPAL}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <Enabled>false</Enabled>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{PYTHON_EXE}}</Command>
+      <Arguments>"{{ENTRYPOINT}}" --config "{{CONFIG_PATH}}" --verifier-url "{{VERIFIER_URL}}" --key-file "{{KEY_FILE}}" --result-file "{{RESULT_FILE}}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

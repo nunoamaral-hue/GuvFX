@@ -1,5 +1,30 @@
 # GuvFX — Project Status
 
+> **2026-11-13 — Independent host-emitter one-shot attestation trigger (GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093;
+> ADR-0104; repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off base
+> `d800b78d`. Adds the signed host-executor op `TRIGGER_EMITTER_ONESHOT_ATTEST` so an authorized operator can run
+> account #46's emitter identity attestation WITHOUT an interactive PowerShell desktop (the #46 web workspace is
+> MT5-only; packet 090 proved only the backend verifier mechanism). Mirrors the read-only `OBSERVE_WORKSPACE` op:
+> no caller surface on the wire (empty params, no payload), the host derives identity from `account_id`, Customer
+> Zero is refused; the exact-account-46 pin lives at THREE defence-in-depth policy edges (backend command +
+> executor method + the `.ps1`). The host primitive `Trigger-GuvfxCopierEmitterOneShot.ps1` proves the
+> pre-installed one-shot task exists, is currently DISABLED, and its action targets `run_oneshot_attest.py` + the
+> `attest-verify` route (never `event-ingest`); enables it for ONE invocation; triggers it; and ALWAYS re-disables
+> it in a `finally` (locale-independent read-back, RULE 11; no `exit` in the enable region, which would skip the
+> finally; an unverifiable re-disable ⇒ `ok:false`). The task entrypoint `run_oneshot_attest.py` reads the ingest
+> secret ONLY from a host-local EPHEMERAL key file (absent ⇒ `SECRET_UNAVAILABLE`; this packet provisions no
+> secret store), attests (identity only) + POSTs ONCE (no retry) to the backend verifier, writes a SANITISED
+> result (no envelope/secret), and shreds the key. DARK flag `copier_emitter_oneshot_enabled` default OFF, ANDed
+> with the master gate. Verified: new oneshot module **30 OK**; `trade_copier` **947 OK**; bundle **33 OK** +
+> daemon-packaging/probe parity OK; `hosted_workspace`+`terminal_provisioning` **2764 OK** (2 PRE-EXISTING
+> environmental Windows-CIM failures in the UNTOUCHED `tests_observer_attach.py`, proven to fail identically on
+> base `d800b78d`); migration-free (only a pre-existing unrelated `strategies` index drift); secret-scan clean;
+> evidence-lint PASS (74). Windows ParseFile/Pester is CI-gated (no local pwsh); frontend untouched/byte-identical.
+> No deploy, no host contact, no task install/enable/trigger, no verifier window opened, no secret handled, no
+> flag enabled, no follower #48 contact, no broker order. Residual (documented): the primitive's result file is a
+> STATUS RELAY — the authoritative verification is the backend HMAC check; a tenant could forge its own displayed
+> status but gains NO trading authority and triggers NO real backend verification. STOP before merge.
+
 > **2026-11-13 — Dashboard auto-monitoring enrolment (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103;
 > repository-only; migration-free; DARK route-mutation / default-safe projection; governed PR; auto-merge OFF;
 > STOP before merge).** Off canonical main `5c1eda76`. Fixes the systemic defect that a newly broker-connected MT5

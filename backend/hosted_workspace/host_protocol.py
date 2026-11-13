@@ -68,6 +68,17 @@ HOSTED_OPERATIONS = (
     # signed payload, bound via payload_digest) + read-back verifies; ATTEST is read-only (SHA/size/inventory).
     "STAGE_CATALOGUE_ARTEFACT",  # write ONE approved servers.dat to versions\<label>\<broker>\ (atomic, read-back verified, overwrite only if byte-identical)
     "ATTEST_CATALOGUE_ARTEFACT", # read-only: SHA+size of one staged artefact, or the version's full staged inventory
+    # ADR-0104 independent host-emitter one-shot attestation TRIGGER (ACCOUNT-SCOPED; mirror OBSERVE_WORKSPACE).
+    # Triggers ONE pre-installed, DISABLED, account-bound attestation task via the signed executor so an authorized
+    # operator can run the #46 emitter attestation WITHOUT an interactive PowerShell desktop (the #46 workspace is
+    # MT5-only). It carries NO params and NO payload: the host derives the slot from account_id, enables the fixed
+    # one-shot task for exactly that one invocation, triggers it, re-disables it in a finally, and returns a
+    # SANITISED verdict. It is attestation-only — it can never place/modify/close an order, contact follower #48,
+    # enable replication/execution/event-ingestion, or accept a caller command/task/path/account/script. The
+    # ingest secret stays HOST-LOCAL (never on this wire, never to the backend); absent host-local secret =>
+    # SECRET_UNAVAILABLE (fail closed). The exact-account-46 pin is a POLICY edge (the backend command + the .ps1),
+    # not a wire concept — this op stays account-generic + Customer-Zero-refused like every sibling op.
+    "TRIGGER_EMITTER_ONESHOT_ATTEST",
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.
 CREDENTIALED_HOSTED_OPERATIONS = ("PROVISION_IDENTITY",)
