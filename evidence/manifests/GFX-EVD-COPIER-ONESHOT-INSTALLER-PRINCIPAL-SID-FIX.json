@@ -66,7 +66,7 @@
   ],
   "checksums": {
     "deploy/copier-emitter/Install-GuvfxCopierEmitterOneShotTask.ps1": "sha256:826ff7f6fdb3a01d8abefe73a65c4bc9ebaf5a6489fa2e305a04e13c2f47d9cd",
-    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1": "sha256:5dc58a549fc2418c3c2a160797f557f991095720d270e453ed99fa11ce7c2502",
+    "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.Tests.ps1": "sha256:19d779e1174940f91fcb80d4095bde6144ef68b3c8f96a3ea6566c22c7dd5ff1",
     "deploy/copier-emitter/tests/Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1": "sha256:8d4d77e616d16d65e37d9770d7c6abc881789fea66f9bc1bb6722471f2521a64",
     "deploy/copier-emitter/MANIFEST.json": "sha256:ac55ba114c6989d047b9128471ad386356443c541ec60a84f553bb997a38ae79",
     "backend/trade_copier/emitter/tests_bundle.py": "sha256:51cf7f84541cc88a52d29cd2deec13be7469be6ab456c20987466b9c6c1d59ab",

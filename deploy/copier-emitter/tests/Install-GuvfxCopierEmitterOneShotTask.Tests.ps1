@@ -295,13 +295,16 @@ Describe 'Install-GuvfxCopierEmitterOneShotTask - canonical SID principal read-b
     # accept/reject + fail-closed. The default $PSDefaultParameterValues resolver maps the pinned-account forms -> one
     # test SID (S-1-5-21-TEST-GUVFX-46); other SIDs -> themselves; names with an 'unresolved' marker or any other
     # name -> $null (fail closed).
-    function Invoke-ApplyReadbackUserId {
-        param([string]$UserId, [scriptblock]$Resolver)
-        $fx = New-FakeSchtasks
-        $fx.State.ReadBackXml = ($script:compliantXml -replace '<UserId>[^<]*</UserId>', ('<UserId>' + $UserId + '</UserId>'))
-        $p = @{ PackageRoot = $script:pkgRef; Apply = $true; InvokeSchtasks = $fx.Invoke }
-        $p['ResolvePrincipalSid'] = if ($Resolver) { $Resolver } else { $script:Resolve }
-        return @{ res = (Install-GuvfxCopierEmitterOneShotTask @p); fx = $fx }
+    BeforeAll {
+        # defined in BeforeAll (run phase), not the Describe body (discovery phase), so it is in scope for the It blocks
+        function Invoke-ApplyReadbackUserId {
+            param([string]$UserId, [scriptblock]$Resolver)
+            $fx = New-FakeSchtasks
+            $fx.State.ReadBackXml = ($script:compliantXml -replace '<UserId>[^<]*</UserId>', ('<UserId>' + $UserId + '</UserId>'))
+            $p = @{ PackageRoot = $script:pkgRef; Apply = $true; InvokeSchtasks = $fx.Invoke }
+            $p['ResolvePrincipalSid'] = if ($Resolver) { $Resolver } else { $script:Resolve }
+            return @{ res = (Install-GuvfxCopierEmitterOneShotTask @p); fx = $fx }
+        }
     }
 
     # ---- POSITIVE: all three accepted forms of the pinned account resolve to the same SID -> read-back verified ----
