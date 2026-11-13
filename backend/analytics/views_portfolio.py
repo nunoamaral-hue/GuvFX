@@ -127,13 +127,32 @@ class PortfolioOpenTradesView(APIView):
         # demo-gated) vs transient disconnect, so the UI explains each unavailable account instead of implying
         # every one is "reconnecting". Coverage counts make partial reads explicit.
         unavailable = PF.unavailable_accounts(per_open)
+        # Account-level monitoring ENROLMENT stage (ADR-0103): one bounded, read-only projection for the whole
+        # scope. It ANNOTATES each account (why it does/does not produce data) without changing the account
+        # universe, and enriches the unavailable list so the panel can say "Setting up monitoring" / "Login
+        # required" distinctly from a transient disconnect. Fail-open: the panel still renders if it errors.
+        enrol_by_id = {}
+        try:
+            from execution import monitoring_enrolment as ENROL
+            enrol_by_id = ENROL.evaluate_enrolment_for_accounts(accounts)
+            for u in unavailable:
+                est = enrol_by_id.get(u.get("account_id"))
+                if est is not None:
+                    u["enrolment_stage"] = est.stage
+                    u["enrolment_ui_state"] = est.ui_state
+                    u["enrolment_structural"] = bool(est.structural)
+            monitoring = ENROL.coverage_rollup(enrol_by_id.values())
+        except Exception:  # noqa: BLE001
+            monitoring = {"total": len(accounts), "monitored": 0,
+                          "not_monitored": len(accounts), "by_stage": {}}
         return Response({
             "reporting_currency": reporting_currency, "scope": scope, "generated_at": timezone.now().isoformat(),
             "count": total_count,                       # full number of open positions (floating-P/L covers all)
             "truncated": truncated,                     # True when the row LIST below was capped at _MAX_OPEN_ROWS
             "open_pl_usd": open_pl.as_dict(),
             "stale_accounts": stale_ids,                # retained (back-compat): the ids whose positions were unread
-            "unavailable_accounts": unavailable,        # [{account_id, reason, reason_category, structural}]
+            "unavailable_accounts": unavailable,        # [{account_id, reason, reason_category, structural, enrolment_*}]
+            "monitoring": monitoring,                   # ADR-0103 coverage rollup (monitored N of M + by_stage)
             "accounts_total": len(accounts),
             "accounts_included": len(accounts) - len(stale_ids),
             "accounts_unavailable": len(stale_ids),

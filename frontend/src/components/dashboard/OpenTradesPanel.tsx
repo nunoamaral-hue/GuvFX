@@ -45,6 +45,20 @@ const STR = {
   reconnecting: { en: "reconnecting", ja: "再接続中" },
   waiting: { en: "…", ja: "…" },
   listLabel: { en: "Open trades list", ja: "オープン取引リスト" },
+  // Monitoring-enrolment coverage (ADR-0103): truthful account-level "monitoring N of M", with a per-stage
+  // breakdown so partial coverage is explained by cause (never a silent gap, never implied "reconnecting").
+  monitoredOf: { en: (m: number, t: number) => `Monitoring ${m} of ${t} account${t === 1 ? "" : "s"}`, ja: (m: number, t: number) => `${t}口座中${m}口座を監視中` },
+  stageLabel: {
+    PROVISIONING: { en: "setting up monitoring", ja: "監視を設定中" },
+    ENDPOINT_MISSING: { en: "setting up monitoring", ja: "監視を設定中" },
+    LOGIN_REQUIRED: { en: "login required", ja: "ログインが必要" },
+    UNREACHABLE: { en: "temporarily unreachable", ja: "一時的に到達不可" },
+    IDENTITY_MISMATCH: { en: "identity mismatch", ja: "識別情報の不一致" },
+    SNAPSHOT_STALE: { en: "snapshot stale", ja: "スナップショットが古い" },
+    STRUCTURALLY_EXCLUDED: { en: "unavailable", ja: "利用不可" },
+    TEMPORARILY_UNAVAILABLE: { en: "temporarily unavailable", ja: "一時的に利用不可" },
+    UNKNOWN: { en: "status unknown", ja: "状態不明" },
+  } as Record<string, { en: string; ja: string }>,
 };
 
 function money(n: number | null | undefined, currency = "USD"): string {
@@ -152,6 +166,18 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
   const structuralCount = unavailList ? unavailList.filter((u) => u.structural).length : 0;
   const transientCount = unavailList ? unavailList.length - structuralCount : staleAccts;
   const unavailableCount = unavailList ? unavailList.length : staleAccts;
+  // Monitoring-enrolment coverage (ADR-0103): "monitoring N of M", with the per-stage breakdown for the accounts
+  // not yet producing data — so a partial dashboard is always explained by cause rather than a silent gap.
+  const coverage = data?.monitoring ?? null;
+  const coverageParts: string[] = [];
+  if (coverage) {
+    for (const [st, n] of Object.entries(coverage.by_stage)) {
+      if (st === "READY" || !n) continue;
+      const lbl = STR.stageLabel[st]?.[L] ?? st.toLowerCase().replace(/_/g, " ");
+      coverageParts.push(`${n} ${lbl}`);
+    }
+  }
+  const showCoverage = !!coverage && coverage.total > 0 && coverage.not_monitored > 0;
 
   return (
     <div style={{ ...card, flex: "1 1 auto", minWidth: 0 }} className="open-trades-tile" data-testid="open-trades-panel">
@@ -224,6 +250,12 @@ export const OpenTradesPanel: React.FC<{ scope: string; lang?: Lang }> = ({ scop
           )}
           {unavailableCount > 0 && truncated ? " · " : ""}
           {truncated ? STR.showing[L](trades.length, fullCount) : ""}
+        </div>
+      )}
+      {showCoverage && (
+        <div style={{ ...meta, marginTop: 4, flexShrink: 0 }} data-testid="monitoring-coverage">
+          {STR.monitoredOf[L](coverage!.monitored, coverage!.total)}
+          {coverageParts.length ? ` · ${coverageParts.join(" · ")}` : ""}
         </div>
       )}
     </div>

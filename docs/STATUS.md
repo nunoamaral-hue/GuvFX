@@ -1,5 +1,37 @@
 # GuvFX — Project Status
 
+> **2026-11-13 — Dashboard auto-monitoring enrolment (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103;
+> repository-only; migration-free; DARK route-mutation / default-safe projection; governed PR; auto-merge OFF;
+> STOP before merge).** Off canonical main `5c1eda76`. Fixes the systemic defect that a newly broker-connected MT5
+> account (acceptance case #58, DominionMarkets-Live) does not automatically become a complete dashboard data
+> source. **Root cause (code-derived):** one record — the per-tenant `HostedExecutionEndpoint` in `state=READY`
+> with a non-empty `base_url` — gates all three ingest paths (deals ingest filters `state=READY`; equity read fails
+> closed `ST_ENDPOINT_NOT_READY`/`ST_HOSTED_NO_ENDPOINT`; positions -> `endpoint_unavailable`), while the account
+> stays counted in the universe (`owned_accounts` filters only `disconnected_at IS NULL`) — "counted but not
+> covered". **No allowlist/static route/env gate** exists; the gap is a missing lifecycle wire. The ADR-0075
+> monitoring-gateway foundation already built the enrolment primitives but left `reserve_route_for_workspace`
+> unwired (zero callers). **Solution — two additive layers, NO new model/field (migration-free):** (Layer 1)
+> `execution/monitoring_enrolment.evaluate_account_enrolment` / `evaluate_enrolment_for_accounts` — a PURE,
+> read-only projection mapping each account to a monitoring STAGE (READY/PROVISIONING/LOGIN_REQUIRED/
+> ENDPOINT_MISSING/UNREACHABLE/IDENTITY_MISMATCH/SNAPSHOT_STALE/STRUCTURALLY_EXCLUDED/TEMPORARILY_UNAVAILABLE/
+> UNKNOWN) + safe UI copy + `monitored`/`structural` flags, from durable records (endpoint state, workspace
+> `proj_*`/`canonical_state`, latest `AccountEquitySnapshot` freshness, and `MonitoringRoute` readiness when the
+> gateway is on). No host contact; never shrinks the account universe; `account_not_demo` never demotes below
+> READY. The summary carries per-account `monitoring_stage`/`monitoring_ui_state`/`monitored` + a `monitoring`
+> coverage rollup; the open-trades endpoint enriches `unavailable_accounts` + exposes the same block; the frontend
+> renders "Monitoring N of M accounts . 2 setting up monitoring . 1 login required". (Layer 2)
+> `reconcile_enrolment` + the governed `reconcile_monitoring_enrolment` command (dry-run default; `--apply`
+> TWO-LEVEL DARK via `MONITORING_GATEWAY_ENABLED` + new default-OFF `MONITORING_ENROLMENT_RECONCILE_ENABLED`):
+> idempotently reserves/registers a `MonitoringRoute` from each eligible account's existing endpoint via the
+> ADR-0075 primitive + raises governed `reliability.AlertEvent`s; NEVER marks a route READY, contacts a host,
+> mutates a bridge/ACL/account/workspace, places an order, or touches Copy Trading. New default-OFF
+> `deploy/monitoring-enrolment-scheduler/` cron (inert until both flags flipped). Verified: `execution` **1620 OK**
+> (incl. 31 new `tests_monitoring_enrolment`), `analytics` **272 OK** (no regression), `check` clean,
+> `makemigrations --check` no drift, frontend `OpenTradesPanel.test.tsx` **26 OK** (+2 ADR-0103), `npm run build`
+> OK, eslint clean, evidence-lint PASS (74), secret-scan clean. Repository-only: NO merge, NO deploy, NO migration
+> (there is none), NO host contact, NO flag enablement, NO production reconcile/apply, NO Copy-Trading change. STOP
+> before merge.
+
 > **2026-11-12 — Copy Trading one-action ARM/DISARM (GFX-COPIER-ONE-ACTION-ARM-DISARM-PR-076; ADR-0097;
 > repository-only / DARK; governed PR; auto-merge OFF; STOP before merge).** Off main `bc2e0c59`. Implements the
 > smallest control-plane correction from the 075 preflight: a single audited, authorization-bound, auto-expiring

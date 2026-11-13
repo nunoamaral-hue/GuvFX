@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-AUTO-MONITORING-ENROLMENT-087",
+  "packet_id": "GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "feat/dashboard-auto-monitoring-enrolment",
+  "base_commit": "5c1eda7603420c469008c3cf5c81b5f476a367be",
+  "head_commit": null,
+  "environment": "local dev (PostgreSQL); isolated test DB 'test_dev_087'",
+  "ci": "GitHub Actions CI (backend, frontend, governance, market-data-foundation, research-foundation) — driven to exact-head 5/5; STOP before merge",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run execution analytics",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> execution.tests_monitoring_enrolment",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> execution",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> analytics",
+    "cd frontend && npx vitest run src/components/dashboard/OpenTradesPanel.test.tsx",
+    "cd frontend && npm run build",
+    "cd frontend && npx eslint src/types/portfolio.ts src/components/dashboard/OpenTradesPanel.tsx"
+  ],
+  "expected_results": [
+    "System check: 0 issues",
+    "Migration drift: no changes (NO new model/field — migration-free)",
+    "Enrolment suite: all pass",
+    "Full execution + analytics suites: all pass (no regression)",
+    "Frontend panel tests: all pass incl. the ADR-0103 coverage cases; build OK; eslint clean"
+  ],
+  "actual_results": [
+    "System check: no issues; makemigrations --check: No changes detected in apps 'execution', 'analytics' (migration-free).",
+    "Enrolment suite (execution.tests_monitoring_enrolment): Ran 37 tests — OK (projection stages READY/PROVISIONING/LOGIN_REQUIRED/ENDPOINT_MISSING/UNREACHABLE/IDENTITY_MISMATCH/SNAPSHOT_STALE/STRUCTURALLY_EXCLUDED; #58-shaped LIVE account becomes READY+monitored with no hard-coded id; account_not_demo does NOT demote; per-account snapshot isolation (no cross-account substitution); login-required is structural, not 'reconnecting'; bounded query count — identical for 3 and 12 accounts, <= 6; dry-run writes nothing; two-level-dark apply is a no-op with flags off; apply (flags on) reserves a route once, idempotent, never marks READY, cross-tenant-distinct, capacity fail-closed; reconcile reflects a provisioning->ready transition; Copy-Trading isolation — no copier import/coupling; PLUS the 6 adversarial-review regression tests — balance-only fresh snapshot is NOT monitored, freshness constant pinned to the ledger window, reserved-UNKNOWN route falls back to the active READY projection, alert opened-for-stuck-then-resolved-on-READY, degraded stage does NOT auto-resolve a genuine alert, alerts flow in --apply even with route-mutation dark).",
+    "Full execution suite: Ran 1626 tests — OK (existing + 37 new; no regression). Full analytics suite: Ran 272 tests — OK (summary + open-trades enrolment annotation additive; no regression).",
+    "Frontend: OpenTradesPanel.test.tsx Ran 26 tests — OK (24 ADR-0100 + 2 ADR-0103 coverage); npm run build Compiled successfully; eslint clean on changed files."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only. The reconciler's route-mutation (--apply) is TWO-LEVEL DARK (needs MONITORING_GATEWAY_ENABLED + MONITORING_ENROLMENT_RECONCILE_ENABLED, both default OFF) and reserves/registers routes ONLY — it NEVER marks a route READY, contacts a host, mutates a Tailscale policy/bridge/account/workspace, places an order, or touches Copy Trading. NOT merged, NOT deployed; the production --apply backfill is a separate Sponsor-gated step.",
+    "Migration-free: no new model/field. Reuses the ADR-0075 MonitoringRoute models + the ADR-0100 reason taxonomy + the ADR-0072/0033 eligibility codes; adds one default-OFF flag (env-var, no migration).",
+    "The read-only dashboard enrolment PROJECTION is default-safe (ADR-0100 precedent: no flag) and production-active: it derives each account's stage from durable records (endpoint state, workspace projection, snapshot freshness) with NO host contact, and it NEVER changes the account universe — it annotates it.",
+    "The LIVE /mt5/positions demo gate (account_not_demo, ADR-0072) is UNCHANGED and explicitly NOT lifted here; a LIVE account still monitors balance/equity/deals and reads READY, with its positions limitation carried as a per-capability note.",
+    "The per-account 12-account live readiness TABLE was NOT re-probed against production (the packet's HARD STOP forbids host contact). Each account's stage is produced by the same code-level projection and is available via the read-only `reconcile_monitoring_enrolment report` command once run with production DB access (a separate, read-only step).",
+    "A pre-existing LOCAL jsdom quirk (window.localStorage.clear is not a function) fails 3 dashboard page test files identically on the clean base commit (verified by stash) — unrelated to this change; CI's frontend environment is unaffected."
+  ],
+  "artefact_locations": [
+    "backend/execution/monitoring_enrolment.py (Layer-1 projection + Layer-2 reconciler)",
+    "backend/execution/monitoring_flags.py (new default-OFF monitoring_enrolment_reconcile_enabled)",
+    "backend/execution/management/commands/reconcile_monitoring_enrolment.py (governed dry-run/--apply command)",
+    "backend/execution/tests_monitoring_enrolment.py (31 tests)",
+    "backend/analytics/portfolio.py (summary: per-account monitoring stage + coverage rollup — additive)",
+    "backend/analytics/views_portfolio.py (open-trades: enrolment stage on unavailable accounts + coverage block)",
+    "frontend/src/types/portfolio.ts (MonitoringStage/MonitoringCoverage + optional account/unavailable fields)",
+    "frontend/src/components/dashboard/OpenTradesPanel.tsx (truthful 'Monitoring N of M' coverage line)",
+    "frontend/src/components/dashboard/OpenTradesPanel.test.tsx (2 ADR-0103 coverage tests)",
+    "deploy/monitoring-enrolment-scheduler/ (default-OFF cron: installer + crontab + README)",
+    "docs/architecture/ADR-0103-dashboard-auto-monitoring-enrolment.md"
+  ],
+  "checksums": {
+    "backend/execution/monitoring_enrolment.py": "sha256:7db550fb2c9fc178848c5df41193c347e99271015410f719705dddd402040ee5",
+    "backend/execution/management/commands/reconcile_monitoring_enrolment.py": "sha256:63c0af75e7dd37e101ae73a83746cf065a71e8ebdc6f14e86a711bb14b2ac3c7",
+    "backend/execution/tests_monitoring_enrolment.py": "sha256:d16db5484e5fa1a253d3f365f48984c69e0d643d168865ff0d268a817e10c75e",
+    "backend/analytics/portfolio.py": "sha256:463db980b748c0501cb2b9a5f1879716d465d3bfe058601d1c4386c91bbb787e",
+    "backend/analytics/views_portfolio.py": "sha256:809a925ec7319d61b6e8290cacacb979e2b6d4a2e85037032a9065ae8f301501",
+    "frontend/src/components/dashboard/OpenTradesPanel.tsx": "sha256:a6869f64afe9fff16ba8c617413c2ac3e3fb73d0a1548e6d158860ac6cb36969",
+    "docs/architecture/ADR-0103-dashboard-auto-monitoring-enrolment.md": "sha256:0025544f0b5dbdf75816f7408927ef5635ab5b3540718887b4255de0fb67c20f"
+  },
+  "reviewer": "5-lens adversarial review (tenant-isolation/endpoint-identity; dashboard-math/stale-data/false-zero/double-count; idempotency/concurrency/duplicate-routes; operational-failure/alert-quality; security/leakage) with adversarial verification of HIGH/CRITICAL. 6 findings: 2 HIGH (both CONFIRMED real) + 2 MEDIUM + 2 LOW — ALL fixed with regression tests. HIGH-1: snapshot_fresh now judged on the latest EQUITY-BEARING row (equity__isnull=False) to match the equity-curve coverage anchor exactly (a balance-only fresh row no longer falsely reads monitored). HIGH-2: a reserved-but-unverified MonitoringRoute (readiness UNKNOWN) no longer overrides a genuinely-READY account — the projection prefers the route only on a determinate readiness and otherwise falls back to the active-record projection. MEDIUM: alert resolution gated on a POSITIVE READY (never auto-resolves a genuine alert on a fail-open/degraded stage); alert management decoupled from the dark route-mutation flags (runs in --apply). LOW: ALLOC_REACTIVATED tallied as 'unchanged' (dropped misleading 'registered'); freshness constant pinned to the ledger by a new regression test. Host-write safety, credential/PII/secret leakage, tenant isolation, universe-never-shrunk, fail-closed and Copy-Trading isolation all CLEAN."
+}
