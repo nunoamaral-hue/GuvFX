@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 Describe 'backend bounded-verifier-window wrapper (synthetic)' {
     BeforeAll {
         $script:wrapper = Join-Path (Split-Path -Parent $PSScriptRoot) 'Open-GuvfxCopierVerifierWindow.ps1'
-        $script:SYNTH = 'SYNTHETIC_TEST_KEY_0123456789_ABCDEF01'   # >= 32 chars, no placeholder marker
+        $global:VW_SYNTH = 'SYNTHETIC_TEST_KEY_0123456789_ABCDEF01'   # >= 32 chars, no placeholder marker
 
         # A STUB that stands in for `ssh`: it records its argv and stdin to log files, then emits canned JSON by action.
         # The wrapper calls it as `& $SshExe $target $remoteCommand`, so $args[-1] is the remote command string.
@@ -40,7 +40,7 @@ throw "stub ssh: unexpected remote command"
             # the confirmation phrase returns the plain phrase. A Pester mock binds switches via a param block,
             # not via $args / $PSBoundParameters.
             if ($AsSecureString) {
-                return (ConvertTo-SecureString $script:SYNTH -AsPlainText -Force)
+                return (ConvertTo-SecureString $global:VW_SYNTH -AsPlainText -Force)
             }
             return 'OPEN-VERIFIER-WINDOW'
         }
@@ -60,9 +60,9 @@ throw "stub ssh: unexpected remote command"
 
         $argv = Get-Content -LiteralPath $argvLog -Raw
         $stdin = Get-Content -LiteralPath $stdinLog -Raw
-        $argv | Should -Not -Match ([regex]::Escape($script:SYNTH))   # key is NEVER an argument
-        $stdin | Should -Match ([regex]::Escape($script:SYNTH))        # key IS delivered on stdin
-        ($out | Out-String) | Should -Not -Match ([regex]::Escape($script:SYNTH))   # key never printed
+        $argv | Should -Not -Match ([regex]::Escape($global:VW_SYNTH))   # key is NEVER an argument
+        $stdin | Should -Match ([regex]::Escape($global:VW_SYNTH))        # key IS delivered on stdin
+        ($out | Out-String) | Should -Not -Match ([regex]::Escape($global:VW_SYNTH))   # key never printed
         $argv | Should -Match '--open'
         $argv | Should -Match '--close'
     }
@@ -78,5 +78,9 @@ throw "stub ssh: unexpected remote command"
         $argv = Get-Content -LiteralPath $argvLog -Raw
         $argv | Should -Match '--open'
         $argv | Should -Match '--close'   # finally block still closed the window
+    }
+
+    AfterAll {
+        Remove-Variable -Name VW_SYNTH -Scope Global -ErrorAction SilentlyContinue
     }
 }
