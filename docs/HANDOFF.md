@@ -1,5 +1,46 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-13 — Independent host-emitter one-shot attestation trigger (GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093; ADR-0104; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-COPIER-INDEPENDENT-EMITTER-ONESHOT
+Packet ID: GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge) — every packet acceptance that can run on the dev host ran and passed; the only non-runs are Windows PowerShell ParseFile/Pester (no pwsh on macOS; CI/host-startup-gated) and the untouched frontend (byte-identical).
+
+Initial branch/HEAD/status: feat/copier-independent-emitter-path @ d800b78d (canonical origin/main tip, #651); clean worktree
+Convergence base: d800b78d (current canonical main; local `main` is stale b5ea8922 and ignored)
+Convergence branch: feat/copier-independent-emitter-path
+Preservation cherry-pick commit: None (new work; main did not advance during the packet)
+Governance commit: 08e53cb8 feat(trade_copier): signed one-shot emitter attestation trigger without a PowerShell desktop (ADR-0104, DARK)
+Files added: backend/terminal_provisioning/windows/Trigger-GuvfxCopierEmitterOneShot.ps1; deploy/copier-emitter/run_oneshot_attest.py; deploy/copier-emitter/oneshot_attest_task_template.xml; backend/trade_copier/management/commands/request_copier_emitter_oneshot_attest.py; backend/trade_copier/tests_copier_emitter_oneshot.py; docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md; evidence/manifests/GFX-EVD-COPIER-INDEPENDENT-EMITTER-ONESHOT.json
+Files modified: backend/hosted_workspace/host_protocol.py; backend/hosted_workspace/host_agent_dispatch.py; backend/hosted_workspace/host_executor.py; deploy/hosted-executor/primitive_runner.py; deploy/hosted-executor/stage-manifest.json; backend/trade_copier/flags.py; deploy/copier-emitter/MANIFEST.json; deploy/copier-emitter/README.md; docs/STATUS.md; docs/NEXT.md; docs/KNOWN_ISSUES.md; docs/HANDOFF.md
+Exact ignored local .claude files: None touched (the worktree's gitignored backend/.env was copied from the main checkout for local test runs only; never staged/committed)
+Original draft hash verification: N/A (no supplied draft)
+Scoped rules verification: architecture (additive; mirrors OBSERVE_WORKSPACE; Windows-primitive boundary preserved — the .ps1 acts only on a fixed slot/task from -AccountId, knows no UUID/job/business rule; no new model/field/migration; no subsystem replacement), security (ingest secret stays host-local — never on the signed wire, in the backend, in logs, in stdout, in the result, or to Claude; least privilege; fail-closed SECRET_UNAVAILABLE; no secret literal in any artefact), research (N/A), data (no raw data in Git), evidence (machine-readable manifest; exact commands + results; limitations stated), handoff (this block)
+Secret-scan result: check_no_secrets: no findings
+Unit-test result: trade_copier.tests_copier_emitter_oneshot 30 OK; trade_copier 947 OK; trade_copier.emitter.tests_bundle 33 OK; hosted_workspace.tests_host_daemon_packaging + tests_probe_session 31 OK; hosted_workspace + terminal_provisioning 2766 ran, 2 FAILED — both in the UNTOUCHED hosted_workspace/tests_observer_attach.py Windows-CIM bare-terminal classifier, proven to fail IDENTICALLY on the unmodified base d800b78d (macOS has no Windows CIM) — unrelated to this packet
+Make governance-check result: secret-scan tests 18 OK; data-root tests 7 OK; evidence-manifest tests 6 OK; evidence-factuality tests 5 OK; evidence-lint PASS (74)
+Make check result: backend makemigrations --check = this packet adds NO model and NO migration (migration-free); a pre-existing unrelated `strategies` index-rename drift exists on base d800b78d and is untouched. frontend-parity/lint/build not run locally (this packet touches NO frontend files; byte-identical); CI runs them. Windows ParseFile (RULE 9) + Pester for the new .ps1 not run locally (no pwsh/Windows PowerShell); ASCII-only + the security-load-bearing shape are pinned by static tests, and the authoritative ParseFile gate runs in CI / at host-daemon startup.
+Evidence/privacy validation: evidence-lint PASS; secret-scan clean; synthetic/fake fixtures only; no PII; no host contact; no production DB query; no real key handled
+Commit identity/message validation: conventional commit feat(trade_copier): ...; Co-Authored-By Claude Opus 4.8
+Final branch/HEAD/status: feat/copier-independent-emitter-path @ <this HANDOFF commit> (on 08e53cb8); clean
+Flow A ref unchanged: Yes (no Notion lifecycle status advanced; Notion connector absent this session)
+Branch pushed: pending (push + PR immediately after this commit)
+
+Commands executed: backend/.venv/bin/python manage.py test {trade_copier.tests_copier_emitter_oneshot | trade_copier | hosted_workspace terminal_provisioning | trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging hosted_workspace.tests_probe_session}; makemigrations --check --dry-run; scripts/check_no_secrets.py; scripts/check_evidence_manifests.py; unittest test_no_secrets/test_data_root/test_evidence_manifests/test_evidence_factuality
+Verified facts: the op is wired across all four signed-executor layers + the stage manifest (parity tests); the host derives identity server-side and refuses Customer Zero; the account-46 pin holds at the command, the executor method and the .ps1; the one-shot task is enabled for exactly one invocation and always re-disabled in a finally (fail-closed); the entrypoint fails closed with SECRET_UNAVAILABLE when the host-local key file is absent, attests + POSTs exactly once, writes a sanitised result and shreds the key
+Assumptions made: the future (separate-gated) install step substitutes the task template placeholders with real paths that still satisfy the primitive's action-trust check (run_oneshot_attest.py + the result file + the attest-verify route, not event-ingest) — asserted structurally, not yet exercised on a host
+Deviations from packet: None (implemented the Phases 0–2 design from packet 092; no new design confirmation requested)
+Amber decisions proposed: None
+Red decisions requiring Nuno: merge; DARK deploy; pre-installing the DISABLED one-shot task on the #46 host; provisioning a host-local ephemeral ingest secret; opening the ADR-0101 verifier window; enabling copier_emitter_oneshot_enabled + the verify surface; the real #46 emitter attestation
+Risks discovered: the host primitive's result file is a STATUS RELAY, not an authority — the authoritative verification is the backend HMAC check; a tenant with write access to its own _oneshot dir could forge its displayed status but gains NO trading authority and triggers NO real backend verification (no POST). Documented in ADR-0104, KNOWN_ISSUES and the evidence manifest.
+Out-of-scope access performed: No
+Rollback/recovery: total and trivial — reverting the PR removes the op from the allow-list/dispatch/runner/stage-manifest, the flag, the command and the new host assets; with the flag OFF and the executor unconfigured (the production default) everything is byte-identical to pre-ADR-0104; no deploy, no migration, no host/task/secret/window state to unwind
+Recommended next packet: on a Sponsor `GO — merge PR`, the pinned squash-merge of this PR, then a separate DARK-deploy packet (deploy the backend code + stage the new host assets; the one-shot task, the host-local secret, the verifier window, the flag and the real attestation each remain their own human/Sponsor gate)
+```
+
 ## 2026-11-13 — Dashboard auto-monitoring enrolment (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087; ADR-0103; repository-only; migration-free; DARK route-mutation / default-safe projection; PR; NOT merged)
 
 ```

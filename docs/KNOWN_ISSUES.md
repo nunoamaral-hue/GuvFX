@@ -2,6 +2,29 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copier independent emitter one-shot attestation — repository-only, NOT merged/deployed (GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093 / ADR-0104, 2026-11-13)
+
+- **DARK + repository-only.** Nothing is deployed or contacted. The one-shot task is NEVER installed/enabled/
+  triggered by this packet; no ADR-0101 verifier window is opened; no host-local ingest secret is provisioned; the
+  flag `copier_emitter_oneshot_enabled` stays OFF; follower #48 is never contacted; no broker order is placed. The
+  real `COPIER_INGEST_HMAC_KEY` is never requested, generated, received, inferred or displayed.
+- **SECRET_UNAVAILABLE is the default.** `run_oneshot_attest.py` reads the ingest secret ONLY from a host-local
+  ephemeral key file. This packet does NOT invent/provision that file, so until a separate Sponsor/human-gated step
+  places it (ACL'd to `guvfx_u_46`, shredded after one use), the one-shot fails closed with `SECRET_UNAVAILABLE`
+  and nothing is attested or posted.
+- **Result file is a STATUS RELAY, not an authority.** The host primitive's sanitised verdict (ok/http_status/
+  verified/reason) reflects the backend's actual response, but the AUTHORITATIVE attestation verification is the
+  backend HMAC check (ADR-0101/ADR-0077). A tenant with write access to its own `accounts\46\_oneshot` dir could
+  forge its displayed status, but gains NO trading authority and triggers NO real backend verification (no POST).
+- **Account-46 pin is policy, not wire.** The signed op + host dispatcher stay account-generic and Customer-Zero-
+  refused (like every sibling op); `== 46` is enforced at the backend command, the executor method, and the `.ps1`.
+- **Windows ParseFile/Pester is CI-gated.** `Trigger-GuvfxCopierEmitterOneShot.ps1` could not be ParseFile-validated
+  locally (no pwsh/Windows PowerShell on the macOS dev host); ASCII-only + the security-load-bearing shape are
+  pinned by static tests, and the authoritative ParseFile gate runs in CI and on the host daemon at startup.
+- **2 pre-existing environmental test failures (unrelated).** `hosted_workspace/tests_observer_attach.py`'s
+  Windows-CIM bare-terminal classifier tests fail on macOS (no Windows CIM); they fail IDENTICALLY on the
+  unmodified base `d800b78d` and are untouched by this packet.
+
 ## 🟡 Dashboard auto-monitoring enrolment — repository-only, NOT merged/deployed (GFX-DASHBOARD-AUTO-MONITORING-ENROLMENT-087 / ADR-0103, 2026-11-13)
 
 - **The underlying operational gap is DIAGNOSED + SURFACED, not repaired here.** A connected account only becomes a

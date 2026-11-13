@@ -134,6 +134,12 @@ OP_PRIMITIVES = {
                                  "params_allow": ("broker_id", "label", "expected_sha256", "size_bytes")},
     "ATTEST_CATALOGUE_ARTEFACT": {"primitive": "attest_catalogue_artefact",
                                   "params_allow": ("broker_id", "label", "expected_sha256")},
+    # ADR-0104 independent host-emitter one-shot attestation TRIGGER (ACCOUNT-SCOPED; mirror OBSERVE_WORKSPACE).
+    # Server-derived username/runtime_root/terminal_root + injected -AccountId; NO caller params. The fixed .ps1
+    # confines to guvfx_u_<id>, refuses Customer Zero (and, defence-in-depth, pins the emitter account), enables
+    # the pre-installed DISABLED one-shot task for exactly one invocation, triggers it, ALWAYS re-disables it, and
+    # returns a sanitised verdict. It never carries or returns a secret and can reach no order/#48/execution path.
+    "TRIGGER_EMITTER_ONESHOT_ATTEST": {"primitive": "trigger_emitter_oneshot_attest", "params_allow": ()},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 
@@ -502,7 +508,9 @@ def _build_args(op: str, slot: dict, fields: dict, *, envelope_open, now: int = 
         return {"username": slot["username"]}
     if op == "ENSURE_SINGLE_SESSION":
         return {}
-    return base                       # MATERIALISE / PREPARE_OBSERVER / REMOVE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT / PROBE_SESSION
+    # MATERIALISE / PREPARE_OBSERVER / REMOVE_OBSERVER / OBSERVE_WORKSPACE / VERIFY_SLOT / PROBE_SESSION /
+    # TRIGGER_EMITTER_ONESHOT_ATTEST — all server-derived username/runtime_root/terminal_root, no caller params.
+    return base
 
 
 _SECRET_KEYS = {"password", "pw", "secret", "payload"}

@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-INDEPENDENT-EMITTER-ONESHOT",
+  "packet_id": "GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "feat/copier-independent-emitter-path",
+  "base_commit": "d800b78d76c689fd790da729cbc51cf87d38c43f",
+  "head_commit": null,
+  "commands": [
+    "backend/.venv/bin/python manage.py test trade_copier.tests_copier_emitter_oneshot",
+    "backend/.venv/bin/python manage.py test trade_copier",
+    "backend/.venv/bin/python manage.py test hosted_workspace terminal_provisioning",
+    "backend/.venv/bin/python manage.py test trade_copier.emitter.tests_bundle hosted_workspace.tests_host_daemon_packaging hosted_workspace.tests_probe_session",
+    "backend/.venv/bin/python manage.py makemigrations --check --dry-run",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_no_secrets.py'",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py'",
+    "python3 -m unittest discover -s tests -p 'test_evidence_factuality.py'",
+    "python3 -m unittest discover -s tests -p 'test_data_root.py'"
+  ],
+  "expected_results": [
+    "new ADR-0104 oneshot test module: all pass",
+    "trade_copier suite: OK (no failures)",
+    "hosted_workspace + terminal_provisioning: OK except pre-existing environmental failures unrelated to this packet",
+    "signed-op parity + bundle manifest tests: OK",
+    "makemigrations --check: no NEW migration from this packet (migration-free)",
+    "secret scan + evidence lint + governance unit tests: PASS/OK"
+  ],
+  "actual_results": [
+    "trade_copier.tests_copier_emitter_oneshot: Ran 30 tests OK (0 failures)",
+    "trade_copier: Ran 947 tests OK (0 failures, includes the 30 new oneshot tests)",
+    "hosted_workspace + terminal_provisioning: Ran 2766 tests, FAILED (failures=2) - both in the UNTOUCHED hosted_workspace/tests_observer_attach.py Windows-CIM bare-terminal classifier; proven to FAIL IDENTICALLY on the unmodified base checkout (macOS has no Windows CIM); unrelated to this packet",
+    "trade_copier.emitter.tests_bundle (33) + tests_host_daemon_packaging + tests_probe_session (31): OK",
+    "makemigrations --check: only a PRE-EXISTING unrelated 'strategies' index-rename drift; this packet adds NO model and NO migration",
+    "check_no_secrets.py: no findings; check_evidence_manifests.py: EVIDENCE-LINT PASS; test_no_secrets (18) / test_evidence_manifests (6) / test_evidence_factuality (5) / test_data_root (7): all OK"
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "Windows PowerShell ParseFile (RULE 9) + Pester for Trigger-GuvfxCopierEmitterOneShot.ps1 were NOT run locally (no pwsh/Windows PowerShell on the macOS dev host); ASCII-only + the security-load-bearing shape are pinned by static tests, and the authoritative ParseFile gate runs in CI / on the host daemon at startup.",
+    "The 2 full-suite failures are PRE-EXISTING and environmental (Windows-CIM bare-terminal classifier in the untouched tests_observer_attach.py; they fail identically on the unmodified base d800b78d on macOS) - NOT introduced by this packet.",
+    "frontend-parity / frontend-lint / frontend-build were not run locally: this packet touches NO frontend files (byte-identical frontend); CI runs them.",
+    "This is a repository-only, default-OFF (DARK) packet: nothing is deployed, no host is contacted, the one-shot task is never installed/enabled/triggered, no ADR-0101 verifier window is opened, no host-local ingest secret is provisioned, no flag is enabled, follower #48 is never contacted, and no broker order is placed. The real COPIER_INGEST_HMAC_KEY is never requested, generated, received, inferred or displayed.",
+    "Residual (documented): the host primitive's result file is a STATUS RELAY, not an authority - the authoritative attestation verification is the backend HMAC check (ADR-0101/ADR-0077). A tenant with write access to its own _oneshot dir could forge its displayed status but gains NO trading authority and triggers NO real backend verification (no POST). STOP before merge per packet 093."
+  ],
+  "artefact_locations": [
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md",
+    "backend/terminal_provisioning/windows/Trigger-GuvfxCopierEmitterOneShot.ps1",
+    "deploy/copier-emitter/run_oneshot_attest.py",
+    "deploy/copier-emitter/oneshot_attest_task_template.xml",
+    "backend/trade_copier/management/commands/request_copier_emitter_oneshot_attest.py",
+    "backend/trade_copier/tests_copier_emitter_oneshot.py",
+    "backend/hosted_workspace/host_protocol.py",
+    "backend/hosted_workspace/host_agent_dispatch.py",
+    "backend/hosted_workspace/host_executor.py",
+    "deploy/hosted-executor/primitive_runner.py",
+    "deploy/hosted-executor/stage-manifest.json",
+    "backend/trade_copier/flags.py",
+    "deploy/copier-emitter/MANIFEST.json"
+  ],
+  "checksums": {
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md": "sha256:864d357ea3a592cb432cb3842dfec654fb930006b3cbc379e4cddd0dd0cd17ec",
+    "backend/terminal_provisioning/windows/Trigger-GuvfxCopierEmitterOneShot.ps1": "sha256:6fb7794e1fe1572639cb3c7807c145fcf199c94f5b394ba9c1bce205d75edece",
+    "deploy/copier-emitter/run_oneshot_attest.py": "sha256:97ec0844abd4432129638b114333892d2b73ae5761833c5d1326e572e0b0096f",
+    "deploy/copier-emitter/oneshot_attest_task_template.xml": "sha256:cd778354947504cb671d2900b29ae0062e09f2624d16100ba8931fae0ba38e84",
+    "backend/trade_copier/management/commands/request_copier_emitter_oneshot_attest.py": "sha256:9ae71c4e0c82e3e5e32329dbd100b3e296f914cc0e4c01e83b1b4daae40f32bb",
+    "backend/trade_copier/tests_copier_emitter_oneshot.py": "sha256:94e924dfe94ea55adc6891276a60a182b0b9ca547fd281b64f92e296e03c5976",
+    "backend/hosted_workspace/host_protocol.py": "sha256:e29341e1be148df2cda64db8fd56d77b77d6c1850211f40ecd4aec1f63893f8a",
+    "backend/hosted_workspace/host_agent_dispatch.py": "sha256:6b83f4662297205b019b0a41984c74ac8fafff8ffaabb00b9ced69c1d562c496",
+    "backend/hosted_workspace/host_executor.py": "sha256:04b4fba4fd1bf04785bfb9224297e657615f0d5a67b69ed2187833a037c66175",
+    "deploy/hosted-executor/primitive_runner.py": "sha256:1bfec3ec65ad7aa04422928edcd07381ed0d40a04657a32fc646f4d1a7593c18",
+    "deploy/hosted-executor/stage-manifest.json": "sha256:33975384fe7788541130dcfd8f71496fb18a05b505c7b39ff1d7cbab84766842",
+    "backend/trade_copier/flags.py": "sha256:8c6014cbf9c6bcd346c2ca6ba3e56da9de351c8b54e240d38f635dd8c9fe3dd2",
+    "deploy/copier-emitter/MANIFEST.json": "sha256:e26eba958080e18ed95b0b2a07c9ff7590dd1392961daf7ac1f1a8e5fe098d1a"
+  },
+  "reviewer": null
+}

@@ -219,6 +219,16 @@ CONTRACT = {
     "attest_catalogue_artefact": PrimitiveSpec(
         script="Attest-GuvfxCatalogueArtefact.ps1",
         argmap={"label": "-Label", "broker_id": "-BrokerId", "expected_sha256": "-ExpectedSha256"}),
+    # ADR-0104 independent host-emitter one-shot attestation TRIGGER (mirror observe_workspace). The reviewed .ps1
+    # takes -Username/-RuntimeRoot/-TerminalRoot (server-derived, confined) + injected -AccountId (from the
+    # username) so it re-asserts the Customer-Zero refusal, re-pins the emitter account, enables the pre-installed
+    # DISABLED one-shot attest task for EXACTLY ONE invocation, triggers it, waits bounded, and ALWAYS re-disables
+    # it in a finally. No caller path/task/account/script; no stdin; the ingest secret stays host-local (never argv,
+    # never returned). It emits one compact SANITISED JSON verdict and mutates no broker/account/execution state.
+    "trigger_emitter_oneshot_attest": PrimitiveSpec(
+        script="Trigger-GuvfxCopierEmitterOneShot.ps1",
+        argmap={"username": "-Username", "runtime_root": "-RuntimeRoot", "terminal_root": "-TerminalRoot"},
+        inject_account_id=True),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and
