@@ -24,12 +24,13 @@ class AttestationVerifyError(Exception):
 
 
 def build_keyring() -> dict:
-    """Resolve the attestation HMAC key (fail closed). Same dedicated secret as ingestion — never GUVFX_AGENT_TOKEN."""
-    from core.credentials import resolve_secret
-    secret = resolve_secret(
-        "COPIER_INGEST_HMAC_KEY", aliases=("COPIER_INGEST_HMAC_SECRET",),
-        purpose="copier host-emitter attestation verify", min_length=32)
-    return {"copier-ingest": secret}
+    """Resolve the attestation HMAC key from the BOUNDED VERIFIER WINDOW (ADR-0101), never the environment.
+
+    The key is readable only while an operator has an OPEN, unexpired window covering ATTEST; outside a window
+    this raises (fail closed) and the endpoint returns 503. Same dedicated secret as ingestion
+    (``COPIER_INGEST_HMAC_KEY``) — never ``GUVFX_AGENT_TOKEN`` (security.md RULE 3)."""
+    from trade_copier.verifier_window import ingest_keyring
+    return ingest_keyring("ATTEST")
 
 
 def make_nonce_burn():

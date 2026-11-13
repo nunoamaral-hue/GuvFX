@@ -153,12 +153,12 @@ def verify_ingest_request(envelope: dict, *, keyring: dict, now: float,
 # ─────────────────────────────── Django-aware helpers (keyring, nonce, service) ───────────────────────────────
 
 def build_keyring() -> dict:
-    """Resolve the endpoint's dedicated HMAC key (fail closed). Its OWN secret — never ``GUVFX_AGENT_TOKEN``."""
-    from core.credentials import resolve_secret  # local import keeps the pure half import-light
-    secret = resolve_secret(
-        "COPIER_INGEST_HMAC_KEY", aliases=("COPIER_INGEST_HMAC_SECRET",),
-        purpose="copier signed event ingestion", min_length=_MIN_SECRET_LEN)
-    return {DEFAULT_KEY_ID: secret}
+    """Resolve the endpoint's dedicated HMAC key from the BOUNDED VERIFIER WINDOW (ADR-0101), never the
+    environment. The key is readable only while an operator has an OPEN, unexpired window covering INGEST;
+    outside a window this raises (fail closed) and the endpoint returns 503. Its OWN secret
+    (``COPIER_INGEST_HMAC_KEY``) — never ``GUVFX_AGENT_TOKEN`` (security.md RULE 3)."""
+    from trade_copier.verifier_window import ingest_keyring  # local import keeps the pure half import-light
+    return ingest_keyring("INGEST")
 
 
 def make_nonce_burn() -> Callable[[str, float], bool]:

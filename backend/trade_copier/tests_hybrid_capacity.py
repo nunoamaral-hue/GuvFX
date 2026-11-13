@@ -6,15 +6,14 @@ production performance is NOT asserted. The assertions are deliberately loose (f
 the suite never flakes on a shared CI box. No broker, no ExecutionJob.
 """
 import json
-import os
 import time
-from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from execution.models import ExecutionJob
 from trade_copier import bridge_emitter as be, services
+from trade_copier.verifier_window import verification_window
 from trade_copier.event_projection import run_event_projection_pass
 from trade_copier.lifecycle import LifecyclePolicy, run_lifecycle_pass
 from trade_copier.lifecycle_dispatch import run_lifecycle_dispatch_pass
@@ -68,7 +67,7 @@ class HybridCapacityTests(TestCase):
 
     def test_emitter_to_dispatch_latency_profile(self):
         emit, ingest, lifecycle, total = [], [], [], []
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             for i in range(N):
                 pos = be.ObservedMasterPosition(ticket=1000 + i, symbol="XAUUSD", side="BUY", volume=0.1)
                 t0 = time.perf_counter()

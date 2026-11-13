@@ -1,9 +1,7 @@
 """ADR-0077 — backend NON-LIFECYCLE attestation verify: gate-off 503, positive, identity/replay negatives,
 and the invariant that verification creates NO lifecycle/MasterEvent/ExecutionJob. Synthetic identities only."""
 import json
-import os
 import time
-from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -11,6 +9,7 @@ from django.test import TestCase, override_settings
 from execution.models import ExecutionJob
 from trade_copier.emitter import attestation as att
 from trade_copier.models import CopierPositionLifecycle, MasterEvent
+from trade_copier.verifier_window import verification_window
 from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
@@ -38,7 +37,9 @@ class AttestationVerifyTests(TestCase):
             now=(now or time.time()), observed_login=observed_login)
 
     def _post(self, env):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        # ADR-0101: the backend key is sourced from a BOUNDED VERIFIER WINDOW (ephemeral tmpfs file),
+        # never the environment. Each post opens its own window (synthetic key) and guarantees cleanup.
+        with verification_window(SECRET, purpose="ATTEST"):
             return self.client.post("/api/copy-trading/attest-verify/", data=json.dumps(env),
                                     content_type="application/json")
 

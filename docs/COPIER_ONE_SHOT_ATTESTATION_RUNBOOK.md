@@ -8,30 +8,48 @@ The one-shot attestation is split into two roles so **no agent ever handles a se
 is ON only for the single request**. The emitter scheduled task `GuvFX_CopierEmitter_46` stays DISABLED and never run
 throughout.
 
+> **Backend key source (ADR-0101).** The backend is **NOT keyed at rest** — `COPIER_INGEST_HMAC_KEY` is never in the
+> backend container environment, env file or image. For this one request the matching key is provisioned into a
+> **bounded verifier window**: an ephemeral tmpfs file (`/dev/shm/…`, 0600) made readable only while the window is
+> OPEN, then shredded. See `trade_copier.verifier_window` / the `copier_verifier_window` command. Earlier revisions of
+> this runbook wrongly assumed the backend already held a key "matching the backend's"; it does not, and must not.
+
 ## Preconditions
 
-- The attestation verifier is deployed (temporary release `20f5491b`), endpoint present and returning `503
-  {"status":"disabled"}` with `COPIER_ATTESTATION_VERIFY_ENABLED` OFF.
+- The attestation verifier endpoint is present and returns `503 {"status":"disabled"}` with
+  `COPIER_ATTESTATION_VERIFY_ENABLED` OFF, and **no verifier window is open** (`copier_verifier_window --status`
+  reports `open:false`), so the backend holds no key.
 - Account-46 emitter bundle installed DISABLED at `C:\GuvFX\copier-emitter\46` (packet-017), hashes verified.
-- The operator can RDP to the Windows host locally.
-- The emitter's `COPIER_INGEST_HMAC_KEY` (value matching the backend's) and `GUVFX_AGENT_TOKEN` are available to be
-  entered interactively by the operator. They are NOT stored on the host by this procedure.
+- The operator can RDP to the Windows host locally and can SSH to the backend host to run the operator wrapper.
+- The human operator has the **emitter's signing key** (`COPIER_INGEST_HMAC_KEY`) and `GUVFX_AGENT_TOKEN` to enter at
+  **hidden prompts**. The same signing-key value is provisioned into the backend's bounded verifier window for the
+  single request; nothing is stored on either host by this procedure — the window file is tmpfs and is shredded on
+  close. The agent never receives, enters, or sees any of these values.
 
 ## Role A — Claude Copy Trading operator (non-secret only)
 
-1. Pre-checks (read-only): confirm verifier revision `20f5491b`; endpoint returns 503; account-46 task DISABLED /
-   never-run; no emitter process; spool empty; `LiveExecutionAuthorization`=0, `CopierLiveAuthorization`=0, kill
-   switch 0, zero QUEUED/RUNNING copier jobs; record pre-counts (`CopierIngestNonce`, `MasterEvent`,
-   `CopierPositionLifecycle`, `CopierReplication`, `ExecutionJob`).
-2. Open the temporary verifier window: set **only** `COPIER_ATTESTATION_VERIFY_ENABLED` ON and apply the minimum
-   backend recreate. Verify health, route resolves, no migration ran, execution/delivery controls still OFF.
-3. Tell the human operator: "verifier is ON — run the wrapper now." Start the abort timer (see below).
+1. Pre-checks (read-only): endpoint returns 503; `copier_verifier_window --status` reports `open:false` (backend
+   holds no key); account-46 task DISABLED / never-run; no emitter process; spool empty; `LiveExecutionAuthorization`=0,
+   `CopierLiveAuthorization`=0, kill switch 0, zero QUEUED/RUNNING copier jobs; record pre-counts (`CopierIngestNonce`,
+   `MasterEvent`, `CopierPositionLifecycle`, `CopierReplication`, `ExecutionJob`).
+2. **Enable the gate (flag only, no secret):** set **only** `COPIER_ATTESTATION_VERIFY_ENABLED` ON and apply the
+   minimum backend recreate. Verify health, route resolves, no migration ran, execution/delivery controls still OFF.
+   The endpoint now returns `503 {"status":"unavailable"}` (gate on, but **still no key** — no window is open yet).
+3. Tell the human operator: "gate is ON — run the operator wrapper now." The wrapper **provisions the bounded
+   verifier window** (hidden prompt → stdin → `copier_verifier_window --open --purpose attest --max-uses 1`; the key
+   never touches argv/env/logs), then runs the account-46 emitter one-shot, then **guarantees** `--close`. Start the
+   abort timer (see below). The agent provisions **no key** and runs no wrapper.
 4. Receive ONLY the wrapper's redacted result (http status, verified, reason code, timestamp, correlation id).
-5. Immediately restore `COPIER_ATTESTATION_VERIFY_ENABLED` OFF and recreate; verify the endpoint returns 503 again.
+5. Verify cleanup and restore OFF: confirm `copier_verifier_window --status` reports `open:false` and the tmpfs key
+   file is gone (the wrapper's guaranteed `--close`; if in doubt, run `copier_verifier_window --close` yourself — it is
+   idempotent and handles no secret). Then restore `COPIER_ATTESTATION_VERIFY_ENABLED` OFF and recreate; verify the
+   endpoint returns `503 {"status":"disabled"}` again.
 6. Verify exactly one new `CopierIngestNonce` (iff success), no new `MasterEvent`/lifecycle/replication/`ExecutionJob`,
    task still DISABLED/never-run, zero broker orders. Record evidence (redacted).
 
-The agent never sees or enters a secret, never runs the emitter, and never reads the envelope/signature.
+The agent never sees, enters, provisions or infers a secret, never runs the emitter or the key-provisioning wrapper,
+and never reads the envelope/signature. The one-action `copier_verifier_window --close` and `--status` the agent may
+run handle **no** key value.
 
 ## Role B — Human operator (secret entry, local RDP only)
 
@@ -52,8 +70,12 @@ The agent never sees or enters a secret, never runs the emitter, and never reads
 ## Abort path
 
 If the human does not complete the invocation within the agreed short window (e.g., 10 minutes), or anything looks
-wrong, **Role A restores `COPIER_ATTESTATION_VERIFY_ENABLED` OFF immediately** (minimum recreate), verifies the 503
-response, and records an aborted-window note. The verifier must never be left ON while reports are written.
+wrong, **Role A closes the verifier window and restores the gate OFF immediately**: run `copier_verifier_window
+--close` (idempotent; shreds the tmpfs key, handles no secret), confirm `--status` reports `open:false`, set
+`COPIER_ATTESTATION_VERIFY_ENABLED` OFF (minimum recreate), verify the `503 {"status":"disabled"}` response, and
+record an aborted-window note. Neither the key window nor the gate may be left on while reports are written. The
+bounded window also self-expires (≤ 900 s) and its tmpfs key dies on any container restart, so a missed close still
+fails closed.
 
 ## Numeric-fidelity check (real run)
 

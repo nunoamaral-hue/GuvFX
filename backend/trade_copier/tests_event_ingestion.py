@@ -4,10 +4,8 @@ Two layers: PURE verifier (signature, replay, skew, expiry, tamper, scope) and t
 persistence + idempotency, account-scope + identity rejection, and the invariant that it creates NO
 ExecutionJob)."""
 import json
-import os
 import time
 from decimal import Decimal
-from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, SimpleTestCase, override_settings
@@ -16,6 +14,7 @@ from django.utils import timezone
 from execution.models import ExecutionJob
 from trade_copier import event_ingestion as ei
 from trade_copier.models import CopierIngestedRevision, CopierMaster
+from trade_copier.verifier_window import verification_window
 from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
@@ -127,13 +126,13 @@ class IngestViewTests(TestCase):
 
     def test_gate_off_503_persists_nothing(self):
         with override_settings(COPIER_ENABLED=False):
-            with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+            with verification_window(SECRET, purpose="INGEST"):
                 r = self._post([self._rev()])
         self.assertEqual(r.status_code, 503)
         self.assertEqual(CopierIngestedRevision.objects.count(), 0)
 
     def test_accept_persists_and_creates_no_execution_job(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev(ticket=1, revision=1), self._rev(ticket=2, revision=1)])
         self.assertEqual(r.status_code, 200, r.content)
         self.assertEqual(r.json()["status"], "accepted")
@@ -142,7 +141,7 @@ class IngestViewTests(TestCase):
         self.assertEqual(ExecutionJob.objects.count(), 0)   # INVARIANT: ingestion never creates a job
 
     def test_idempotent_duplicate_revision(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             self._post([self._rev(ticket=1, revision=1)], nonce="a")
             r2 = self._post([self._rev(ticket=1, revision=1)], nonce="b")   # new nonce, same revision
         self.assertEqual(r2.json()["accepted"], 0)
@@ -150,7 +149,7 @@ class IngestViewTests(TestCase):
         self.assertEqual(CopierIngestedRevision.objects.filter(ticket=1, revision=1).count(), 1)
 
     def test_replay_same_request_409(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             env_payload = [self._rev()]
             payload = {"revisions": env_payload}
             env = ei.sign_ingest_request(account_id=self.acct.id, secret=SECRET, nonce="same",
@@ -163,7 +162,7 @@ class IngestViewTests(TestCase):
 
     def test_account_scope_violation_rejected(self):
         # Signed account matches the master, but a revision claims a different account.
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev(ticket=1, revision=1, account_id=self.acct.id + 999)])
         self.assertEqual(r.status_code, 200)
         reasons = [x["reason"] for x in r.json()["rejected"]]
@@ -171,37 +170,37 @@ class IngestViewTests(TestCase):
         self.assertEqual(CopierIngestedRevision.objects.count(), 0)
 
     def test_unknown_account_permanent_reject_200(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev()], account_id=self.acct.id + 999)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["reason"], "account_not_master")
 
     def test_identity_mismatch_rejected(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev(broker_login="9999999")])   # wrong login vs account_number 1000001
         self.assertEqual(r.status_code, 200)
         reasons = [x["reason"] for x in r.json()["rejected"]]
         self.assertIn("identity_mismatch", reasons)
 
     def test_matching_identity_accepted(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev(broker_login="1000001", broker_server="IS6Technologies-Demo")])
         self.assertEqual(r.json()["accepted"], 1)
 
     def test_malformed_json_400(self):
-        with override_settings(**ENABLED), mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with override_settings(**ENABLED), verification_window(SECRET, purpose="INGEST"):
             r = self.client.post("/api/copy-trading/event-ingest/", data="{not json",
                                  content_type="application/json")
         self.assertEqual(r.status_code, 400)
 
     def test_body_too_large_413(self):
         big = "z" * (ei.MAX_BODY_BYTES + 10)
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self.client.post("/api/copy-trading/event-ingest/", data=big, content_type="application/json")
         self.assertEqual(r.status_code, 413)
 
     def test_structurally_invalid_revision_rejected_not_persisted(self):
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev(ticket=1, revision=1, volume=0)])   # non-positive volume on an open
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["rejected"])
@@ -209,7 +208,7 @@ class IngestViewTests(TestCase):
 
     def test_oversize_value_rejected_not_500(self):
         # ADR-0074 M1: an out-of-range magnitude must be a clean per-row rejection, never a late DataError/500.
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self._post([self._rev(ticket=1, revision=1, volume=2_000_000),            # > _MAX_VOLUME
                             self._rev(ticket=2, revision=1, sl=1e14)])                     # > _MAX_PRICE
         self.assertEqual(r.status_code, 200)
@@ -223,7 +222,7 @@ class IngestViewTests(TestCase):
         payload = {"revisions": [self._rev()]}
         env = ei.sign_ingest_request(account_id=self.acct.id, secret=SECRET, nonce="z" * 200,
                                      now=time.time(), payload=payload)
-        with mock.patch.dict(os.environ, {"COPIER_INGEST_HMAC_KEY": SECRET}):
+        with verification_window(SECRET, purpose="INGEST"):
             r = self.client.post("/api/copy-trading/event-ingest/", data=json.dumps(env),
                                  content_type="application/json")
         self.assertEqual(r.status_code, 400)
