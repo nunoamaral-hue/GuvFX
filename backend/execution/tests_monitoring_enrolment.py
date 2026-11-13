@@ -652,3 +652,20 @@ class EnrolmentCoverageDimensionTests(TestCase):
         cov = self._ctx_status(acct).detail["coverage"]
         for k in ("connection", "endpoint", "identity", "equity", "positions", "deals", "route"):
             self.assertIn(k, cov)
+
+    # STAGE-ACCURACY-FIX-095 (packet 096 CI fix): the positions dimension must use the canonical account-policy
+    # gate, NOT a raw ``is_demo`` read (trading.tests_account_policy_guard). A demo/live MISMATCH (is_demo=True on a
+    # LIVE broker server) therefore fail-closes to not-DEMO ⇒ positions ``structurally_unavailable`` — a raw
+    # ``is_demo`` read would have wrongly reported ``available``.
+    def test_positions_fail_closed_on_demo_live_mismatch(self):
+        from trading.models import BrokerServer
+        srv = BrokerServer.objects.create(
+            broker_display_name="X", server_name="X-Live-mismatch", environment=BrokerServer.LIVE)
+        acct, ws = make_tenant("6208", node=self.node, is_demo=True)   # is_demo True ...
+        # Bind a LIVE server via .update() (the hosted broker identity is write-once on save()) ⇒ demo/live mismatch.
+        TradingAccount.objects.filter(pk=acct.pk).update(broker_server=srv)
+        acct.refresh_from_db()
+        make_endpoint(acct, ws, self.node, port=8928); _connect(ws); _snapshot(acct)   # fresh equity
+        cov = self._ctx_status(acct).detail["coverage"]
+        self.assertEqual(cov["equity"], "fresh")
+        self.assertEqual(cov["positions"], "structurally_unavailable")  # fail-closed, never a false "available"

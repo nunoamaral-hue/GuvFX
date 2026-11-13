@@ -148,6 +148,7 @@ class EnrolmentContext:
     snapshot_fresh: bool = False       # latest equity-bearing AccountEquitySnapshot within SNAPSHOT_FRESHNESS_S
     snapshot_observed_at: object = None  # instant of that latest equity-bearing snapshot (None ⇒ never observed)
     has_deals: bool = False            # ≥1 ingested trade exists (realized-P&L / deal evidence; present vs absent)
+    is_demo_env: bool = False          # DEMO per the canonical policy gate (fail-closed False ⇒ treat as LIVE)
     hosted: bool = False               # per-tenant (PERSISTENT_WORKSPACE) path vs legacy global-agent account
 
 
@@ -337,8 +338,11 @@ def _coverage_dimensions(account, ctx: EnrolmentContext) -> dict:
         equity = "never"
 
     # Live positions are demo-gated for a LIVE account (ADR-0072) regardless of equity freshness — reported on
-    # its own axis so "fresh equity" is never read as "positions available".
-    if not bool(getattr(account, "is_demo", False)):
+    # its own axis so "fresh equity" is never read as "positions available". The DEMO/LIVE decision uses the
+    # canonical ``trading.account_policy`` gate, resolved in bulk in ``_build_contexts`` (never a raw ``is_demo``
+    # read here — ``trading.tests_account_policy_guard``); a demo/live mismatch fail-closes to not-DEMO, so such
+    # an account reads ``structurally_unavailable`` (conservative), never a false "available".
+    if not ctx.is_demo_env:
         positions = "structurally_unavailable"
     elif equity == "fresh":
         positions = "available"
@@ -493,6 +497,28 @@ def _build_contexts(accts, ids) -> Dict[int, EnrolmentContext]:
                 c.has_deals = True
     except Exception:  # noqa: BLE001
         logger.warning("enrolment: deals prefetch failed", exc_info=True)
+
+    # Environment (DEMO/LIVE) per account via the canonical policy gate (``is_demo_environment`` — never a raw
+    # ``is_demo`` read; ``trading.tests_account_policy_guard``). Bulk-prefetch the bound ``BrokerServer`` rows and
+    # prime each account's FK cache first, so the policy call issues NO per-account query (keeps the projection
+    # N+1-free). Fail-closed: on any error an account stays ``is_demo_env=False`` (treated as LIVE ⇒ positions
+    # structurally unavailable), never falsely "demo".
+    try:
+        from trading.account_policy import is_demo_environment
+        from trading.models import BrokerServer
+        srv_ids = {getattr(a, "broker_server_id", None) for a in accts}
+        srv_ids.discard(None)
+        servers = ({s.id: s for s in BrokerServer.objects.filter(id__in=srv_ids)} if srv_ids else {})
+        for a in accts:
+            sid = getattr(a, "broker_server_id", None)
+            if sid is not None and sid in servers:
+                a.broker_server = servers[sid]          # prime FK cache ⇒ the policy call issues no query
+            try:
+                ctx_by_id[a.id].is_demo_env = bool(is_demo_environment(a))
+            except Exception:  # noqa: BLE001 — per-account fail-closed (stays not-demo)
+                logger.warning("enrolment: environment resolve failed for account %s", a.id, exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("enrolment: environment prefetch failed", exc_info=True)
 
     return ctx_by_id
 
