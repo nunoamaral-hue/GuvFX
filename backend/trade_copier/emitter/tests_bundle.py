@@ -304,7 +304,7 @@ class OneShotInstallerNativeSchtasksFixTests(SimpleTestCase):
         self.assertIn("$ErrorActionPreference = $prevEap", t, "the helper must restore the prior EAP")
         self.assertIn("finally", t, "EAP restore + temp-file cleanup must live in a finally")
         # the restore happens inside the finally (after the final 'finally {' in the helper region)
-        helper = t[t.index("function Invoke-GuvfxSchtasksNative"):t.index("function Install-GuvfxCopierEmitterOneShotTask")]
+        helper = t[t.index("function Invoke-GuvfxSchtasksNative"):t.index("function Resolve-GuvfxPrincipalSid")]
         self.assertLess(helper.index("finally"), helper.index("$ErrorActionPreference = $prevEap"),
                         "the EAP restore must be in the finally block, not the try body")
 
@@ -314,7 +314,7 @@ class OneShotInstallerNativeSchtasksFixTests(SimpleTestCase):
         # CALLER from a non-zero /query exit code. (The 3 `catch { return (Fail ...)` sites are JSON-parse fail-closed
         # guards OUTSIDE the helper, which is why this check is scoped to the helper region.)
         t = self._t()
-        helper = t[t.index("function Invoke-GuvfxSchtasksNative"):t.index("function Install-GuvfxCopierEmitterOneShotTask")]
+        helper = t[t.index("function Invoke-GuvfxSchtasksNative"):t.index("function Resolve-GuvfxPrincipalSid")]
         self.assertNotIn("catch { return", helper, "the native helper must not relabel a caught failure as a soft pass")
         self.assertIn("finally", helper, "the helper uses try/finally for EAP restore + temp-file cleanup")
         self.assertIn("if ($null -eq $res -or $res.ExitCode -ne 0 -or -not $res.Out) { return $null }", t,
@@ -351,6 +351,81 @@ class OneShotInstallerNativeSchtasksFixTests(SimpleTestCase):
         for forbidden in ("COPIER_INGEST_HMAC_KEY", "GUVFX_AGENT_TOKEN", "api.guvfx.com", "100.79.101.19"):
             self.assertNotIn(forbidden, text, f"regression asset must not reference {forbidden}")
         self.assertFalse(_SECRET_RE.search(text), "secret-looking literal in real-schtasks regression asset")
+
+
+class OneShotInstallerPrincipalSidFixTests(SimpleTestCase):
+    """GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108 - the APPLY read-back must compare the task
+    principal by CANONICAL SID, not by comparing a returned SID with the bare 'guvfx_u_46' string. The live rollout
+    registered a correct DISABLED/triggerless account-46 task, but schtasks returned the principal as a SID
+    (S-1-5-21-...-1065); the old read-back string-compared it to 'guvfx_u_46', reported readback_mismatch, and
+    fail-closed-deleted the task. These are source-level (mutation-killing) regressions; the live Windows SID
+    normalization is exercised by the real-schtasks asset on a Windows runner (no Windows in Linux CI)."""
+
+    def _t(self):
+        return _ONESHOT_INSTALLER.read_text()
+
+    def _resolver_region(self, t):
+        return t[t.index("function Resolve-GuvfxPrincipalSid"):t.index("function Install-GuvfxCopierEmitterOneShotTask")]
+
+    def test_canonical_sid_resolver_present_and_authoritative(self):
+        t = self._t()
+        self.assertIn("function Resolve-GuvfxPrincipalSid", t, "missing the canonical-SID resolver")
+        self.assertIn("function Test-PrincipalCanonical", t, "missing the SID-to-SID comparison helper")
+        region = self._resolver_region(t)
+        # authoritative Windows identity translation, both directions (name->SID and SID->account round-trip)
+        self.assertIn("System.Security.Principal.NTAccount", region)
+        self.assertIn("System.Security.Principal.SecurityIdentifier", region)
+        self.assertIn(".Translate(", region)
+        # fail closed: the resolver returns $null on any failure (catch) and is injectable for tests
+        self.assertIn("catch { return $null }", region)
+        self.assertIn("[scriptblock]$ResolvePrincipalSid = $null", t, "resolver must be injectable for tests")
+
+    def test_resolver_is_not_a_string_or_substring_match(self):
+        region = self._resolver_region(self._t())
+        # check the CODE only (the header comment legitimately names guvfx_u_46 as an example); the resolver must
+        # NEVER lowercase/substring/suffix-match the account name -- translation is authoritative Windows identity.
+        code = "\n".join(re.sub(r"#.*$", "", ln) for ln in region.splitlines())
+        self.assertNotIn(".ToLower()", code, "principal resolution must be authoritative, not a lowercase compare")
+        self.assertNotIn("-like", code, "principal resolution must not use a wildcard/substring -like match")
+        self.assertNotIn("guvfx_u_46", code, "the resolver must not special-case the account name as a string")
+
+    def test_readback_uses_canonical_sid_not_raw_string(self):
+        t = self._t()
+        # both read-back sites (authoritative read-back + idempotency compliant check) use the canonical comparison
+        self.assertIn("$rbUid = (Test-PrincipalCanonical (", t, "APPLY read-back must use the canonical SID comparison")
+        self.assertGreaterEqual(t.count("Test-PrincipalCanonical ("), 2, "both read-back + compliant checks must canonicalize")
+        # the raw 'returned UserId -eq $PRINCIPAL' string equality must be GONE
+        self.assertNotIn("Principal.UserId) -eq $PRINCIPAL", t, "raw string compare of the read-back principal must be removed")
+        # the RENDER check (what we rendered == the bare name) legitimately stays a -ne string check
+        self.assertIn("Principal.UserId) -ne $PRINCIPAL", t, "the render-validation principal check must be preserved")
+
+    def test_account_pin_and_disabled_triggerless_preserved(self):
+        t = self._t()
+        self.assertIn("$PINNED = 46", t)
+        self.assertIn("$EXPLICIT_REFUSE = @(48)", t)
+        self.assertIn("$RESERVED = @(0, 1, 18)", t)
+        self.assertIn("rendered_not_disabled", t)
+        self.assertIn("rendered_has_triggers", t)
+        self.assertIn("readback_mismatch", t)
+        self.assertFalse(_SECRET_RE.search(t), "secret-looking literal in the installer")
+
+    def test_real_schtasks_sid_regression_present(self):
+        asset = _BUNDLE / "tests" / "Install-GuvfxCopierEmitterOneShotTask.RealSchtasks.Tests.ps1"
+        self.assertTrue(asset.exists(), "real-schtasks regression asset missing")
+        text = asset.read_text()
+        low = text.lower()
+        self.assertIn("real windows sid normalization", low, "missing the real-schtasks SID normalization test")
+        self.assertIn("resolve-guvfxprincipalsid", low)
+        self.assertIn("windowsidentity", low)          # resolves/compares against the runner's real current-user SID
+        self.assertIn("schtasks", low)
+        # the real test must assert the returned (SID) read-back canonicalizes to the submitted principal
+        self.assertIn("rx.Task.Principals.Principal.UserId", text)
+        data = asset.read_bytes()
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf"), "BOM in real-schtasks asset")
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII byte in real-schtasks asset")
+        for forbidden in ("COPIER_INGEST_HMAC_KEY", "GUVFX_AGENT_TOKEN", "api.guvfx.com", "100.79.101.19", "guvfx_u_46"):
+            self.assertNotIn(forbidden, text, f"real-schtasks asset must not reference {forbidden}")
+        self.assertFalse(_SECRET_RE.search(text), "secret-looking literal in real-schtasks asset")
 
 
 class OperatorWrapperTests(SimpleTestCase):

@@ -157,6 +157,30 @@ install invariant above is unchanged. Coverage adds a Linux-CI source-level muta
 plus a RULE 11 positive control. The rollout's byte-recoverable rollback gap (the account-46 `MANIFEST.json` not
 backed up before replacement) is closed in `docs/COPIER_HOST_EMITTER_INSTALL_AND_ACCEPTANCE.md` section 5a.
 
+### Principal-SID read-back correction (packet GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108, repository-only)
+
+The rollout-retry (`GFX-COPIER-ONESHOT-WINDOWS-ROLLOUT-RETRY-105`) proved the native-`schtasks` fix works: PLAN was
+clean and APPLY correctly registered a DISABLED, triggerless, account-46 task. But the authoritative APPLY read-back
+then failed `readback_mismatch`: `schtasks` stores a task principal as a **SID**, so the read-back returned
+`S-1-5-21-...-1065` while the installer had rendered the bare local name `guvfx_u_46`; the read-back string-compared
+the two and so deleted the (correct) task fail-closed and rolled the host back to DARK. This is the
+`GFX-COPIER-PARITY-VALIDATOR-FIX-013` Defect-2 (principal resolution) resurfacing in the installer's read-back.
+
+The correction is behaviour-preserving: a top-level `Resolve-GuvfxPrincipalSid` canonicalises a principal reference
+(a SID string, a bare local name, or a `HOST\name`) to its SID via authoritative Windows identity translation
+(`NTAccount`/`SecurityIdentifier`), returning `$null` on ANY lookup/translation failure (fail closed) -- never a
+lowercase/substring/suffix match, and a SID string must round-trip to a real account. A nested `Test-PrincipalCanonical`
+resolves BOTH the pinned `guvfx_u_46` principal and the returned principal to SIDs and compares SID-to-SID; both APPLY
+read-back sites (authoritative read-back + idempotency compliance) use it. Account-46 stays pinned (`$PRINCIPAL` is
+fixed to `guvfx_u_46`); a different account's SID never matches; #48/Customer Zero/reserved/arbitrary principals are
+never reachable. The render-validation still checks the rendered XML carries the bare `guvfx_u_46` (it validates what
+the installer itself wrote). Every other acceptance condition -- exact task name, DISABLED, zero triggers, fixed
+action/arguments, no secret, fail-closed deletion on a genuine mismatch -- is unchanged. Coverage adds a positive +
+negative principal matrix to the mocked suite (via an injected resolver) and a real-`schtasks` Windows regression
+that registers a task under the runner's own account, reads back the stored SID, and asserts it canonicalises to the
+submitted principal -- the mock returns the submitted name and never normalises to a SID, which is why the live gap
+escaped. The installer resolver is injectable (`$ResolvePrincipalSid`) for deterministic tests.
+
 ## Not in this packet (separate Sponsor/human gates)
 
 Merge · deploy · install/enable/trigger the one-shot task on the host · open the ADR-0101 verifier window ·

@@ -76,3 +76,71 @@ Describe 'Invoke-GuvfxSchtasksNative - real schtasks absent-task path (PS 5.1 na
         }
     }
 }
+
+Describe 'Resolve-GuvfxPrincipalSid - real Windows SID normalization (packet 108)' {
+    # The live rollout proved schtasks stores a task principal as a SID, so the APPLY read-back must compare by
+    # canonical SID, not by the submitted bare name. These tests exercise the REAL resolver + a REAL schtasks task on a
+    # Windows runner (the mock returns the submitted name and never normalizes to a SID). Non-production: the task runs
+    # as the runner's CURRENT user (no password, InteractiveToken), a collision-resistant name, disabled+triggerless,
+    # cleaned up in finally. No real account/secret/host/broker.
+    BeforeAll {
+        $script:SidTask = 'GuvFxPesterSid_' + ([guid]::NewGuid().ToString('N'))
+        $cur = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $script:CurSid = $cur.User.Value
+        $script:CurName = $cur.Name            # DOMAIN\user or MACHINE\user
+        $script:CurBare = ($script:CurName -split '\\')[-1]
+    }
+    AfterAll { Remove-TestTaskQuiet $script:SidTask }
+
+    It 'the real resolver canonicalizes bare name, qualified name and SID of the SAME account to one SID' {
+        (Resolve-GuvfxPrincipalSid -Reference $script:CurName) | Should -BeExactly $script:CurSid
+        (Resolve-GuvfxPrincipalSid -Reference $script:CurSid)  | Should -BeExactly $script:CurSid
+        (Resolve-GuvfxPrincipalSid -Reference $script:CurBare) | Should -BeExactly $script:CurSid
+    }
+
+    It 'the real resolver FAILS CLOSED on a dangling SID and a non-existent name (returns null)' {
+        (Resolve-GuvfxPrincipalSid -Reference 'S-1-5-21-0-0-0-99999') | Should -BeNullOrEmpty
+        (Resolve-GuvfxPrincipalSid -Reference ('NoSuchUser_' + [guid]::NewGuid().ToString('N'))) | Should -BeNullOrEmpty
+    }
+
+    It 'a DIFFERENT real identity resolves to a DIFFERENT SID (LocalSystem != current user)' {
+        $sys = Resolve-GuvfxPrincipalSid -Reference 'S-1-5-18'    # LocalSystem, a real well-known SID
+        $sys | Should -BeExactly 'S-1-5-18'
+        $sys | Should -Not -BeExactly $script:CurSid
+    }
+
+    It 'a REAL schtasks task read-back returns a SID that canonicalizes to the submitted principal' {
+        $tmp = Join-Path $env:TEMP ($script:SidTask + '.xml')
+        try {
+            $xml = @'
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Settings><Enabled>false</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy></Settings>
+  <Triggers />
+  <Principals><Principal id="Author"><UserId>__USER__</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Actions Context="Author"><Exec><Command>cmd.exe</Command><Arguments>/c exit 0</Arguments></Exec></Actions>
+</Task>
+'@
+            $xml = $xml.Replace('__USER__', $script:CurName)
+            Set-Content -LiteralPath $tmp -Value $xml -Encoding Unicode
+            $c = Invoke-GuvfxSchtasksNative -ArgList @('/create', '/tn', ('\' + $script:SidTask), '/xml', $tmp, '/f')
+            $c.ExitCode | Should -Be 0
+            $q = Invoke-GuvfxSchtasksNative -ArgList @('/query', '/tn', ('\' + $script:SidTask), '/xml', 'ONE')
+            $q.ExitCode | Should -Be 0
+            $rx = [xml]$q.Out
+            $returnedUid = ('' + $rx.Task.Principals.Principal.UserId)
+            # schtasks normalizes the principal; the resolver must canonicalize the returned value to the same SID as
+            # the submitted name -- this is exactly the account-46 read-back the live rollout mishandled.
+            (Resolve-GuvfxPrincipalSid -Reference $returnedUid) | Should -BeExactly $script:CurSid
+            (Resolve-GuvfxPrincipalSid -Reference $returnedUid) | Should -BeExactly (Resolve-GuvfxPrincipalSid -Reference $script:CurName)
+            # and the task was stored DISABLED + triggerless
+            ('' + $rx.Task.Settings.Enabled) | Should -BeExactly 'false'
+            $tc = 0; if ($rx.Task.Triggers -and $rx.Task.Triggers.ChildNodes) { $tc = [int]$rx.Task.Triggers.ChildNodes.Count }
+            $tc | Should -Be 0
+        }
+        finally {
+            Remove-TestTaskQuiet $script:SidTask
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
