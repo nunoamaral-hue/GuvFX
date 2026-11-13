@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ MONITORING STAGE-ACCURACY FIX (2026-11-13; GFX-DASHBOARD-MONITORING-STAGE-ACCURACY-FIX-095; ADR-0105; repository-only PR)
+Corrects the ADR-0103 projection deployed in PR #651 off canonical main `d800b78d`. The stage no longer gates on
+`workspace_confirmed_at` (an ADR-0034 execution-arming ACK, not a monitoring-data precondition); monitored == connected
++ matched + READY endpoint + fresh equity. The production-shaped support@ cohort now reads **5 monitored / 6 snapshot
+stale / 1 not connected** (#58 = SNAPSHOT_STALE, not LOGIN_REQUIRED), ending the "Monitoring 0 of 12" line that
+contradicted the shown equity. Per-dimension `detail['coverage']` keeps live positions on their own axis (fresh equity
+never implies positions). Every EXECUTION confirm gate is preserved and proven intact by a regression test; component
+source unchanged. Migration-free; system check clean, `execution+analytics` 1908 OK, enrolment 47 OK, frontend 29 OK,
+build OK, eslint clean, evidence-lint PASS, secret-scan clean. Repository-only; prod untouched.
+**One bounded next action:** governed review + exact-head CI 5/5, then on a Sponsor `GO — merge PR` the pinned
+squash-merge; a DARK re-deploy of the corrected projection (replacing the d800b78d projection; existing figures
+unchanged) is a separate Sponsor-gated step. STOP before merge. (The 6 snapshot-stale accounts' stale bridges are a
+SEPARATE infrastructure gap, not this packet.)
+
 ## ★ COPIER INDEPENDENT EMITTER ONE-SHOT ATTESTATION (2026-11-13; GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093; ADR-0104; repository-only PR)
 Signed host-executor op `TRIGGER_EMITTER_ONESHOT_ATTEST` off base `d800b78d`, so an authorized operator can run
 account #46's emitter identity attestation WITHOUT an interactive PowerShell desktop (the #46 web workspace is

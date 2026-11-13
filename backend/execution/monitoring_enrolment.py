@@ -37,12 +37,12 @@ codes — no new reason vocabulary is invented.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
 
 from execution import monitoring_models as mm
 from execution.readiness import (
-    PERSISTENT_WORKSPACE, RW_ACTIVE_ACCOUNT_MISMATCH, RW_NOT_CONFIRMED,
+    PERSISTENT_WORKSPACE, RW_ACTIVE_ACCOUNT_MISMATCH,
     RW_WORKSPACE_MISSING, RW_WORKSPACE_NOT_CONNECTED,
 )
 
@@ -145,7 +145,10 @@ class EnrolmentContext:
     endpoint: object = None            # latest non-RETIRED HostedExecutionEndpoint, or None
     workspace: object = None           # HostedMt5Workspace, or None
     route: object = None               # non-TOMBSTONED MonitoringRoute, or None (only loaded when gateway on)
-    snapshot_fresh: bool = False       # latest AccountEquitySnapshot observed within SNAPSHOT_FRESHNESS_S
+    snapshot_fresh: bool = False       # latest equity-bearing AccountEquitySnapshot within SNAPSHOT_FRESHNESS_S
+    snapshot_observed_at: object = None  # instant of that latest equity-bearing snapshot (None ⇒ never observed)
+    has_deals: bool = False            # ≥1 ingested trade exists (realized-P&L / deal evidence; present vs absent)
+    is_demo_env: bool = False          # DEMO per the canonical policy gate (fail-closed False ⇒ treat as LIVE)
     hosted: bool = False               # per-tenant (PERSISTENT_WORKSPACE) path vs legacy global-agent account
 
 
@@ -185,7 +188,28 @@ def evaluate_account_enrolment(account, *, ctx: EnrolmentContext,
     low-level reason from a just-completed live open-positions read (ADR-0100), which only REFINES an
     endpoint-READY account (identity-refused / unreachable); it never promotes an account and ``account_not_demo``
     never demotes one. Deterministic, most-specific-first, fail-safe (indeterminate ⇒ UNKNOWN, never a
-    fabricated READY)."""
+    fabricated READY).
+
+    The returned status carries, in ``detail['coverage']``, an INDEPENDENT per-dimension breakdown (connection /
+    endpoint / identity / equity / positions / deals / route) so a single stage never collapses several distinct
+    facts into one misleading reason — e.g. a LIVE account with fresh equity is READY/monitored for equity while
+    its live POSITIONS stay separately ``structurally_unavailable`` (never implied available, never a zero)."""
+    st = _project_stage(account, ctx, live_reason)
+    detail = dict(st.detail)
+    detail["coverage"] = _coverage_dimensions(account, ctx)
+    return replace(st, detail=detail)
+
+
+def _project_stage(account, ctx: EnrolmentContext, live_reason: Optional[str]) -> EnrolmentStatus:
+    """Derive ONE account's monitoring STAGE from durable records (the stage machine; the per-dimension coverage
+    is layered on by ``evaluate_account_enrolment``). Monitoring EVIDENCE only — endpoint lifecycle, workspace
+    connection/identity projection and equity-snapshot freshness.
+
+    It deliberately does NOT read ``workspace_confirmed_at`` (STAGE-ACCURACY-FIX-095): that field is the ADR-0034
+    execution-arming human ACK and still gates EXECUTION independently in ``execution.readiness.evaluate`` (→
+    ``RW_NOT_CONFIRMED``), ``hosted_workspace.provisioning`` and ``trading.managed_start``. It has never been a
+    monitoring-data precondition (the deals / equity / positions ingest never required it), so gating the dashboard
+    stage on it mislabels a genuinely-monitored account (fresh data flowing) as 'Login required'."""
     # Tombstoned accounts are normally filtered out of every dashboard scope; guard defensively so a stray one
     # can never read as monitored.
     if getattr(account, "disconnected_at", None) is not None:
@@ -231,10 +255,12 @@ def evaluate_account_enrolment(account, *, ctx: EnrolmentContext,
     if getattr(ws, "proj_account_match", None) is not True:
         return _status(account, IDENTITY_MISMATCH, reason_code=RW_ACTIVE_ACCOUNT_MISMATCH)
 
-    # Connected + matched but the customer has not yet confirmed the discovered account is theirs (ADR-0034
-    # human ACK). Surfaced as LOGIN_REQUIRED (an explicit user action is pending), never "reconnecting".
-    if getattr(account, "workspace_confirmed_at", None) is None:
-        return _status(account, LOGIN_REQUIRED, reason_code=RW_NOT_CONFIRMED)
+    # NOTE (STAGE-ACCURACY-FIX-095): the ADR-0034 customer-confirmation ACK (``workspace_confirmed_at``) is NOT
+    # consulted here. It is an EXECUTION-arming precondition — still enforced, independently, in
+    # ``execution.readiness.evaluate`` (→ RW_NOT_CONFIRMED), ``hosted_workspace.provisioning`` and
+    # ``trading.managed_start`` — and has never gated the monitoring data pipeline (deals / equity / positions
+    # ingest). A connected + matched account with a READY endpoint and fresh equity IS producing dashboard data
+    # even while unconfirmed, so its stage follows the endpoint/snapshot evidence below, never a false LOGIN_REQUIRED.
 
     # Endpoint lifecycle — the record that actually gates all three ingest paths (deals / equity / positions).
     if ep is None:
@@ -262,6 +288,79 @@ def evaluate_account_enrolment(account, *, ctx: EnrolmentContext,
         return _status(account, READY, reason_code=mm.RC_OK, detail=detail)
     # Endpoint READY but no fresh snapshot yet (just became ready, or the collector has not run) — transient.
     return _status(account, SNAPSHOT_STALE, reason_code=mm.RC_STALE_HEALTH, detail=detail)
+
+
+def _ready_state():
+    try:
+        from execution.models import HostedExecutionEndpoint
+        return HostedExecutionEndpoint.State.READY
+    except Exception:  # noqa: BLE001
+        return "READY"
+
+
+def _coverage_dimensions(account, ctx: EnrolmentContext) -> dict:
+    """INDEPENDENT per-dimension monitoring coverage for ONE account (pure; derived from the same durable ``ctx``).
+
+    Each dimension is reported on its OWN axis so the stage never collapses several distinct facts into one
+    misleading reason. In particular ``positions`` is ALWAYS reported separately from ``equity``: a LIVE terminal's
+    open positions are demo-gated (ADR-0072) and read ``structurally_unavailable`` even when equity is fresh —
+    fresh equity NEVER implies positions are available, and an unavailable position is never a fabricated zero.
+    All values are stable, secret-free enum strings (never a login/account number)."""
+    ws = ctx.workspace
+    ep = ctx.endpoint
+
+    if not ctx.hosted:
+        # Legacy / global-agent account: connection + transport are implicit; honesty lives in the equity axis.
+        connection, endpoint, identity = "connected", "ready", "matched"
+    else:
+        if ws is None:
+            connection = "provisioning"
+        elif getattr(ws, "proj_connected", None) is True:
+            connection = "connected"
+        elif str(getattr(ws, "canonical_state", "") or "") == "WAITING_FOR_LOGIN" or ep is not None:
+            connection = "login_required"
+        else:
+            connection = "not_connected"
+        if ep is None:
+            endpoint = "missing"
+        elif getattr(ep, "state", None) == _ready_state():
+            endpoint = "ready"
+        else:
+            endpoint = "provisioning"
+        match = getattr(ws, "proj_account_match", None) if ws is not None else None
+        identity = "matched" if match is True else "mismatch" if match is False else "unverified"
+
+    if ctx.snapshot_fresh:
+        equity = "fresh"
+    elif ctx.snapshot_observed_at is not None:
+        equity = "stale"
+    else:
+        equity = "never"
+
+    # Live positions are demo-gated for a LIVE account (ADR-0072) regardless of equity freshness — reported on
+    # its own axis so "fresh equity" is never read as "positions available". The DEMO/LIVE decision uses the
+    # canonical ``trading.account_policy`` gate, resolved in bulk in ``_build_contexts`` (never a raw ``is_demo``
+    # read here — ``trading.tests_account_policy_guard``); a demo/live mismatch fail-closes to not-DEMO, so such
+    # an account reads ``structurally_unavailable`` (conservative), never a false "available".
+    if not ctx.is_demo_env:
+        positions = "structurally_unavailable"
+    elif equity == "fresh":
+        positions = "available"
+    else:
+        positions = "unavailable"
+
+    deals = "present" if ctx.has_deals else "absent"
+
+    if ctx.route is None:
+        route = "absent"
+    else:
+        ready = mm.MonitoringRoute.Readiness.MONITORING_READY
+        route = "ready" if getattr(ctx.route, "readiness", None) == ready else "staged"
+
+    return {
+        "connection": connection, "endpoint": endpoint, "identity": identity,
+        "equity": equity, "positions": positions, "deals": deals, "route": route,
+    }
 
 
 def _from_route(account, route) -> EnrolmentStatus:
@@ -379,10 +478,47 @@ def _build_contexts(accts, ids) -> Dict[int, EnrolmentContext]:
         for aid, observed_at in rows:
             c = ctx_by_id.get(aid)
             if c is not None and observed_at is not None:
+                c.snapshot_observed_at = observed_at
                 age = (now - observed_at).total_seconds()
                 c.snapshot_fresh = (0 <= age <= SNAPSHOT_FRESHNESS_S)
     except Exception:  # noqa: BLE001
         logger.warning("enrolment: snapshot prefetch failed", exc_info=True)
+
+    # Realized-P&L / deal coverage — ONE bounded existence query (which accounts carry ≥1 ingested trade). A
+    # distinct, additive annotation only: the dashboard's daily-realized figure keeps its OWN authoritative path
+    # (unchanged), so this never recomputes or overrides it — it just reports present/absent per account.
+    try:
+        from trading.models import Trade
+        with_deals = set(Trade.objects.filter(account_id__in=ids)
+                         .values_list("account_id", flat=True).distinct())
+        for aid in with_deals:
+            c = ctx_by_id.get(aid)
+            if c is not None:
+                c.has_deals = True
+    except Exception:  # noqa: BLE001
+        logger.warning("enrolment: deals prefetch failed", exc_info=True)
+
+    # Environment (DEMO/LIVE) per account via the canonical policy gate (``is_demo_environment`` — never a raw
+    # ``is_demo`` read; ``trading.tests_account_policy_guard``). Bulk-prefetch the bound ``BrokerServer`` rows and
+    # prime each account's FK cache first, so the policy call issues NO per-account query (keeps the projection
+    # N+1-free). Fail-closed: on any error an account stays ``is_demo_env=False`` (treated as LIVE ⇒ positions
+    # structurally unavailable), never falsely "demo".
+    try:
+        from trading.account_policy import is_demo_environment
+        from trading.models import BrokerServer
+        srv_ids = {getattr(a, "broker_server_id", None) for a in accts}
+        srv_ids.discard(None)
+        servers = ({s.id: s for s in BrokerServer.objects.filter(id__in=srv_ids)} if srv_ids else {})
+        for a in accts:
+            sid = getattr(a, "broker_server_id", None)
+            if sid is not None and sid in servers:
+                a.broker_server = servers[sid]          # prime FK cache ⇒ the policy call issues no query
+            try:
+                ctx_by_id[a.id].is_demo_env = bool(is_demo_environment(a))
+            except Exception:  # noqa: BLE001 — per-account fail-closed (stays not-demo)
+                logger.warning("enrolment: environment resolve failed for account %s", a.id, exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("enrolment: environment prefetch failed", exc_info=True)
 
     return ctx_by_id
 
