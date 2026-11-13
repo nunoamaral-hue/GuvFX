@@ -410,6 +410,30 @@ def hosted_liveness_recovery_enabled() -> bool:
     return _flag("HOSTED_LIVENESS_RECOVERY_ENABLED")
 
 
+def hosted_established_recovery_enabled() -> bool:
+    """ESTABLISHED-ACCOUNT-AUTO-RECOVERY (Sponsor packet-109, 2026-11-13) — the gate that WIDENS the
+    terminal-relaunch liveness pass to an ESTABLISHED, identity-pinned, MONITORING-ONLY account (one with prior
+    verified ``account_read`` evidence) whose terminal has EXITED but which is NOT armed for execution. DEFAULT
+    OFF. It closes the packet-108 gap: such an account was classified "onboarding" and never relaunched, so a
+    previously-monitored account (e.g. #50) that lost its terminal could not self-heal.
+
+    Two-level darkness: a dormant no-op unless BOTH this AND the master ``HOSTED_PERSISTENT_MT5_ENABLED`` are on,
+    AND the ``HOSTED_LIVENESS_RECOVERY_ENABLED`` master relaunch pass is on (the established path is an additive,
+    disjoint candidate class INSIDE that pass). With this flag OFF the liveness pass is byte-identical to before
+    (ARMED candidates only) — an established monitoring account is simply not a candidate.
+
+    It is MONITORING-RESTORE ONLY and inherits every safety invariant of the armed path: eligibility is
+    fail-closed on durable, account-scoped, identity-matched evidence (``recovery_eligibility``); the terminal
+    must be observed DOWN by a READ-ONLY probe (never inferred); exactly ONE account-scoped RELAUNCH_TERMINAL is
+    issued, bounded + single-flight (per-workspace attempt cap + cooldown); and it NEVER logs in, supplies a
+    credential, changes the broker account, ARMS execution, enables Copy Trading, places an order, or writes a
+    snapshot — re-establishing monitoring is re-proven solely by the normal identity-firewalled collector on the
+    next cycle. LIVE monitoring accounts remain gated behind the SEPARATE ``HOSTED_LIVE_RECOVERY_ENABLED``
+    infrastructure-recovery flag (this flag never widens the LIVE host-action surface on its own). Customer Zero
+    (1) and account 18 are reserved and never touched. Arming it is a Sponsor decision."""
+    return _flag("HOSTED_ESTABLISHED_RECOVERY_ENABLED")
+
+
 def hosted_session_reconciler_enabled() -> bool:
     """P4 cold-boot SESSION reconciler (Sponsor 2026-09-29/30) — the gate for the governed step that detects a
     per-tenant Windows/MT5 runtime that did NOT auto-recover after a host cold boot and drives it back to the

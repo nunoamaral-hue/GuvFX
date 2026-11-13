@@ -219,6 +219,15 @@ class Command(BaseCommand):
                 live_txt = (f" | liveness: candidates={lv.get('candidates', 0)} down={lv.get('down', 0)} "
                             f"relaunched={lv.get('relaunched', 0)} recovered={lv.get('recovered', 0)} "
                             f"errors={lv.get('errors', 0)}")
+                est = lv.get("established") or {}
+                if est.get("enabled"):
+                    # ESTABLISHED-ACCOUNT-AUTO-RECOVERY (packet-109): prove a monitoring-only established account
+                    # that lost its terminal is relaunched, and a genuinely-new one is not (ineligible count).
+                    live_txt += (f" | established: eligible={est.get('eligible', 0)} "
+                                 f"ineligible={est.get('ineligible', 0)} down={est.get('down', 0)} "
+                                 f"relaunched={est.get('relaunched', 0)} recovered={est.get('recovered', 0)} "
+                                 f"login_required={est.get('terminal_up_login_required', 0)} "
+                                 f"errors={est.get('errors', 0)}")
         self.stdout.write(
             f"[run_hosted_observations] {now.isoformat()} "
             f"prov: enabled={p['enabled']} candidates={p['candidates']} allocated={p['allocated']} "
