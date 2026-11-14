@@ -62,7 +62,8 @@ fails closed on a since-rebound identity (→ `identity_pin_drift`, human login 
 
 ### The eligibility contract (all mandatory; first failing gate names the reason)
 
-An existing, enabled, owner-bound, non-tombstoned account; not reserved / Customer Zero; a derivable
+An existing, enabled, owner-bound, non-tombstoned account (**`enabled`/`is_active` requirement SUPERSEDED — see
+Addendum ELIGIBILITY-FIX-112**); not reserved / Customer Zero; a derivable
 account-specific slot (`derive_slot(account.id)` — the exact existing relaunch target); the workspace is this
 account's (`ws.trading_account_id == account.id`); a live (non-RETIRED) per-tenant `HostedExecutionEndpoint`
 owned by this account whose denormalised ownership agrees with the workspace (no collision); a non-empty expected
@@ -127,12 +128,49 @@ No READY/monitored state is set by recovery.
 - When armed (separate Sponsor decision + deploy), a previously-monitored account whose terminal dies self-heals:
   bounded relaunch → next-cycle collector re-proves identity → dashboard freshness returns — the #50 class no
   longer needs a human relaunch. Genuinely-new, awaiting-login, rebound-identity, cross-owner, reserved/CZ,
-  disabled, tombstoned, no-endpoint/pin, LIVE-without-the-LIVE-gate and indeterminate-environment accounts remain
-  excluded, fail-closed, each with a stable reason code and per-reason telemetry.
+  tombstoned, non-hosted/not-monitored, **Copy Trading master/follower**, no-endpoint/pin,
+  LIVE-without-the-LIVE-gate and indeterminate-environment accounts remain excluded, fail-closed, each with a
+  stable reason code and per-reason telemetry. (**`disabled`/`is_active=False` is NO LONGER an exclusion — see
+  Addendum ELIGIBILITY-FIX-112**; `is_active` is an execution control, not a monitoring-recovery one.)
 - **No migration.** Reuses existing `liveness_recovery_at/count` columns. No new model, no new index.
 - Operator visibility: a deduped `reliability.AlertEvent` (component `MT5_TERMINAL`) opens on a stale/down
   established monitoring account and resolves on recovery; the scheduler log gains an `established: …` section.
   No broker secret in any alert (internal account id only).
+
+## Addendum — ELIGIBILITY-FIX-112 (2026-11-14): `is_active` separated from monitoring-recovery eligibility
+
+The original contract above listed "an existing, **enabled**, owner-bound… account" and excluded a **disabled**
+(`is_active=False`) account with `account_disabled`. Preflight GFX-DASHBOARD-ESTABLISHED-RECOVERY-POSITIVE-PREFLIGHT-111
+proved this was a **production-efficacy defect**: every production LIVE monitoring account — including the #50
+motivating case — is deliberately `is_active=False` (a LIVE monitoring-only account is intentionally
+execution-disabled; LIVE execution is separately walled at readiness condition 11), so the feature as first shipped
+could recover **none** of the live monitoring cohort. `is_active` is an **execution/trading-authority** control
+(`execution.readiness` returns `R_ACCOUNT_INACTIVE` for it; the order path and `trading.managed_start` gate on it),
+**not** a monitoring-recovery control. This addendum corrects the contract:
+
+- **`is_active` is NOT an eligibility gate for established monitoring recovery.** A relaunch on this path only
+  restarts the account's own `terminal64` — it never arms, logs in, enables Copy Trading, or places an order — so
+  an established monitoring-only account left `is_active=False` is still eligible to have its **monitoring** terminal
+  restored. `is_active` continues to gate **execution** everywhere it did before; this change sets it on no path,
+  bypasses it on no order path, and grants **no** trading authority.
+- **Monitoring recovery is governed by the authoritative monitoring model + established identity, not `is_active`.**
+  The eligibility predicate now requires the account to be a **hosted, per-tenant monitoring subject**
+  (`readiness_provider == PERSISTENT_WORKSPACE` **or** a `HostedMt5Workspace` row exists — the SAME disjunction
+  `execution.monitoring_enrolment._build_contexts` uses, so a lagging `readiness_provider` never false-negatives a
+  genuinely-monitored account; reason `not_monitored` otherwise) in addition to the existing identity-pin +
+  prior-verified-`account_read` establishment evidence. A legacy / global-agent account (no hosted slot to
+  relaunch) is excluded.
+- **Copy Trading master/follower are excluded, regardless of flags.** The predicate now reads the `CopierMaster` /
+  `CopierFollower` registries **only to exclude** a participant (reason `copier_participant`), failing closed
+  (`copier_check_unavailable`) if membership is indeterminate. The #46 master / #48 follower pair are never
+  auto-recovered on this path even with both recovery flags on.
+- **LIVE recovery remains separately gated and default-OFF.** A LIVE account is still eligible only when
+  `HOSTED_LIVE_RECOVERY_ENABLED` is on (reason `live_recovery_disabled` otherwise); this correction never widens
+  the LIVE host-action surface on its own. Both recovery flags remain default-OFF (no production behaviour change
+  from merging this correction). No migration (the predicate and candidate query change only).
+
+The operator/acceptance contract and the bounded positive-acceptance procedure live in
+`docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md`.
 
 ## Evidence
 
