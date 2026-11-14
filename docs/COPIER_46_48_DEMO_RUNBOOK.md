@@ -12,6 +12,56 @@ live path is DARK and default-OFF. Every step is labelled:
 position**. Authorization window **≤ 15 min**. Authorities: **MODIFY + FULL_CLOSE only** (no partial, no new
 entry after expiry). No credentials appear here.
 
+## Quick-start — one page (GFX-115; what actually has to happen tomorrow)
+
+The next live acceptance needs **Nuno at the keyboard for exactly three things**; Claude/the operator drive
+everything else (non-secret). Nuno never pastes a key into chat and never asks Claude to place a trade.
+
+**What Nuno clicks/types (the ONLY human steps):**
+
+1. **[HUMAN]** RDP into the account-46 Windows desktop (`WIN-RD8VDS93DK7`).
+2. **[HUMAN]** In an elevated, non-transcribed PowerShell, run the reviewed hidden-input key provisioner and type
+   the ingest key **once** at the hidden prompt (confirm phrase `provision-key-account-46`):
+   ```
+   cd C:\GuvFX\copier-emitter\operator
+   .\Provision-GuvfxCopierOneShotKey.ps1
+   ```
+   Reply only `DONE` (or a redacted one-line `reason`). See `COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md` Role B2.
+   *(Provisioner staged + hash-verified `84e931fa…` under GFX-COPIER-ONESHOT-KEY-PROVISIONING-114; the ingest
+   key is `COPIER_INGEST_HMAC_KEY`, held by Nuno.)*
+3. **[HUMAN]** During the armed window, perform the explicit **master** MT5 actions in MetaTrader on #46, one at
+   a time: **OPEN** 0.01 XAUUSD (with SL+TP) → **MODIFY** (tighten SL) → **FULL CLOSE**. Nothing on #48.
+
+**What Claude / the operator drive (non-secret, no trade, no key):**
+preflight (`copier_live_demo_preflight`) · authorization read-back · ARM/DISARM orchestration (ADR-0097, staff
+command) · verifier-window sequencing + signed attestation read-back (non-secret) · admission verification ·
+per-action latency observation (target **≤1 s**, hard ceiling **≤2 s** acceptance→job — see the synthetic proof
+below) · follower read-back / ADR-0096 ticket binding · deadline + abort enforcement · teardown and final
+zero-state verification.
+
+**Latency expectation (proven synthetically, no broker):** OPEN/MODIFY/CLOSE each clear well under the **2 s hard
+ceiling** from authenticated event acceptance to governed job creation. Evidence: `trade_copier.tests_synthetic_e2e_latency`
+(p50/p95/max printed; broker fill is **not** part of this measurement and must never be reported as such).
+
+**Expected success markers (in order):** preflight `verdict=READY_TO_ARM` → authorization `status=ACTIVE` (sole
+for the pair) → one `CopierLiveArm` engaged → OPEN → one LIVE `PLACE_ORDER`, `orders_consumed=1`,
+`CopierRealtimeDispatch OPEN_SUBMITTED` (`is_late=false`) → ADR-0096 bind `reconciliation_status=MATCHED` →
+MODIFY → one `MODIFY_POSITION` → FULL CLOSE → one `CLOSE_TRADE` → DISARM → zero-state (no arm, no in-flight job,
+key file absent).
+
+**Maximum waiting periods:** authorization window **≤ 15 min** total; per-action observe **≤ 90 s**; hidden-key
+step **≤ 10 min** before the Abort path; latency per action **≤ 2 s** acceptance→job (a slower observation means
+the slow reconciler ran — investigate, do not retry).
+
+**Immediate STOP / containment triggers:** wrong account/symbol/side/volume; a second follower order or any extra
+job; a PARTIAL_CLOSE on this LIVE route (must never happen); `UNKNOWN_OUTCOME` / `PRE_STATE_MISMATCH` /
+`DEADLINE_EXCEEDED`; identity/authorization/expiry drift; any `#48`-initiated action; bridge/observer/watchdog
+degradation. **Containment:** `copier_live_arm --disengage …` (or emergency `copier_live_disarm` = kill switch +
+disarm-all), `.\Provision-GuvfxCopierOneShotKey.ps1 -Remove`, close the verifier window, restore host admission
+OFF (`restore_copier_bridge_execution_off`), verify zero-state. **No automatic retry or late recovery, ever.**
+
+The authoritative, fully-labelled ordered sequence follows below; the quick-start is a timed index into it.
+
 > **ADR-0094 update (real-time + arming corrections).** The 2026-11-12 demo exposed two facts corrected here:
 > (1) the ~2-min observer is **reconciliation only**, not the copy trigger — the primary path is now the signed
 > ingestion endpoint driving `dispatch_master_realtime` synchronously when `COPIER_IMMEDIATE_DISPATCH_ENABLED`
