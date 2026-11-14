@@ -67,6 +67,39 @@ run handle **no** key value.
 4. The wrapper submits exactly one request and self-cleans; it does not retry. If it reports a failure, do NOT re-run
    without a fresh Sponsor authorization (a consumed nonce cannot be reused).
 
+## Role B2 — Headless variant (account 46, MT5-only workspace; ADR-0104 + packet-112)
+
+Account 46's workspace is MT5-only, so there is no interactive PowerShell desktop in which to run the Role-B wrapper.
+The headless path instead uses the pre-installed DISABLED task `GuvFX_CopierEmitterOneShot_46` (run_oneshot_attest.py),
+which reads the ingest secret from a **host-local ephemeral key file** and shreds it after one use. The operator
+provisions that file securely, triggers the task once, then removes any residue. The human enters the **same** key
+here as into the backend verifier window; the agent never receives it.
+
+1. Only after Role A confirms the verifier window is OPEN (ATTEST, `max_uses 1`) and the gate is armed, the human
+   operator, locally over RDP as an administrator in a normal (non-transcribed) console, provisions the host-local key:
+
+   ```
+   .\Provision-GuvfxCopierOneShotKey.ps1
+   ```
+
+   Enter the confirmation phrase, then the **same** ingest key at the hidden `Read-Host -AsSecureString` prompt. The
+   wrapper validates the installed task contract (account-46-pinned, DISABLED, triggerless, correct action/principal),
+   refuses a reparse-point path, writes `C:\GuvFX\copier-emitter\oneshot\ingest.key` atomically with inheritance broken
+   and access restricted to `guvfx_u_46` + SYSTEM + Administrators, and prints only a redacted JSON result. Report that
+   one line to Role A (never the key). Optionally run `.\Provision-GuvfxCopierOneShotKey.ps1 -Verify` to confirm
+   `ok:true` without reading the key.
+2. Role A triggers the task exactly once through the signed op (`request_copier_emitter_oneshot_attest --apply`, which
+   enables -> triggers -> host re-disables the task). `run_oneshot_attest.py` reads the key into a process-local env,
+   builds the identity attestation, POSTs it once to the ATTEST verifier, writes a sanitised result, and **shreds the
+   key file** (one-use).
+3. Guaranteed cleanup on every path: the human runs `.\Provision-GuvfxCopierOneShotKey.ps1 -Remove` (idempotent
+   shred+delete of the fixed path; refuses a reparse target) even though the consumer already shreds on success, and
+   Role A closes the verifier window and restores the gate OFF (see Abort path). Confirm the key file is absent and the
+   task is DISABLED and triggerless.
+
+The provisioner never enables, triggers or runs any task, never opens the verifier window, and never contacts the
+backend or broker; it only places (or removes) the one ephemeral key file.
+
 ## Abort path
 
 If the human does not complete the invocation within the agreed short window (e.g., 10 minutes), or anything looks
