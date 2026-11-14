@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-ESTABLISHED-MONITORING-ELIGIBILITY-112",
+  "packet_id": "GFX-DASHBOARD-ESTABLISHED-MONITORING-ELIGIBILITY-FIX-112",
+  "created_at_utc": "2026-11-14T22:30:00Z",
+  "branch": "feat/established-monitoring-eligibility",
+  "base_commit": "64cb38227f1c8760019eda91ca526a79efc34b5d",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK. Corrects the ADR-0107 production-efficacy defect proven by preflight GFX-DASHBOARD-ESTABLISHED-RECOVERY-POSITIVE-PREFLIGHT-111: the established monitoring-recovery eligibility predicate (recovery_eligibility.established_account_recovery_eligible) and the liveness candidate query used trading_account.is_active=True as a gate, but is_active is an EXECUTION/trading-authority control and every production LIVE monitoring account (incl. #50, the motivating case) is intentionally is_active=False, so the feature as first shipped could recover NONE of the live monitoring cohort. This change removes is_active as a monitoring-recovery gate (it is left untouched as an execution gate everywhere), replaces it with an explicit hosted-monitoring-subject gate (readiness_provider == PERSISTENT_WORKSPACE, the authoritative monitoring model's own marker) and adds a fail-closed Copy Trading master/follower exclusion. Both recovery flags remain default-OFF; LIVE recovery stays separately gated behind HOSTED_LIVE_RECOVERY_ENABLED. No is_active is set, no order path is bypassed, no Copy Trading authorization check is changed, no credential/snapshot/host action. NO production or host mutation, NO deploy, NO migration.",
+    "adr": "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — Addendum ELIGIBILITY-FIX-112)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance (secret/PII scan + evidence lint) + frontend (untouched). Pure-Python change; no PowerShell artefact, so no Windows ParseFile/Pester gate applies."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_established_recovery  (53/53 OK)",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_liveness_recovery hosted_workspace.tests_capability_recovery hosted_workspace.tests_bounded_observation hosted_workspace.tests_hosted_observation_command hosted_workspace.tests_d4d_live_recovery hosted_workspace.tests_established_recovery execution.tests_monitoring_enrolment trading.tests_account_policy_guard  (178/178 OK)",
+    "cd backend && .venv/bin/python manage.py check  (System check identified no issues (0 silenced))",
+    "cd backend && .venv/bin/python manage.py makemigrations hosted_workspace execution trade_copier analytics --check --dry-run  (No changes detected — migration-free; exit 0)",
+    "git diff grep over the three code files for password|secret|token|api_key|credential  (no findings beyond prose 'reads no credential')"
+  ],
+  "expected_results": [
+    "is_active is NOT consulted by established monitoring-recovery eligibility; an established, identity-pinned, hosted monitoring-only account that is is_active=False is ELIGIBLE and is relaunched (the #50 class).",
+    "Enabling the recovery flags makes an is_active=False DEMO account recoverable with the established flag only; a LIVE account additionally requires HOSTED_LIVE_RECOVERY_ENABLED (live_recovery_disabled otherwise).",
+    "is_active=False still blocks every execution/trading path (execution.readiness returns R_ACCOUNT_INACTIVE); recovery never sets or bypasses is_active and never changes a Copy Trading authorization.",
+    "Copy Trading master (#46) and follower (#48) are EXCLUDED (copier_participant) regardless of flags; indeterminate copier membership fails closed (copier_check_unavailable).",
+    "A non-hosted / not-monitored (legacy) account is excluded (not_monitored); onboarding / awaiting-first-login / missing-identity / identity-drift / missing-snapshot / wrong-owner / shared-endpoint remain excluded as before.",
+    "Cooldown, max-attempts, single-flight and the locked claim-time recheck are preserved and use the corrected predicate; exactly one account is acted on per candidate with no sibling substitution; UNKNOWN observe stays fail-closed.",
+    "With both recovery flags OFF the liveness pass is byte-identical to pre-112 (established sub-summary {\"enabled\": false}); mutation-killing: restoring the old is_active=True restriction fails the new tests.",
+    "manage.py check clean; makemigrations --check introduces no migration for the touched apps; no secret in the diff."
+  ],
+  "actual_results": [
+    "backend/hosted_workspace/recovery_eligibility.py: gate-1 is_active short-circuit REMOVED (RC_DISABLED retired from the predicate, retained only for vocabulary stability). NEW gate 3b (monitoring enrolment): the account must be a hosted per-tenant monitoring subject per the AUTHORITATIVE model — readiness_provider == PERSISTENT_WORKSPACE OR a HostedMt5Workspace row exists (reason not_monitored otherwise). This disjunction is byte-identical to execution.monitoring_enrolment._build_contexts' own hosted rule, so a lagging readiness_provider never false-negatives a monitored account (see the adversarial-review fix below). NEW gate 4c (Copy Trading exclusion): import-local read of trade_copier.CopierMaster(trading_account)/CopierFollower(follower_account) ONLY to exclude (copier_participant); any read error fails closed (copier_check_unavailable). Docstrings updated to state is_active is an execution control not consulted here, and that copier registries are read only to exclude, never to grant.",
+    "backend/hosted_workspace/liveness_recovery.py: the established candidate query dropped .filter(trading_account__is_active=True) (now disconnected_at__isnull=True only, still excluding armed + reserved); the demo-only pre-filter when LIVE recovery is OFF is unchanged. The locked _claim_established_attempt re-checks the SAME corrected predicate under select_for_update (inherits the new gates). The armed liveness pass, bounds, cooldown, observe gate and alert logic are unchanged.",
+    "backend/hosted_workspace/tests_established_recovery.py: two defect-encoding tests repurposed to the corrected behaviour (test_disabled_account_is_eligible_for_monitoring_recovery; test_disabled_account_is_recovered_as_monitoring_subject) and the #50 fixture corrected to the REAL production shape (is_active=False). NEW Packet112EligibilitySeparationTests (13 cases): copier master/follower exclusion + all-flags-on non-relaunch + copier_check_unavailable fail-closed; non-hosted not_monitored; is_active=False DEMO recovers with established flag only; inert with flag off; LIVE needs both flags / recovers with both; is_active=False still blocks execution readiness (R_ACCOUNT_INACTIVE); recovery never modifies is_active; locked claim recheck excludes a now-copier account; two eligible accounts each relaunched once with no cross-substitution.",
+    "Local verification (PostgreSQL): tests_established_recovery 53/53; recovery+observation+enrolment+account-policy cluster 178/178; manage.py check clean; makemigrations --check reports 'No changes detected' for hosted_workspace/execution/trade_copier/analytics (migration-free); secret grep over the diff: no findings.",
+    "docs/architecture/ADR-0107 amended with an explicit ELIGIBILITY-FIX-112 Addendum (is_active is execution authority, not monitoring recovery; monitoring recovery grants no trading authority; hosted-monitoring-subject + established identity govern; Copy Trading excluded; LIVE separately gated default-OFF) and the two superseded inline statements annotated. docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md added (corrected contract table + bounded Sponsor-gated positive-acceptance procedure with human flat-confirmation, deliberate single-terminal stop, immediate return-to-OFF, and the standing prohibition on fabricated snapshots / broker actions). This evidence manifest added.",
+    "Independent adversarial review (6 reviewers, one per vector: accidental trading-authority broadening; is_active=False leaking into execution; Copy Trading inclusion; cross-tenant recovery; sibling restart; onboarding recovery; identity substitution; stale-snapshot acceptance; duplicate relaunch; UNKNOWN late recovery; flag-default regression; migration/config/secret scope creep). NO CRITICAL, NO HIGH. ONE MEDIUM, raised independently by two reviewers: the first-draft monitoring gate used readiness_provider == PERSISTENT_WORKSPACE ONLY, which is STRICTLY NARROWER than the authoritative _build_contexts rule (provider==PW OR a workspace row exists) and would FALSE-NEGATIVE (not_monitored) an established monitoring account whose mutable readiness_provider lags while its terminal is down — latently re-opening the exact efficacy defect this packet fixes (fail-closed, DARK, so safe-but-ineffective). FIX APPLIED: the gate was moved before the ws-match gate (now 3b) and widened to the authoritative disjunction (provider==PW OR HostedMt5Workspace exists), matching _build_contexts exactly; the legacy-account test was corrected to a genuinely non-hosted account and a new mutation-killing regression test (test_provider_lag_with_workspace_present_is_still_eligible: workspace + READY endpoint + prior read present, provider lagging -> RC_ELIGIBLE) was added. A second independent verification pass (2 reviewers) CONFIRMED medium_resolved=true with zero new real findings: the disjunction matches the authority exactly, a genuine legacy account is still correctly excluded, and the reorder introduced no wrongful inclusion / ordering / import-cycle / N+1 defect. No other HIGH/CRITICAL finding surfaced."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS) because the feature stays DARK: both recovery flags remain default-OFF, the correction is NOT merged and NOT deployed, and the POSITIVE production acceptance (a deliberate terminal stop on a real established monitoring-only account) is a SEPARATE Sponsor-gated step — NOT run here. No production or host mutation occurred.",
+    "The authoritative exact-head CI (5/5) is the merge gate and is driven to a terminal result in Phase 7; the figures above are local (macOS + PostgreSQL) runs of the same backend/check/migration commands CI runs.",
+    "No credential, snapshot, host call, Tailscale/DNS change, Copy Trading change, or broker action was performed; is_active was neither set nor bypassed on any execution path.",
+    "The monitoring-subject gate uses readiness_provider == PERSISTENT_WORKSPACE (fail-closed): an account whose durable provider marker lags a present workspace is conservatively not recovered until it resolves — never over-recovered."
+  ],
+  "artefact_locations": [
+    "backend/hosted_workspace/recovery_eligibility.py (the corrected classifier)",
+    "backend/hosted_workspace/liveness_recovery.py (established candidate query)",
+    "backend/hosted_workspace/tests_established_recovery.py (regression + separation tests)",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — Addendum ELIGIBILITY-FIX-112)",
+    "docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md (operator/acceptance contract + procedure)",
+    "evidence/manifests/GFX-EVD-ESTABLISHED-MONITORING-ELIGIBILITY-112.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/hosted_workspace/recovery_eligibility.py": "sha256:2ded5f30136979486f02231b9ad5c40b20ae3b2de608db7cca8e403ed3d03d6a",
+    "backend/hosted_workspace/liveness_recovery.py": "sha256:f8cde2628e0821cb3281ef57167140d2b4a3788f46963e7b6ca98707ccbd038f",
+    "backend/hosted_workspace/tests_established_recovery.py": "sha256:765f2cef40033b4bbe38e5ec6c84da5e7de36641bf0480e91d6412771baa65f5",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md": "sha256:40161d27a451c64f1044c33ae775158a07d404b3cdee79f2067fdfa209ca955c",
+    "docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md": "sha256:ad4e970109e5f33c2af59552c5f4536daaaf3a117a72dc95c7bba790ff3b8f2e"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Independent adversarial review across the listed vectors; findings + fixes recorded in the PR. Sponsor review pending (auto-merge OFF, STOP before merge). Pure-Python change — no PowerShell gate applies."
+}

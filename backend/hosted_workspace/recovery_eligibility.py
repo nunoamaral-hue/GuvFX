@@ -30,9 +30,14 @@ produced an identity-verified broker read has already proven the exact (login, s
 be relaunched into. A genuinely-new / awaiting-first-login account has no such evidence and so is always
 INELIGIBLE (``no_prior_verified_read``), fail-closed.
 
-WHAT THIS HELPER NEVER DOES: it reads NO credential; it considers NO execution / Copy-Trading authority
-(``execution_enabled`` / authorizations / copier models are never read and never inferred); it performs NO host
-call; and establishing eligibility NEVER itself relaunches, logs in, arms, advances state, or writes a snapshot.
+WHAT THIS HELPER NEVER DOES: it reads NO credential; it considers NO execution authority (``execution_enabled`` /
+authorizations are never read and never inferred) and NEVER grants trading authority; it performs NO host call; and
+establishing eligibility NEVER itself relaunches, logs in, arms, advances state, or writes a snapshot. It reads the
+Copy-Trading registries (``CopierMaster`` / ``CopierFollower``) for ONE purpose only — to EXCLUDE a master/follower
+fail-closed (ELIGIBILITY-FIX-112), never to grant anything. ``is_active`` is DELIBERATELY NOT consulted: it is an
+EXECUTION/TRADING-AUTHORITY control (it gates the order path in ``execution.readiness`` / ``trading.managed_start``),
+not a monitoring-recovery control, so an established monitoring-only account intentionally left ``is_active=False``
+(as every production LIVE monitoring account is) is still eligible to have its MONITORING terminal restored.
 The dynamic "is the terminal actually down" determination is NOT part of this helper — it stays in the liveness
 pass's READ-ONLY observe (``process_running is False``, never inferred), so eligibility answers only "is this the
 KIND of account that may be relaunched", and the observe answers "does it need relaunching right now".
@@ -53,9 +58,15 @@ from hosted_workspace.capability_recovery import _RESERVED_ACCOUNT_IDS
 RC_ELIGIBLE = "eligible"
 RC_NO_ACCOUNT = "no_account"
 RC_DISCONNECTED = "account_disconnected"          # tombstoned (disconnected_at set) — decommissioning
-RC_DISABLED = "account_disabled"                  # is_active False
+RC_DISABLED = "account_disabled"                  # RETIRED from this predicate (ELIGIBILITY-FIX-112): is_active is
+                                                  # an EXECUTION-authority control, never a monitoring-recovery gate.
+                                                  # Retained only for reason-vocabulary stability.
 RC_NO_OWNER = "no_owner"                           # not owner-bound
+RC_NOT_MONITORED = "not_monitored"                 # not a hosted per-tenant MONITORING subject per the authoritative
+                                                   # model (no PERSISTENT_WORKSPACE provider AND no HostedMt5Workspace)
 RC_RESERVED = "reserved_identity"                  # Customer Zero / account 18 / reserved set
+RC_COPIER_PARTICIPANT = "copier_participant"       # Copy Trading master or follower — never auto-recovered here
+RC_COPIER_CHECK_UNAVAILABLE = "copier_check_unavailable"  # copier membership indeterminate ⇒ fail closed (deny)
 RC_SLOT_UNDERIVABLE = "slot_underivable"           # derive_slot refused (e.g. non-positive id)
 RC_WS_ACCOUNT_MISMATCH = "workspace_account_mismatch"   # ws.trading_account_id != account.id (caller inconsistency)
 RC_NO_ENDPOINT = "no_endpoint"                     # no live (non-RETIRED) per-tenant endpoint for this account
@@ -80,14 +91,19 @@ _DENY = lambda code: EligibilityResult(False, code)  # noqa: E731 — tiny local
 def established_account_recovery_eligible(ws, account) -> EligibilityResult:
     """Fail-closed: may this ESTABLISHED account's DOWN terminal be safely relaunched by the automatic MONITORING
     recovery? Returns ``EligibilityResult``. Evaluates ONLY durable, account-scoped, server-authoritative facts,
-    cheapest/structural first so the FIRST failing gate names the reason. Reads no credential; infers no
-    execution/Copy-Trading authority; performs no host call; never mutates anything.
+    cheapest/structural first so the FIRST failing gate names the reason. Reads no credential; grants no
+    execution/trading authority; reads the Copy-Trading registries ONLY to EXCLUDE a master/follower (never to
+    grant); performs no host call; never mutates anything.
 
-    Mandatory evidence (ALL must agree):
-      1. an EXISTING, ENABLED, owner-bound trading account (not tombstoned, not disabled, has an owner);
+    Mandatory evidence (ALL must agree; ``is_active`` is NOT among them — see gate 1):
+      1. an EXISTING, owner-bound trading account (not tombstoned, has an owner);
       2. not a reserved / Customer Zero identity;
       3. a deterministic account-specific slot (``derive_slot(account.id)`` succeeds) — the relaunch target;
+      3b. a HOSTED, per-tenant MONITORING subject per the authoritative monitoring model
+          (``readiness_provider == PERSISTENT_WORKSPACE`` OR a ``HostedMt5Workspace`` row exists — the SAME
+          disjunction ``_build_contexts`` uses, so a provider-field lag never false-negatives a monitored account);
       4. the workspace is THIS account's (``ws.trading_account_id == account.id``);
+      4c. NOT a Copy Trading master or follower (fail-closed if copier membership is indeterminate);
       5. a live (non-RETIRED) per-tenant ``HostedExecutionEndpoint`` owned by THIS account, whose denormalised
          ownership agrees with the workspace (no endpoint/workspace collision);
       6. a non-empty expected (login, server) IDENTITY PIN on that endpoint;
@@ -99,11 +115,15 @@ def established_account_recovery_eligible(ws, account) -> EligibilityResult:
     """
     if account is None:
         return _DENY(RC_NO_ACCOUNT)
-    # 1 — existing, enabled, owner-bound, not tombstoned.
+    # 1 — existing, owner-bound, not tombstoned. NOTE (ELIGIBILITY-FIX-112): ``is_active`` is DELIBERATELY NOT a
+    # gate here. It is an EXECUTION/TRADING-AUTHORITY control (``execution.readiness`` returns ``R_ACCOUNT_INACTIVE``
+    # for it, and the order path / ``trading.managed_start`` gate on it), NOT a monitoring-recovery control. This
+    # path only restarts the account's own ``terminal64`` — it NEVER arms, logs in, enables Copy Trading, or places
+    # an order — so an established monitoring-only account intentionally left ``is_active=False`` (every production
+    # LIVE monitoring account is) must still be eligible for MONITORING restoration. Establishment is governed by
+    # the monitoring-enrolment gate (3b) + the identity-pin (6) + prior-verified-read (7) gates, never ``is_active``.
     if getattr(account, "disconnected_at", None) is not None:
         return _DENY(RC_DISCONNECTED)
-    if getattr(account, "is_active", False) is not True:
-        return _DENY(RC_DISABLED)
     if getattr(account, "user_id", None) is None:
         return _DENY(RC_NO_OWNER)
     # 2 — reserved / Customer Zero (coerce-total; a non-numeric id fails toward applying the guard).
@@ -121,9 +141,39 @@ def established_account_recovery_eligible(ws, account) -> EligibilityResult:
         derive_slot(acct_id_int)
     except Exception:  # noqa: BLE001 — a non-derivable slot is fail-closed, never a relaunch
         return _DENY(RC_SLOT_UNDERIVABLE)
+    # 3b — MONITORING ENROLMENT (ELIGIBILITY-FIX-112; the explicit replacement for the retired ``is_active`` gate).
+    # This path restores a HOSTED, per-tenant MONITORING subject's own terminal, so the account must be a hosted
+    # monitoring subject per the AUTHORITATIVE monitoring model. ``execution.monitoring_enrolment._build_contexts``
+    # classifies an account as hosted when ``readiness_provider == PERSISTENT_WORKSPACE`` OR a ``HostedMt5Workspace``
+    # row exists for it (its verbatim rationale: "A workspace row means the account is on the hosted pipeline even if
+    # readiness_provider lags"). This gate uses the SAME disjunction — never the narrower provider-only form, which
+    # would FALSE-NEGATIVE an established monitoring account whose mutable ``readiness_provider`` still sits at the
+    # model default while its terminal is down, re-opening the exact efficacy defect this packet fixes. A legacy /
+    # global-agent account (no per-tenant workspace, non-PW provider) has no hosted slot to relaunch ⇒ not a
+    # monitoring subject. ``is_active`` is NOT consulted (it is execution authority — see gate 1). Import-local
+    # (``execution.readiness`` imports this app lazily; ``HostedMt5Workspace`` is this app's own model).
+    from execution.readiness import PERSISTENT_WORKSPACE
+    from hosted_workspace.models import HostedMt5Workspace
+    hosted_subject = (str(getattr(account, "readiness_provider", "") or "") == PERSISTENT_WORKSPACE
+                      or HostedMt5Workspace.objects.filter(trading_account_id=acct_id_int).exists())
+    if not hosted_subject:
+        return _DENY(RC_NOT_MONITORED)
     # 4 — the workspace belongs to THIS account (no substitution via a caller inconsistency).
     if ws is None or getattr(ws, "trading_account_id", None) != acct_id_int:
         return _DENY(RC_WS_ACCOUNT_MISMATCH)
+    # 4c — COPY TRADING exclusion (ELIGIBILITY-FIX-112 Phase-3 invariant; regardless of flags). A Copy Trading
+    # master or follower is NEVER auto-recovered on this path: its terminal is coupled to the copier control plane,
+    # and an autonomous relaunch could perturb an active copy relationship. The Copy-Trading registries are read
+    # ONLY to EXCLUDE (never to grant); on any error reading them, fail CLOSED (deny) — a possibly-copier account is
+    # never recovered.
+    try:
+        from trade_copier.models import CopierFollower, CopierMaster
+        is_copier = (CopierMaster.objects.filter(trading_account_id=acct_id_int).exists()
+                     or CopierFollower.objects.filter(follower_account_id=acct_id_int).exists())
+    except Exception:  # noqa: BLE001 — copier membership indeterminate ⇒ fail closed (never auto-recover)
+        return _DENY(RC_COPIER_CHECK_UNAVAILABLE)
+    if is_copier:
+        return _DENY(RC_COPIER_PARTICIPANT)
     # 5/6 — a live, account-owned endpoint with a non-empty identity pin (and no endpoint/workspace drift).
     from execution.models import HostedExecutionEndpoint
     retired = HostedExecutionEndpoint.State.RETIRED

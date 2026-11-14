@@ -29,6 +29,7 @@ from analytics.models import AccountEquitySnapshot
 from execution import readiness as R
 from execution.models import HostedExecutionEndpoint, TerminalNode
 from reliability.models import AlertEvent
+from trade_copier.models import CopierFollower, CopierMaster
 from trading.models import BrokerServer, TradingAccount
 
 from hosted_workspace import capability_recovery as CR
@@ -163,10 +164,16 @@ class EligibilityTests(TestCase):
         acct.disconnected_at = timezone.now()
         self.assertEqual(RE.established_account_recovery_eligible(ws, acct).reason, RE.RC_DISCONNECTED)
 
-    def test_disabled_account(self):
+    def test_disabled_account_is_eligible_for_monitoring_recovery(self):
+        # ELIGIBILITY-FIX-112: is_active is an EXECUTION-authority control, NOT a monitoring-recovery gate. An
+        # established, identity-pinned, monitoring-enrolled account that is intentionally is_active=False (every
+        # production LIVE monitoring account is, incl. the #50 motivating case) MUST still be eligible to have its
+        # MONITORING terminal restored. (Mutation-killing: restoring the old is_active gate fails this test.)
         acct, node, ws, _ = _established_scenario()
         acct.is_active = False
-        self.assertEqual(RE.established_account_recovery_eligible(ws, acct).reason, RE.RC_DISABLED)
+        res = RE.established_account_recovery_eligible(ws, acct)
+        self.assertTrue(res.eligible)
+        self.assertEqual(res.reason, RE.RC_ELIGIBLE)
 
     def test_no_owner(self):
         acct, node, ws, _ = _established_scenario()
@@ -383,15 +390,20 @@ class EstablishedLivenessTests(TestCase):
         self.assertEqual(ex.calls, [])
 
     @override_settings(**EST_FLAGS)
-    def test_disabled_account_excluded(self):
+    def test_disabled_account_is_recovered_as_monitoring_subject(self):
+        # ELIGIBILITY-FIX-112: an is_active=False established DEMO monitoring account (the #50 class) is now a
+        # candidate and is relaunched — is_active no longer gates the candidate query or eligibility.
+        # (Previously this account was EXCLUDED by the is_active=True candidate filter; that was the defect.)
         acct, node, srv = _mk_account(active=False)
         ws = _mk_ws(acct, node)
         _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
         _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
         ex = FakeExecutor()
         out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
-        self.assertEqual(out["established"]["relaunched"], 0)
-        self.assertEqual(ex.calls, [])
+        self.assertEqual(out["established"]["eligible"], 1)
+        self.assertEqual(out["established"]["relaunched"], 1)
+        slot = derive_slot(acct.id)
+        self.assertEqual(ex.calls, [("relaunch_terminal", slot["username"], slot["runtime_root"], node.rdp_host)])
 
     @override_settings(**EST_FLAGS)
     def test_armed_account_not_double_handled_by_established_pass(self):
@@ -436,9 +448,11 @@ class EstablishedLivenessTests(TestCase):
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class Account50RegressionTests(TestCase):
     def _account_50_shaped(self):
-        """LIVE (IS6Technologies-Live-shaped), NOT armed, confirmed=None, prior matched read, snapshot STALE
-        (~12 days), terminal down — exactly the packet-108 #50 condition."""
-        acct, node, srv = _mk_account(is_demo=False, confirmed=False)
+        """LIVE (IS6Technologies-Live-shaped), NOT armed, confirmed=None, is_active=False (the REAL production #50
+        shape — a LIVE monitoring-only account is intentionally execution-disabled; ELIGIBILITY-FIX-112 corrects
+        the ADR-0107 fixture that modelled it as is_active=True and so missed the production-efficacy defect),
+        prior matched read, snapshot STALE (~12 days), terminal down — exactly the packet-108 #50 condition."""
+        acct, node, srv = _mk_account(is_demo=False, confirmed=False, active=False)
         ws = _mk_ws(acct, node, armed=False)
         _mk_endpoint(ws, acct, node, login="LIVE50", server="IS6Technologies-Live")
         _mk_snapshot(acct, login="LIVE50", server="IS6Technologies-Live", age_s=12 * 24 * 3600)
@@ -495,3 +509,171 @@ class CapabilityClassificationTests(TestCase):
         self.assertEqual(out["skipped_onboarding"], 1)
         self.assertEqual(out["skipped_established"], 0)
         self.assertEqual(ex.calls, [])
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# ELIGIBILITY-FIX-112 — execution/trading authority (is_active) separated from monitoring-recovery eligibility.
+# Monitoring recovery is governed by hosted-monitoring enrolment + established identity, NOT is_active; Copy
+# Trading master/follower are excluded regardless of flags; LIVE recovery stays separately gated; no trading
+# authority is granted and is_active is never modified.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def _mk_copier_master(acct):
+    return CopierMaster.objects.create(trading_account=acct)
+
+
+def _mk_copier_follower(acct):
+    """Make ``acct`` a Copy Trading FOLLOWER (its own throwaway master in the same owner)."""
+    master_acct, master_node, _ = _mk_account()
+    master = CopierMaster.objects.create(trading_account=master_acct)
+    return CopierFollower.objects.create(master=master, follower_account=acct)
+
+
+class Packet112EligibilitySeparationTests(TestCase):
+    # ── Copy Trading exclusion (the #46 master / #48 follower pair — regardless of flags) ──────────────────────
+    def test_copier_master_is_excluded_from_eligibility(self):
+        acct, node, ws, _ = _established_scenario()
+        _mk_copier_master(acct)
+        res = RE.established_account_recovery_eligible(ws, acct)
+        self.assertFalse(res.eligible)
+        self.assertEqual(res.reason, RE.RC_COPIER_PARTICIPANT)
+
+    def test_copier_follower_is_excluded_from_eligibility(self):
+        acct, node, ws, _ = _established_scenario()
+        _mk_copier_follower(acct)
+        res = RE.established_account_recovery_eligible(ws, acct)
+        self.assertFalse(res.eligible)
+        self.assertEqual(res.reason, RE.RC_COPIER_PARTICIPANT)
+
+    @override_settings(**EST_LIVE_FLAGS)   # even with EVERY recovery flag on, copier stays excluded
+    def test_copier_master_is_never_relaunched_even_with_all_flags_on(self):
+        acct, node, ws, _ = _established_scenario(is_demo=False)   # #46-shaped LIVE master
+        _mk_copier_master(acct)
+        ex = FakeExecutor()
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(out["established"]["reasons"].get(RE.RC_COPIER_PARTICIPANT), 1)
+        self.assertEqual(ex.calls, [])
+
+    def test_copier_check_unavailable_fails_closed(self):
+        # If the Copy-Trading registry cannot be read, the account is NEVER recovered (deny, not allow).
+        from unittest import mock
+        acct, node, ws, _ = _established_scenario()
+        boom = mock.MagicMock()
+        boom.objects.filter.side_effect = RuntimeError("copier db down")
+        with mock.patch("trade_copier.models.CopierMaster", boom):
+            res = RE.established_account_recovery_eligible(ws, acct)
+        self.assertFalse(res.eligible)
+        self.assertEqual(res.reason, RE.RC_COPIER_CHECK_UNAVAILABLE)
+
+    # ── Monitoring enrolment is the authoritative gate (a non-hosted/legacy account is not a subject) ──────────
+    def test_legacy_non_hosted_account_is_not_a_monitoring_subject(self):
+        # A legacy / global-agent account: non-PERSISTENT_WORKSPACE provider AND no HostedMt5Workspace row ⇒ not a
+        # hosted monitoring subject per the authoritative model. No workspace exists, so pass ws=None.
+        acct, node, srv = _mk_account()
+        acct.readiness_provider = "temporary_validation"
+        acct.save(update_fields=["readiness_provider"])
+        res = RE.established_account_recovery_eligible(None, acct)
+        self.assertFalse(res.eligible)
+        self.assertEqual(res.reason, RE.RC_NOT_MONITORED)
+
+    def test_provider_lag_with_workspace_present_is_still_eligible(self):
+        # ELIGIBILITY-FIX-112 (adversarial-review fix): the monitoring-subject gate uses the AUTHORITATIVE
+        # disjunction (readiness_provider == PERSISTENT_WORKSPACE OR a HostedMt5Workspace exists), exactly as
+        # execution.monitoring_enrolment._build_contexts does. An established account whose mutable
+        # readiness_provider LAGS at the default while a workspace + READY endpoint + prior verified read exist is
+        # STILL a hosted monitoring subject and STILL eligible — a provider-field lag must NOT re-open the
+        # 'monitored account cannot self-heal' defect. (Mutation-killing: the narrower provider-only gate that the
+        # first draft shipped would wrongly return not_monitored here.)
+        acct, node, ws, _ = _established_scenario()
+        acct.readiness_provider = "temporary_validation"   # provider lags, but the workspace row exists
+        acct.save(update_fields=["readiness_provider"])
+        res = RE.established_account_recovery_eligible(ws, acct)
+        self.assertTrue(res.eligible)
+        self.assertEqual(res.reason, RE.RC_ELIGIBLE)
+
+    # ── is_active=False DEMO monitoring account recovers; needs only the established flag (no LIVE flag) ───────
+    @override_settings(**EST_FLAGS)
+    def test_is_active_false_demo_recovers_with_established_flag_only(self):
+        acct, node, srv = _mk_account(is_demo=True, active=False)
+        ws = _mk_ws(acct, node, armed=False)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(FakeExecutor()), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)
+
+    @override_settings(**MASTER)   # established flag OFF ⇒ byte-identical to pre-112 (no established pass at all)
+    def test_is_active_false_demo_is_inert_with_flag_off(self):
+        acct, node, srv = _mk_account(is_demo=True, active=False)
+        ws = _mk_ws(acct, node, armed=False)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
+        ex = FakeExecutor()
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"], {"enabled": False})
+        self.assertEqual(ex.calls, [])
+
+    # ── LIVE recovery still requires BOTH the established AND the separate LIVE-recovery flag ──────────────────
+    @override_settings(**EST_FLAGS)   # established ON, LIVE-recovery OFF
+    def test_is_active_false_live_needs_live_recovery_flag(self):
+        acct, node, srv = _mk_account(is_demo=False, active=False)
+        ws = _mk_ws(acct, node, armed=False)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
+        self.assertEqual(RE.established_account_recovery_eligible(ws, acct).reason, RE.RC_LIVE_RECOVERY_DISABLED)
+        ex = FakeExecutor()
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(ex.calls, [])
+
+    @override_settings(**EST_LIVE_FLAGS)
+    def test_is_active_false_live_recovers_with_both_flags(self):
+        acct, node, srv = _mk_account(is_demo=False, active=False)
+        ws = _mk_ws(acct, node, armed=False)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
+        self.assertTrue(RE.established_account_recovery_eligible(ws, acct).eligible)
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(FakeExecutor()), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)
+
+    # ── is_active=False still blocks EXECUTION (the separation is one-directional) and is never modified ───────
+    @override_settings(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_MT5_EXECUTION_ENABLED="1")
+    def test_is_active_false_still_blocks_execution_readiness(self):
+        from execution import broker_gate as g
+        acct, node, srv = _mk_account(is_demo=True, active=False)
+        _mk_ws(acct, node, armed=False)
+        decision = R.PersistentWorkspaceProvider().evaluate(acct)
+        self.assertFalse(decision.eligible)                    # monitoring recovery NEVER opens execution
+        self.assertEqual(decision.reason_code, g.R_ACCOUNT_INACTIVE)
+
+    @override_settings(**EST_FLAGS)
+    def test_recovery_never_modifies_is_active(self):
+        acct, node, srv = _mk_account(is_demo=True, active=False)
+        ws = _mk_ws(acct, node, armed=False)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
+        LR.run_hosted_liveness_recovery(executor_resolver=_resolver(FakeExecutor()), observe_fn=_down)
+        acct.refresh_from_db()
+        self.assertFalse(acct.is_active)                       # is_active unchanged (still disabled for trading)
+
+    # ── Locked claim-time recheck uses the corrected predicate (a now-copier account cannot be claimed) ───────
+    @override_settings(**EST_FLAGS)
+    def test_claim_recheck_uses_new_predicate_excludes_copier(self):
+        acct, node, ws, _ = _established_scenario()
+        _mk_copier_master(acct)                                # became a copier participant
+        claimed = LR._claim_established_attempt(ws.pk, timezone.now())
+        self.assertFalse(claimed)                              # locked recheck denies it
+        ws.refresh_from_db()
+        self.assertEqual(ws.liveness_recovery_count, 0)        # no attempt stamped
+
+    # ── Exactly one account acted on per candidate; no sibling substitution ────────────────────────────────────
+    @override_settings(**EST_FLAGS)
+    def test_two_eligible_accounts_each_relaunched_once_no_cross(self):
+        a1, n1, ws1, _ = _established_scenario()
+        a2, n2, ws2, _ = _established_scenario()
+        ex = FakeExecutor()
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 2)
+        self.assertEqual(len(ex.calls), 2)
+        relaunched_users = sorted(c[1] for c in ex.calls)
+        self.assertEqual(relaunched_users,
+                         sorted([derive_slot(a1.id)["username"], derive_slot(a2.id)["username"]]))

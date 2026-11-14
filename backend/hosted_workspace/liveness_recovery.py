@@ -412,9 +412,15 @@ def _run_established_monitoring_recovery(*, now, resolve_ex, observe_fn) -> dict
 
     out["recovered"] = _resolve_established_recovered_alerts(now)
 
-    # Candidate set: active, non-reserved, NON-ARMED workspaces (armed ones are the armed pass's job — disjoint).
+    # Candidate set: non-tombstoned, non-reserved, NON-ARMED workspaces (armed ones are the armed pass's job —
+    # disjoint). NOTE (ELIGIBILITY-FIX-112): ``is_active`` is NOT a candidate filter — it is an EXECUTION-authority
+    # control, not a monitoring-recovery one, and an established monitoring-only account is intentionally
+    # ``is_active=False``. Authoritative per-candidate eligibility (hosted monitoring subject, NOT a Copy-Trading
+    # participant, identity-pinned, prior-verified, recoverable env) is decided by
+    # ``established_account_recovery_eligible`` below and RE-CHECKED under the row lock in
+    # ``_claim_established_attempt`` — the query stays a cheap, inclusive pre-filter.
     qs = (HostedMt5Workspace.objects
-          .filter(trading_account__disconnected_at__isnull=True, trading_account__is_active=True)
+          .filter(trading_account__disconnected_at__isnull=True)
           .exclude(execution_enabled=True, execution_authorized_at__isnull=False)
           .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS))
     # Demo-only pre-filter when LIVE infra-recovery is OFF (perf + defence; the per-candidate eligibility env gate
