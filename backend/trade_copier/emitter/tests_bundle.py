@@ -20,6 +20,9 @@ _PS1 = sorted(_BUNDLE.glob("*.ps1"))
 _PARITY = _BUNDLE / "tests" / "Test-TaskXmlSchtasksParity.ps1"
 _OPWRAP = _BUNDLE / "operator" / "Invoke-GuvfxCopierOneShotAttestation.ps1"
 _ONESHOT_INSTALLER = _BUNDLE / "Install-GuvfxCopierEmitterOneShotTask.ps1"
+_KEY_PROV = _BUNDLE / "operator" / "Provision-GuvfxCopierOneShotKey.ps1"
+_KEY_PROV_TEST = _BUNDLE / "operator" / "tests" / "Test-OneShotKeyProvisioner.Tests.ps1"
+_KEY_PROV_EVD = _ROOT / "evidence" / "manifests" / "GFX-EVD-COPIER-ONESHOT-KEY-PROVISIONER.json"
 _ORDER_VERBS = ("order_send", "place_order", "ordersend", "broker_order", "close_position", "modify_position")
 _SECRET_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
 
@@ -559,3 +562,142 @@ class OperatorWrapperTests(SimpleTestCase):
             self.assertNotIn("100.79.101.19", text)                  # no real host
         # the mock verifier is loopback-only
         self.assertIn("127.0.0.1", pe.read_text())
+
+
+class OneShotKeyProvisionerTests(SimpleTestCase):
+    """GFX-COPIER-ONESHOT-KEY-PROVISIONER-112 - the host-local one-shot ingest-key provisioner is the ONLY reviewed
+    writer of C:\\GuvFX\\copier-emitter\\oneshot\\ingest.key. It must be: account-46 pinned (#48/Customer Zero/reserved
+    refused), human hidden-input ONLY (never argv/env/log/output), an atomic ACL-restricted write (tenant Read + SYSTEM
+    + Administrators, inheritance broken, no Users/Everyone/Authenticated-Users), reparse-refusing, min-length-32
+    fail-closed, with idempotent -Remove cleanup and a read-only -Verify, and it must perform NO scheduled-task
+    mutation. Source-level (mutation-killing) assertions; the behavioural Pester suite runs on a Windows runner."""
+
+    def _t(self):
+        return _KEY_PROV.read_text()
+
+    def _param_block(self, t):
+        return t[t.index("param("):t.index("$ErrorActionPreference")]
+
+    def test_present_ascii_no_bom_ps51(self):
+        self.assertTrue(_KEY_PROV.exists(), "provisioner missing")
+        data = _KEY_PROV.read_bytes()
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf"), "BOM in provisioner")
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII byte in provisioner")
+        self.assertIn("#Requires -Version 5.1", self._t())
+        self.assertFalse(_SECRET_RE.search(self._t()), "secret-looking literal in provisioner")
+
+    def test_fixed_scope_not_overridable(self):
+        t = self._t()
+        self.assertIn("$PINNED_ACCOUNT = 46", t)
+        self.assertIn("$EXPLICIT_REFUSE = @(48)", t)
+        self.assertIn("$RESERVED_IDS = @(0, 1, 18)", t)
+        self.assertIn("$TASK_NAME = 'GuvFX_CopierEmitterOneShot_' + $PINNED_ACCOUNT", t)
+        self.assertIn("$PRINCIPAL_NAME = 'guvfx_u_' + $PINNED_ACCOUNT", t)
+        self.assertIn(r"$KEY_RELATIVE = 'copier-emitter\oneshot\ingest.key'", t)
+        self.assertIn(r"$FIXED_ROOT = 'C:\GuvFX'", t)
+        # no caller-supplied alternate account(name) / task / path / principal / secret parameter
+        head = self._param_block(t)
+        for bad in ("$KeyPath", "$KeyFile", "$Path ", "$Destination", "$TaskName", "$Task ",
+                    "$Principal", "$PrincipalName", "$UserId", "$Sid ", "$Secret ", "$IngestKey",
+                    "$HmacKey", "$Token", "$Password", "$ApiKey"):
+            self.assertNotIn(bad, head, f"provisioner must not take {bad} as a parameter")
+
+    def test_account_pin_refusals_present(self):
+        t = self._t()
+        self.assertIn("Assert-AccountPinned", t)
+        for reason in ("account_refused_reserved", "account_refused_explicit", "account_not_pinned"):
+            self.assertIn(reason, t)
+
+    def test_hidden_input_only_never_argv_env(self):
+        t = self._t()
+        self.assertIn("Read-Host -AsSecureString", t)
+        self.assertIn("SecureStringToBSTR", t)
+        self.assertIn("ZeroFreeBSTR", t)
+        self.assertIn("[scriptblock]$ReadSecret = $null", t)       # the only non-interactive source is the test seam
+        self.assertNotIn("[Environment]::GetEnvironmentVariable", t)
+        self.assertNotIn("$env:COPIER_INGEST_HMAC_KEY", t)
+
+    def test_no_secret_persisted_or_printed(self):
+        t = self._t()
+        self.assertNotIn("Write-Host", t)
+        self.assertNotIn("[Environment]::SetEnvironmentVariable", t)   # no persistent env write
+        self.assertNotIn("Set-ItemProperty", t)                       # no registry write
+        self.assertNotIn("Export-Clixml", t)
+        self.assertNotIn("Start-Transcript", t)
+        self.assertNotIn("Set-Content", t)                            # the ONLY writer is the atomic WriteAllText temp
+        self.assertNotIn("Out-File", t)
+        self.assertIn("Write-Redacted", t)
+        for field in ("key_file_present", "length_policy_satisfied", "acl_verified", "reason", "correlation_id"):
+            self.assertIn(field, t)
+        for leaky in ("key_value", "key_hash", "key_sha", "key_prefix", "key_suffix", "entropy", "byte_dump"):
+            self.assertNotIn(leaky, t, f"redacted result must never carry {leaky}")
+
+    def test_atomic_acl_restricted_write(self):
+        t = self._t()
+        self.assertIn("SetAccessRuleProtection($true, $false)", t)     # break inheritance, do NOT copy inherited ACEs
+        self.assertIn("S-1-5-18", t)                                   # SYSTEM
+        self.assertIn("S-1-5-32-544", t)                              # Administrators
+        self.assertIn("[System.IO.File]::Move(", t)                   # atomic same-volume rename
+        # the temp is ACL-restricted BEFORE the secret bytes are written
+        acl_idx = t.index("Set-ProtectedAcl $tmp")
+        secret_idx = t.index("WriteAllText($tmp, $plain")
+        self.assertLess(acl_idx, secret_idx, "temp must be restricted before the secret is written")
+        # no broad principal is ever granted
+        for broad in ("'Everyone'", r"'BUILTIN\Users'", "'Authenticated Users'", "S-1-1-0", "S-1-5-11", "S-1-5-32-545"):
+            self.assertNotIn(broad, t, f"must not grant a broad principal ({broad})")
+
+    def test_reparse_refusal_and_min_length(self):
+        t = self._t()
+        self.assertIn("Test-NoReparseChain", t)
+        self.assertIn("ReparsePoint", t)
+        self.assertIn("reparse_point_detected", t)
+        self.assertIn("$MIN_SECRET_LEN = 32", t)
+        self.assertIn("secret_too_short", t)
+        self.assertIn("key_file_exists", t)                           # existing-file policy: fail closed, no overwrite
+
+    def test_no_scheduled_task_mutation(self):
+        t = self._t()
+        self.assertIn("/query", t)                                    # the task is READ (schtasks /query /xml) only
+        for verb in ("Register-ScheduledTask", "Set-ScheduledTask", "Enable-ScheduledTask",
+                     "Unregister-ScheduledTask", "Start-ScheduledTask", "/create", "/change", "/run", "/delete"):
+            self.assertNotIn(verb, t, f"provisioner must not mutate the scheduled task ({verb})")
+
+    def test_remove_and_verify_modes(self):
+        t = self._t()
+        self.assertIn("[switch]$Remove", t)
+        self.assertIn("[switch]$Verify", t)
+        self.assertIn("'removed'", t)
+        self.assertIn("'verified'", t)
+        self.assertIn("remove_target_reparse", t)
+        self.assertIn("Test-ProtectedAcl", t)
+        self.assertIn("$item.Length -ge $MIN_SECRET_LEN", t)          # verify length by SIZE; content never read
+
+    def test_test_seams_default_null_and_root_fixed(self):
+        t = self._t()
+        for seam in ("[scriptblock]$ReadTaskXml = $null", "[scriptblock]$ResolvePrincipalSid = $null",
+                     "[scriptblock]$ReadSecret = $null", "[scriptblock]$AfterTempForTest = $null",
+                     "[string]$FixedRootForTest = ''"):
+            self.assertIn(seam, t, f"test seam must default to a no-op: {seam}")
+        # the sandbox seam only prepends a root to the FIXED relative suffix (never a full arbitrary path)
+        self.assertIn("if ($FixedRootForTest) { $FixedRootForTest } else { $FIXED_ROOT }", t)
+        self.assertIn("Join-Path $root $KEY_RELATIVE", t)
+
+    def test_pester_suite_present_and_synthetic(self):
+        self.assertTrue(_KEY_PROV_TEST.exists(), "provisioner Pester suite missing")
+        data = _KEY_PROV_TEST.read_bytes()
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf"), "BOM in provisioner Pester suite")
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII in provisioner Pester suite")
+        text = _KEY_PROV_TEST.read_text()
+        self.assertIn("SYNTHETIC", text.upper())
+        self.assertNotIn("api.guvfx.com", text, "the Pester suite must not reference a real endpoint")
+        self.assertNotIn("100.79.101.19", text)
+        self.assertFalse(_SECRET_RE.search(text), "secret-looking literal in the provisioner Pester suite")
+
+    def test_included_in_governed_evidence_manifest(self):
+        self.assertTrue(_KEY_PROV_EVD.exists(), "evidence manifest missing")
+        manifest = json.loads(_KEY_PROV_EVD.read_text())
+        checks = manifest.get("checksums", {})
+        rel = "deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1"
+        self.assertIn(rel, checks, "provisioner must be recorded in the governed evidence manifest")
+        actual = "sha256:" + hashlib.sha256(_KEY_PROV.read_bytes()).hexdigest()
+        self.assertEqual(checks[rel], actual, "provisioner checksum drift vs the evidence manifest")

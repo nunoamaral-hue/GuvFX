@@ -181,9 +181,46 @@ that registers a task under the runner's own account, reads back the stored SID,
 submitted principal -- the mock returns the submitted name and never normalises to a SID, which is why the live gap
 escaped. The installer resolver is injectable (`$ResolvePrincipalSid`) for deterministic tests.
 
+### Host-local key provisioner (packet GFX-COPIER-ONESHOT-KEY-PROVISIONER-112, repository-only)
+
+The headless task entrypoint `run_oneshot_attest.py` reads the ingest secret ONLY from a host-local ephemeral key
+file (`C:\GuvFX\copier-emitter\oneshot\ingest.key`) and shreds it after one use; it deliberately **never provisions**
+that file. Preflight `GFX-COPIER-ONESHOT-ATTESTATION-PREFLIGHT-111` established that no reviewed repository mechanism
+wrote it: the installer only names the path, the signed `TRIGGER_EMITTER_ONESHOT_ATTEST` op is secret-blind, and the
+interactive child-env wrapper (`Invoke-GuvfxCopierOneShotAttestation.ps1`) cannot serve the headless path because
+account 46's workspace is MT5-only (no interactive PowerShell desktop). This packet closes exactly that gap with a
+reviewed host operator wrapper, `deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1`, and nothing more.
+
+The provisioner is the **only** reviewed writer of that file and is a dedicated, non-general-purpose tool: the
+account (46), task (`GuvFX_CopierEmitterOneShot_46`), key path and principal (`guvfx_u_46`) are fixed constants;
+#48, Customer Zero and every reserved identity (`id <= 1`, plus 18) are refused; there is no parameter for an
+alternate account, task, path or principal. The key is accepted **only** through a non-echoing `Read-Host
+-AsSecureString` prompt (never argv/env/registry/pipeline/transcript) and is never emitted to stdout, logs, the event
+log, the JSON result, Notion or Git; it refuses to run under active transcription or Verbose/Debug tracing. It fails
+closed unless the secret is >= 32 characters, the installed task exists and matches the reviewed contract (DISABLED,
+triggerless, action pointing at the one-shot entrypoint + the fixed key path, principal SID == `guvfx_u_46` SID), and
+the destination plus its parent chain carry no reparse point / symlink / junction. The write is **atomic and protected
+from creation**: a same-directory temp file has inheritance broken and only `{guvfx_u_46 (Read), SYSTEM (Full),
+Administrators (Full)}` granted **before** the secret bytes are written, then it is atomically renamed onto the fixed
+path (which therefore never exists with broad inherited permissions); temp artefacts are removed on success and
+failure, and an existing key file is refused (no silent overwrite). A `-Remove` mode shreds+deletes the fixed path
+idempotently (refusing a reparse target) and a read-only `-Verify` mode checks path/regular-file/no-reparse/min-length
+(by size)/ACL/owner/task **without ever reading or printing the key**. Windows storage cannot promise a forensic
+overwrite of a deleted file, so the guarantee is a **bounded ephemeral lifetime + restrictive ACLs + the one-use
+consumer deletion + mandatory cleanup**, not an unverifiable "secure erase". The real scheduler, SID resolution and
+secret entry are injectable seams for deterministic tests (synthetic key only; the production path/account/task are
+never overridable). Coverage: a 30+-case Pester matrix on a Windows runner (positive, length/account/task/principal/
+reparse/existing-file/tracing refusals, ACL exactness, temp cleanup on success and failure, redaction, `-Remove`
+idempotency, `-Verify` fail-closed) plus Linux source guards in `trade_copier.emitter.tests_bundle` and a governed
+evidence manifest recording the artefact checksum.
+
+The human operator enters the **same** key independently into the two reviewed hidden-input mechanisms -- the backend
+bounded verifier window (ADR-0101, `copier_verifier_window --open` over STDIN) and this host provisioner -- so the
+agent never receives or handles the key on either side.
+
 ## Not in this packet (separate Sponsor/human gates)
 
 Merge · deploy · install/enable/trigger the one-shot task on the host · open the ADR-0101 verifier window ·
-provision the host-local ingest secret · enable `copier_emitter_oneshot_enabled` / the verify surface · the real
-#46 emitter attestation · any authorization or broker order. No deploy, no migration, no host contact, no secret
+run the host key provisioner with a real secret · enable `copier_emitter_oneshot_enabled` / the verify surface · the
+real #46 emitter attestation · any authorization or broker order. No deploy, no migration, no host contact, no secret
 handled, no flag enablement, no verifier window, no #48 contact, no order here.

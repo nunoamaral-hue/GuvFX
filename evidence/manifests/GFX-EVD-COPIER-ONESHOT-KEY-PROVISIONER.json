@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-ONESHOT-KEY-PROVISIONER",
+  "packet_id": "GFX-COPIER-ONESHOT-KEY-PROVISIONER-112",
+  "created_at_utc": "2026-11-14T13:00:00Z",
+  "branch": "fix/copier-oneshot-key-provisioner",
+  "base_commit": "5c1eb4507a0762e7c882c906caa6891c9e8e56df",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK. Closes the single gap preflight GFX-COPIER-ONESHOT-ATTESTATION-PREFLIGHT-111 proved: the headless one-shot task (run_oneshot_attest.py, ADR-0104) reads its ingest secret from a host-local ephemeral key file (C:\\GuvFX\\copier-emitter\\oneshot\\ingest.key) it never provisions, and no reviewed repository mechanism wrote that file (the installer only names the path; the signed TRIGGER op is secret-blind; the interactive child-env wrapper needs a desktop #46 lacks). Adds ONE reviewed host operator wrapper, Provision-GuvfxCopierOneShotKey.ps1: account-46-pinned human hidden-input provisioner that writes the key atomically with inheritance broken + ACL restricted to guvfx_u_46 + SYSTEM + Administrators, refuses reparse/alternate/short/existing targets, and offers idempotent -Remove and read-only -Verify. NO deploy, NO host contact, NO real secret handled, NO verifier window, NO flag enablement, NO task trigger, NO #48 contact, NO broker order.",
+    "adr": "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test --parallel 4) + governance (secret/PII scan + evidence lint) + frontend (untouched) + research-foundation + market-data-foundation; plus a separate throwaway Windows PowerShell 5.1 ParseFile + Pester gate pinned to the exact PR head"
+  },
+  "commands": [
+    "cd backend && manage.py test trade_copier.emitter.tests_bundle  (Linux source guards: provisioner + Pester suite + evidence-manifest inclusion)",
+    "cd backend && manage.py test trade_copier  (full copier app suite - unaffected; the provisioner is operator tooling, not imported by Django)",
+    "cd backend && manage.py check  (System check identified no issues)",
+    "cd backend && manage.py makemigrations --check --dry-run trade_copier  (No changes detected - migration-free)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT: PASS)",
+    "Windows runner: [Parser]::ParseFile on Provision-GuvfxCopierOneShotKey.ps1 + Test-OneShotKeyProvisioner.Tests.ps1 (RULE 9) then Invoke-Pester (30+ case matrix, synthetic key only)"
+  ],
+  "expected_results": [
+    "The provisioner is the ONLY reviewed writer of the host-local key file; it exposes NO parameter for an alternate account/task/path/principal, and account 46 is pinned (#48/Customer Zero/reserved refused).",
+    "The key is accepted only through a non-echoing hidden prompt and never appears in argv/env/registry/transcript/logs/stdout/the JSON result; the wrapper refuses to run under transcription or Verbose/Debug tracing.",
+    "Provision fails closed unless: secret >= 32 chars; the installed task exists, is DISABLED, triggerless, action points at run_oneshot_attest.py + the fixed key path, principal SID == guvfx_u_46 SID; and the destination + parent chain carry no reparse point. An existing key file is refused (no silent overwrite).",
+    "The write is atomic and protected from creation: a same-directory temp is ACL-restricted (inheritance broken; only guvfx_u_46 Read + SYSTEM Full + Administrators Full) BEFORE the secret bytes are written, then renamed onto the fixed path; temp artefacts are removed on success and failure.",
+    "-Remove shreds+deletes the fixed path idempotently (refusing a reparse target); -Verify checks path/regular-file/no-reparse/min-length-by-size/ACL/owner/task without reading or printing the key. Neither mutates the scheduled task.",
+    "Linux source guards and the governed evidence manifest record the provisioner; manage.py check + makemigrations --check clean; secret scan + evidence lint PASS; migration-free; the run-mode and one-shot tasks are never touched."
+  ],
+  "actual_results": [
+    "deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1: #Requires 5.1, ASCII-only; fixed constants PINNED_ACCOUNT=46 / EXPLICIT_REFUSE=@(48) / RESERVED_IDS=@(0,1,18) / TASK_NAME / PRINCIPAL_NAME=guvfx_u_46 / KEY_RELATIVE=copier-emitter\\oneshot\\ingest.key / FIXED_ROOT=C:\\GuvFX; Read-Host -AsSecureString + SecureStringToBSTR/ZeroFreeBSTR; Assert-SafeCaptureMode (transcription/tracing refusal); Assert-TaskContract (namespace-safe SelectSingleNode, DISABLED + element-counted triggers + action/key-path + canonical-SID principal); Test-NoReparseChain; atomic WriteAllText-temp -> Set-ProtectedAcl (SetAccessRuleProtection $true,$false; S-1-5-18 + S-1-5-32-544 Full + tenant Read) -> File.Move; Test-ProtectedAcl read-only verify; -Remove overwrite+delete idempotent, reparse-refusing; redacted JSON result (ok/account_id/task/key_file_present/length_policy_satisfied/acl_verified/reason/correlation_id) with NO key-derived field. Injectable seams (ReadTaskXml/ResolvePrincipalSid/ReadSecret/AfterTempForTest/FixedRootForTest) default to the real production implementations.",
+    "deploy/copier-emitter/operator/tests/Test-OneShotKeyProvisioner.Tests.ps1: Pester 5 BeforeAll harness, synthetic key only, resolver maps guvfx_u_46 to the runner's own SID (ACL settable without a real guvfx_u_46 account), FIXED relative path sandboxed under a temp root. 30+ cases: positive/min-length/short/empty; account 48/1/18/99 refusals; no override params; task absent/enabled/triggered/action-drift/principal-drift; reparse destination + parent (junctions); existing-file; tracing; -Remove delete/idempotent/reparse-refusal; temp cleanup on success and injected mid-write failure; redaction; consumer-verbatim bytes (no BOM); -Verify positive + fail-closed-without-weakening-ACL.",
+    "backend/trade_copier/emitter/tests_bundle.py: new OneShotKeyProvisionerTests (12 Linux source guards) - ASCII/no-BOM/5.1, fixed-scope-not-overridable, account-pin refusals, hidden-input-only, no-secret-persisted-or-printed, atomic-ACL-restricted-write (ACL precedes secret write; no broad principal), reparse+min-length, no-scheduled-task-mutation, remove+verify modes, test-seams-default-null, Pester-suite-present-synthetic, included-in-governed-evidence-manifest (checksum match).",
+    "docs/architecture/ADR-0104 amended with the host-local key provisioner section (same key entered independently into the backend window + host provisioner; agent never handles it). docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md amended with Role B2 (headless variant: provision -> signed trigger -> remove; guaranteed cleanup). This evidence manifest added.",
+    "Adversarial review vectors (cross-tenant placement, task/principal substitution, symlink/junction/reparse, ACL inheritance/permissive ACEs, temp exposure, existing-file overwrite, transcript/debug leak, stdout/stderr/result leak, command-history, partial-write/crash cleanup, TOCTOU between validation and rename, cleanup failure, backend/host input mismatch, unexpected task enablement/trigger, #48/Customer-Zero reachability, secret persistence after one-shot consume): see the PR review section - findings and fixes recorded there.",
+    "Diff scope: 1 NEW operator wrapper + 1 NEW Pester suite + 1 MODIFIED Python guard module + 1 amended ADR + 1 amended runbook + this NEW manifest. No backend runtime import, no migration, no workflow in the PR, no production mutation, no secret, no flag flip."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS) solely because the PowerShell gates (RULE 9 ParseFile + the Pester behavioural matrix) run on a SEPARATE Windows-runner gate, not the macOS authoring host (no pwsh). Mitigation: both .ps1 files are verified ASCII-only (RULE 9 corollary) and structurally balanced; all Python/Django/governance guards run on Linux CI.",
+    "Repository-only / DARK. Auto-merge OFF; NOT merged, NOT deployed. The real key provisioning, the verifier-window opening, the flag enablement and the one-shot trigger remain SEPARATE Sponsor/human gates. The agent handled NO real secret.",
+    "The ACL and reparse behaviours are exercised against a sandbox temp root with the runner's own SID standing in for guvfx_u_46 (that account does not exist on the CI runner); the production path, account and principal are fixed and non-overridable.",
+    "SetOwner to Administrators is best-effort (needs SeRestorePrivilege); the verifier accepts an owner in {SYSTEM, Administrators, the tenant SID} so a non-elevated owner does not weaken the DACL guarantee.",
+    "Windows storage cannot promise a forensic overwrite of a deleted file; the guarantee is bounded ephemeral lifetime + restrictive ACLs + one-use consumer deletion + mandatory cleanup, documented in the script and ADR."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1 (the host-local key provisioner)",
+    "deploy/copier-emitter/operator/tests/Test-OneShotKeyProvisioner.Tests.ps1 (Pester behavioural matrix - Windows-runner gate)",
+    "backend/trade_copier/emitter/tests_bundle.py (OneShotKeyProvisionerTests Linux source guards)",
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md (amended)",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md (amended - Role B2 headless variant)",
+    "evidence/manifests/GFX-EVD-COPIER-ONESHOT-KEY-PROVISIONER.json (this manifest)"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1": "sha256:e9a8756301786a8507d3e53e3c9dc43bd59cf95d5e9650d527bb4e768379ee48",
+    "deploy/copier-emitter/operator/tests/Test-OneShotKeyProvisioner.Tests.ps1": "sha256:b46ac10a5256db36491e759412910c4eae723b62e5ac6482b812b4146be6c4c9",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:3778b7d17c07d7cf57bed00a512e749476313328d7f23b4e8ccd7221aa05e489",
+    "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md": "sha256:1d9a9c9db36e90357e18e24b1f2f9db869138605c1bc96a2d6d3fbbe65ac23de",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md": "sha256:020f959d2eb5a97f48cf47c32cc8c585acc14e399cd513802188387e4f5e8e53"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Independent adversarial review across the vectors listed in actual_results; findings + fixes recorded in the PR. Sponsor review pending (auto-merge OFF, STOP before merge). PowerShell ParseFile + Pester are a separate pre-merge Windows-runner gate."
+}
