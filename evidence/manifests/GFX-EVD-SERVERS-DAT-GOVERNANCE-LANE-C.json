@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0.0",
+  "handoff_id": "GFX-EVD-SERVERS-DAT-GOVERNANCE-LANE-C",
+  "packet_id": "GFX-WI-SERVERS-DAT-GOVERNANCE-085",
+  "created_at_utc": "2026-11-13T00:00:00Z",
+  "branch": "feat/servers-dat-governance",
+  "base_commit": "52d111e22fff6bf7f5c36f28cdb25998f7dd09ed",
+  "head_commit": null,
+  "environment": "local dev (PostgreSQL); isolated test DB 'test_dev_lane_a'",
+  "ci": "GitHub Actions CI (backend, frontend, governance, market-data-foundation, research-foundation) — driven to exact-head 5/5; STOP before merge",
+  "commands": [
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_catalogue",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> broker_catalogue.tests_delta_governance",
+    "cd backend && PYTHONPATH=$(pwd) .venv/bin/python <laned-runner> broker_catalogue",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "System check: 0 issues",
+    "Migration drift: no changes (migration 0006 captures the models)",
+    "Delta-governance suite: all pass",
+    "Full broker_catalogue suite: all pass (no regression)",
+    "Secret scan: no findings; Evidence linter: PASS"
+  ],
+  "actual_results": [
+    "System check: no issues; makemigrations --check: No changes detected in app 'broker_catalogue'.",
+    "Delta-governance suite (tests_delta_governance): Ran 31 tests — OK (hash-pinned propose incl. stale-base/no-op/duplicate/ambiguous/ownership/malformed/bidi-zero-width/traversal-relpath refusals; one-in-flight DB constraint; dry-run validate then REVIEWED; deterministic delta + descriptor checksum; approve-separate-from-activation; SoD approver!=proposer; stage descriptor; full activate flips version + rollback restores; proposed-content re-pin blocks a post-approval mutation; rollback refused when proposed no longer ACTIVE; stale-base CAS; double-activation refused; unapproved-proposed activation fails closed/base preserved; append-only audit model guard + DB trigger; privacy-safe report; CLI parser builds no Django collision, dry-run/apply dispatch).",
+    "Full broker_catalogue suite: Ran 135 tests — OK (existing + 31 new; no regression).",
+    "Secret scan: no findings; Evidence linter: PASS."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / DARK: NO host contact, NO servers.dat write, NO terminal restart, NO broker action. The host_catalogue seams are never invoked; activation delegates to activate_catalogue_version WITHOUT --attest-host. NOT merged, NOT deployed.",
+    "Additive migration broker_catalogue/0006 (CatalogueDelta + CatalogueDeltaAudit + an append-only audit DB trigger + a one-in-flight partial-unique); no change to existing catalogue data or models.",
+    "The servers.dat BYTES are the opaque MT5 format and are NOT parsed; integrity is bound by SHA-256 + the existing sanitiser verdict + immutability. The structural validator checks the declared server IDENTITIES + metadata (canonical names, no control/bidi/zero-width chars, length-bounded, ownership, no duplicates, sanitisation PASS, valid SHA, safe host_relpath).",
+    "Minimal separation of duty: approve refuses approver==proposer; --actor values are AUDIT LABELS, not authenticated principals; fuller SoD (reviewer!=approver!=activator / quorum) is enforced out-of-band by management-command access control (documented follow-up).",
+    "The staging descriptor is repository-only (deterministic, checksummed metadata); the actual host STAGE op is a separate Sponsor-gated step.",
+    "Adversarial review (2 lenses): governance-integrity found 1 HIGH + 3 MEDIUM, privacy/host-write found 3 LOW. All HIGH/MEDIUM and the two in-scope LOW fixed with regression tests; the pre-existing lenient ownership substring heuristic in service.server_ownership_problems was left untouched (not introduced by this packet; no drive-by refactor)."
+  ],
+  "artefact_locations": [
+    "backend/broker_catalogue/models.py (CatalogueDelta + CatalogueDeltaAudit)",
+    "backend/broker_catalogue/migrations/0006_catalogue_delta_governance.py (additive; append-only audit trigger)",
+    "backend/broker_catalogue/delta_governance.py (propose/validate/approve/stage/activate/reject/rollback + structural validator + CAS + re-pin)",
+    "backend/broker_catalogue/management/commands/catalogue_delta.py (governed dry-run-first command)",
+    "backend/broker_catalogue/tests_delta_governance.py (31 tests)",
+    "docs/architecture/ADR-0102-catalogue-servers-dat-delta-governance.md"
+  ],
+  "checksums": {
+    "backend/broker_catalogue/models.py": "sha256:e45f1e384eb830dcefecde7c1b18cbf4affc67fb903529fcbf47d0d6811ddc10",
+    "backend/broker_catalogue/migrations/0006_catalogue_delta_governance.py": "sha256:75decfec3462287e5324370747ece537223cd6c7ce1c00fc9e6c9a6e6392e8e7",
+    "backend/broker_catalogue/delta_governance.py": "sha256:d1a2eb7a5827e5a303d4549fc7e5a7ebc89250b7e32a988b018cfa77b81fcf8f",
+    "backend/broker_catalogue/management/commands/catalogue_delta.py": "sha256:2dbe170c0b18f52c3891a4a03982296cf4cac2e6a9b92044f2fe0f068f2346f0",
+    "backend/broker_catalogue/tests_delta_governance.py": "sha256:dce2f99d153308d101ef9d3f8bc4eb5ccfac0c9bebdf065ae05fba6b236222b8",
+    "docs/architecture/ADR-0102-catalogue-servers-dat-delta-governance.md": "sha256:299ef5d44801f37ef7d591693471a4f930de5f1a9b356110e521767d2c764733"
+  },
+  "reviewer": "2-lens adversarial review. Governance-integrity (HIGH: proposed-content not re-pinned → fixed by _assert_proposed_unchanged at validate/stage/activate; MEDIUM: rollback could undo a newer activation → fixed by proposed-still-ACTIVE guard; MEDIUM: CAS TOCTOU → fixed by select_for_update on the active pointer; MEDIUM: no SoD → fixed by approver!=proposer + docs). Privacy/host-write (all LOW: control-char filter missed C1/bidi/zero-width → fixed; host_relpath not format-validated → fixed; pre-existing ownership heuristic → out of scope). Host-write, credential/PII/bytes egress, tenant isolation, state-machine fail-closed, one-in-flight, double-activation, append-only audit all CLEAN. Each fix carries a regression test."
+}
