@@ -567,7 +567,7 @@ class OperatorWrapperTests(SimpleTestCase):
 class OneShotKeyProvisionerTests(SimpleTestCase):
     """GFX-COPIER-ONESHOT-KEY-PROVISIONER-112 - the host-local one-shot ingest-key provisioner is the ONLY reviewed
     writer of C:\\GuvFX\\copier-emitter\\oneshot\\ingest.key. It must be: account-46 pinned (#48/Customer Zero/reserved
-    refused), human hidden-input ONLY (never argv/env/log/output), an atomic ACL-restricted write (tenant Read + SYSTEM
+    refused), human hidden-input ONLY (never argv/env/log/output), an atomic ACL-restricted write (tenant Modify [read+write+delete, so the one-use consumer can shred] + SYSTEM
     + Administrators, inheritance broken, no Users/Everyone/Authenticated-Users), reparse-refusing, min-length-32
     fail-closed, with idempotent -Remove cleanup and a read-only -Verify, and it must perform NO scheduled-task
     mutation. Source-level (mutation-killing) assertions; the behavioural Pester suite runs on a Windows runner."""

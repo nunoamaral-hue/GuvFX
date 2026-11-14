@@ -22,7 +22,7 @@
 #   * Validation (fail closed): secret present + length >= 32; installed task exists, DISABLED, triggerless, action points
 #     at the reviewed one-shot entrypoint + the fixed key path, principal SID == guvfx_u_46 SID; destination + parent chain
 #     carry no reparse point / symlink / junction; the final key file must NOT already exist (use -Remove first).
-#   * Atomic protected write: a same-directory temp file is created, inheritance is broken and only {guvfx_u_46 (Read),
+#   * Atomic protected write: a same-directory temp file is created, inheritance is broken and only {guvfx_u_46 (Modify -- so the one-use consumer can overwrite+delete/shred),
 #     SYSTEM (Full), Administrators (Full)} are granted BEFORE the secret bytes are written, then it is atomically renamed
 #     onto the fixed path (which therefore never exists with broad inherited permissions). Temp artefacts are removed on
 #     success and failure.
@@ -162,7 +162,7 @@ function Assert-TaskContract() {
     return $expectedSid
 }
 
-# Break inheritance and grant ONLY {tenant:Read, SYSTEM:Full, Administrators:Full}. Owner set to Administrators
+# Break inheritance and grant ONLY {tenant:Modify, SYSTEM:Full, Administrators:Full}. Owner set to Administrators
 # (best-effort). No Users / Everyone / Authenticated Users / sibling-service principal retains access.
 function Set-ProtectedAcl([string]$path, [string]$tenantSid) {
     $acl = Get-Acl -LiteralPath $path

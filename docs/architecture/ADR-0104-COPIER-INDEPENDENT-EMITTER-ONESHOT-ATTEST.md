@@ -200,8 +200,8 @@ log, the JSON result, Notion or Git; it refuses to run under active transcriptio
 closed unless the secret is >= 32 characters, the installed task exists and matches the reviewed contract (DISABLED,
 triggerless, action pointing at the one-shot entrypoint + the fixed key path, principal SID == `guvfx_u_46` SID), and
 the destination plus its parent chain carry no reparse point / symlink / junction. The write is **atomic and protected
-from creation**: a same-directory temp file has inheritance broken and only `{guvfx_u_46 (Read), SYSTEM (Full),
-Administrators (Full)}` granted **before** the secret bytes are written, then it is atomically renamed onto the fixed
+from creation**: a same-directory temp file has inheritance broken and only `{guvfx_u_46 (Modify), SYSTEM (Full),
+Administrators (Full)}` granted **before** the secret bytes are written (the tenant is granted Modify -- read, write and delete -- so the one-use consumer can overwrite and delete/shred the key after its single use; a bare Read grant would leave the secret on disk), then it is atomically renamed onto the fixed
 path (which therefore never exists with broad inherited permissions); temp artefacts are removed on success and
 failure, and an existing key file is refused (no silent overwrite). A `-Remove` mode shreds+deletes the fixed path
 idempotently (refusing a reparse target) and a read-only `-Verify` mode checks path/regular-file/no-reparse/min-length
