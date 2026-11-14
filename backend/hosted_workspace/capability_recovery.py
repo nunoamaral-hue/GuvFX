@@ -115,8 +115,16 @@ def _recover_one_workspace(ws, now, *, resolve, gate_onboarding, actor) -> str:
     # signed executor/.ps1 refuse only account 1, so this is the ONLY application-layer backstop for account 18).
     if getattr(account, "id", None) in _RESERVED_ACCOUNT_IDS:
         return "skipped_reserved"
-    # Onboarding gate: do not disrupt a just-authenticated, still-unconfirmed tenant (fresh-beta UX).
+    # Onboarding gate: do not disrupt a just-authenticated, still-unconfirmed tenant (fresh-beta UX). Behaviour
+    # is UNCHANGED — capability recovery still HOLDS an unconfirmed account (its purpose is ARMING-capability,
+    # strictly above monitoring, and relaunching here would pre-establish autotrading config the customer has not
+    # authorised). The shared classifier only SHARPENS the reason so an ESTABLISHED monitoring-only account (one
+    # with prior verified reads) is no longer mislabelled 'onboarding' in telemetry — the packet-108 confusion.
+    # Terminal-relaunch for such an account is the established-MONITORING liveness pass's job, never this one.
     if gate_onboarding and getattr(account, "workspace_confirmed_at", None) is None:
+        from hosted_workspace.recovery_eligibility import established_account_recovery_eligible
+        if established_account_recovery_eligible(ws, account).eligible:
+            return "skipped_established_unconfirmed"
         return "skipped_onboarding"
     # Demo-only wall + freshness (a stale projection is not acted on — the observer must be current).
     if getattr(account, "is_demo", False) is not True or not _observation_fresh(ws):
@@ -205,7 +213,8 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
     and does NOT itself advance canonical state — the observer re-proves trade_allowed on the next cycle."""
     if not (hosted_persistent_mt5_enabled() and hosted_capability_recovery_enabled()):
         return {"enabled": False, "candidates": 0, "attempted": 0, "config_reasserted": 0, "relaunched": 0,
-                "skipped_cooldown": 0, "skipped_not_ready": 0, "skipped_no_executor": 0, "errors": 0}
+                "skipped_cooldown": 0, "skipped_not_ready": 0, "skipped_no_executor": 0,
+                "skipped_onboarding": 0, "skipped_established": 0, "errors": 0}
 
     now = timezone.now()
     resolve = executor_resolver or (lambda account_id, rdp_host: resolve_host_executor(
@@ -213,7 +222,7 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
 
     candidates = attempted = config_reasserted = relaunched = 0
     skipped_cooldown = skipped_not_ready = skipped_no_executor = errors = 0
-    skipped_onboarding = 0
+    skipped_onboarding = skipped_established = 0
 
     qs = (HostedMt5Workspace.objects
           .filter(canonical_state=str(S.CONNECTED), proj_connected=True, proj_account_match=True,
@@ -240,6 +249,10 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
         outcome = _recover_one_workspace(ws, now, resolve=resolve, gate_onboarding=gate_onboarding, actor=actor)
         if outcome in ("skipped_onboarding",):
             skipped_onboarding += 1
+        elif outcome == "skipped_established_unconfirmed":
+            # Still a SKIP (no host call) — only a sharper reason than skipped_onboarding for an established,
+            # unconfirmed monitoring account. Its terminal-relaunch is the established-monitoring liveness pass.
+            skipped_established += 1
         elif outcome in ("skipped_not_ready", "skipped_reserved"):  # reserved never occurs here (DB-excluded)
             skipped_not_ready += 1
         elif outcome == "skipped_cooldown":
@@ -264,4 +277,4 @@ def run_hosted_capability_recovery(*, actor: str = SOURCE, executor_resolver=Non
             "config_reasserted": config_reasserted, "relaunched": relaunched,
             "skipped_cooldown": skipped_cooldown, "skipped_not_ready": skipped_not_ready,
             "skipped_no_executor": skipped_no_executor, "skipped_onboarding": skipped_onboarding,
-            "errors": errors}
+            "skipped_established": skipped_established, "errors": errors}
