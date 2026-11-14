@@ -172,14 +172,38 @@ function Set-ProtectedAcl([string]$path, [string]$tenantSid) {
     $admins = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
     $tenant = New-Object System.Security.Principal.SecurityIdentifier($tenantSid)
     $full = [System.Security.AccessControl.FileSystemRights]::FullControl
-    $read = [System.Security.AccessControl.FileSystemRights]'Read, Synchronize'
+    # The tenant (guvfx_u_46) is the one-use CONSUMER: run_oneshot_attest.py runs AS guvfx_u_46 and must READ the key,
+    # then OVERWRITE + DELETE it to shred it after the single attempt. That needs Modify (read + write + delete), not a
+    # bare Read grant -- a Read-only grant would silently break the one-use shred and leave the secret on disk.
+    $tenantRights = [System.Security.AccessControl.FileSystemRights]::Modify
     $none = [System.Security.AccessControl.InheritanceFlags]::None
     $noprop = [System.Security.AccessControl.PropagationFlags]::None
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sys, $full, $none, $noprop, $allow)))
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($admins, $full, $none, $noprop, $allow)))
-    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($tenant, $read, $none, $noprop, $allow)))
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($tenant, $tenantRights, $none, $noprop, $allow)))
     try { $acl.SetOwner($admins) } catch { }                         # best-effort; verifier accepts {SYSTEM,Admins,tenant}
+    Set-Acl -LiteralPath $path -AclObject $acl
+}
+
+# ACL for a directory WE create: inheritance broken; SYSTEM + Administrators Full; the tenant gets ReadAndExecute only
+# (traverse + list, so guvfx_u_46 can reach the key file by name) but NO write -- it cannot plant a junction or tamper.
+function Set-ProtectedDirAcl([string]$path, [string]$tenantSid) {
+    $acl = Get-Acl -LiteralPath $path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+    $sys = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+    $admins = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $tenant = New-Object System.Security.Principal.SecurityIdentifier($tenantSid)
+    $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+    $rx = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $none = [System.Security.AccessControl.InheritanceFlags]::None
+    $noprop = [System.Security.AccessControl.PropagationFlags]::None
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sys, $full, $none, $noprop, $allow)))
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($admins, $full, $none, $noprop, $allow)))
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($tenant, $rx, $none, $noprop, $allow)))
+    try { $acl.SetOwner($admins) } catch { }
     Set-Acl -LiteralPath $path -AclObject $acl
 }
 
@@ -199,6 +223,19 @@ function Test-ProtectedAcl([string]$path, [string]$tenantSid) {
     try { $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSid = $null }
     if ($ownerSid -and ($allowed -notcontains $ownerSid)) { return $false }
     return $true
+}
+
+# Best-effort overwrite-then-delete of ONE file. The overwrite never raises (Windows cannot promise a forensic wipe);
+# the DELETE is the guarantee, so a failed delete is surfaced by the caller re-checking Test-Path.
+function Remove-SecretFile([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    try {
+        $size = [int](Get-Item -LiteralPath $path -Force).Length
+        $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
+        try { $zero = New-Object byte[] ([Math]::Max($size, 1)); $fs.Write($zero, 0, $zero.Length); $fs.Flush() }
+        finally { $fs.Close() }
+    } catch { }
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
 }
 
 function Remove-TempSiblings([string]$dir) {
@@ -234,6 +271,16 @@ function Assert-AccountPinned() {
 }
 
 # =====================================================================================================================
+# Test seams are REFUSED in production. Any seam (the sandbox root, the task/SID/secret/failure injectors, or the
+# confirmation skip) is honoured ONLY when the self-test signal is set -- a signal the production launch path (the
+# runbook + the operator) never sets. This keeps the fail-closed contract un-bypassable from the command line: a
+# caller cannot forge the task contract, redirect the path, or skip the human confirmation in production.
+$seamUsed = ($FixedRootForTest -ne '' -or $null -ne $ReadTaskXml -or $null -ne $ResolvePrincipalSid -or
+    $null -ne $ReadSecret -or $null -ne $AfterTempForTest -or $AssumeYes)
+if ($seamUsed -and $env:GUVFX_PROVISIONER_SELFTEST -ne '1') {
+    Write-Redacted (New-Result $false 'guard' 'test_seam_in_production'); exit 2
+}
+
 if ($Remove -and $Verify) { Write-Redacted (New-Result $false 'provision' 'mode_conflict'); exit 2 }
 
 $mode = if ($Remove) { 'remove' } elseif ($Verify) { 'verify' } else { 'provision' }
@@ -274,15 +321,7 @@ try {
             if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) {
                 $result.reason = 'remove_target_reparse'; Write-Redacted $result; exit 2
             }
-            try {
-                $size = [int]$item.Length
-                $fs = [System.IO.File]::Open($keyPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
-                try {
-                    $zero = New-Object byte[] ([Math]::Max($size, 1))
-                    $fs.Write($zero, 0, $zero.Length); $fs.Flush()
-                } finally { $fs.Close() }
-            } catch { }                                                 # best-effort overwrite; delete is the guarantee
-            Remove-Item -LiteralPath $keyPath -Force
+            Remove-SecretFile $keyPath
         }
         Remove-TempSiblings $dir
         $result.key_file_present = (Test-Path -LiteralPath $keyPath)
@@ -318,22 +357,30 @@ try {
     }
     $result.length_policy_satisfied = $true
 
+    # Create the fixed directory tree (admin-controlled) if missing, then re-verify the FULL path chain carries NO
+    # reparse point immediately before writing -- closing any junction/symlink planted during the human-input window.
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Set-ProtectedDirAcl $dir $tenantSid                          # a dir WE create: admin-owned; tenant traverse-only
+    }
+    if (-not (Test-NoReparseChain $keyPath)) { $plain = $null; $result.reason = 'reparse_point_detected'; Write-Redacted $result; exit 2 }
+    if (Test-Path -LiteralPath $keyPath) { $plain = $null; $result.reason = 'key_file_exists'; Write-Redacted $result; exit 2 }
+
     # atomic protected write: restrict the same-dir temp BEFORE the secret bytes land, then rename onto the fixed path.
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $tmp = Join-Path $dir ('.ingest.key.tmp.' + [guid]::NewGuid().ToString('N'))
     $utf8 = New-Object System.Text.UTF8Encoding($false)               # UTF-8, no BOM; verbatim (no normalisation)
     try {
-        [System.IO.File]::WriteAllText($tmp, '', $utf8)               # create empty (inherited ACL, but NO secret yet)
+        [System.IO.File]::WriteAllText($tmp, '', $utf8)               # create empty (no secret yet)
         Set-ProtectedAcl $tmp $tenantSid                              # restrict BEFORE writing the secret
         [System.IO.File]::WriteAllText($tmp, $plain, $utf8)           # secret bytes into the already-restricted temp
         $plain = $null
         if ($null -ne $AfterTempForTest) { & $AfterTempForTest }      # test-only failure injection (production: null)
-        [System.IO.File]::Move($tmp, $keyPath)                       # atomic rename (same volume); preserves the ACL
+        [System.IO.File]::Move($tmp, $keyPath)                       # atomic rename; fails closed if the dest appeared
         $tmp = $null
         Set-ProtectedAcl $keyPath $tenantSid                          # re-assert on the final path (defensive)
     } catch {
         $plain = $null
-        if ($tmp -and (Test-Path -LiteralPath $tmp)) { try { Remove-Item -LiteralPath $tmp -Force } catch { } }
+        if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-SecretFile $tmp }
         Remove-TempSiblings $dir
         $result.reason = 'write_failed'; Write-Redacted $result; exit 2
     }
@@ -341,12 +388,9 @@ try {
     $result.key_file_present = (Test-Path -LiteralPath $keyPath)
     $result.acl_verified = (Test-ProtectedAcl $keyPath $tenantSid)
     $ok = ($result.key_file_present -and $result.acl_verified)
+    if (-not $ok) { Remove-SecretFile $keyPath }                      # never leave a weakly-protected secret on disk
     $result.ok = $ok
     $result.reason = if ($ok) { 'provisioned' } else { 'acl_failed' }
-    if (-not $ok) {
-        # fail closed WITHOUT leaving a weakly-protected secret: shred+remove and report failure.
-        try { Remove-Item -LiteralPath $keyPath -Force } catch { }
-    }
     Write-Redacted $result
     exit ([int](-not $ok))
 }

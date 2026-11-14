@@ -12,6 +12,9 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'host-local one-shot key provisioner (synthetic)' {
     BeforeAll {
+        # the provisioner refuses every test seam in production; this self-test signal (which the production launch
+        # path never sets) authorises the injected seams for the behavioural suite.
+        $env:GUVFX_PROVISIONER_SELFTEST = '1'
         $script:Wrapper = Join-Path (Split-Path -Parent $PSScriptRoot) 'Provision-GuvfxCopierOneShotKey.ps1'
         $script:Synth = 'SYNTHETIC_PROV_KEY_0123456789_ABCDEF0123'          # 40 chars, no 40+ hex run, no placeholder
         $script:Synth32 = 'SYNTH_KEY_32_0123456789_ABCDEFGH'               # exactly 32 chars
@@ -84,6 +87,7 @@ Describe 'host-local one-shot key provisioner (synthetic)' {
     }
 
     AfterAll {
+        $env:GUVFX_PROVISIONER_SELFTEST = $null
         Get-ChildItem -LiteralPath $env:TEMP -Filter 'prov_*' -Directory -ErrorAction SilentlyContinue |
             ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
         Remove-Variable -Name Synth, Synth32, RunnerSid, Wrapper -Scope Script -ErrorAction SilentlyContinue
@@ -133,6 +137,18 @@ Describe 'host-local one-shot key provisioner (synthetic)' {
             $sids = Get-AclSidSet (Key-Path $root)
             $expected = @('S-1-5-18', 'S-1-5-32-544', $script:RunnerSid) | Sort-Object -Unique
             ($sids -join ',') | Should -Be ($expected -join ',')
+        }
+        It '21b. grants the tenant Modify (so the one-use consumer can overwrite + delete the key)' {
+            $root = New-Root
+            [void](Invoke-Prov -Root $root)
+            $acl = Get-Acl -LiteralPath (Key-Path $root)
+            $ace = $acl.Access | Where-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $script:RunnerSid }
+            $ace | Should -Not -BeNullOrEmpty
+            $rights = [int]$ace.FileSystemRights
+            $write = [int][System.Security.AccessControl.FileSystemRights]::Write
+            $del = [int][System.Security.AccessControl.FileSystemRights]::Delete
+            (($rights -band $write) -eq $write) | Should -BeTrue    # consumer overwrites during shred
+            (($rights -band $del) -eq $del) | Should -BeTrue        # consumer deletes (one-use)
         }
         It '22. removes the temp file after success' {
             $root = New-Root
@@ -192,6 +208,18 @@ Describe 'host-local one-shot key provisioner (synthetic)' {
             # the key can ONLY ever land at <root>\copier-emitter\oneshot\ingest.key
             (Test-Path -LiteralPath (Key-Path $root)) | Should -BeTrue
             (Split-Path -Leaf (Key-Path $root)) | Should -Be 'ingest.key'
+        }
+        It 'G. refuses ANY test seam in production (self-test signal absent) - contract is un-bypassable from argv' {
+            $root = New-Root
+            $saved = $env:GUVFX_PROVISIONER_SELFTEST
+            $env:GUVFX_PROVISIONER_SELFTEST = ''
+            try {
+                $out = & $script:Wrapper -FixedRootForTest $root -AssumeYes 2>&1
+                $json = (($out | Out-String).Trim() | ConvertFrom-Json)
+                $json.ok | Should -BeFalse
+                $json.reason | Should -Be 'test_seam_in_production'
+                (Test-Path -LiteralPath (Key-Path $root)) | Should -BeFalse
+            } finally { $env:GUVFX_PROVISIONER_SELFTEST = $saved }
         }
     }
 

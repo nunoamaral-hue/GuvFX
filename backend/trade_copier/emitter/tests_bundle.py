@@ -638,13 +638,26 @@ class OneShotKeyProvisionerTests(SimpleTestCase):
         self.assertIn("S-1-5-18", t)                                   # SYSTEM
         self.assertIn("S-1-5-32-544", t)                              # Administrators
         self.assertIn("[System.IO.File]::Move(", t)                   # atomic same-volume rename
+        # the tenant gets Modify (read + write + delete) so the one-use consumer can shred the key; NOT a bare Read
+        self.assertIn("[System.Security.AccessControl.FileSystemRights]::Modify", t)
         # the temp is ACL-restricted BEFORE the secret bytes are written
         acl_idx = t.index("Set-ProtectedAcl $tmp")
         secret_idx = t.index("WriteAllText($tmp, $plain")
         self.assertLess(acl_idx, secret_idx, "temp must be restricted before the secret is written")
+        # a directory the wrapper creates is admin-owned with the tenant limited to traverse (ReadAndExecute)
+        self.assertIn("Set-ProtectedDirAcl", t)
+        self.assertIn("[System.Security.AccessControl.FileSystemRights]::ReadAndExecute", t)
         # no broad principal is ever granted
         for broad in ("'Everyone'", r"'BUILTIN\Users'", "'Authenticated Users'", "S-1-1-0", "S-1-5-11", "S-1-5-32-545"):
             self.assertNotIn(broad, t, f"must not grant a broad principal ({broad})")
+
+    def test_reparse_rechecked_before_write_and_acl_failure_shreds(self):
+        t = self._t()
+        # the reparse chain is re-verified AFTER the human-input window / dir creation, immediately before the write
+        self.assertGreaterEqual(t.count("Test-NoReparseChain"), 3, "reparse chain must be re-checked before the write")
+        # a post-write ACL-verification failure SHREDS the secret, never a bare delete
+        self.assertIn("Remove-SecretFile $keyPath", t)
+        self.assertIn("if (-not $ok) { Remove-SecretFile $keyPath }", t)
 
     def test_reparse_refusal_and_min_length(self):
         t = self._t()
@@ -672,7 +685,7 @@ class OneShotKeyProvisionerTests(SimpleTestCase):
         self.assertIn("Test-ProtectedAcl", t)
         self.assertIn("$item.Length -ge $MIN_SECRET_LEN", t)          # verify length by SIZE; content never read
 
-    def test_test_seams_default_null_and_root_fixed(self):
+    def test_test_seams_default_null_and_gated_in_production(self):
         t = self._t()
         for seam in ("[scriptblock]$ReadTaskXml = $null", "[scriptblock]$ResolvePrincipalSid = $null",
                      "[scriptblock]$ReadSecret = $null", "[scriptblock]$AfterTempForTest = $null",
@@ -681,6 +694,11 @@ class OneShotKeyProvisionerTests(SimpleTestCase):
         # the sandbox seam only prepends a root to the FIXED relative suffix (never a full arbitrary path)
         self.assertIn("if ($FixedRootForTest) { $FixedRootForTest } else { $FIXED_ROOT }", t)
         self.assertIn("Join-Path $root $KEY_RELATIVE", t)
+        # EVERY seam is refused in production: a seam is honoured only when the self-test signal is set, so the
+        # fail-closed contract cannot be bypassed from the command line (defaults alone are not enough).
+        self.assertIn("$env:GUVFX_PROVISIONER_SELFTEST -ne '1'", t)
+        self.assertIn("test_seam_in_production", t)
+        self.assertIn("$seamUsed", t)
 
     def test_pester_suite_present_and_synthetic(self):
         self.assertTrue(_KEY_PROV_TEST.exists(), "provisioner Pester suite missing")
