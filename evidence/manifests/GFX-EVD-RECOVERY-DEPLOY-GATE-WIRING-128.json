@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-RECOVERY-DEPLOY-GATE-WIRING-128",
+  "packet_id": "GFX-DASHBOARD-RECOVERY-DEPLOY-GATE-WIRING-128",
+  "created_at_utc": "2026-11-15T12:30:00Z",
+  "branch": "feat/deploy-gate-wiring",
+  "base_commit": "fbde7ef7f1d511a3cfe76286dff5e6a8dc24f514",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK / default-OFF / migration-free. Wires the OPERATING-MODEL-127 recovery/deploy exclusion gate into the production backend-deploy path via ONE shared wrapper scripts/guarded_deploy.py, and prepares (does not execute) the bounded #50 steady-state rollout. The wrapper acquires a governed DEPLOY lease BEFORE any mutation (refused while a recovery lease is live or MALFORMED), runs the existing rollback-first, backend-only, never---remove-orphans build+recreate, and releases the lease through GUARANTEED cleanup (a deploy failure whose ROLLBACK also fails RETAINS the lease + ALERTS; the lease self-expires via TTL). It uses only the stdlib recovery_lease file primitives (works backend/DB-down); the emergency override requires an explicit non-empty redacted audited reason and bypasses only a LIVE recovery lease (never a malformed one); no mutation runs before the lease is acquired; it NEVER passes --remove-orphans. No production enablement, no flag change, no is_active/Copy-Trading/broker/MT5/credential change.",
+    "adr": "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — DEPLOY-GATE-WIRING-128 note)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance (secret/PII scan + evidence lint) + frontend (untouched). Pure-Python change; no PowerShell artefact; no migration."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_guarded_deploy  (15/15 OK)",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_recovery_operating_model hosted_workspace.tests_guarded_deploy  (57/57 OK)",
+    "cd backend && .venv/bin/python manage.py check  (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations hosted_workspace --check --dry-run  (No changes detected — migration-free)",
+    "cd backend && .venv/bin/python -m py_compile ../scripts/guarded_deploy.py ../scripts/deploy_recovery_gate.py  (OK — static check of the changed deploy scripts)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT: PASS)"
+  ],
+  "expected_results": [
+    "Gate wiring: an active recovery lease (or a malformed lease) REFUSES the deploy before ANY build/recreate; an active deploy lease blocks a recovery attempt (mutual exclusion); no mutation runs before the deploy lease is acquired.",
+    "Guaranteed cleanup: a clean success OR a successful rollback releases the deploy lease; a deploy failure whose ROLLBACK also fails RETAINS the lease and ALERTS (no false cleanup); the finally runs on success/verify-failure/exception.",
+    "Emergency override: requires a non-empty reason, is audited, the reason is redacted, bypasses only a LIVE recovery lease (never a MALFORMED one), is never silently implied.",
+    "Fail-closed CLI: the wrapper refuses (exit 3) when no lease file is configured — it NEVER falls back to a temp dir / bypasses the gate on a backend-down host. verify() reads only GUVFX_GIT_COMMIT (no full-env dump) and requires a real health 200 (bounded readiness poll), not an auth-layer 401.",
+    "Concurrency/expiry: concurrent acquisition has exactly one winner (O_EXCL lost-race → REFUSED); an expired lease is reclaimed on acquire; works with no Django/DB.",
+    "No secret/environment leakage; is_active / Copy-Trading / broker / MT5 / credentials untouched; manage.py check clean; makemigrations --check migration-free; secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "scripts/guarded_deploy.py (NEW, Django-free): run_guarded_deploy(ops, ...) acquires a DEPLOY lease (gate) → tag_rollback → build → recreate (backend-only) → verify → guaranteed finally release (or rollback→release, or retain+alert when rollback also fails). DeployOps ABC + _RealDeployOps (rollback-first {{.Image}} tag, git-checkout+build, --no-deps --force-recreate recreate [never --remove-orphans], bounded health-200 readiness poll reading only GUVFX_GIT_COMMIT, tag-based rollback) + main() with fail-closed --lease-file (no temp fallback) + --health-url.",
+    "backend/hosted_workspace/tests_guarded_deploy.py (NEW): 15 tests (refuse-before-mutation on recovery/malformed lease; deploy-lease blocks recovery; clean acquire→release; verify-fail/exception→rollback→release; fail+rollback-fail→retain+alert; override requires non-empty reason + redacted audit + never-bypass-malformed; concurrent one-winner; expired reclaim; backend-down usable; no-secret; main() no-lease-file fail-closed exit 3).",
+    "docs/operations/hosted-workspace/RECOVERY_OPERATING_MODEL.md (EDIT): added the deploy-gate wiring section (guarded_deploy usage with mandatory --lease-file on the handoff mount) and the #50 steady-state RESOLUTION (model B — recovery flags OFF except during bounded governed leases — derived from merged _is_approved_steady_state_config requiring demo-only for an unleased approved steady-state, and #50 being LIVE).",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md (EDIT): DEPLOY-GATE-WIRING-128 note.",
+    "Independent 4-vector adversarial review (deploy-lease lifecycle+cleanup; gate bypass/fail-closed; secret/boundary; rollback-first/verify soundness): found 1 CRITICAL (CLI defaulted lease_path=None → /tmp fallback bypassed the gate on a backend-down host) + 1 HIGH (verify() 401 only proved gunicorn booted → a migration-broken revision reported DEPLOYED, no rollback) + MEDIUM/LOW, ALL FIXED with regression tests: added fail-closed --lease-file (no temp fallback) + main() exit-3 test; verify() now a bounded health-200 readiness poll reading only GUVFX_GIT_COMMIT (no full-env dump); override no longer bypasses a MALFORMED lease (+ test); retain-alert wording corrected for the override path.",
+    "Local verification (PostgreSQL): tests_guarded_deploy 15/15; operating-model+guarded-deploy cluster 57/57; manage.py check clean; makemigrations --check migration-free; py_compile of the changed deploy scripts OK; secret scan + evidence lint PASS.",
+    "Read-only production preflight: prod backend db45ff53 (pkt-127 fbde7ef7 merged but NOT deployed); recovery flags OFF (env absent); operational lease ABSENT; no deploy running; #50 recovery_count 2 (unchanged), 0 open established alerts; Copy-Trading live-execute OFF (0 active authz / 0 arms). Deploy paths traced: host build_*.sh / deploy_093_build.sh (rollback-first build) + deploy_093_recreate.sh (up -d --no-deps --force-recreate, never --remove-orphans); backend is image-based. #50 steady-state model = B (bounded governed leases)."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS): the gate wiring is prepared repository-only. The wrapper is NOT merged (auto-merge OFF, STOP before merge) and NOT deployed; no production backend deploy was run through it; recovery flags remain default-OFF; no production mutation occurred.",
+    "The host's ad-hoc build_*.sh / deploy_*_recreate.sh live outside Git; this packet provides and tests the shared wrapper and documents routing every deploy through it — wiring the host scripts to call it is the operator step in the runbook.",
+    "The deploy lease has no heartbeat/renewal: it is acquired once and held across build+recreate; the operator must set --ttl above the expected deploy duration (default 1800s is longer than any observed backend build+recreate). A full lease-renewal mechanism is out of scope.",
+    "_RealDeployOps shells to git+docker and is operator-run (not exercised in CI); the lease/cleanup guarantee it applies is unit-tested in the Django-testable run_guarded_deploy core with a fake DeployOps across every exit path.",
+    "verify() checks boot + health-200 + revision stamp, NOT migration health (the wrapper runs build+recreate only, never manage.py migrate — migrations are a separate documented step; the recovery deploys are migration-free).",
+    "The authoritative exact-head CI is the merge gate and is driven to a terminal result in-turn; the figures above are local (macOS + PostgreSQL) runs of the same commands CI runs.",
+    "No credential, snapshot, host deploy, flag enablement, is_active change, Copy-Trading or broker action was performed."
+  ],
+  "artefact_locations": [
+    "scripts/guarded_deploy.py (shared lease-guarded, rollback-first backend-deploy wrapper)",
+    "backend/hosted_workspace/tests_guarded_deploy.py (15 tests)",
+    "docs/operations/hosted-workspace/RECOVERY_OPERATING_MODEL.md (deploy-gate wiring + #50 steady-state model B)",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — DEPLOY-GATE-WIRING-128 note)",
+    "evidence/manifests/GFX-EVD-RECOVERY-DEPLOY-GATE-WIRING-128.json (this manifest)"
+  ],
+  "checksums": {
+    "scripts/guarded_deploy.py": "sha256:e62b693cb2030657114c477707035ec60922c08fdcd6f0ae486a7723c24bbf8f",
+    "backend/hosted_workspace/tests_guarded_deploy.py": "sha256:44d2b9da6bbb3bcae7a8fac5e7485c68ceb8b78f4ab190f95052df0dd403396a",
+    "docs/operations/hosted-workspace/RECOVERY_OPERATING_MODEL.md": "sha256:15548aa64ca066a915908bdca075949e82e18d45e56df54de41faf9674a449a7",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md": "sha256:b081b997110903ced6f529685080fd0fde4b8fb2cf038f2aa9355022fa019df6"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Independent 4-vector adversarial review of the deploy wrapper; 1 CRITICAL + 1 HIGH + MEDIUM/LOW, all fixed with named regression tests BEFORE the PR. Sponsor review pending (auto-merge OFF, STOP before merge). Pure-Python change — no PowerShell gate applies."
+}
