@@ -24,7 +24,10 @@ from execution import snapshot_transport as ST
 from execution.bridge_config import (
     render_bridge_env,
     readonly_positions_for_account,
+    follower_positions_read_readiness,
+    allow_live_for_account,
     _live_readonly_positions_monitoring_armed,
+    _live_readonly_positions_account_allowlist,
 )
 from execution.tests_bridge_symbols import _load_bridge
 
@@ -197,6 +200,93 @@ class RendererAndDecision(SimpleTestCase):
             self.assertFalse(_live_readonly_positions_monitoring_armed())          # execution flag ≠ read authority
         with override_settings(LIVE_READONLY_POSITIONS_MONITORING_ENABLED="1"):
             self.assertTrue(_live_readonly_positions_monitoring_armed())
+
+
+class AccountLevelAllowlist(SimpleTestCase):
+    """GFX-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135 — the default-OFF, ACCOUNT-LEVEL read-only allow-list.
+
+    Maps the packet's test matrix for the new authority. Items covered by the broader suite are CITED, not
+    duplicated: (4) identity mismatch + (5) cross-tenant are the UNCHANGED backend firewall (FirewallIdentityControls
+    below + tests_live_readonly_firewall); (10) bounded, tenant-isolated six-account fan-out is the dashboard
+    aggregation (analytics.tests_portfolio bounded-parallel + the per-account identity firewall). This authority is
+    account-scoped, fail-closed, and NEVER consulted by any order/mutation path."""
+
+    def _acct(self, acct_id):
+        return SimpleNamespace(id=acct_id)
+
+    def test_allowlisted_live_account_armed(self):  # matrix (1): approved LIVE account can read
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48, 53 54"):
+                for aid in (48, 53, 54):
+                    self.assertTrue(readonly_positions_for_account(self._acct(aid)), aid)
+
+    def test_unapproved_live_account_refused(self):  # matrix (2): unapproved LIVE account refused
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                self.assertFalse(readonly_positions_for_account(self._acct(99)))
+
+    def test_empty_or_unset_allowlist_fails_closed(self):  # matrix (8): default OFF
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST=""):
+                self.assertFalse(readonly_positions_for_account(self._acct(48)))
+            # fully unset (no setting, no env) resolves to the empty set and denies every account
+            self.assertEqual(_live_readonly_positions_account_allowlist(), frozenset())
+            self.assertFalse(readonly_positions_for_account(self._acct(48)))
+
+    def test_malformed_allowlist_fails_closed_never_widens(self):  # matrix (8): malformed config refuses
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="not,an,int ; drop-table 48x"):
+                self.assertEqual(_live_readonly_positions_account_allowlist(), frozenset())
+                self.assertFalse(readonly_positions_for_account(self._acct(48)))
+            # a bad token among good ones is dropped; the valid ids still parse (a malformed entry never breaks
+            # the good ones and never widens the set)
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48, garbage, 53"):
+                self.assertEqual(_live_readonly_positions_account_allowlist(), frozenset({48, 53}))
+                self.assertFalse(readonly_positions_for_account(self._acct(99)))
+
+    def test_demo_account_never_armed_even_if_allowlisted(self):  # matrix (3): demo behaviour unchanged
+        with mock.patch("trading.account_policy.is_live_environment", return_value=False):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                self.assertFalse(readonly_positions_for_account(self._acct(48)))
+
+    def test_missing_or_invalid_account_id_fails_closed(self):  # matrix (4)-adjacent: malformed identity refused
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                self.assertFalse(readonly_positions_for_account(SimpleNamespace()))          # no id
+                self.assertFalse(readonly_positions_for_account(SimpleNamespace(id="x")))    # non-int id
+
+    def test_allowlist_read_authority_does_not_arm_execution(self):  # matrix (6)(7): read != execution (#48)
+        acct = self._acct(48)
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True), \
+             mock.patch("execution.live_authz.live_execution_permitted", return_value=False), \
+             mock.patch("execution.live_authz.copier_live_execution_authorized", return_value=False), \
+             mock.patch("execution.live_authz.copier_live_lifecycle_authorized", return_value=False):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                self.assertTrue(readonly_positions_for_account(acct))     # READ armed by the allow-list
+                self.assertFalse(allow_live_for_account(acct))            # EXECUTION still OFF (separate stack)
+
+    def test_render_for_allowlisted_is_read_only_no_allow_live(self):  # render stays execution-independent
+        ep = SimpleNamespace(trading_account_id=48, runtime_path="/x", port=8801, expected_login="L",
+                             expected_server="S", windows_username="u", workspace_uuid="w", is_demo=False)
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                env = render_bridge_env(ep, readonly_positions=readonly_positions_for_account(self._acct(48)))
+        self.assertIn("set MT5_LIVE_READONLY_POSITIONS_ENABLED=1", env)
+        self.assertNotIn("MT5_ALLOW_LIVE", env)
+
+    def test_readiness_taxonomy_truthful(self):  # matrix (9): reason codes stay truthful
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                self.assertEqual(follower_positions_read_readiness(self._acct(48)),
+                                 ("FOLLOWER_POSITIONS_READ_OK", "account_allowlisted"))
+                self.assertEqual(follower_positions_read_readiness(self._acct(99)),
+                                 ("FOLLOWER_POSITIONS_READ_NOT_AUTHORIZED", "live_read_authority_off"))
+
+    def test_allowlist_independent_of_global_and_follower_authorities(self):  # each authority default-OFF (OR)
+        with mock.patch("trading.account_policy.is_live_environment", return_value=True):
+            self.assertFalse(_live_readonly_positions_monitoring_armed())      # broad flag OFF (default)
+            with override_settings(LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST="48"):
+                self.assertTrue(readonly_positions_for_account(self._acct(48)))  # armed by allow-list alone
 
 
 class FirewallIdentityControls(SimpleTestCase):
