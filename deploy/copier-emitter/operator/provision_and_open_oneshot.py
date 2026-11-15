@@ -55,13 +55,13 @@ def _last_json(text):
     ``copier_verifier_window`` command pretty-prints it (``json.dumps(..., indent=1)``, multi-line);
     the Windows provisioner emits it compact (``ConvertTo-Json -Compress``). SSH banners travel on
     stderr (read separately), so stdout is normally clean JSON. The earlier parser read line-by-line
-    and so could not parse a pretty-printed (multi-line) object — no single line is valid JSON — and
+    and so could not parse a pretty-printed (multi-line) object - no single line is valid JSON - and
     wrongly reported "could not read status".
 
-    Contract (fail closed — the result feeds security gates, so it must never be ambiguous):
+    Contract (fail closed - the result feeds security gates, so it must never be ambiguous):
       * accept compact one-line JSON AND pretty-printed multi-line JSON;
       * tolerate harmless non-JSON banner/noise text that PRECEDES the single JSON value;
-      * require EXACTLY ONE complete top-level JSON value — reject empty output, non-JSON garbage,
+      * require EXACTLY ONE complete top-level JSON value - reject empty output, non-JSON garbage,
         partial/truncated JSON, two-or-more concatenated payloads (ambiguous), and any non-whitespace
         content TRAILING the value (trailing garbage / a second payload);
       * return the parsed object, else None.
@@ -70,7 +70,7 @@ def _last_json(text):
     s = text.strip()
     if not s:
         return None
-    # Fast path: stdout is exactly one JSON value (the normal clean case). json.loads is strict — it
+    # Fast path: stdout is exactly one JSON value (the normal clean case). json.loads is strict - it
     # rejects trailing garbage and multiple concatenated payloads outright. Only an OBJECT is a valid
     # command result; a scalar/array fails closed (callers gate on ``.get(...)``).
     try:
@@ -79,7 +79,7 @@ def _last_json(text):
     except ValueError:
         pass
     # Fallback: tolerate non-JSON noise that PRECEDES the value. Decode the first complete top-level
-    # JSON value, then require everything after it to be whitespace only — so a leading banner is
+    # JSON value, then require everything after it to be whitespace only - so a leading banner is
     # accepted but a trailing payload / trailing garbage / a second object is rejected as ambiguous.
     dec = json.JSONDecoder()
     i, n = 0, len(text)

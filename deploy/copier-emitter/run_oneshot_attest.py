@@ -106,7 +106,7 @@ def _classify_post_response(status, raw):
     A "rejected" response with a missing or non-allow-listed reason collapses to ``rejected_unknown``.
     ``replayed``/``disabled``/``unavailable`` carry no sub-reason and surface as themselves. Any
     unrecognised body shape keeps the ``http_<code>`` fallback. This never returns the envelope, signature,
-    broker login, raw response body, headers or exception text — only an allow-listed identifier."""
+    broker login, raw response body, headers or exception text - only an allow-listed identifier."""
     verified = False
     reason = "http_%d" % status      # fallback when the body is not a recognised {status: ...} shape
     try:
