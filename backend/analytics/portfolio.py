@@ -321,44 +321,107 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
     }
 
 
-def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None,
-                       rate_source=None, observed_ccy=None):
-    """Today's REALIZED net P&L across accounts (closed positions closed on today's calendar date). Distinct from
-    floating P/L.
+def _daily_native_by_account(account_ids, today, *, stage: str) -> dict:
+    """``{account_id: (native_net, trade_count, {non-blank trade currencies})}`` over trades CLOSED on ``today``.
 
-    ``today`` is ``timezone.now().date()``; with TIME_ZONE=UTC that is the UTC calendar date. NOTE (documented, not
-    changed here): ``close_time`` is stored from the MT5 deal timestamp which is the broker SERVER time, so this
-    window is effectively a broker-server calendar day; a true-UTC or member-local frame is a platform-wide
-    follow-up requiring an ingest-time correction + backfill (see KNOWN_ISSUES). Mid-day trades (the norm) are
-    unaffected; only trades within the broker/UTC offset of midnight could bucket a day off.
-
-    Returns ``(value|None, basis)`` — currency-honest like ``portfolio_metrics``: non-USD accounts are excluded
-    (``basis="PARTIAL"``), and a mixed trade currency withholds the number entirely (``None``, ``"PARTIAL"``)
-    rather than summing across denominations (H1)."""
-    usd_accounts, non_usd = _partition_usd(accounts, observed_nonusd_ids)
-    excluded = [a.id for a in non_usd]
-    ids = [a.id for a in usd_accounts]
-    if not ids and excluded:
-        # ADR-0066: a SINGLE non-USD currency scope with a vetted rate -> convert today's realized net to USD.
-        conv = _single_currency_rate(non_usd, observed_ccy, rate_source)
-        if conv is not None:
-            _ccy, fx = conv
-            d = timezone.now().date()
-            dqs = Trade.objects.filter(account_id__in=excluded, close_time__date=d)
-            if stage in ("LIVE", "TEST"):
-                dqs = dqs.filter(source_stage=stage)
-            return round(sum(_net(t) for t in dqs.only("profit", "commission", "swap")) * fx.rate, 2), "USD"
-        # No vetted rate: no USD-eligible trade set -> withhold the number entirely (None), never a measured 0.0.
-        # (No accounts at all falls through to the honest empty 0.0 below.)
-        return None, "PARTIAL"
-    if not _trade_currencies_all_usd(ids, stage=stage):
-        return None, "PARTIAL"
-    today = timezone.now().date()
+    ONE query for the whole scope (no per-account N+1). ``native_net`` is the account's same-day realized in its OWN
+    denomination (profit+commission+swap); the currency set lets the caller fail closed on a mixed-denomination
+    account instead of converting a mixed native sum by a single rate."""
+    out: dict = {}
+    ids = list(account_ids)
+    if not ids:
+        return out
     qs = Trade.objects.filter(account_id__in=ids, close_time__date=today)
     if stage in ("LIVE", "TEST"):
         qs = qs.filter(source_stage=stage)
-    val = round(sum(_net(t) for t in qs.only("profit", "commission", "swap")), 2)
-    return val, ("USD" if not excluded else "PARTIAL")
+    for t in qs.only("account_id", "profit", "commission", "swap",
+                     "profit_currency", "commission_currency", "swap_currency"):
+        net, n, ccys = out.get(t.account_id, (0.0, 0, set()))
+        net += _net(t)
+        n += 1
+        for f in ("profit_currency", "commission_currency", "swap_currency"):
+            raw = getattr(t, f)
+            if raw:
+                ccys.add(FX.normalise_currency(raw))
+        out[t.account_id] = (net, n, ccys)
+    return out
+
+
+def _account_realized_currency(account, observed_ccy) -> str:
+    """The account's realized denomination: the OBSERVED (snapshot) currency when known, else the model currency,
+    else USD — mirrors ``build_summary``'s per-account observed-currency derivation so the realized and balance
+    paths never disagree on an account's currency."""
+    observed_ccy = observed_ccy or {}
+    return FX.normalise_currency(observed_ccy.get(account.id) or getattr(account, "account_currency", None))
+
+
+def daily_realized_pnl_detail(accounts, *, stage: str = STAGE_ALL, observed_ccy=None,
+                              rate_source: Optional[FX.FxRateSource] = None):
+    """Today's REALIZED net P&L as a per-account, currency-honest USD aggregate — returns ``(UsdAggregate, today)``.
+
+    Each account's same-day realized (profit+commission+swap of positions CLOSED on today's broker-server calendar
+    date) is converted to USD INDEPENDENTLY — USD at identity, a non-USD account via the vetted ``rate_source`` —
+    and the convertible contributions are summed, EXACTLY as the balance/equity totals already do
+    (``portfolio_fx.aggregate_usd``). This replaces the previous whole-scope single-currency rule, under which a
+    MIXED USD+non-USD population silently dropped every non-USD account, so a GBP account's same-day realized never
+    reached the daily total and a GBP-only trading day read as ``$0.00`` (the pkt-131 defect).
+
+    Only accounts that CLOSED a trade today become items: an account with no same-day trade contributes nothing and
+    is NEVER an exclusion (its same-day realized is a true zero, not a coverage gap). An account whose same-day
+    trades carry a denomination other than (or in addition to) the account currency is excluded fail-closed
+    (``mixed_trade_currency``) — a mixed native sum is never converted by a single rate. The aggregate's ``state``
+    is OK (all convertible), PARTIAL (some excluded — a measured total over the included subset, NEVER a false
+    zero), UNAVAILABLE (same-day activity existed but NONE converted — ``total_usd`` is ``None``), or EMPTY (no
+    account closed a trade today — a genuine ``0.0``). Deposits/withdrawals are broker BALANCE deals (no
+    ``position_id``) and are never ingested as Trades, so they never contribute.
+
+    ``today`` is ``timezone.now().date()`` (TIME_ZONE=UTC) compared against the stored broker-server ``close_time``,
+    so the window is a broker-server calendar day (documented in KNOWN_ISSUES — a true-UTC / member-local frame is a
+    platform-wide follow-up). AUTOMATIC: the account set is whatever the caller passes (the monitored population), so
+    a newly monitored account enters the figure with no per-account packet or code change."""
+    rs = rate_source or FX.NullFxRateSource()
+    today = timezone.now().date()
+    by_acct = _daily_native_by_account([a.id for a in accounts], today, stage=stage)
+    items = []
+    mixed_excluded = []
+    for a in accounts:
+        native, n, ccys = by_acct.get(a.id, (0.0, 0, set()))
+        if n == 0:
+            continue                                        # no same-day trade -> contributes nothing, not a gap
+        acct_cur = _account_realized_currency(a, observed_ccy)
+        nonblank = {c for c in ccys if c}
+        if nonblank and nonblank != {acct_cur}:
+            # Trades declare a denomination other than (or beyond) the account currency: a single rate cannot
+            # convert a mixed native sum. Exclude fail-closed; never fold a mixed denomination into one number (H1).
+            # The native figure is withheld (None): ``native`` is profit+commission+swap across components whose
+            # declared currencies are NOT all the account currency, so there is no honest single-denomination amount
+            # to disclose — surfacing one would re-introduce the silent fold the guard exists to prevent.
+            mixed_excluded.append({"account_id": a.id, "native": None,
+                                   "native_currency": acct_cur, "reason": "mixed_trade_currency",
+                                   "category": FX.CURRENCY_UNCONVERTIBLE})
+            continue
+        items.append({"account_id": a.id, "amount": round(native, 2), "currency": acct_cur})
+    agg = FX.aggregate_usd(items, rs)
+    for mx in mixed_excluded:
+        agg.basis = "PARTIAL"
+        agg.unconverted.append(mx)
+    return agg, today
+
+
+def daily_realized_pnl(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None,
+                       rate_source=None, observed_ccy=None):
+    """Back-compatible ``(value, basis)`` wrapper over :func:`daily_realized_pnl_detail` (per-account conversion).
+
+    ``value`` is the summed USD of the convertible accounts' same-day realized — ``None`` when same-day activity
+    existed but none converted (UNAVAILABLE; never a measured ``0.0``), ``0.0`` for a genuine no-trade or
+    complete-zero day, else the measured figure. ``basis`` is ``"USD"`` when the figure is complete (or there was
+    no activity) and ``"PARTIAL"`` when some same-day activity was excluded. ``observed_nonusd_ids`` is accepted for
+    signature compatibility and is no longer consulted (per-account currency comes from ``observed_ccy`` / the
+    account)."""
+    agg, _today = daily_realized_pnl_detail(accounts, stage=stage, observed_ccy=observed_ccy, rate_source=rate_source)
+    d = agg.as_dict()
+    basis = "USD" if d["state"] in (FX.STATE_OK, FX.STATE_EMPTY) else "PARTIAL"
+    return d["total_usd"], basis
 
 
 def account_net_pnl(account, *, stage: str = STAGE_ALL, observed_usd=None, rate_source=None, account_ccy=None):
@@ -710,23 +773,20 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     open_pl_agg, open_stale = portfolio_open_pl(per_open, rate_source)
     metrics = portfolio_metrics(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids,
                                 rate_source=rate_source, observed_ccy=observed_ccy)
-    daily_val, daily_basis = daily_realized_pnl(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids,
-                                                rate_source=rate_source, observed_ccy=observed_ccy)
-
-    # Daily realized-P&L coverage: report the split that MATCHES the figure actually produced (not a blind non-USD
-    # partition). ``daily_realized_pnl`` withholds the number entirely (None) when it cannot be expressed as one USD
-    # denomination (mixed trade currency, or non-USD with no vetted rate) — then NOTHING is covered; and under
-    # ADR-0066 a single non-USD scope with a vetted rate IS converted — then those non-USD accounts ARE included.
-    all_ids = {a.id for a in accounts}
-    nonusd_ids = sorted(observed_nonusd_ids & all_ids)
-    usd_ids = all_ids - set(nonusd_ids)
-    if daily_val is None:
-        daily_included_ids, daily_excluded = [], sorted(all_ids)           # figure withheld — covers no account
-    elif not usd_ids and nonusd_ids:
-        daily_included_ids, daily_excluded = nonusd_ids, []                # ADR-0066 single-currency conversion
-    else:
-        daily_included_ids, daily_excluded = sorted(usd_ids), nonusd_ids   # USD subset summed; non-USD excluded
-    daily_included_count = len(daily_included_ids)
+    # Daily realized P&L: a per-account, currency-honest USD aggregate (the SAME machinery as the balance total) so
+    # EVERY monitored account's same-day realized contributes — a non-USD account is converted via the vetted rate,
+    # and only genuinely non-convertible same-day activity is excluded (surfaced with its native figure, never
+    # summed, never a false 0.0). Coverage counts the accounts whose same-day realized was actually summed vs
+    # dropped, so "N included / M excluded" matches the figure rather than a blind denomination split.
+    daily_agg, _daily_today = daily_realized_pnl_detail(accounts, stage=stage, observed_ccy=observed_ccy,
+                                                        rate_source=rate_source)
+    daily_d = daily_agg.as_dict()
+    daily_val = daily_d["total_usd"]
+    daily_state = daily_d["state"]
+    daily_basis = "USD" if daily_state in (FX.STATE_OK, FX.STATE_EMPTY) else "PARTIAL"
+    daily_excluded_detail = daily_d["unconverted"]      # [{account_id, native, native_currency, reason, category}]
+    daily_excluded = [u["account_id"] for u in daily_excluded_detail]
+    daily_included_count = daily_d["included_count"]
 
     payload = {
         "reporting_currency": FX.USD,
@@ -747,14 +807,16 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             "balance_usd": bal_agg.as_dict(),
             "equity_usd": eq_agg.as_dict(),
             "open_pl_usd": open_pl_agg.as_dict(),
-            "daily_realized_pnl_usd": daily_val,            # None when non-USD/mixed; basis states it (H1)
-            "daily_realized_pnl_basis": daily_basis,
+            "daily_realized_pnl_usd": daily_val,            # None=UNAVAILABLE (never a false 0); 0.0=EMPTY/complete-zero
+            "daily_realized_pnl_basis": daily_basis,        # "USD" | "PARTIAL" (back-compat 2-value)
+            "daily_realized_pnl_state": daily_state,        # OK | PARTIAL | UNAVAILABLE | EMPTY (the honest state)
             # Day window is the stored broker-server ``close_time`` calendar date (≈UTC); named so the client never
-            # mislabels the timezone. included/excluded = the USD-eligible account split the figure was summed over.
+            # mislabels the timezone. included/excluded COUNT same-day activity actually summed vs dropped.
             "daily_realized_pnl_window": "broker_server_calendar_day",
             "daily_realized_pnl_included_count": daily_included_count,
             "daily_realized_pnl_excluded_count": len(daily_excluded),
-            "daily_realized_pnl_excluded_accounts": daily_excluded,
+            "daily_realized_pnl_excluded_accounts": daily_excluded,                 # ids (back-compat)
+            "daily_realized_pnl_excluded_detail": daily_excluded_detail,            # + native amount, currency, reason
             "metrics": metrics,
         },
     }

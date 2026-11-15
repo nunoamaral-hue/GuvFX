@@ -196,13 +196,20 @@ export type PortfolioSummary = {
     balance_usd: UsdAggregate;
     equity_usd: UsdAggregate;
     open_pl_usd: UsdAggregate;
-    daily_realized_pnl_usd: number | null;      // null when non-USD/mixed; basis states it
+    daily_realized_pnl_usd: number | null;      // null=UNAVAILABLE (never a false 0); 0.0=EMPTY/complete-zero; else measured
     daily_realized_pnl_basis: "USD" | "PARTIAL";
-    // Daily-P&L coverage disclosure (ADR-0100): the day window and the USD-eligible account split it summed over.
+    // Per-account coverage (pkt-131): the day window, the honest state, and the accounts whose same-day realized was
+    // summed vs dropped. ``state`` distinguishes a complete figure (OK), a measured-but-partial one (PARTIAL — some
+    // same-day activity could not be converted), no trustworthy number (UNAVAILABLE — usd is null, NEVER shown as 0),
+    // and a genuine no-trade day (EMPTY — usd 0.0). ``excluded_detail`` carries each dropped account's native figure.
+    daily_realized_pnl_state?: "OK" | "PARTIAL" | "UNAVAILABLE" | "EMPTY";
     daily_realized_pnl_window?: string;         // "broker_server_calendar_day"
     daily_realized_pnl_included_count?: number;
     daily_realized_pnl_excluded_count?: number;
     daily_realized_pnl_excluded_accounts?: number[];
+    daily_realized_pnl_excluded_detail?: {
+      account_id: number; native: number | null; native_currency: string; reason: string; category?: string;
+    }[];
     metrics: PortfolioMetrics;
   };
   fx?: FxProvenance;            // present only when the DARK FX-conversion flag is ON
