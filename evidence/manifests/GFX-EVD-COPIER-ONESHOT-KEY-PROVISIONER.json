@@ -64,9 +64,9 @@
     "evidence/manifests/GFX-EVD-COPIER-ONESHOT-KEY-PROVISIONER.json (this manifest)"
   ],
   "checksums": {
-    "deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1": "sha256:84e931fa6573e64f46d65951b41cdf930e42e581279cd3eee27551b38e068104",
+    "deploy/copier-emitter/operator/Provision-GuvfxCopierOneShotKey.ps1": "sha256:15a6d89f0f144b4ee80fe94b73cffc8e1b537ce1faafb8405e1a0dec1e326d61",
     "deploy/copier-emitter/operator/tests/Test-OneShotKeyProvisioner.Tests.ps1": "sha256:bf4e4e826b8e907edd3b755396ba550ec6661231e5547461d3df0903100a9188",
-    "backend/trade_copier/emitter/tests_bundle.py": "sha256:e4ef72204cccb0e3e7c70a41541635d733f3cb25bb873eed8771e870a44654c3",
+    "backend/trade_copier/emitter/tests_bundle.py": "sha256:1285148ec2b4dbb1bc442b80c797ec9a58b97f239d6f8eb9a92e9a0b4d8408aa",
     "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md": "sha256:14064369b82f1440f01d2a4d54aa8fa1816510d3bd13807961847c495fd48574",
     "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md": "sha256:020f959d2eb5a97f48cf47c32cc8c585acc14e399cd513802188387e4f5e8e53"
   },

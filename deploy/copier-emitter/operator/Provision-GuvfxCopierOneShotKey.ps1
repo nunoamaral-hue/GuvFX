@@ -16,9 +16,12 @@
 #   * FIXED scope: account 46, task GuvFX_CopierEmitterOneShot_46, key path C:\GuvFX\copier-emitter\oneshot\ingest.key,
 #     principal guvfx_u_46. No caller-supplied alternate account / task / path / principal. #48, Customer Zero and every
 #     reserved identity (id <= 1) are refused. It is NOT a general-purpose secret writer.
-#   * Human hidden-input ONLY (Read-Host -AsSecureString). The key is NEVER accepted through argv/env/registry/pipeline/
-#     transcript and NEVER emitted to stdout/logs/event-log/result/Notion/Git. It refuses to run under active PowerShell
-#     transcription or Verbose/Debug tracing. It never generates or infers a real key.
+#   * Human hidden-input: by default the key is read from a hidden interactive prompt (Read-Host -AsSecureString).
+#     The -KeyFromStdin GOVERNED single-entry mode instead reads "<confirm-phrase>`n<key>" from STDIN ONLY, so the
+#     reviewed single-entry wrapper (operator/provision_and_open_oneshot.py) can deliver the operator's ONE hidden
+#     entry byte-identically to both this writer and the backend verifier window. In BOTH modes the key is NEVER
+#     accepted through argv/env/registry and NEVER emitted to stdout/logs/event-log/result/Notion/Git; it refuses to
+#     run under active PowerShell transcription or Verbose/Debug tracing, and never generates or infers a real key.
 #   * Validation (fail closed): secret present + length >= 32; installed task exists, DISABLED, triggerless, action points
 #     at the reviewed one-shot entrypoint + the fixed key path, principal SID == guvfx_u_46 SID; destination + parent chain
 #     carry no reparse point / symlink / junction; the final key file must NOT already exist (use -Remove first).
@@ -39,6 +42,8 @@ param(
     [switch]$Remove,
     [switch]$Verify,
     [switch]$AssumeYes,                              # test-only: skip the typed confirmation (the secret is STILL prompted)
+    [switch]$KeyFromStdin,                           # GOVERNED single-entry (NOT a test seam): read "<phrase>`n<key>" from
+                                                     # STDIN only (the reviewed single-entry wrapper's one hidden entry).
     # ---- test-only injectable seams (production uses the real defaults; NONE changes the fixed account/task/filename) ----
     [string]$FixedRootForTest = '',                 # sandbox ONLY the C:\GuvFX root for the FIXED relative key structure
     [scriptblock]$ReadTaskXml = $null,              # () -> installed-task XML string, or $null if absent
@@ -282,6 +287,7 @@ if ($seamUsed -and $env:GUVFX_PROVISIONER_SELFTEST -ne '1') {
 }
 
 if ($Remove -and $Verify) { Write-Redacted (New-Result $false 'provision' 'mode_conflict'); exit 2 }
+if ($KeyFromStdin -and ($Remove -or $Verify)) { Write-Redacted (New-Result $false 'provision' 'mode_conflict'); exit 2 }
 
 $mode = if ($Remove) { 'remove' } elseif ($Verify) { 'verify' } else { 'provision' }
 $result = New-Result $false $mode 'not_started'
@@ -337,14 +343,33 @@ try {
     $tenantSid = Assert-TaskContract                                   # task exists, DISABLED, triggerless, action+principal OK
     if (Test-Path -LiteralPath $keyPath) { $result.reason = 'key_file_exists'; Write-Redacted $result; exit 2 }
 
-    if (-not $AssumeYes) {
-        Write-Output ('HUMAN-OPERATED one-shot ingest-key provisioning for GuvFX account ' + $PINNED_ACCOUNT + '.')
-        Write-Output 'This writes ONE ephemeral, ACL-restricted key file. It does NOT enable, trigger or run any task.'
-        $c = Read-Host ('To proceed type EXACTLY: ' + $CONFIRM_PHRASE)
-        if ($c -ne $CONFIRM_PHRASE) { $result.reason = 'confirmation_mismatch'; Write-Redacted $result; exit 2 }
+    # GOVERNED single-entry mode: read the whole STDIN once as "<confirm-phrase>`n<key>". The key stays on STDIN only
+    # (never argv/env/log); the phrase is the anti-accident gate (an empty/malformed pipe fails closed).
+    $stdinPhrase = $null; $stdinKey = $null
+    if ($KeyFromStdin) {
+        $stdinRaw = [Console]::In.ReadToEnd()
+        if ([string]::IsNullOrEmpty($stdinRaw)) { $result.reason = 'stdin_empty'; Write-Redacted $result; exit 2 }
+        $nlIdx = $stdinRaw.IndexOf("`n")
+        if ($nlIdx -lt 0) { $result.reason = 'stdin_malformed'; Write-Redacted $result; exit 2 }
+        $stdinPhrase = $stdinRaw.Substring(0, $nlIdx).TrimEnd("`r")
+        $stdinKey = ($stdinRaw.Substring($nlIdx + 1)) -replace "(`r`n|`n|`r)+$", ""
     }
 
-    if ($null -ne $ReadSecret) {
+    if (-not $AssumeYes) {
+        if ($KeyFromStdin) {
+            if ($stdinPhrase -ne $CONFIRM_PHRASE) { $stdinKey = $null; $result.reason = 'confirmation_mismatch'; Write-Redacted $result; exit 2 }
+        } else {
+            Write-Output ('HUMAN-OPERATED one-shot ingest-key provisioning for GuvFX account ' + $PINNED_ACCOUNT + '.')
+            Write-Output 'This writes ONE ephemeral, ACL-restricted key file. It does NOT enable, trigger or run any task.'
+            $c = Read-Host ('To proceed type EXACTLY: ' + $CONFIRM_PHRASE)
+            if ($c -ne $CONFIRM_PHRASE) { $result.reason = 'confirmation_mismatch'; Write-Redacted $result; exit 2 }
+        }
+    }
+
+    if ($KeyFromStdin) {
+        $plain = [string]$stdinKey                                    # the operator's single hidden entry, piped via STDIN
+        $stdinKey = $null
+    } elseif ($null -ne $ReadSecret) {
         $plain = [string](& $ReadSecret)                              # tests inject a synthetic >=32-char value
     } else {
         $secure = Read-Host -AsSecureString 'Enter the ingest key for account 46 (hidden)'
