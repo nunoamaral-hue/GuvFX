@@ -45,7 +45,9 @@ in an alert (the internal account id only).
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 
 from django.db import transaction
 from django.utils import timezone
@@ -267,6 +269,192 @@ def _established_recovery_enabled() -> bool:
         return False
 
 
+# ── ESTABLISHED-RECOVERY HARDENING CONFIG (packet-118) ────────────────────────────────────────────────────────
+# Three independently-governed, strictly-parsed, fail-closed controls that let the DARK feature progress from a
+# one-account acceptance test toward a tightly-bounded #50-only pilot WITHOUT enabling anything. All read LIVE from
+# settings-then-env (the same idiom as flags._flag), so none require a restart and none change production config.
+# DEFAULTS preserve pre-118 behaviour byte-for-byte: the recovery threshold defaults to the 900s dashboard window,
+# and the host-breaker caps default generously (a single-account relaunch is never blocked). The ALLOW-LIST is the
+# one deliberately fail-closed-EMPTY control: when the established flag is on but no allow-list is configured, NO
+# account is recovered (a pilot must opt accounts in explicitly). None of these grant authority or touch execution.
+RECOVERY_STALE_DEFAULT_S = 900           # == the dashboard/portfolio freshness window (byte-identical default)
+RECOVERY_STALE_MIN_S = 300               # < the ~5-min (300s) account_read collector cadence ⇒ UNSAFE (false positives)
+RECOVERY_STALE_MAX_S = 86400
+HOST_WINDOW_DEFAULT_S = 3600
+HOST_MAX_RELAUNCHES_DEFAULT = 3
+HOST_MAX_DOWN_DEFAULT = 2
+
+
+def _cfg_raw(name):
+    """Live settings-then-env read (never raises)."""
+    try:
+        from django.conf import settings
+        val = getattr(settings, name, None)
+        if val is None:
+            val = os.getenv(name, None)
+        return val
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cfg_int_checked(name, default, min_v, max_v):
+    """Strict int from settings-then-env. Returns ``(value, malformed)``:
+      * MISSING/empty ⇒ ``(default, False)`` — an unset control is its safe default, NOT a misconfiguration.
+      * present + valid-in-range ⇒ ``(value, False)``.
+      * present + non-int / out-of-range ⇒ ``(default, True)`` — a REAL misconfiguration the caller fails closed on.
+    """
+    raw = _cfg_raw(name)
+    if raw is None or (isinstance(raw, str) and str(raw).strip() == ""):
+        return default, False
+    try:
+        v = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("established_recovery: %s malformed (%r) → fail-closed to default %s", name, raw, default)
+        return default, True
+    if v < min_v or v > max_v:
+        logger.warning("established_recovery: %s out of range [%s,%s] (%s) → fail-closed to default %s",
+                       name, min_v, max_v, v, default)
+        return default, True
+    return v, False
+
+
+def _established_recovery_stale_s() -> int:
+    """(A) DEDICATED recovery staleness threshold — the SOLE recovery consumer; the dashboard/portfolio 900s windows
+    (analytics.equity_snapshots.DEFAULT_FRESHNESS_S, execution.monitoring_enrolment.SNAPSHOT_FRESHNESS_S) are
+    untouched. Default 900 (byte-identical). A malformed/zero/negative/unsafe (< the 300s collector cadence) value
+    fails closed to the conservative 900 (slower = safe), never to a more-aggressive value."""
+    value, _malformed = _cfg_int_checked(
+        "HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S", RECOVERY_STALE_DEFAULT_S, RECOVERY_STALE_MIN_S, RECOVERY_STALE_MAX_S)
+    return value
+
+
+def _established_recovery_allowlist() -> frozenset:
+    """(B) FAIL-CLOSED recovery account allow-list — the set of account ids explicitly permitted to be recovery
+    CANDIDATES. Parsed strictly as positive ints from a comma/space-separated list. FAIL-CLOSED: missing/empty ⇒
+    EMPTY (no candidate); ANY malformed or non-positive entry ⇒ EMPTY (never silently keep the valid ids). Membership
+    is purely ADDITIVE/NARROWING — it NEVER bypasses eligibility, identity, ownership, copier-exclusion, the LIVE
+    gate, or any other requirement; it only restricts WHICH accounts may be considered. With the flag off this is
+    never consulted (the pass short-circuits)."""
+    raw = _cfg_raw("HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS")
+    if raw is None:
+        return frozenset()
+    s = str(raw).strip()
+    if not s:
+        return frozenset()
+    out = set()
+    for tok in s.replace(",", " ").split():
+        try:
+            v = int(tok)
+        except (TypeError, ValueError):
+            logger.warning("established_recovery: allow-list malformed entry %r → FAIL-CLOSED (zero candidates)", tok)
+            return frozenset()
+        if v <= 0:
+            logger.warning("established_recovery: allow-list non-positive entry %r → FAIL-CLOSED (zero candidates)", tok)
+            return frozenset()
+        out.add(v)
+    return frozenset(out)
+
+
+def _host_breaker_config():
+    """(C) Host restart-storm circuit-breaker config → ``(window_s, max_relaunches, max_down, malformed)``. Any
+    malformed/out-of-range value sets ``malformed=True`` so the breaker FAILS CLOSED (blocks). Missing ⇒ generous
+    defaults (byte-identical: a lone relaunch is never blocked)."""
+    window_s, m1 = _cfg_int_checked("HOSTED_ESTABLISHED_RECOVERY_HOST_WINDOW_S", HOST_WINDOW_DEFAULT_S, 1, 86400)
+    max_relaunch, m2 = _cfg_int_checked("HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_RELAUNCHES", HOST_MAX_RELAUNCHES_DEFAULT, 1, 100000)
+    max_down, m3 = _cfg_int_checked("HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN", HOST_MAX_DOWN_DEFAULT, 1, 100000)
+    return window_s, max_relaunch, max_down, (m1 or m2 or m3)
+
+
+def _resolve_rdp_host(ws) -> str:
+    """The physical host (rdp_host) a workspace's terminal lives on, via its execution_node else the account's
+    terminal_node. '' when underivable (fail-closed: such a candidate is skipped, never breaker-evaluated)."""
+    account = getattr(ws, "trading_account", None)
+    node = getattr(ws, "execution_node", None) or getattr(account, "terminal_node", None)
+    return str(getattr(node, "rdp_host", "") or "").strip()
+
+
+def _host_recent_relaunch_counts(now, window_s) -> dict:
+    """Deterministic per-host count of recovery relaunches in the rolling ``window_s`` (from the durable
+    ``liveness_recovery_at`` — reused, NO migration). Counts BOTH armed + established relaunches on the host (a
+    restart-storm is host-wide). Raises on query failure so the caller FAILS CLOSED (blocks). No cross-host mixing."""
+    from datetime import timedelta
+    cutoff = now - timedelta(seconds=window_s)
+    counts: dict = {}
+    for ws in (HostedMt5Workspace.objects
+               .filter(liveness_recovery_at__gte=cutoff)
+               .select_related("execution_node", "trading_account", "trading_account__terminal_node")):
+        host = _resolve_rdp_host(ws)
+        if host:
+            counts[host] = counts.get(host, 0) + 1
+    return counts
+
+
+def _record_recovery_latency_event(account_id, detected_at, requested_at, outcome_at, relaunch_ok) -> None:
+    """(D) Truthful, event-level recovery-latency evidence (structured log). In-pass measurements are genuine
+    timestamps; the cross-cycle ones (first identity-matched read / first genuine collector snapshot) are NOT yet
+    available in this pass and are recorded as NULL (never 0) — they are filled truthfully at resolution time by
+    ``_resolve_established_recovered_alerts`` from the durable ``liveness_recovery_at`` + the real snapshot time.
+    No snapshot is ever fabricated. p50/p95 aggregation is deliberately NOT claimed here (see ADR-0107 addendum:
+    percentiles need a durable metrics store / later migration; this packet records event-level evidence only)."""
+    try:
+        def _lat(a, b):
+            return round((b - a).total_seconds(), 3) if (a is not None and b is not None) else None
+        ev = {
+            "event": "established_recovery_latency",
+            "account_id": account_id,
+            "eligibility_detected_at": detected_at.isoformat() if detected_at else None,
+            "recovery_requested_at": requested_at.isoformat() if requested_at else None,
+            "relaunch_outcome_at": outcome_at.isoformat() if outcome_at else None,
+            "relaunch_ok": bool(relaunch_ok),
+            "detection_to_request_s": _lat(detected_at, requested_at),
+            "request_to_relaunch_s": _lat(requested_at, outcome_at),
+            "first_verified_identity_at": None,      # cross-cycle — filled at resolution (never 0)
+            "first_genuine_snapshot_at": None,       # cross-cycle — filled at resolution (never 0)
+            "relaunch_to_identity_s": None,
+            "relaunch_to_snapshot_s": None,
+        }
+        logger.info("established_recovery_latency %s", json.dumps(ev, sort_keys=True))
+    except Exception:  # pragma: no cover — evidence logging is best-effort, never breaks recovery
+        logger.exception("established_recovery: latency-event log failed acct %s", account_id)
+
+
+def _recovered_latency_evidence(account_id, ws) -> dict:
+    """(D) Truthful relaunch→fresh-identity-matched-read latency, computed at RESOLUTION from the DURABLE
+    ``liveness_recovery_at`` + the REAL snapshot ``observed_at``. Unavailable components are null (never 0); no
+    snapshot is fabricated. Percentiles are NOT claimed (documented aggregation gap)."""
+    out = {"relaunch_outcome_at": None, "first_genuine_snapshot_at": None, "first_verified_identity_at": None,
+           "relaunch_to_snapshot_s": None, "relaunch_to_identity_s": None,
+           "latency_note": "event-level evidence only; p50/p95 aggregation not computed (no metrics store — ADR-0107 addendum)"}
+    try:
+        from analytics.models import AccountEquitySnapshot
+        from execution.models import HostedExecutionEndpoint
+        relaunch_at = getattr(ws, "liveness_recovery_at", None)
+        expected_login = (HostedExecutionEndpoint.objects
+                          .filter(trading_account_id=account_id)
+                          .exclude(state=HostedExecutionEndpoint.State.RETIRED)
+                          .order_by("-id").values_list("expected_login", flat=True).first())
+        expected_login = (expected_login or "").strip()
+        snap_at = None
+        # The FIRST identity-matched read AT-OR-AFTER the relaunch (ascending) — so ``first_genuine_snapshot_at`` is
+        # literally the first post-relaunch read and the latency is measured against THIS recovery's relaunch, never
+        # a pre-relaunch read (review-118 LOW). Null when there is no current pin or no post-relaunch read yet.
+        if expected_login and relaunch_at is not None:
+            snap_at = (AccountEquitySnapshot.objects
+                       .filter(trading_account_id=account_id, source="account_read", equity__isnull=False,
+                               observed_login=expected_login, observed_at__gte=relaunch_at)
+                       .order_by("observed_at").values_list("observed_at", flat=True).first())
+        out["relaunch_outcome_at"] = relaunch_at.isoformat() if relaunch_at else None
+        out["first_genuine_snapshot_at"] = snap_at.isoformat() if snap_at else None
+        out["first_verified_identity_at"] = snap_at.isoformat() if snap_at else None
+        if relaunch_at is not None and snap_at is not None and snap_at >= relaunch_at:
+            lat = round((snap_at - relaunch_at).total_seconds(), 3)
+            out["relaunch_to_snapshot_s"] = lat
+            out["relaunch_to_identity_s"] = lat
+    except Exception:  # pragma: no cover
+        logger.exception("established_recovery: recovered-latency evidence failed acct %s", account_id)
+    return out
+
+
 def _monitoring_snapshot_fresh(account_id, now) -> bool:
     """True iff the latest EQUITY-BEARING ``account_read`` snapshot for this account, UNDER THE CURRENT IDENTITY
     PIN, is within the monitoring freshness window — the authoritative 'monitoring is flowing' signal for a
@@ -278,11 +466,16 @@ def _monitoring_snapshot_fresh(account_id, now) -> bool:
     a recent read under a DRIFTED login must NOT count as 'monitoring restored' and must NOT silently suppress an
     observe/relaunch or auto-resolve a recovery alert while the pinned identity is actually not being served.
     Fail-closed (False) when there is no current pin or on any error — a healthy account is at worst observed once
-    (the read-only observe then confirms it is up and it is skipped), never wrongly relaunched."""
+    (the read-only observe then confirms it is up and it is skipped), never wrongly relaunched.
+
+    STALENESS THRESHOLD (packet-118-A): this is the SOLE consumer of the dedicated recovery threshold
+    ``_established_recovery_stale_s()`` (default 900 — byte-identical to the dashboard window). Decoupled on purpose:
+    an operator may shorten RECOVERY's reaction (never below the 300s collector cadence) without altering the
+    dashboard/portfolio freshness semantics, which keep their own 900s constants."""
     try:
-        from analytics.equity_snapshots import DEFAULT_FRESHNESS_S
         from analytics.models import AccountEquitySnapshot
         from execution.models import HostedExecutionEndpoint
+        stale_s = _established_recovery_stale_s()
         expected_login = (HostedExecutionEndpoint.objects
                           .filter(trading_account_id=account_id)
                           .exclude(state=HostedExecutionEndpoint.State.RETIRED)
@@ -297,7 +490,7 @@ def _monitoring_snapshot_fresh(account_id, now) -> bool:
         if latest is None:
             return False
         age = (now - latest).total_seconds()
-        return 0 <= age <= DEFAULT_FRESHNESS_S
+        return 0 <= age <= stale_s
     except Exception:  # noqa: BLE001
         return False
 
@@ -363,6 +556,11 @@ def _resolve_established_recovered_alerts(now) -> int:
                      .update(status=AlertEvent.Status.RESOLVED, resolved_at=now))
                 if n:
                     from reliability.constants import Component
+                    # (D) truthful cross-cycle latency: relaunch→fresh-identity-matched read, from the DURABLE
+                    # liveness_recovery_at (set atomically at relaunch) + the real snapshot time. The fresh read IS
+                    # the first identity-verified read (the collector writes only verify_identity reads), so identity
+                    # and snapshot latencies coincide. Unavailable components stay null (never 0); no fabrication.
+                    lat = _recovered_latency_evidence(acct_id, ws)
                     AlertEvent.objects.create(
                         severity=AlertEvent.Severity.INFO, component=Component.MT5_TERMINAL,
                         trading_account_id=acct_id,
@@ -370,9 +568,10 @@ def _resolve_established_recovered_alerts(now) -> int:
                         body=("[GuvFX monitoring] RECOVERED: account " + str(acct_id) + " terminal restored and "
                               "the identity-firewalled collector is producing fresh reads again."),
                         dedup_key=f"{_ESTABLISHED_ALERT_PREFIX}_recovered:account:{acct_id}:{int(now.timestamp())}",
-                        status=AlertEvent.Status.RESOLVED, detail={"account_id": acct_id})
+                        status=AlertEvent.Status.RESOLVED, detail=dict({"account_id": acct_id}, **lat))
                     recovered += 1
-                    logger.info("established_recovery: RECOVERED acct %s (monitoring restored)", acct_id)
+                    logger.info("established_recovery: RECOVERED acct %s (monitoring restored) %s",
+                                acct_id, json.dumps(lat, sort_keys=True))
     except Exception:  # pragma: no cover — best-effort
         logger.exception("established_recovery: recovered-scan failed")
     return recovered
@@ -392,6 +591,10 @@ def _claim_established_attempt(pk, now) -> bool:
         # Disjoint from the armed pass: an armed workspace is handled there, never double-claimed here.
         if ws.execution_enabled is True and getattr(ws, "execution_authorized_at", None) is not None:
             return False
+        # Allow-list re-check UNDER THE ROW LOCK (packet-118-B): membership can only NARROW, and is re-asserted here
+        # so a concurrent config change cannot let a now-de-listed account be relaunched. Never bypasses eligibility.
+        if getattr(account, "id", None) not in _established_recovery_allowlist():
+            return False
         if not established_account_recovery_eligible(ws, account).eligible or not _attempt_allowed(ws, now):
             return False
         ws.liveness_recovery_at = now
@@ -402,37 +605,55 @@ def _claim_established_attempt(pk, now) -> bool:
 
 def _run_established_monitoring_recovery(*, now, resolve_ex, observe_fn) -> dict:
     """One established-MONITORING liveness pass (additive, disjoint candidate class). DARK unless the established
-    flag is on. Keyed off equity-snapshot staleness (not ``last_decision_at``). Fail-closed throughout; relaunch
-    is the SAME account-scoped RELAUNCH_TERMINAL primitive, bounded + single-flight; arms nothing, writes no
-    snapshot. Returns a secret-free sub-summary with a per-reason ineligibility breakdown."""
+    flag is on. Keyed off equity-snapshot staleness (the dedicated packet-118 recovery threshold). Fail-closed
+    throughout; relaunch is the SAME account-scoped RELAUNCH_TERMINAL primitive, bounded + single-flight; arms
+    nothing, writes no snapshot. Packet-118 hardening: a fail-closed account ALLOW-LIST (empty ⇒ zero candidates),
+    a host-wide restart-storm CIRCUIT BREAKER (per-host recent-relaunch rate + concurrent-down caps, blocking
+    BEFORE any host contact and failing closed on malformed config / unavailable cohort data), and truthful
+    event-level recovery-latency evidence. Returns a secret-free sub-summary with a per-reason breakdown."""
     out = {"enabled": True, "candidates": 0, "eligible": 0, "ineligible": 0, "down": 0, "relaunched": 0,
            "recovered": 0, "terminal_up_login_required": 0, "skipped_healthy": 0, "skipped_cooldown": 0,
-           "skipped_ambiguous": 0, "skipped_no_executor": 0, "errors": 0, "reasons": {}}
+           "skipped_ambiguous": 0, "skipped_no_executor": 0, "skipped_allowlist": 0, "skipped_host_circuit": 0,
+           "host_circuit_open": False, "errors": 0, "reasons": {}}
     from hosted_workspace.recovery_eligibility import established_account_recovery_eligible
 
+    # Alert resolution for recovered accounts runs first (observational; it clears a stale alert when monitoring
+    # has returned, independent of the pilot allow-list).
     out["recovered"] = _resolve_established_recovered_alerts(now)
 
-    # Candidate set: non-tombstoned, non-reserved, NON-ARMED workspaces (armed ones are the armed pass's job —
-    # disjoint). NOTE (ELIGIBILITY-FIX-112): ``is_active`` is NOT a candidate filter — it is an EXECUTION-authority
-    # control, not a monitoring-recovery one, and an established monitoring-only account is intentionally
-    # ``is_active=False``. Authoritative per-candidate eligibility (hosted monitoring subject, NOT a Copy-Trading
-    # participant, identity-pinned, prior-verified, recoverable env) is decided by
-    # ``established_account_recovery_eligible`` below and RE-CHECKED under the row lock in
-    # ``_claim_established_attempt`` — the query stays a cheap, inclusive pre-filter.
+    # (B) FAIL-CLOSED ALLOW-LIST: with the established flag on but no allow-list configured, NO account is a
+    # recovery candidate. A pilot opts accounts in explicitly; an empty/missing/malformed allow-list recovers none.
+    allow = _established_recovery_allowlist()
+    if not allow:
+        out["reasons"]["allowlist_empty"] = out["reasons"].get("allowlist_empty", 0) + 1
+        return out
+
+    # (C) host-breaker config (fail-closed when malformed).
+    window_s, host_max_relaunch, host_max_down, breaker_malformed = _host_breaker_config()
+
+    # Candidate universe: non-tombstoned, non-reserved, NON-ARMED workspaces (armed ones are the armed pass's job —
+    # disjoint). ``is_active`` is NOT a filter (ELIGIBILITY-FIX-112). The allow-list + per-candidate eligibility
+    # (hosted monitoring subject, NOT a Copy-Trading participant, identity-pinned, prior-verified, recoverable env)
+    # NARROW this inclusive pre-filter; both are RE-CHECKED under the row lock in ``_claim_established_attempt``.
     qs = (HostedMt5Workspace.objects
           .filter(trading_account__disconnected_at__isnull=True)
           .exclude(execution_enabled=True, execution_authorized_at__isnull=False)
           .exclude(trading_account_id__in=_RESERVED_ACCOUNT_IDS))
-    # Demo-only pre-filter when LIVE infra-recovery is OFF (perf + defence; the per-candidate eligibility env gate
-    # is the authoritative fail-closed decision either way).
     if not _live_recovery_enabled():
         qs = qs.filter(trading_account__is_demo=True)
-    qs = qs.select_related("trading_account", "execution_node").iterator()
+    qs = qs.select_related("trading_account", "execution_node", "trading_account__terminal_node").iterator()
 
+    # ── Phase 1: gather eligible + ALLOW-LISTED + STALE candidates, grouped by physical host (rdp_host). ──
+    candidates = []   # (ws, account, rdp_host)
+    host_down: dict = {}
     for ws in qs:
         account = getattr(ws, "trading_account", None)
         if account is None:
             out["errors"] += 1
+            continue
+        # Allow-list NARROWS the candidate set — it NEVER bypasses any gate below.
+        if getattr(account, "id", None) not in allow:
+            out["skipped_allowlist"] += 1
             continue
         res = established_account_recovery_eligible(ws, account)
         if not res.eligible:
@@ -440,17 +661,47 @@ def _run_established_monitoring_recovery(*, now, resolve_ex, observe_fn) -> dict
             out["reasons"][res.reason] = out["reasons"].get(res.reason, 0) + 1
             continue
         out["eligible"] += 1
-        # Monitoring flowing? (fresh identity-matched equity read) → do not observe/relaunch. Any OPEN alert for
-        # it was already RESOLVED by _resolve_established_recovered_alerts() above (fresh + eligible).
         if _monitoring_snapshot_fresh(account.id, now):
             out["skipped_healthy"] += 1
             continue
-        # Monitoring STALE — attention needed. Need a delivering node to reach the host executor.
-        out["candidates"] += 1
-        node = getattr(ws, "execution_node", None) or getattr(account, "terminal_node", None)
-        rdp_host = str(getattr(node, "rdp_host", "") or "").strip()
+        rdp_host = _resolve_rdp_host(ws)
+        candidates.append((ws, account, rdp_host))
+        if rdp_host:
+            host_down[rdp_host] = host_down.get(rdp_host, 0) + 1
+    out["candidates"] = len(candidates)
+
+    # ── Phase 2: per-host recent-relaunch counts from the durable liveness_recovery_at (fail-closed on failure). ──
+    try:
+        host_recent = _host_recent_relaunch_counts(now, window_s)
+    except Exception:  # noqa: BLE001 — unavailable cohort data ⇒ breaker fails closed (blocks) below
+        logger.exception("established_recovery: host circuit-breaker query failed → fail-closed (block all)")
+        host_recent = None
+    relaunched_on_host: dict = {}
+
+    # ── Phase 3: act per candidate — the host circuit breaker gates BEFORE any observe/relaunch (mutation). ──
+    for (ws, account, rdp_host) in candidates:
         if not rdp_host:
             out["skipped_no_executor"] += 1
+            continue
+        # (C) HOST CIRCUIT BREAKER — fail-closed. Block before any host contact when: config malformed; cohort data
+        # unavailable; too many siblings on THIS host are simultaneously down (a host-wide event, not N isolated
+        # deaths); or the host's recent-relaunch budget (prior window + this pass) is spent. Per-host, deterministic,
+        # no cross-host contamination.
+        if breaker_malformed or host_recent is None:
+            out["skipped_host_circuit"] += 1
+            out["host_circuit_open"] = True
+            continue
+        if host_down.get(rdp_host, 0) > host_max_down:
+            out["skipped_host_circuit"] += 1
+            out["host_circuit_open"] = True
+            logger.error("established_recovery: host circuit OPEN (concurrent-down=%s > %s) — blocking host cohort",
+                         host_down.get(rdp_host, 0), host_max_down)
+            continue
+        if host_recent.get(rdp_host, 0) + relaunched_on_host.get(rdp_host, 0) >= host_max_relaunch:
+            out["skipped_host_circuit"] += 1
+            out["host_circuit_open"] = True
+            logger.error("established_recovery: host circuit OPEN (recent-relaunches=%s >= %s) — blocking",
+                         host_recent.get(rdp_host, 0) + relaunched_on_host.get(rdp_host, 0), host_max_relaunch)
             continue
         ex = resolve_ex(account.id, rdp_host)
         if ex is None:                       # DARK / unarmed host executor — burn no attempt
@@ -460,8 +711,6 @@ def _run_established_monitoring_recovery(*, now, resolve_ex, observe_fn) -> dict
         obs = observe_fn(ws) if observe_fn is not None else _safe_call(ex, "observe", rdp_host=rdp_host)
         proc = (obs or {}).get("process_running", None)
         if proc is True:
-            # Terminal is UP but monitoring is stale ⇒ the collector is not producing an identity-matched read.
-            # Relaunch would NOT help and could duplicate — fail-closed. Surface it as login/identity review.
             out["terminal_up_login_required"] += 1
             _open_established_down_alert(account, exhausted=False, terminal_up=True)
             continue
@@ -475,11 +724,19 @@ def _run_established_monitoring_recovery(*, now, resolve_ex, observe_fn) -> dict
             out["skipped_cooldown"] += 1
             continue
         _open_established_down_alert(account, exhausted=False, terminal_up=False)
+        detected_at = now
+        requested_at = timezone.now()
         if not _claim_established_attempt(ws.pk, now):
             out["skipped_cooldown"] += 1
             continue
+        # The CLAIM durably stamps ``liveness_recovery_at`` — exactly what the across-pass host breaker counts via
+        # ``_host_recent_relaunch_counts`` — so the in-pass host budget is consumed per CLAIMED ATTEMPT (not per
+        # success). This makes a burst of FAILING relaunches on one unhealthy host still stop at HOST_MAX_RELAUNCHES
+        # within a single pass (review-118 LOW: attempt-based, consistent with the durable record).
+        relaunched_on_host[rdp_host] = relaunched_on_host.get(rdp_host, 0) + 1
         slot = derive_slot(account.id)
         r = _safe_call(ex, "relaunch_terminal", slot["username"], slot["runtime_root"], rdp_host=rdp_host)
+        _record_recovery_latency_event(account.id, detected_at, requested_at, timezone.now(), _ok(r))
         if _ok(r):
             out["relaunched"] += 1
             logger.info("established_recovery: relaunched terminal acct=%s (attempt %s)",

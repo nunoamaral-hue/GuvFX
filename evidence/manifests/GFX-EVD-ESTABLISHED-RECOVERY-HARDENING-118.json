@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-ESTABLISHED-RECOVERY-HARDENING-118",
+  "packet_id": "GFX-DASHBOARD-ESTABLISHED-RECOVERY-HARDENING-118",
+  "created_at_utc": "2026-11-15T00:45:00Z",
+  "branch": "feat/established-recovery-hardening",
+  "base_commit": "86cb95cd68f50c5993f430f530f580a32b400b2e",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK / default-OFF / migration-free. Implements the pkt-117 steady-state safety controls for ADR-0107 established-account monitoring recovery so the DARK feature can progress from the #50 acceptance (ACCEPTANCE-116 PASS) toward a tightly-bounded #50-only pilot, WITHOUT enabling anything. Four controls in backend/hosted_workspace/liveness_recovery.py, all read live from settings-then-env, strictly parsed, fail-closed: (A) a DEDICATED recovery stale threshold HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S (default 900 = byte-identical; SOLE consumer in _monitoring_snapshot_fresh; the dashboard/portfolio 900s constants are untouched; malformed/zero/negative/<300s fail-closed to 900); (B) a FAIL-CLOSED account allow-list HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS (empty/missing/malformed => zero candidates; strict positive ints; narrows only, never bypasses eligibility/identity/ownership/copier-exclusion/LIVE gate; re-checked under the row lock); (C) a HOST-WIDE restart-storm CIRCUIT BREAKER (HOST_WINDOW_S / HOST_MAX_RELAUNCHES / HOST_MAX_DOWN) that blocks BEFORE any host contact on malformed config, cohort-query failure (fail-closed), >HOST_MAX_DOWN concurrent siblings down, or a spent per-host rolling recent-relaunch budget (from the durable liveness_recovery_at, NO migration); (D) truthful event-level recovery-latency evidence (null never 0; no fabricated snapshot; p50/p95 NOT claimed). NO deploy, NO flag enablement, NO host/MT5 contact, NO terminal relaunch, NO snapshot, NO is_active change, NO Copy-Trading, NO broker action.",
+    "adr": "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — Addendum HARDENING-118)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance (secret/PII scan + evidence lint) + frontend (untouched). Pure-Python change; no PowerShell artefact."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_established_recovery  (76/76 OK — 53 pre-existing + 22 new Packet118HardeningTests + 1 review-fix regression)",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_liveness_recovery hosted_workspace.tests_capability_recovery hosted_workspace.tests_bounded_observation hosted_workspace.tests_hosted_observation_command hosted_workspace.tests_d4d_live_recovery execution.tests_monitoring_enrolment trading.tests_account_policy_guard analytics.tests_equity_snapshots  (229/229 OK — analytics suite confirms the dashboard freshness window is untouched)",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace  (1507 tests, 1505 pass; the 2 failures are the PRE-EXISTING tests_observer_attach.test_cim_positive_and_negative_controls — a bare-terminal PID classifier in a file NOT in this diff, documented pre-existing in the ADR-0107 evidence)",
+    "cd backend && .venv/bin/python manage.py check  (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations hosted_workspace execution analytics trade_copier --check --dry-run  (No changes detected — migration-free)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT: PASS)"
+  ],
+  "expected_results": [
+    "DARK/default-OFF: both recovery flags OFF => established={'enabled': False}, no candidates, no mutation. With the established flag on but no allow-list configured => zero candidates (allowlist_empty).",
+    "Dedicated threshold default 900 (byte-identical); a configured 600 affects recovery eligibility ONLY and leaves analytics.equity_snapshots.DEFAULT_FRESHNESS_S and execution.monitoring_enrolment.SNAPSHOT_FRESHNESS_S at 900; malformed/zero/negative/<300s fail closed to 900.",
+    "Allow-list: missing/empty/malformed => zero candidates; a 50-only list selects #50 and excludes siblings (skipped_allowlist); #46/#48 (copier) stay excluded even if listed; membership never bypasses eligibility/identity/endpoint gates.",
+    "Host circuit breaker: a second relaunch inside the per-host rolling window is blocked (attempt-based budget — a FAILING relaunch still consumes it); >HOST_MAX_DOWN concurrent siblings down blocks that host cohort; a different host is unaffected; a cohort-query failure or malformed config fails closed (blocks); expired-window evidence allows a later recovery.",
+    "One decision per account per pass; a repeat/concurrent pass cannot duplicate a relaunch (select_for_update claim + cooldown + allow-list re-check under the lock). is_active is never changed; no order/credential/login/Copy-Trading action.",
+    "Latency evidence: unavailable cross-cycle measurements are null (never 0); the first identity-matched read AT-OR-AFTER the relaunch is used; no fabricated snapshot; p50/p95 not claimed (documented gap).",
+    "manage.py check clean; makemigrations --check migration-free; secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "backend/hosted_workspace/liveness_recovery.py: added _cfg_raw/_cfg_int_checked (strict, fail-closed); _established_recovery_stale_s (A); _established_recovery_allowlist (B); _host_breaker_config / _resolve_rdp_host / _host_recent_relaunch_counts (C); _record_recovery_latency_event + _recovered_latency_evidence (D). _monitoring_snapshot_fresh now reads the dedicated threshold (dashboard constants untouched). _run_established_monitoring_recovery restructured into gather->breaker->act: the fail-closed allow-list short-circuits an empty list; Phase-1 gathers eligible+allow-listed+stale candidates grouped by rdp_host; Phase-2 computes per-host recent-relaunch counts (fail-closed on query failure); Phase-3 applies the host breaker BEFORE any host contact, then the unchanged observe/claim/relaunch, consuming the host budget per CLAIMED ATTEMPT (review-fix). _claim_established_attempt re-checks the allow-list under the row lock. New summary keys skipped_allowlist/skipped_host_circuit/host_circuit_open.",
+    "backend/hosted_workspace/tests_established_recovery.py: 22 new Packet118HardeningTests + 1 review-fix regression (test_08b) covering the full packet-118 matrix (default 900, configured 600 vs dashboard, malformed-threshold fail-closed, missing/50-only/malformed allow-list, copier-excluded-if-listed, first-recovery-success, host rate cap + attempt-based budget, concurrent-down cohort block, different-host-unaffected, expired-window, breaker-query-failure fail-closed, malformed-breaker-config, repeat-pass no duplicate, onboarding/identity-drift/endpoint-missing excluded-if-listed, latency null-not-zero + first-post-relaunch read, no-fabricated-snapshot + genuine-timestamp log, all-flags-off inert, is_active invariant). The pre-118 pass tests patch _established_recovery_allowlist to an allow-all shim (they predate the fail-closed allow-list).",
+    "Local verification (PostgreSQL): tests_established_recovery 76/76; recovery/observation/enrolment/account-policy/equity cluster 229/229; full hosted_workspace 1505/1507 (2 pre-existing unrelated); manage.py check clean; makemigrations --check migration-free; secret scan clean.",
+    "docs/architecture/ADR-0107 amended with the HARDENING-118 addendum (the four controls + why the safe initial point is ~10 min with the snapshot collector + why minute-scale needs a real-time process signal). docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md amended with the controls table + the bounded #50-only pilot sequence. This evidence manifest added.",
+    "Independent adversarial review (4 reviewers: allow-list parser bypass / accidental-default-activation / monitoring-truthfulness; restart-storms / sibling-blast-radius / cross-host-tenant-leakage / stale-forged-evidence; duplicate-scheduler / identity-substitution / onboarding/copier-into-recovery / is_active; fabricated-snapshots / false-latency-zeros / evidence-truthfulness): NO CRITICAL, NO HIGH. FOUR LOW findings, all FIXED with regression tests: (1,2) the in-pass host rate budget counted successes while the durable record counts attempts — fixed to count per CLAIMED ATTEMPT so a burst of FAILING relaunches on one host still stops at HOST_MAX_RELAUNCHES (new test_08b); (3,4) the resolution-time latency labelled the LATEST identity-matched read as the FIRST and could attribute to a pre-relaunch read — fixed to select the FIRST read AT-OR-AFTER the relaunch (observed_at__gte=relaunch_at, ascending). No other finding surfaced."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS) because the feature stays DARK: both recovery flags remain default-OFF, the allow-list is default-empty (zero candidates), the correction is NOT merged and NOT deployed, and the #50-only pilot + any steady-state arming are SEPARATE Sponsor-gated steps. No production or host mutation occurred.",
+    "The authoritative exact-head CI (5/5) is the merge gate and is driven to a terminal result in-turn; the figures above are local (macOS + PostgreSQL) runs of the same backend/check/migration commands CI runs.",
+    "The full hosted_workspace suite has 2 PRE-EXISTING failures (tests_observer_attach.test_cim_positive_and_negative_controls) in a file not in this diff — unchanged by this packet.",
+    "Latency evidence is EVENT-LEVEL only; p50/p95 percentile aggregation is deliberately not computed (needs a durable metrics store / later migration) — documented in the ADR addendum.",
+    "The dedicated recovery threshold's practical floor is ~600s on the snapshot signal alone (the account_read collector writes ~every 5 min); minute-scale detection would need a separate real-time terminal/process signal, out of scope here. No threshold is changed by this packet (default 900).",
+    "No credential, snapshot, host call, deploy, flag enablement, is_active change, Copy-Trading or broker action was performed."
+  ],
+  "artefact_locations": [
+    "backend/hosted_workspace/liveness_recovery.py (the four hardening controls)",
+    "backend/hosted_workspace/tests_established_recovery.py (Packet118HardeningTests + review-fix regression)",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — Addendum HARDENING-118)",
+    "docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md (controls table + #50-only pilot sequence)",
+    "evidence/manifests/GFX-EVD-ESTABLISHED-RECOVERY-HARDENING-118.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/hosted_workspace/liveness_recovery.py": "sha256:1974ccdc2a1fbd6d793b7d06ae92159e3aae207f8b33c3683dcbcfa5d3792ae2",
+    "backend/hosted_workspace/tests_established_recovery.py": "sha256:c699a405a6b3af8685c9c1057620fedf41b8518849cd29c427ff94b5dc5d2063",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md": "sha256:4c77104006761701699c750ad8ee54a311a78016e83449c9f6c1b290850abcfb",
+    "docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md": "sha256:2f0cb902ecfb87d4fb5b943bf12c1a72ecd447d5141b9360e4b1bf07fcfcc4db"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Independent 4-reviewer adversarial review across the listed vectors; NO CRITICAL/HIGH, four LOW fixed with regression tests. Sponsor review pending (auto-merge OFF, STOP before merge). Pure-Python change — no PowerShell gate applies."
+}
