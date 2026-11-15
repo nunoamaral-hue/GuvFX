@@ -223,3 +223,58 @@ snapshot-staleness threshold — that is a larger, separate, host-load-bearing c
   `origin/main` worktree). `manage.py check` clean; `makemigrations --check` introduces **no** migration for the
   touched apps. Mutation discrimination: with the flag OFF the #50-shaped regression reproduces (no relaunch); with
   it ON the account recovers.
+
+---
+
+## Addendum — OPERATING-MODEL-127 (governed exclusive-window lease, deploy-race block, faster-but-floored detection, guaranteed teardown)
+
+**Status:** repository-only, DARK, default-OFF, **migration-free**. Implements the conservative bounded-cohort
+operating model surfaced by the pkt-126 production acceptance. Adopted without an A/B/C/D Sponsor question per the
+packet: recovery stays default-OFF globally; production activation is allow-list-only; the initial steady-state
+cohort is a small set (`STEADY_STATE_COHORT_MAX = 1`) of established MONITORING-ONLY accounts with the breaker
+pinned 1-down / 1-relaunch; `is_active` remains an execution gate and is never changed; Copy-Trading participants
+stay excluded fail-closed; the stale threshold may be lowered to **300s but never below** (the collector cadence
+floor); recovery never logs in, trades, arms execution, or fabricates a snapshot.
+
+**Why.** pkt-126 exposed two operational limitations: (1) a concurrent backend *deploy* recreated the backend and
+reset `beta.env` mid-acceptance, invalidating the window; (2) the 900s stale threshold makes an established
+account's terminal-down detection slower than necessary.
+
+**What this addendum adds (all additive, default-OFF, no behaviour change to the relaunch logic itself):**
+
+1. **Governed exclusive-window lease** — `hosted_workspace/recovery_lease.py`: a single-writer, file-based
+   (handoff-mount, configurable `GUVFX_RECOVERY_LEASE_DIR`), **mutually-exclusive** operational lease with
+   owner/purpose/correlation-id/created/expiry and a bounded TTL. A **deploy** action is blocked while a
+   **recovery** lease is live; a **recovery** acceptance refuses to arm while a **deploy** lease is live; only ONE
+   lease is live at a time. An **EXPIRED** lease is safely reclaimable; a **MALFORMED** lease **fails closed**
+   (blocks, never read as ABSENT). Acquire/release/reclaim/override are appended to a no-secret audit log; free-text
+   fields are secret-name-guarded. It is NOT a remote-command mechanism — only a JSON state file + audit log.
+
+2. **Django-free deploy gate** — `scripts/deploy_recovery_gate.py`: the host deploy process runs this before
+   recreating the backend; it reads the SAME lease file directly (stdlib-only, so it works when the backend is
+   **down** — exactly when a deploy happens) and exits non-zero on a live recovery lease or a malformed lease. An
+   `--emergency-override REASON` is the only way past a block and is audited. An agreement test asserts it classifies
+   identically to `recovery_lease`.
+
+3. **Config hardening** — `liveness_recovery.py`: the 300s floor was already enforced (a 299s or malformed value
+   fails closed to 900); added `recovery_config_metadata()` (safe, **no env dump**: flags, allow-list ids, breaker,
+   lease status, warnings), an `_is_approved_steady_state_config()` validator (enabled + allow-list ≤ 1 +
+   breaker 1/1 + clean threshold), and `recovery_enablement_warnings()` emitted **every cron cycle** when recovery is
+   enabled without an active governed lease AND not an approved steady-state shape (catches leftover acceptance
+   configuration a teardown failed to remove), plus explicit LIVE-requires-allow-list and malformed-breaker/threshold
+   warnings. Surfaced via `manage.py recovery_ops config`.
+
+4. **Bounded acceptance runner with guaranteed teardown** — `hosted_workspace/recovery_acceptance.py`
+   (`run_bounded_acceptance`): acquires a recovery lease (fail-closed vs a deploy lease), captures the byte-exact
+   `beta.env` baseline, arms ONLY the selected account (allow-list-of-one, breaker 1/1), watches to PASS/FAIL/TIMEOUT,
+   and in a **`finally`** block ALWAYS restores the byte-exact baseline, recreates the backend, confirms both recovery
+   flags read OFF, and releases the lease. A teardown failure raises an operator ALERT and leaves the lease to
+   self-expire (TTL) — recovery flags are **never** left silently enabled. Host I/O is injected (`HostOps`) so the
+   guarantee is unit-tested across success / FAIL / timeout / exception. The host wrapper is
+   `scripts/recovery_acceptance_runner.py`.
+
+**Boundaries unchanged:** no production enablement, no terminal stop/relaunch, no `is_active` change, no Copy-Trading
+change, no broker action, no fabricated snapshot. **Remaining production-activation step** (separate, Sponsor-gated):
+set a one-account allow-list + conservative breaker as an approved steady-state cohort, after the deploy tooling is
+wired to call the gate. Tests: `hosted_workspace/tests_recovery_operating_model.py` (33) + the established cluster,
+all green; migration-free; secret scan + evidence lint clean.

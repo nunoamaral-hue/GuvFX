@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-RECOVERY-OPERATING-MODEL-127",
+  "packet_id": "GFX-DASHBOARD-RECOVERY-OPERATING-MODEL-127",
+  "created_at_utc": "2026-11-15T11:20:00Z",
+  "branch": "feat/recovery-operating-model",
+  "base_commit": "db45ff53d160026fe8e0e8a1ab37c1d24f3618e5",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK / default-OFF / migration-free. Implements the pkt-127 conservative bounded-cohort operating model for ADR-0107 established-account monitoring recovery WITHOUT enabling anything in production. Adds: (1) a governed, file-based, mutually-exclusive OPERATIONAL LEASE (hosted_workspace/recovery_lease.py) with owner/purpose/correlation-id/created/expiry, bounded TTL, fail-closed acquisition, safe EXPIRED reclaim, MALFORMED fail-closed, no-secret audit log — deploy and recovery leases are mutually exclusive; (2) a Django-free deploy gate (scripts/deploy_recovery_gate.py) that refuses a backend deploy while a recovery lease is live (works when the backend is down) with an audited emergency override; (3) config hardening in liveness_recovery.py: recovery_config_metadata() (safe, NO env dump), _is_approved_steady_state_config() (allow-list<=1 + breaker 1/1 + clean >=300s threshold), and recovery_enablement_warnings() emitted every cron cycle when recovery is enabled without an active governed lease and not an approved steady-state shape (plus LIVE-requires-allow-list and malformed warnings); the 300s stale floor was already enforced; (4) a bounded acceptance runner (hosted_workspace/recovery_acceptance.py run_bounded_acceptance) whose finally block ALWAYS restores the byte-exact beta.env baseline, recreates the backend, confirms both recovery flags OFF, and releases the lease — a teardown failure alerts and leaves the lease to self-expire, never silently leaving flags enabled; host wrapper scripts/recovery_acceptance_runner.py. NO deploy, NO flag enablement, NO host/MT5 contact, NO terminal relaunch, NO snapshot, NO is_active change, NO Copy-Trading, NO broker action.",
+    "adr": "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — Addendum OPERATING-MODEL-127)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance (secret/PII scan + evidence lint) + frontend (untouched). Pure-Python change; no PowerShell artefact; no migration."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_recovery_operating_model  (42/42 OK — 33 initial + 9 adversarial-review regression tests)",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_established_recovery hosted_workspace.tests_recovery_operating_model  (cluster OK — established-recovery behaviour preserved)",
+    "cd backend && .venv/bin/python manage.py check  (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations hosted_workspace --check --dry-run  (No changes detected — migration-free)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT: PASS)"
+  ],
+  "expected_results": [
+    "Governed lease: a deploy action is blocked while a recovery lease is live, and vice versa; only one lease is live at a time; an EXPIRED lease is not blocking and is reclaimable; a MALFORMED/empty lease fails closed (blocks, never read as ABSENT); release only by matching correlation; acquire over an expired lease reclaims and succeeds; TTL is clamped to [60,7200]; acquire/release/reclaim/override are audited; secret-bearing free-text fields are rejected and redacted.",
+    "Deploy gate (Django-free): classifies identically to recovery_lease (agreement test); exits 2 when blocked, 0 when clear; an --emergency-override proceeds (exit 0) and writes an audit record; a missing lease-file path fails closed.",
+    "Config hardening: a 299s threshold is rejected (fail-closed to 900, malformed=True) and a 300s threshold is accepted; a missing/empty/malformed allow-list yields zero candidates; LIVE recovery without an allow-list warns; the approved steady-state validator is True only for enabled + allow-list<=1 + breaker 1/1 + clean threshold; recovery enabled without an active lease and not an approved shape warns LEFTOVER every cycle; the config metadata is safe (no environment dump, no secret).",
+    "Bounded acceptance runner: success / FAIL / timeout / exception ALL restore the byte-exact baseline, confirm flags OFF, and release the lease (finally); a run blocked by a live deploy lease never arms; a teardown that cannot confirm flags OFF marks teardown_ok False and raises an operator alert.",
+    "Preserved invariants (DB): only the allow-listed account is relaunched and siblings are unchanged; a Copy-Trading participant is excluded even if listed; is_active is never mutated by recovery.",
+    "No secret/environment leakage: lease fields, audit log, and config metadata carry no secret; manage.py check clean; makemigrations --check migration-free; secret scan + evidence lint clean."
+  ],
+  "actual_results": [
+    "backend/hosted_workspace/recovery_lease.py (NEW): file-based single-writer lease — read_lease (ABSENT/ACTIVE/EXPIRED/MALFORMED), acquire (fail-closed; mutual exclusion; reclaim-on-expired), release (correlation-matched), reclaim (EXPIRED/MALFORMED), blocks (MALFORMED+ACTIVE => blocked), status_metadata, atomic temp+os.replace write, no-secret audit; stdlib-only at import (Django-optional path default).",
+    "backend/hosted_workspace/recovery_acceptance.py (NEW): run_bounded_acceptance with a guaranteed finally teardown over an injected HostOps; build_armed_env (allow-list-of-one + breaker 1/1 + optional >=300 threshold); AcceptanceResult.",
+    "backend/hosted_workspace/management/commands/recovery_ops.py (NEW): lease-status/acquire/release/reclaim, check-deploy (+ audited --emergency-override), check-arm, config (safe metadata).",
+    "backend/hosted_workspace/liveness_recovery.py (EDIT): added STEADY_STATE_COHORT_MAX, _stale_malformed, _is_approved_steady_state_config, _active_governed_lease, recovery_enablement_warnings, recovery_config_metadata; the established pass now logs the warnings every cycle. No change to the eligibility/relaunch/claim/breaker/latency logic.",
+    "scripts/deploy_recovery_gate.py (NEW, Django-free): classify + deploy_blocked + main (exit 0/2) + audited emergency override; an agreement test asserts parity with recovery_lease.",
+    "scripts/recovery_acceptance_runner.py (NEW, host operator wrapper): acquire lease -> backup -> arm -> recreate -> operator watch -> finally restore byte-exact + recreate + verify flags OFF + release lease.",
+    "backend/hosted_workspace/tests_recovery_operating_model.py (NEW): 42 tests across lease / deploy-gate / acceptance-teardown / config-hardening / preserved-invariants (DB) / no-secret, including the 9 adversarial-review regression tests (acquire lost-race, non-UTF-8 lease MALFORMED, recreate-failure-during-arm restore, restore-recreate-also-fails alert+lease-retained, gate secret-bearing-expired parity, gate non-UTF-8 block, gate override redaction, LIVE-never-approved-unleased warning, audit correlation redaction).",
+    "Local verification (PostgreSQL): tests_recovery_operating_model 42/42; established + operating-model cluster 118/118 OK; manage.py check clean; makemigrations --check migration-free (no model added)."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS) because the feature stays DARK: recovery flags remain default-OFF, the allow-list is default-empty, and the operating model is PREPARED not enabled. The PR is NOT merged (auto-merge OFF, STOP before merge) and NOT deployed.",
+    "The deploy gate enforces at the HOST deploy path; wiring it into the operator's build_*.sh / compose recreate (which live outside Git) is the remaining operator step documented in the runbook — this packet provides and tests the gate, it does not modify those host scripts.",
+    "The host acceptance-runner wrapper (scripts/recovery_acceptance_runner.py) shells to docker compose and is operator-run (not exercised in CI); the teardown GUARANTEE it applies is unit-tested in the Django-testable core run_bounded_acceptance with a fake HostOps across every exit path.",
+    "The authoritative exact-head CI is the merge gate and is driven to a terminal result in-turn; the figures above are local (macOS + PostgreSQL) runs of the same commands CI runs.",
+    "No credential, snapshot, host call, deploy, flag enablement, is_active change, Copy-Trading or broker action was performed."
+  ],
+  "artefact_locations": [
+    "backend/hosted_workspace/recovery_lease.py (governed operational lease)",
+    "backend/hosted_workspace/recovery_acceptance.py (bounded acceptance runner core + guaranteed teardown)",
+    "backend/hosted_workspace/management/commands/recovery_ops.py (lease CLI + safe config metadata)",
+    "backend/hosted_workspace/liveness_recovery.py (config hardening: metadata/warnings/approved-steady-state)",
+    "scripts/deploy_recovery_gate.py (Django-free deploy gate)",
+    "scripts/recovery_acceptance_runner.py (host operator wrapper)",
+    "backend/hosted_workspace/tests_recovery_operating_model.py (33 tests)",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md (amended — Addendum OPERATING-MODEL-127)",
+    "docs/operations/hosted-workspace/RECOVERY_OPERATING_MODEL.md (operating-model runbook)",
+    "evidence/manifests/GFX-EVD-RECOVERY-OPERATING-MODEL-127.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/hosted_workspace/recovery_lease.py": "sha256:6844e3e936c954b3a1b4eb28ade7beefd293cf0ccad17625f0aa98c8fc1618ee",
+    "backend/hosted_workspace/recovery_acceptance.py": "sha256:6266fd12fbe9da78f2f27c5adb93d20c8d3ca6b4af473dd07c3c7bfcf2a63fde",
+    "backend/hosted_workspace/management/commands/recovery_ops.py": "sha256:87eb0457f9a7d2773c3c4bec8f5f2e5e3a88f0946a3b17c238430448d3a914e7",
+    "backend/hosted_workspace/liveness_recovery.py": "sha256:0e563fc40dcb0830781c6023906ed1bd98f76c93afa5cd6b28598d15411aa9f7",
+    "scripts/deploy_recovery_gate.py": "sha256:0564cbfd09879ce0282d3f2259afd96208cbf40a99ebec002cd89ad221265f2b",
+    "scripts/recovery_acceptance_runner.py": "sha256:f32770524fc13d7762d894c5b333e79a7ae7592abf8f02d95db3f583174b31cc",
+    "backend/hosted_workspace/tests_recovery_operating_model.py": "sha256:17ba67d79afa213d3a2eb9b9e03779d779f15399245da1c12c11440b1e861ee3",
+    "docs/architecture/ADR-0107-established-account-auto-recovery.md": "sha256:94d70b92736106191e828b61dd494cb4e39e1a1e29a2c14ea507b6937a048665",
+    "docs/operations/hosted-workspace/RECOVERY_OPERATING_MODEL.md": "sha256:08cea86ee97511b3cfd8b6ff1e28f77b2cc798964b1fff63f0b17493a7966b56"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Independent 5-vector adversarial review (lease mutual-exclusion/TTL/reclaim/malformed-fail-closed; deploy-gate parity + override audit; teardown-guarantee across every exit path; config fail-closed + no-env-leak; boundary/regression). Found 1 CRITICAL + 2 HIGH + several LOW, ALL FIXED with regression tests: (CRITICAL) the acceptance teardown restore was gated on 'armed' (set AFTER recreate_backend), so a recreate failure right after the arm write could leave LIVE recovery flags ON in beta.env silently — fixed to gate the restore on 'env_dirty' set the INSTANT beta.env is written (new test_recreate_failure_during_arm_still_restores_baseline + test_restore_recreate_also_fails_alerts_and_keeps_lease), and the host runner given the same ordering fix; (HIGH) acquire() was a non-atomic read-then-replace — fixed to an O_EXCL create (compare-and-swap) inside a best-effort flock critical section, returning 'lost_acquire_race' fail-closed (new test_acquire_lost_race_is_fail_closed); (HIGH/MEDIUM) the Django-free deploy gate lacked the lease module's secret-free check and UTF-16 fail-closed, so a tampered secret-bearing+expired lease could be permitted — fixed to parity (new test_gate_secret_bearing_expired_blocks_matching_lease_module + test_gate_non_utf8_is_malformed_blocked); (MEDIUM) the leftover-config backstop was blind to a LIVE acceptance (its shape equalled an approved steady-state) — fixed so a LIVE config is never an unleased approved steady-state and always warns LIVE-without-active-lease (new test_live_config_never_approved_unleased_and_warns); (LOW) non-UTF-8 lease fail-closed in both readers, audit redaction extended to correlation_id, gate emergency-override reason redacted. Sponsor review pending (auto-merge OFF, STOP before merge). Pure-Python change — no PowerShell gate applies."
+}
