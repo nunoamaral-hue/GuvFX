@@ -1057,6 +1057,9 @@ class OpenTradesViewReasonTests(TestCase):
 class BuildSummaryReasonTests(TestCase):
     def test_summary_carries_structural_and_daily_counts(self):
         u = _user("bs1"); live = _acct(u, broker="IS6"); demo = _acct(u, broker="Pepperstone")
+        # Same-day USD realized on BOTH accounts so the activity-based daily coverage is 2 included / 0 excluded
+        # (the daily figure now counts accounts whose same-day realized was actually summed, not the denomination split).
+        _closed_trade(live, 3.0); _closed_trade(demo, 4.0)
 
         def _bal(account, timeout=10.0):
             return {"balance": 100, "equity": 100, "currency": "USD"}
@@ -1212,3 +1215,170 @@ class DailyCoverageCountTests(TestCase):
         self.assertEqual(agg["daily_realized_pnl_basis"], "USD")
         self.assertEqual(agg["daily_realized_pnl_included_count"], 1)   # the GBP account IS covered (converted)
         self.assertEqual(agg["daily_realized_pnl_excluded_count"], 0)
+
+
+# ── pkt-131: Daily realized P&L — per-account currency conversion + honest coverage (never a false $0.00) ──────
+class DailyRealizedPnlPerAccountTests(TestCase):
+    """Daily realized P&L must include EVERY monitored account's same-day realized — a non-USD account converted
+    per-account via the vetted rate (the SAME machinery as the balance total), not dropped by a whole-scope
+    single-currency rule. Coverage is honest: PARTIAL (a measured total over the included subset, never a false 0)
+    when some same-day activity is non-convertible, UNAVAILABLE (None) when activity exists but none converts, and
+    EMPTY (0.0) on a genuine no-trade day. Automatic for newly monitored accounts; tenant-isolated;
+    profit+commission+swap counted exactly once. (Deposits/withdrawals are broker BALANCE deals with no
+    position_id, never ingested as Trades — proven in trading.tests_position_ingest / execution
+    tests_notification_provenance — so they can never contribute here.)"""
+
+    GBP = 1.3238
+
+    def _gbp(self, rate=None):
+        return FX.MappingFxRateSource({("GBP", "USD"): rate or self.GBP}, as_of="2026-11-12", source="FED:DEXUSUK")
+
+    def test_usd_account_multiple_same_day_deals_summed(self):
+        # #58-shape (Dominion, USD): several closed deals today -> the exact net sum, complete USD.
+        u = _user("d58"); a = _acct(u, currency="USD")
+        for p in (10.0, -2.0, 5.0, 1.37):
+            _closed_trade(a, p)
+        d = PF.daily_realized_pnl_detail([a], observed_ccy={a.id: "USD"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_OK)
+        self.assertEqual(d["total_usd"], 14.37)
+        self.assertEqual(d["included_count"], 1); self.assertEqual(d["excluded_count"], 0)
+
+    def test_gbp_account_converts_per_account(self):
+        # #52-shape (Vantage, GBP): same-day GBP realized converted to USD via the vetted rate.
+        u = _user("d52"); g = _acct(u, currency="GBP")
+        _closed_trade(g, 38.04)
+        val, basis = PF.daily_realized_pnl([g], rate_source=self._gbp(), observed_ccy={g.id: "GBP"})
+        self.assertEqual(basis, "USD"); self.assertEqual(val, round(38.04 * self.GBP, 2))   # 50.36
+
+    def test_mixed_usd_gbp_both_included_when_rate_available(self):
+        # THE pkt-131 fix: a mixed USD+GBP day no longer drops the GBP account — both convert and sum.
+        u = _user("dmix"); usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(usd, 34.37); _closed_trade(gbp, 0.93)
+        d = PF.daily_realized_pnl_detail([usd, gbp], rate_source=self._gbp(),
+                                         observed_ccy={usd.id: "USD", gbp.id: "GBP"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_OK)                        # complete — GBP NOT dropped
+        self.assertEqual(d["total_usd"], round(34.37 + 0.93 * self.GBP, 2))   # 35.60
+        self.assertEqual(d["included_count"], 2); self.assertEqual(d["excluded_count"], 0)
+
+    def test_gbp_only_day_is_not_false_zero(self):
+        # Reproduces 2026-11-11: only the GBP account traded. With a rate -> the real converted figure, never $0.00.
+        u = _user("dg"); usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(gbp, 38.04)                                        # USD account idle today
+        val, basis = PF.daily_realized_pnl([usd, gbp], rate_source=self._gbp(),
+                                           observed_ccy={usd.id: "USD", gbp.id: "GBP"})
+        self.assertEqual(basis, "USD"); self.assertEqual(val, round(38.04 * self.GBP, 2))   # +50.36, not 0.00
+
+    def test_gbp_activity_without_rate_is_partial_never_false_zero(self):
+        # GBP traded today but no vetted rate -> USD subset summed, GBP EXCLUDED and SURFACED with its native figure;
+        # state PARTIAL — never a complete-looking 0. (The exact false-zero the dashboard showed.)
+        u = _user("dnr"); usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(usd, 0.0); _closed_trade(gbp, 38.04)              # USD nets 0; GBP has real activity
+        d = PF.daily_realized_pnl_detail([usd, gbp], rate_source=FX.NullFxRateSource(),
+                                         observed_ccy={usd.id: "USD", gbp.id: "GBP"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_PARTIAL)
+        self.assertEqual(d["total_usd"], 0.0)                           # the USD subset is a real 0 ...
+        self.assertEqual(d["excluded_count"], 1)                        # ... but the GBP activity is flagged, not hidden
+        ex = d["unconverted"][0]
+        self.assertEqual(ex["account_id"], gbp.id); self.assertEqual(ex["native"], 38.04)
+        self.assertEqual(ex["native_currency"], "GBP")
+
+    def test_all_nonusd_activity_without_rate_is_unavailable_not_zero(self):
+        u = _user("dun"); g1 = _acct(u, currency="GBP"); g2 = _acct(u, currency="GBP")
+        _closed_trade(g1, 10.0); _closed_trade(g2, 5.0)
+        val, basis = PF.daily_realized_pnl([g1, g2], rate_source=FX.NullFxRateSource(),
+                                           observed_ccy={g1.id: "GBP", g2.id: "GBP"})
+        self.assertIsNone(val); self.assertEqual(basis, "PARTIAL")      # UNAVAILABLE -> None, never 0.0
+
+    def test_no_same_day_trades_is_empty_zero(self):
+        # Lifetime history exists but nothing closed today -> a genuine 0.0 (EMPTY), not UNAVAILABLE/None.
+        u = _user("dz"); a = _acct(u, currency="USD")
+        _closed_trade(a, 9.0, when=timezone.now() - timedelta(days=2))
+        d = PF.daily_realized_pnl_detail([a], observed_ccy={a.id: "USD"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_EMPTY); self.assertEqual(d["total_usd"], 0.0)
+        self.assertEqual(d["included_count"], 0); self.assertEqual(d["excluded_count"], 0)
+
+    def test_exact_zero_with_complete_evidence(self):
+        # A USD account that closed trades today netting exactly 0 -> a COMPLETE measured 0.0 (shown, truthfully).
+        u = _user("d0"); a = _acct(u, currency="USD")
+        _closed_trade(a, 5.0); _closed_trade(a, -5.0)
+        d = PF.daily_realized_pnl_detail([a], observed_ccy={a.id: "USD"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_OK); self.assertEqual(d["total_usd"], 0.0)
+        self.assertEqual(d["included_count"], 1)
+
+    def test_profit_commission_swap_counted_once(self):
+        u = _user("dpcs"); a = _acct(u, currency="USD")
+        Trade.objects.create(account=a, ticket=_uniq(), symbol="XAUUSD", side="BUY", volume=1,
+                             open_time=timezone.now() - timedelta(hours=1), close_time=timezone.now(),
+                             open_price=1, close_price=2, profit=10.0, commission=-2.0, swap=-0.5,
+                             source_stage="UNKNOWN")
+        d = PF.daily_realized_pnl_detail([a], observed_ccy={a.id: "USD"})[0].as_dict()
+        self.assertEqual(d["total_usd"], 7.5)                           # 10 - 2 - 0.5, each once
+
+    def test_day_boundary_excludes_yesterday(self):
+        u = _user("ddb"); a = _acct(u, currency="USD")
+        _closed_trade(a, 3.0, when=timezone.now())                               # today
+        _closed_trade(a, 99.0, when=timezone.now() - timedelta(days=1))          # yesterday — must NOT count
+        d = PF.daily_realized_pnl_detail([a], observed_ccy={a.id: "USD"})[0].as_dict()
+        self.assertEqual(d["total_usd"], 3.0)
+
+    def test_mixed_trade_currency_excluded_fail_closed(self):
+        # A USD account whose same-day trade DECLARES a foreign currency -> a mixed native sum is never converted.
+        u = _user("dmc"); a = _acct(u, currency="USD")
+        _closed_trade(a, 10.0, profit_currency="GBP")
+        d = PF.daily_realized_pnl_detail([a], rate_source=self._gbp(), observed_ccy={a.id: "USD"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_UNAVAILABLE); self.assertIsNone(d["total_usd"])
+        self.assertEqual(d["unconverted"][0]["reason"], "mixed_trade_currency")
+        self.assertIsNone(d["unconverted"][0]["native"])   # a mixed native fold is never disclosed as one currency
+
+    def test_eur_excluded_gbp_converted_when_only_gbp_rate(self):
+        u = _user("deur"); g = _acct(u, currency="GBP"); e = _acct(u, currency="EUR")
+        _closed_trade(g, 10.0); _closed_trade(e, 20.0)
+        d = PF.daily_realized_pnl_detail([g, e], rate_source=self._gbp(),
+                                         observed_ccy={g.id: "GBP", e.id: "EUR"})[0].as_dict()
+        self.assertEqual(d["state"], FX.STATE_PARTIAL)
+        self.assertEqual(d["total_usd"], round(10.0 * self.GBP, 2))     # GBP converted; EUR excluded
+        self.assertEqual([x["account_id"] for x in d["unconverted"]], [e.id])
+
+    def test_newly_added_account_auto_included(self):
+        # An account created "after the original dashboard" is just another item in the caller's scope -> auto-included.
+        u = _user("dnew"); old = _acct(u, currency="USD"); _closed_trade(old, 1.0)
+        self.assertEqual(PF.daily_realized_pnl_detail([old], observed_ccy={old.id: "USD"})[0].as_dict()["included_count"], 1)
+        new = _acct(u, currency="GBP"); _closed_trade(new, 10.0)        # newly monitored, non-USD
+        d = PF.daily_realized_pnl_detail([old, new], rate_source=self._gbp(),
+                                         observed_ccy={old.id: "USD", new.id: "GBP"})[0].as_dict()
+        self.assertEqual(d["included_count"], 2)                        # no special-casing, no packet
+        self.assertEqual(d["total_usd"], round(1.0 + 10.0 * self.GBP, 2))
+
+    def test_single_query_no_n_plus_1(self):
+        u = _user("dnq")
+        accts = [_acct(u, currency="USD") for _ in range(6)]
+        for a in accts:
+            _closed_trade(a, 1.0)
+        obs = {a.id: "USD" for a in accts}
+        with self.assertNumQueries(1):                                  # ONE trade query for the whole scope
+            PF.daily_realized_pnl_detail(accts, observed_ccy=obs)
+
+    def test_tenant_isolation_no_cross_account(self):
+        a_user = _user("dtiA"); b_user = _user("dtiB")
+        a_acct = _acct(a_user, currency="USD"); b_acct = _acct(b_user, currency="USD")
+        _closed_trade(a_acct, 7.0); _closed_trade(b_acct, 999.0)
+        payload, _ = PF.build_summary(a_user, "ALL",
+                                      fetch_balance=lambda x, timeout=None: {"balance": 1, "equity": 1, "currency": "USD"},
+                                      fetch_positions=_fake_positions({a_acct.id: []}), rate_source=FX.NullFxRateSource())
+        self.assertEqual(payload["aggregate"]["daily_realized_pnl_usd"], 7.0)   # only A's trade, never 999
+        self.assertEqual(payload["aggregate"]["daily_realized_pnl_state"], "OK")
+
+    def test_build_summary_exposes_state_and_excluded_detail(self):
+        u = _user("dbs"); usd = _acct(u, currency="USD"); gbp = _acct(u, currency="GBP")
+        _closed_trade(usd, 2.0); _closed_trade(gbp, 38.04)
+        bal = {usd.id: {"balance": 1, "equity": 1, "currency": "USD"},
+               gbp.id: {"balance": 1, "equity": 1, "currency": "GBP"}}
+        payload, _ = PF.build_summary(u, "ALL", fetch_balance=lambda a, timeout=None: bal.get(a.id),
+                                      fetch_positions=_fake_positions({usd.id: [], gbp.id: []}),
+                                      rate_source=FX.NullFxRateSource())           # no rate -> GBP excluded, surfaced
+        agg = payload["aggregate"]
+        self.assertEqual(agg["daily_realized_pnl_state"], "PARTIAL")
+        self.assertEqual(agg["daily_realized_pnl_usd"], 2.0)
+        detail = agg["daily_realized_pnl_excluded_detail"]
+        self.assertEqual(len(detail), 1); self.assertEqual(detail[0]["account_id"], gbp.id)
+        self.assertEqual(detail[0]["native"], 38.04); self.assertEqual(detail[0]["native_currency"], "GBP")

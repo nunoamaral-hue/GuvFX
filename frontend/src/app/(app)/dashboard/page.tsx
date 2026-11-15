@@ -849,29 +849,51 @@ export default function DashboardPage() {
           </div>
           <div style={{ padding: "0 1.5rem", borderRight: "1px solid rgba(255,255,255,0.045)", minWidth: 120 }}>
             {(() => {
-              // ALL scope: portfolio REALIZED daily P/L (USD, from the trade set). Specific account: per-account daily.
+              // ALL scope: portfolio REALIZED daily P/L (USD, per-account converted — pkt-131). Specific account: per-account daily.
               const dp = isAll ? (portfolioForScope ? portfolioForScope.aggregate.daily_realized_pnl_usd : null) : dailyPnl;
+              const dpState = isAll ? portfolioForScope?.aggregate.daily_realized_pnl_state : undefined;
+              const dpExcluded = (isAll && portfolioForScope?.aggregate.daily_realized_pnl_excluded_detail) || [];
               const unit = isAll ? "$" : (perf?.currency ? perf.currency + " " : "$");
-              // ALL scope with a withheld (null) daily figure means today's realized P/L cannot be expressed in USD
-              // for every account (a non-USD account, or a mixed-currency trade). A dedicated honest line, so "—"
-              // is never read as "$0" regardless of the specific cause.
+              // PARTIAL (pkt-131): a MEASURED figure over the convertible accounts, with some same-day activity that
+              // could not be converted to USD surfaced (native amount + currency) — so a number here, even 0, is never
+              // read as a complete "$0.00". UNAVAILABLE keeps the withheld-null path ("—"), never a false zero.
+              const isPartial = isAll && dpState === "PARTIAL" && dpExcluded.length > 0;
+              // The ALL-scope daily figure is gated on whether the DAILY aggregate itself measured one (OK/PARTIAL),
+              // NOT on the lifetime `hasHistory` (metrics.total_trades) — those are different aggregates: a non-USD
+              // account the daily path converts contributes to this figure yet is absent from the lifetime USD-only
+              // metric, so a real measured daily figure must not be hidden as "—" behind the lifetime gate (pkt-131).
+              const dailyMeasured = isAll && dp != null && (dpState === "OK" || dpState === "PARTIAL");
+              const excludedSummary = dpExcluded.map((e) => {
+                const amt = e.native == null ? "—"
+                  : `${e.native >= 0 ? "+" : "−"}${Math.abs(e.native).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${e.native_currency ? " " + e.native_currency : ""}`;
+                return `#${e.account_id} ${amt}`;
+              }).join(", ");
               const dpTitle = isAll && dp == null && portfolioForScope
                 ? (lang === "ja"
                     ? "本日の確定損益を全口座についてUSDで表示できません（通貨換算が利用できない口座があります）"
                     : "Today's realized P/L cannot be shown in USD for every account (currency conversion unavailable)")
-                : undefined;
+                : isPartial
+                  ? (lang === "ja"
+                      ? `一部 — USDに換算できない口座があります（除外: ${excludedSummary}）`
+                      : `Partial — some accounts' same-day realized could not be converted to USD (excluded: ${excludedSummary})`)
+                  : undefined;
               return (<>
                 <div style={microLabel}><i className={`ti ti-trending-${dp != null && dp < 0 ? "down" : "up"}`} aria-hidden="true" style={{ marginRight: 5 }} />Daily PnL{isAll ? " (realized)" : ""}</div>
-                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: !hasHistory || dp == null ? "#f0f6ff" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
-                  {/* Daily PnL is REALIZED (closed-today) P/L. With zero closed round-trips there is no realized
-                      dataset, so show "—", never a measured +$0.00 presented as calculated (same honesty rule as
-                      Net PnL). A genuine 0 is shown once trades close (hasHistory). */}
-                  {!hasHistory
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: (!hasHistory && !dailyMeasured) || dp == null ? "#f0f6ff" : isPartial ? "#cbd5e1" : dp < 0 ? "#fca5a5" : "#86efac" }} title={dpTitle}>
+                  {/* Daily PnL is REALIZED (closed-today) P/L. With zero closed round-trips AND no measured daily
+                      figure there is no realized dataset, so show "—", never a measured +$0.00 presented as
+                      calculated (same honesty rule as Net PnL). A genuine 0 is shown once trades close. */}
+                  {(!hasHistory && !dailyMeasured)
                     ? "—"
                     : dp == null
                       ? (isAll && summaryError && !portfolioForScope ? (lang === "ja" ? "読み込めませんでした" : "Couldn't load") : "—")
                       : `${dp >= 0 ? "+" : "-"}${unit}${Math.abs(dp).toLocaleString(localeFor(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
+                {isPartial ? (
+                  <div style={{ fontSize: "0.6rem", color: "#fbbf24", marginTop: 2 }} title={dpTitle}>
+                    {lang === "ja" ? `一部 · ${dpExcluded.length}口座除外` : `Partial · ${dpExcluded.length} excluded`}
+                  </div>
+                ) : null}
               </>);
             })()}
           </div>

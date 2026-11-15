@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-DAILY-PNL-AUTOMATIC-INGESTION-131",
+  "packet_id": "GFX-DASHBOARD-DAILY-PNL-AUTOMATIC-INGESTION-131",
+  "created_at_utc": "2026-11-15T16:00:00Z",
+  "branch": "fix/dashboard-daily-pnl-per-account-fx",
+  "base_commit": "c1e5cc390b0a092292283ed50304908b121651a7",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / migration-free / additive. Fixes the dashboard 'Daily PnL (realized)' card showing a false +$0.00 on days with real same-day closed trades. Root cause: analytics.portfolio.daily_realized_pnl summed the figure over a WHOLE-SCOPE single denomination, so a mixed USD+non-USD monitored population dropped every non-USD account and a GBP-only trading day summed to 0.0 over the idle USD subset (rendered as +$0.00). Fix: per-account currency conversion summed with the existing portfolio_fx.aggregate_usd (the same per-account aggregator used by the balance/equity totals), with honest coverage states (OK/PARTIAL/UNAVAILABLE/EMPTY) and per-account excluded native detail; the frontend renders PARTIAL (figure + 'Partial - N excluded' disclosure) and UNAVAILABLE ('-') instead of a false $0.00. Automatic for newly monitored accounts (no hard-coded ids, no special-case packets). No production deploy, no migration, no host/MT5 mutation, no manual snapshot, no broker action, no Copy-Trading change.",
+    "adr": "docs/architecture/ADR-0108-daily-realized-pnl-per-account-currency-conversion.md (new)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + frontend (vitest + eslint + next build) + governance (secret/PII scan + evidence lint). Pure Python + TypeScript change; no PowerShell artefact; no migration."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test analytics.tests_portfolio.DailyRealizedPnlPerAccountTests  (16/16 OK)",
+    "cd backend && .venv/bin/python manage.py test analytics  (288 OK, 1 skipped)",
+    "cd backend && .venv/bin/python manage.py check  (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations analytics trading execution --check --dry-run  (No changes detected - migration-free)",
+    "cd frontend && npx vitest run src/app/(app)/dashboard/daily-pnl-coverage.test.tsx  (4/4 OK)",
+    "cd frontend && npx eslint <changed files>  (0 errors; 3 pre-existing unrelated unused-var warnings)",
+    "cd frontend && npm run build  (success)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT: PASS)"
+  ],
+  "expected_results": [
+    "Daily realized P&L includes EVERY monitored account's same-day realized: a non-USD account is converted per-account via the vetted rate and summed (no longer dropped by a whole-scope single-currency rule); a mixed USD+GBP day with an available rate is COMPLETE, not PARTIAL-dropping-GBP.",
+    "Never a false zero: same-day activity that cannot be converted is EXCLUDED and surfaced with its native amount (PARTIAL), or the figure is UNAVAILABLE (null, never 0.0) when no activity converts; a genuine no-trade day is EMPTY (0.0); an exactly-zero complete day shows 0.0 truthfully.",
+    "profit+commission+swap counted exactly once; deposits/withdrawals (balance deals, no position_id) never contribute; day window is the broker-server close_time calendar date; yesterday excluded.",
+    "Automatic enrolment: a newly monitored account enters the figure with no hard-coded id / special-case packet; one bounded trade query for the whole scope (no N+1); tenant-isolated (owner scope only, no cross-account substitution).",
+    "Frontend: OK -> measured figure; PARTIAL -> figure + 'Partial - N excluded' disclosure naming each excluded native amount; UNAVAILABLE -> '-' (never +$0.00).",
+    "Back-compatible: daily_realized_pnl still returns (value, basis); existing analytics tests pass; migration-free; secret scan + evidence lint clean; no Copy-Trading / broker / is_active / host change."
+  ],
+  "actual_results": [
+    "backend/analytics/portfolio.py: new _daily_native_by_account (ONE query, no N+1), _account_realized_currency, daily_realized_pnl_detail (per-account -> portfolio_fx.aggregate_usd -> UsdAggregate with OK/PARTIAL/UNAVAILABLE/EMPTY + unconverted native detail; mixed-trade-currency account excluded fail-closed), and daily_realized_pnl reimplemented as a back-compatible (value, basis) wrapper. build_summary emits daily_realized_pnl_state + daily_realized_pnl_excluded_detail alongside the existing keys (now activity-based coverage).",
+    "frontend/src/types/portfolio.ts: added daily_realized_pnl_state ('OK'|'PARTIAL'|'UNAVAILABLE'|'EMPTY') and daily_realized_pnl_excluded_detail[{account_id, native, native_currency, reason, category?}].",
+    "frontend/src/app/(app)/dashboard/page.tsx: Daily PnL card renders the honest state - a 'Partial - N excluded' amber disclosure (tooltip naming each excluded account's native same-day realized) for PARTIAL, '-' for UNAVAILABLE; a bare +$0.00 can no longer stand for dropped activity.",
+    "Tests: backend DailyRealizedPnlPerAccountTests (16 new: #58-shape USD multi-deal, #52-shape GBP converted, mixed USD+GBP both included [THE fix], GBP-only day not false-zero, GBP-no-rate PARTIAL surfaced, all-non-USD-no-rate UNAVAILABLE, no-trade EMPTY, exact-zero complete, commission+swap once, day boundary, mixed-trade-currency fail-closed, EUR-excluded/GBP-converted, newly-added auto-included, single-query N+1 guard, tenant isolation, build_summary state+excluded_detail); updated test_summary_carries_structural_and_daily_counts to activity-based coverage. frontend daily-pnl-coverage.test.tsx (4: OK / PARTIAL badge+native / UNAVAILABLE never $0.00 / measured-figure-shown-despite-lifetime-metric-UNAVAILABLE).",
+    "docs/architecture/ADR-0108-daily-realized-pnl-per-account-currency-conversion.md (new): canonical Daily Realized P&L contract + per-account conversion + coverage states + deliberate boundary (lifetime Net PnL policy unchanged).",
+    "Read-only production diagnosis (owner 29, DB-only, no bridge/host contact, no mutation) reproduced the defect against real data: 2026-11-11 card $0.00 vs true +$50.36 (Vantage #52 GBP +38.04 dropped); 2026-11-05 card -$8.48 vs true +$17.38; 2026-11-10 card +$8.25 vs true +$24.47; #58 Dominion +34.37 on 2026-11-13 present (USD, self-resolved ingest timing). GBP->USD rate available (Fed DEXUSUK 1.3238). owner-29 non-USD accounts: #49/#52/#56 GBP.",
+    "Local verification (PostgreSQL): DailyRealizedPnlPerAccountTests 16/16; analytics 288 OK (1 skipped); manage.py check clean; makemigrations --check migration-free; frontend daily-pnl-coverage 4/4; eslint 0 errors; npm run build success; secret scan no findings; evidence lint PASS."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS): the fix is repository-only and NOT merged (auto-merge OFF, STOP before merge) and NOT deployed; no production backend/frontend deploy; the production card is corrected only once the PR is merged + deployed (a separate Sponsor-gated step).",
+    "Scope boundary (deliberate): only the DAILY realized figure is changed. The lifetime 'Net PnL' / performance-snapshot metric (portfolio_metrics) keeps its existing documented mixed-non-USD-excluded currency policy; aligning it is a separate decision.",
+    "Day window remains the stored broker-server close_time calendar date (~UTC). A true-UTC / member-local day frame is a documented platform-wide follow-up (KNOWN_ISSUES), unchanged here; only trades within the broker/UTC offset of midnight could bucket a day off.",
+    "Non-USD conversion depends on fx_conversion_enabled_for(user) + a within-staleness GBP->USD rate; a non-GBP non-USD currency or a stale/missing rate degrades that account to PARTIAL/UNAVAILABLE (surfaced native), never a false zero - correct, but not a converted number.",
+    "The authoritative exact-head CI is the merge gate; the figures above are local (macOS + PostgreSQL / Node) runs of the same commands CI runs. Local-only pre-existing failures NOT from this PR: dashboard localization.test.tsx (jsdom window.localStorage.clear missing; CI env unaffected) and core.tests_adr_governance (stray untracked 'ADR-0097-... 2.md' sync-dup; not in git, passes on CI's clean checkout).",
+    "No credential, snapshot, host deploy, flag enablement, is_active change, Copy-Trading or broker action was performed."
+  ],
+  "artefact_locations": [
+    "backend/analytics/portfolio.py (daily_realized_pnl_detail + per-account conversion + build_summary coverage)",
+    "backend/analytics/tests_portfolio.py (DailyRealizedPnlPerAccountTests + updated coverage test)",
+    "frontend/src/types/portfolio.ts (daily_realized_pnl_state + excluded_detail)",
+    "frontend/src/app/(app)/dashboard/page.tsx (Daily PnL card honest-state rendering)",
+    "frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx (3 rendering tests)",
+    "docs/architecture/ADR-0108-daily-realized-pnl-per-account-currency-conversion.md (new)",
+    "evidence/manifests/GFX-EVD-DASHBOARD-DAILY-PNL-AUTOMATIC-INGESTION-131.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/analytics/portfolio.py": "sha256:c7f664fc068da55066c075f173a0ad7e259a7e0db79db469745160c0949bd2d8",
+    "backend/analytics/tests_portfolio.py": "sha256:331a7e3937b629ba0b2fbf03b0e55ccfcb3d5f711d84af786175bf324a126ddf",
+    "frontend/src/app/(app)/dashboard/page.tsx": "sha256:f9d4a8d9018f009a404b3aafc5206f5f204357a2318e5cf47415a4b41ab41cf8",
+    "frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx": "sha256:7226510394afb407620ad335ce8f6c486542beaf5b26a70b9092dd2ac0e21d67",
+    "frontend/src/types/portfolio.ts": "sha256:cba6f676c4c50c1a332bcd02c91a7f1f21096aff95c45d86bf5cb4e7ab1c4f63",
+    "docs/architecture/ADR-0108-daily-realized-pnl-per-account-currency-conversion.md": "sha256:3ff4478d71f2e54e76ad2f9cc237ac8ff94e8b5ea067ce631baa59801f18700a"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Independent 6-vector adversarial review (Workflow, ultracode): NO CRITICAL/HIGH/MEDIUM; 3 LOW all fixed with regression tests before the PR - (1) mixed_trade_currency excluded native withheld (None) instead of a cross-currency fold; (2+3) the ALL-scope Daily card now shows a measured daily figure (OK/PARTIAL) even when the lifetime metric total_trades is UNAVAILABLE, instead of hiding it as a dash behind the lifetime gate. Sponsor review pending (auto-merge OFF, STOP before merge)."
+}
