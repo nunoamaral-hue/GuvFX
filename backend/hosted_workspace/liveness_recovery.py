@@ -284,6 +284,14 @@ HOST_WINDOW_DEFAULT_S = 3600
 HOST_MAX_RELAUNCHES_DEFAULT = 3
 HOST_MAX_DOWN_DEFAULT = 2
 
+# ── OPERATING-MODEL HARDENING (packet-127) ────────────────────────────────────────────────────────────────────
+# The conservative steady-state operating model: recovery is default-OFF globally; production activation is
+# ALLOW-LIST-only; the initial cohort is SMALL (<= STEADY_STATE_COHORT_MAX) with the breaker pinned to 1-down /
+# 1-relaunch. An "approved steady-state" configuration is one that already matches that shape — so a configuration
+# that enables recovery WITHOUT either an active governed lease OR this approved shape is almost certainly leftover
+# bounded-acceptance configuration that a teardown failed to remove, and the cron warns about it every cycle.
+STEADY_STATE_COHORT_MAX = 1              # initial cohort size cap (prepared, not enabled — allow-list defaults empty)
+
 
 def _cfg_raw(name):
     """Live settings-then-env read (never raises)."""
@@ -363,6 +371,119 @@ def _host_breaker_config():
     max_relaunch, m2 = _cfg_int_checked("HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_RELAUNCHES", HOST_MAX_RELAUNCHES_DEFAULT, 1, 100000)
     max_down, m3 = _cfg_int_checked("HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN", HOST_MAX_DOWN_DEFAULT, 1, 100000)
     return window_s, max_relaunch, max_down, (m1 or m2 or m3)
+
+
+def _stale_malformed() -> bool:
+    """True iff the dedicated stale threshold env is present-but-invalid (incl. < the 300s floor) → it fails closed
+    to 900. Exposed for the config metadata/warnings so an operator sees a rejected-and-clamped value."""
+    _v, malformed = _cfg_int_checked(
+        "HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S", RECOVERY_STALE_DEFAULT_S, RECOVERY_STALE_MIN_S, RECOVERY_STALE_MAX_S)
+    return malformed
+
+
+def _is_approved_steady_state_config() -> bool:
+    """True iff the CURRENT recovery configuration matches the approved conservative steady-state shape:
+    established recovery enabled, a NON-empty allow-list no larger than ``STEADY_STATE_COHORT_MAX``, the host breaker
+    pinned to 1-down / 1-relaunch and not malformed, and a stale threshold that parsed cleanly (>= the 300s floor).
+    This is the ONLY production shape that may run WITHOUT an active governed lease without warning."""
+    try:
+        if not _established_recovery_enabled():
+            return False
+        # A LIVE recovery configuration may NEVER qualify as an unleased "approved steady-state" — a bounded
+        # acceptance arms exactly the LIVE allow-list-of-one / breaker-1/1 shape, so treating that shape as approved
+        # would blind the leftover-config warning to a LIVE acceptance whose teardown failed. Only a DEMO-only cohort
+        # may run unleased without warning; a LIVE cohort must run under an active governed lease (or be warned).
+        if _live_recovery_enabled():
+            return False
+        allow = _established_recovery_allowlist()
+        if not allow or len(allow) > STEADY_STATE_COHORT_MAX:
+            return False
+        _w, max_relaunch, max_down, breaker_malformed = _host_breaker_config()
+        if breaker_malformed or max_down != 1 or max_relaunch != 1:
+            return False
+        if _stale_malformed():
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — unknown ⇒ not approved (warn)
+        return False
+
+
+def _active_governed_lease() -> bool:
+    """True iff a live (ACTIVE) governed operational lease exists (tolerant; any error ⇒ treated as NO lease so the
+    'enabled without lease' warning errs toward warning, never toward silence)."""
+    try:
+        from django.utils import timezone
+        from hosted_workspace import recovery_lease
+        status, _ = recovery_lease.read_lease(timezone.now())
+        return status == recovery_lease.LeaseStatus.ACTIVE
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def recovery_enablement_warnings() -> list:
+    """Operator-facing WARNINGS about the current recovery configuration (no secret, no env dump). Empty list when
+    the configuration is safe/inert. Emitted every cron cycle by the established pass and surfaced by ``recovery_ops
+    config`` so leftover bounded-acceptance configuration can never run unnoticed."""
+    warnings = []
+    try:
+        established = _established_recovery_enabled()
+        live = _live_recovery_enabled()
+        allow = _established_recovery_allowlist()
+        if established and not allow:
+            warnings.append("established recovery ENABLED with EMPTY/malformed allow-list → recovers NOTHING "
+                            "(fail-closed); set HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS or disable the flag.")
+        if live and not allow:
+            warnings.append("LIVE recovery enabled without an allow-list → no LIVE account can be a candidate "
+                            "(fail-closed).")
+        if live and not _active_governed_lease():
+            warnings.append("LIVE recovery ENABLED without an ACTIVE governed lease → LIVE recovery must run only "
+                            "within a bounded governed lease; if unexpected this is almost certainly LEFTOVER "
+                            "bounded-acceptance configuration a teardown failed to remove — investigate NOW.")
+        if established and not _active_governed_lease() and not _is_approved_steady_state_config():
+            warnings.append("established recovery ENABLED without an active governed lease AND not an approved "
+                            "steady-state cohort config (allow-list size<=%d, breaker 1-down/1-relaunch) → likely "
+                            "LEFTOVER bounded-acceptance configuration; investigate/teardown immediately."
+                            % STEADY_STATE_COHORT_MAX)
+        _w, _mr, _md, breaker_malformed = _host_breaker_config()
+        if breaker_malformed:
+            warnings.append("host restart-storm breaker config MALFORMED → fail-closed (blocks all relaunches).")
+        if _stale_malformed():
+            warnings.append("recovery stale threshold MALFORMED or below the 300s floor → fail-closed to 900s.")
+    except Exception:  # noqa: BLE001
+        warnings.append("recovery configuration could not be evaluated → treat as unsafe (investigate).")
+    return warnings
+
+
+def recovery_config_metadata() -> dict:
+    """Safe snapshot of the recovery operating-model configuration for observability: NO secret and NO raw
+    environment dump — only the non-secret, operator-set names/ids/counts (allow-list ids, thresholds, breaker caps)
+    and the governed-lease status. It deliberately echoes those non-secret config values; it never reads or emits a
+    secret-bearing environment variable."""
+    try:
+        window_s, max_relaunch, max_down, breaker_malformed = _host_breaker_config()
+        allow = sorted(_established_recovery_allowlist())
+        meta = {
+            "established_recovery_enabled": bool(_established_recovery_enabled()),
+            "live_recovery_enabled": bool(_live_recovery_enabled()),
+            "allowlist_ids": allow,
+            "allowlist_size": len(allow),
+            "stale_threshold_s": _established_recovery_stale_s(),
+            "stale_threshold_malformed": _stale_malformed(),
+            "host_breaker": {"window_s": window_s, "max_relaunches": max_relaunch, "max_down": max_down,
+                             "malformed": bool(breaker_malformed)},
+            "steady_state_cohort_max": STEADY_STATE_COHORT_MAX,
+            "approved_steady_state_config": _is_approved_steady_state_config(),
+            "warnings": recovery_enablement_warnings(),
+        }
+        try:
+            from django.utils import timezone
+            from hosted_workspace import recovery_lease
+            meta["governed_lease"] = recovery_lease.status_metadata(timezone.now())
+        except Exception:  # noqa: BLE001
+            meta["governed_lease"] = {"status": "UNKNOWN"}
+        return meta
+    except Exception:  # noqa: BLE001
+        return {"error": "recovery_config_metadata unavailable"}
 
 
 def _resolve_rdp_host(ws) -> str:
@@ -616,6 +737,12 @@ def _run_established_monitoring_recovery(*, now, resolve_ex, observe_fn) -> dict
            "skipped_ambiguous": 0, "skipped_no_executor": 0, "skipped_allowlist": 0, "skipped_host_circuit": 0,
            "host_circuit_open": False, "errors": 0, "reasons": {}}
     from hosted_workspace.recovery_eligibility import established_account_recovery_eligible
+
+    # (packet-127) Operating-model guard: warn LOUDLY every cycle if recovery is enabled in an unsafe/leftover shape
+    # (enabled without an active governed lease and not an approved steady-state cohort, empty allow-list, malformed
+    # breaker/threshold). This never changes behaviour — it makes a botched teardown or a careless enablement visible.
+    for _w in recovery_enablement_warnings():
+        logger.warning("established_recovery OPERATING-MODEL: %s", _w)
 
     # Alert resolution for recovered accounts runs first (observational; it clears a stale alert when monitoring
     # has returned, independent of the pilot allow-list).
