@@ -278,3 +278,15 @@ change, no broker action, no fabricated snapshot. **Remaining production-activat
 set a one-account allow-list + conservative breaker as an approved steady-state cohort, after the deploy tooling is
 wired to call the gate. Tests: `hosted_workspace/tests_recovery_operating_model.py` (33) + the established cluster,
 all green; migration-free; secret scan + evidence lint clean.
+
+### Addendum note — DEPLOY-GATE-WIRING-128 (repository-only, DARK)
+
+The recovery/deploy exclusion gate (OPERATING-MODEL-127) is now wired into the production backend-deploy path via
+one shared wrapper, `scripts/guarded_deploy.py`: it acquires a governed **deploy** lease before any mutation (refused
+while a recovery lease is live or malformed), runs the existing rollback-first, backend-only, never-`--remove-orphans`
+build+recreate, and releases the lease through guaranteed cleanup (a deploy failure whose rollback also fails retains
+the lease and alerts; the lease self-expires via TTL). It uses only the stdlib `recovery_lease` file primitives, so it
+enforces the gate even when the backend/DB is down. The emergency override requires an explicit, non-empty, redacted,
+audited reason and is the only way past a live recovery lease. The **#50 steady-state model is B** (recovery flags OFF
+except during bounded governed leases) — because `_is_approved_steady_state_config()` admits only a *demo-only*
+unleased cohort and #50 is LIVE. No production enablement; no `is_active`/Copy-Trading/broker/MT5/credential change.

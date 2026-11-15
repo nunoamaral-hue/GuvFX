@@ -78,3 +78,52 @@ success / FAIL / timeout / exception in `tests_recovery_operating_model.py`.
 No production recovery enablement in this packet; no terminal stop/relaunch; no `is_active` mutation; no Copy-Trading
 change; no broker action; no fabricated snapshot; the lease carries no secret and the config metadata never dumps the
 environment.
+
+---
+
+## 6. Deploy-gate wiring (packet-128) — the one shared guarded deploy wrapper
+
+Every backend production deploy MUST go through `scripts/guarded_deploy.py` — the single shared, lease-guarded,
+rollback-first wrapper. The ad-hoc host build/recreate scripts (`build_*.sh`, `deploy_*_recreate.sh`) are replaced
+by (or must call) it. It:
+
+1. **Acquires a governed DEPLOY lease before any mutation.** The lease module refuses while a **recovery** lease is
+   live or MALFORMED — so a deploy cannot race an in-flight established-recovery/acceptance window. While the deploy
+   lease is held, a recovery attempt fails closed (mutual exclusion).
+2. Runs the existing **rollback-first** (tag the running backend image before `:latest` moves), **backend-only**
+   (`up -d --no-deps --force-recreate guvfx-backend`, **never `--remove-orphans`**) build + recreate + verify.
+3. **Releases the lease through guaranteed cleanup.** A clean success — or a successful rollback after a failed
+   deploy — releases the lease. A deploy failure whose **rollback also fails** RETAINS the lease and ALERTS (never a
+   false "clean" report); the lease then self-expires via its TTL. It needs only the stdlib `recovery_lease` file
+   primitives, so a **backend/DB-down** deploy still enforces the gate.
+
+```bash
+export GUVFX_RECOVERY_LEASE_FILE=/srv/guvfx/mt5_handoff/recovery_operational_lease.json   # same mount the backend uses
+python3 scripts/guarded_deploy.py --sha <target> --compose-dir /home/ubuntu/guvfx-prod \
+  --app-dir /home/ubuntu/guvfx-app --owner <operator> --release-prefix <release> \
+  --lease-file "$GUVFX_RECOVERY_LEASE_FILE" --health-url https://api.guvfx.com/api/health/
+# emergency only (explicit, audited, redacted; the ONLY way past a LIVE recovery lease — never a malformed one):
+python3 scripts/guarded_deploy.py ... --lease-file "$GUVFX_RECOVERY_LEASE_FILE" \
+  --emergency-override "hotfix <ticket>, approved by <operator>"
+```
+
+The `--lease-file` MUST point at the **same lease file the in-container recovery writes** (the handoff mount); the
+wrapper **refuses fail-closed** (exit 3) if no lease file is configured — it never falls back to a temp path. Exit
+`0` = deployed + lease released; `3` = refused / not cleanly deployed (investigate; the lease may be retained). The
+wrapper runs build+recreate only (never `manage.py migrate`) — migrations remain a separate, documented operator step
+and `verify()`'s health 200 does not imply migration health.
+`scripts/deploy_recovery_gate.py` remains the lightweight standalone pre-check.
+
+## 7. #50 steady-state model — resolved from ADR-0107 + merged code (NOT assumption)
+
+The merged pkt-127 code decides this: `liveness_recovery._is_approved_steady_state_config()` returns True only when
+recovery is enabled **and `_live_recovery_enabled()` is False** (demo-only), allow-list ≤ 1, breaker 1/1, clean
+threshold. #50 is a **LIVE** monitoring-only account (`is_demo=False`), so a LIVE recovery configuration is **never**
+an unleased "approved steady-state" and always raises the LIVE-without-active-lease warning.
+
+**Therefore the approved #50 steady-state model is B — all recovery flags OFF except during bounded governed
+leases** (Option A, continuously-enabled DEMO/monitoring-only recovery with LIVE OFF, applies only to a *demo*
+cohort; it does not fit the LIVE #50). #50 recovery runs only inside a bounded governed recovery lease (the pkt-126
+acceptance shape), then returns to DARK. This is consistent with ADR-0107 (recovery default-OFF globally;
+activation allow-list-only; LIVE requires an active governed lease). If a future operator sets a continuously-enabled
+LIVE #50 config, the cron will warn every cycle — by design.
