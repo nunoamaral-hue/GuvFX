@@ -19,6 +19,7 @@ Proves (the packet-108 gap and its fix):
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -47,6 +48,26 @@ EST_FLAGS = dict(MASTER, HOSTED_ESTABLISHED_RECOVERY_ENABLED="1")
 EST_LIVE_FLAGS = dict(EST_FLAGS, HOSTED_LIVE_RECOVERY_ENABLED="1")
 CAP_FLAGS = dict(HOSTED_PERSISTENT_MT5_ENABLED="1", HOSTED_CAPABILITY_RECOVERY_ENABLED="1",
                  HOSTED_BOUNDED_OBSERVATION_ENABLED="1")
+
+
+class _AllowAllTestIds:
+    """Test shim: packet-118 added a FAIL-CLOSED recovery allow-list (empty ⇒ zero candidates). The pre-118
+    established-pass tests predate it, so each such test class patches ``_established_recovery_allowlist`` to this
+    'contains every id' object, preserving their pre-118 semantics. The DEDICATED Packet118HardeningTests exercise
+    the REAL allow-list function (unpatched)."""
+
+    def __contains__(self, _x):
+        return True
+
+    def __bool__(self):
+        return True
+
+
+def _patch_allow_all(testcase):
+    """Start an allow-all patch for the duration of ``testcase`` (auto-stopped)."""
+    p = mock.patch.object(LR, "_established_recovery_allowlist", lambda: _AllowAllTestIds())
+    p.start()
+    testcase.addCleanup(p.stop)
 
 
 def _uniq():
@@ -269,6 +290,9 @@ def _other_ws(acct, node):
 # Liveness pass — established MONITORING recovery (integration).
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class EstablishedLivenessTests(TestCase):
+    def setUp(self):
+        _patch_allow_all(self)   # packet-118: pre-existing pass tests predate the fail-closed allow-list
+
     @override_settings(**EST_FLAGS)
     def test_down_established_monitoring_account_is_relaunched_once(self):
         acct, node, ws, _ = _established_scenario()
@@ -447,6 +471,9 @@ class EstablishedLivenessTests(TestCase):
 # #50-shaped regression + mutation discrimination.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class Account50RegressionTests(TestCase):
+    def setUp(self):
+        _patch_allow_all(self)   # packet-118: pre-existing pass tests predate the fail-closed allow-list
+
     def _account_50_shaped(self):
         """LIVE (IS6Technologies-Live-shaped), NOT armed, confirmed=None, is_active=False (the REAL production #50
         shape — a LIVE monitoring-only account is intentionally execution-disabled; ELIGIBILITY-FIX-112 corrects
@@ -529,6 +556,9 @@ def _mk_copier_follower(acct):
 
 
 class Packet112EligibilitySeparationTests(TestCase):
+    def setUp(self):
+        _patch_allow_all(self)   # packet-118: the pass-running tests here predate the fail-closed allow-list
+
     # ── Copy Trading exclusion (the #46 master / #48 follower pair — regardless of flags) ──────────────────────
     def test_copier_master_is_excluded_from_eligibility(self):
         acct, node, ws, _ = _established_scenario()
@@ -677,3 +707,271 @@ class Packet112EligibilitySeparationTests(TestCase):
         relaunched_users = sorted(c[1] for c in ex.calls)
         self.assertEqual(relaunched_users,
                          sorted([derive_slot(a1.id)["username"], derive_slot(a2.id)["username"]]))
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# HARDENING-118 — dedicated recovery stale threshold, fail-closed account allow-list, host-wide restart-storm
+# circuit breaker, truthful event-level latency evidence. These run the REAL allow-list/breaker (NOT the allow-all
+# shim), opting accounts in explicitly via settings. DARK/default-OFF; no migration; no execution/Copy-Trading.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def _down_candidate(*, rdp="100.79.101.19", is_demo=True, pin="PIN1", server="SRV1"):
+    """A stale (down-candidate) established monitoring-only account on host ``rdp``."""
+    acct, node, srv = _mk_account(is_demo=is_demo, confirmed=False, active=False, rdp=rdp)
+    ws = _mk_ws(acct, node, armed=False)
+    _mk_endpoint(ws, acct, node, login=pin, server=server)
+    _mk_snapshot(acct, login=pin, server=server, age_s=DEFAULT_FRESHNESS_S + 3600)
+    return acct, node, ws
+
+
+def _ids(*accts):
+    return ",".join(str(a.id) for a in accts)
+
+
+class Packet118HardeningTests(TestCase):
+    # ── A. Dedicated recovery stale threshold ─────────────────────────────────────────────────────────────────
+    def test_01_default_stale_threshold_is_900(self):
+        self.assertEqual(LR._established_recovery_stale_s(), 900)
+
+    @override_settings(HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S="600")
+    def test_02_configured_600_affects_recovery_only_not_dashboard(self):
+        from analytics.equity_snapshots import DEFAULT_FRESHNESS_S as DASH_CURVE
+        from execution.monitoring_enrolment import SNAPSHOT_FRESHNESS_S as DASH_ENROL
+        self.assertEqual(LR._established_recovery_stale_s(), 600)
+        self.assertEqual(DASH_CURVE, 900)         # dashboard/portfolio freshness UNCHANGED
+        self.assertEqual(DASH_ENROL, 900)         # enrolment projection freshness UNCHANGED
+        # behaviour: an account whose read is 700s old is STALE for recovery (>600) but within the dashboard's 900s.
+        acct, node, srv = _mk_account(active=False)
+        _mk_endpoint(_mk_ws(acct, node), acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=700)
+        self.assertFalse(LR._monitoring_snapshot_fresh(acct.id, timezone.now()))
+
+    def test_02b_malformed_threshold_fails_closed_to_900(self):
+        for bad in ("abc", "0", "-5", "60"):   # non-int / zero / negative / below the 300s collector cadence
+            with override_settings(HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S=bad):
+                self.assertEqual(LR._established_recovery_stale_s(), 900)
+
+    # ── B. Fail-closed allow-list ─────────────────────────────────────────────────────────────────────────────
+    @override_settings(**EST_FLAGS)
+    def test_03_missing_allowlist_yields_zero_candidates(self):
+        _down_candidate()
+        ex = FakeExecutor()
+        out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["candidates"], 0)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(out["established"]["reasons"].get("allowlist_empty"), 1)
+        self.assertEqual(ex.calls, [])
+
+    @override_settings(**EST_FLAGS)
+    def test_04_only_listed_account_selected_siblings_excluded(self):
+        target, _, _ = _down_candidate()
+        sibling, _, _ = _down_candidate()
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(target)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)
+        self.assertEqual(out["established"]["skipped_allowlist"], 1)   # the sibling never became a candidate
+        self.assertEqual(ex.calls[0][1], derive_slot(target.id)["username"])
+        self.assertEqual(len(ex.calls), 1)
+
+    def test_05_malformed_allowlist_fails_closed(self):
+        for bad in ("50,abc", "50 -3", "0", "nope"):
+            with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=bad):
+                self.assertEqual(LR._established_recovery_allowlist(), frozenset())
+
+    @override_settings(**EST_LIVE_FLAGS)
+    def test_06_copier_participant_excluded_even_if_listed(self):
+        acct, node, srv = _mk_account(is_demo=False, confirmed=False, active=True, rdp="100.79.101.19")
+        ws = _mk_ws(acct, node, armed=False)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=DEFAULT_FRESHNESS_S + 3600)
+        _mk_copier_master(acct)                                   # #46-shaped master, explicitly listed
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(acct)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(out["established"]["reasons"].get(RE.RC_COPIER_PARTICIPANT), 1)
+        self.assertEqual(ex.calls, [])
+
+    @override_settings(**EST_FLAGS)
+    def test_07_first_permitted_recovery_succeeds(self):
+        target, _, _ = _down_candidate()
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(target)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)
+
+    # ── C. Host-wide restart-storm circuit breaker ────────────────────────────────────────────────────────────
+    @override_settings(**EST_FLAGS, HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_RELAUNCHES="1",
+                       HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN="5")
+    def test_08_second_relaunch_in_host_window_blocked(self):
+        a, _, _ = _down_candidate(rdp="10.0.0.1")
+        b, _, _ = _down_candidate(rdp="10.0.0.1")   # same host
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a, b)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)        # host rate cap = 1
+        self.assertEqual(out["established"]["skipped_host_circuit"], 1)
+        self.assertTrue(out["established"]["host_circuit_open"])
+
+    @override_settings(**EST_FLAGS, HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_RELAUNCHES="1",
+                       HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN="5")
+    def test_08b_failing_relaunches_consume_host_budget(self):
+        # review-118 LOW fix: the host rate budget is attempt-based. A FAILING relaunch still consumes it, so a
+        # burst of failures on one unhealthy host cannot exceed HOST_MAX_RELAUNCHES in a single pass.
+        a, _, _ = _down_candidate(rdp="10.0.0.9")
+        b, _, _ = _down_candidate(rdp="10.0.0.9")   # same host
+        ex = FakeExecutor(relaunch_ok=False)        # host unhealthy: every relaunch RPC fails
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a, b)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(len(ex.calls), 1)          # ONE relaunch RPC, not two — budget consumed by the attempt
+        self.assertEqual(out["established"]["errors"], 1)
+        self.assertEqual(out["established"]["skipped_host_circuit"], 1)
+        self.assertTrue(out["established"]["host_circuit_open"])
+
+    @override_settings(**EST_FLAGS, HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN="1")
+    def test_09_concurrent_sibling_down_blocks_host_cohort(self):
+        a, _, _ = _down_candidate(rdp="10.0.0.2")
+        b, _, _ = _down_candidate(rdp="10.0.0.2")   # same host, both down ⇒ host-wide event
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a, b)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)        # 2 down > max_down 1 ⇒ both blocked
+        self.assertEqual(out["established"]["skipped_host_circuit"], 2)
+        self.assertEqual(ex.calls, [])
+
+    @override_settings(**EST_FLAGS, HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN="1")
+    def test_10_different_host_unaffected(self):
+        a, _, _ = _down_candidate(rdp="10.0.0.3")   # host A: 2 down ⇒ blocked
+        b, _, _ = _down_candidate(rdp="10.0.0.3")
+        c, _, _ = _down_candidate(rdp="10.0.0.4")   # host B: 1 down ⇒ allowed
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a, b, c)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)        # only host B's single account
+        self.assertEqual(out["established"]["skipped_host_circuit"], 2)
+        self.assertEqual(ex.calls[0][1], derive_slot(c.id)["username"])
+
+    @override_settings(**EST_FLAGS, HOSTED_ESTABLISHED_RECOVERY_HOST_WINDOW_S="3600",
+                       HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_RELAUNCHES="1")
+    def test_11_expired_window_evidence_allows_later_recovery(self):
+        a, _, ws = _down_candidate(rdp="10.0.0.5")
+        # a relaunch OLDER than the window must NOT count toward the host rate cap.
+        ws.liveness_recovery_at = timezone.now() - timezone.timedelta(seconds=4000)
+        ws.liveness_recovery_count = 0
+        ws.save(update_fields=["liveness_recovery_at", "liveness_recovery_count"])
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)        # expired evidence ⇒ not blocked
+        self.assertEqual(out["established"]["skipped_host_circuit"], 0)
+
+    @override_settings(**EST_FLAGS)
+    def test_12_circuit_breaker_query_failure_blocks(self):
+        a, _, _ = _down_candidate()
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a)), \
+                mock.patch.object(LR, "_host_recent_relaunch_counts", side_effect=RuntimeError("db down")):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)        # fail-closed on unavailable cohort data
+        self.assertEqual(out["established"]["skipped_host_circuit"], 1)
+        self.assertTrue(out["established"]["host_circuit_open"])
+        self.assertEqual(ex.calls, [])
+
+    def test_12b_malformed_breaker_config_fails_closed(self):
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN="abc"):
+            _w, _r, _d, malformed = LR._host_breaker_config()
+            self.assertTrue(malformed)
+
+    # ── E. One-pass & concurrency safety ──────────────────────────────────────────────────────────────────────
+    @override_settings(**EST_FLAGS)
+    def test_13_repeat_pass_does_not_duplicate_relaunch(self):
+        a, _, ws = _down_candidate()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a)):
+            out1 = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(FakeExecutor()), observe_fn=_down)
+            ex2 = FakeExecutor()
+            out2 = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex2), observe_fn=_down)
+        self.assertEqual(out1["established"]["relaunched"], 1)
+        self.assertEqual(out2["established"]["relaunched"], 0)       # single-flight + cooldown ⇒ no duplicate
+        ws.refresh_from_db()
+        self.assertEqual(ws.liveness_recovery_count, 1)
+
+    @override_settings(**EST_FLAGS)
+    def test_14_onboarding_account_excluded_even_if_listed(self):
+        acct, node, srv = _mk_account(active=False)
+        ws = _mk_ws(acct, node)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")   # no prior verified read ⇒ onboarding
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(acct)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(out["established"]["reasons"].get(RE.RC_NO_PRIOR_VERIFIED_READ), 1)
+
+    @override_settings(**EST_FLAGS)
+    def test_15_identity_drift_excluded_even_if_listed(self):
+        acct, node, ws, _ = _established_scenario(pin_login="NEWPIN", snap_login="OLDPIN")
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(acct)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(out["established"]["reasons"].get(RE.RC_IDENTITY_PIN_DRIFT), 1)
+
+    @override_settings(**EST_FLAGS)
+    def test_16_endpoint_missing_excluded_even_if_listed(self):
+        acct, node, ws, _ = _established_scenario(with_endpoint=False)
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(acct)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 0)
+        self.assertEqual(out["established"]["reasons"].get(RE.RC_NO_ENDPOINT), 1)
+
+    # ── D. Truthful latency evidence ──────────────────────────────────────────────────────────────────────────
+    def test_17_latency_components_null_when_unavailable_never_zero(self):
+        # no post-relaunch snapshot yet ⇒ relaunch→snapshot latency is None (NOT 0).
+        acct, node, srv = _mk_account(active=False)
+        ws = _mk_ws(acct, node)
+        _mk_endpoint(ws, acct, node, login="PIN1", server="SRV1")
+        ws.liveness_recovery_at = timezone.now() - timezone.timedelta(seconds=100)
+        lat = LR._recovered_latency_evidence(acct.id, ws)
+        self.assertIsNone(lat["relaunch_to_snapshot_s"])
+        self.assertIsNone(lat["first_genuine_snapshot_at"])
+        self.assertNotEqual(lat["relaunch_to_snapshot_s"], 0)
+        # a genuine post-relaunch read ⇒ a real positive latency (never fabricated).
+        _mk_snapshot(acct, login="PIN1", server="SRV1", age_s=50)   # observed 50s after the relaunch
+        lat2 = LR._recovered_latency_evidence(acct.id, ws)
+        self.assertIsNotNone(lat2["relaunch_to_snapshot_s"])
+        self.assertGreater(lat2["relaunch_to_snapshot_s"], 0)
+        self.assertEqual(lat2["relaunch_to_identity_s"], lat2["relaunch_to_snapshot_s"])
+
+    @override_settings(**EST_FLAGS)
+    def test_18_recovery_writes_no_snapshot_and_logs_genuine_timestamps(self):
+        a, _, _ = _down_candidate()
+        before = AccountEquitySnapshot.objects.count()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a)):
+            with self.assertLogs("guvfx.hosted_workspace", level="INFO") as cm:
+                out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(FakeExecutor()), observe_fn=_down)
+        self.assertEqual(out["established"]["relaunched"], 1)
+        self.assertEqual(AccountEquitySnapshot.objects.count(), before)   # NO fabricated snapshot
+        self.assertTrue(any("established_recovery_latency" in line for line in cm.output))
+
+    # ── Flag-off inertness + is_active invariant ──────────────────────────────────────────────────────────────
+    @override_settings(**MASTER)   # established flag OFF
+    def test_19_all_flags_off_no_candidates_no_mutation(self):
+        a, _, ws = _down_candidate()
+        before = AccountEquitySnapshot.objects.count()
+        ex = FakeExecutor()
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a)):
+            out = LR.run_hosted_liveness_recovery(executor_resolver=_resolver(ex), observe_fn=_down)
+        self.assertEqual(out["established"], {"enabled": False})
+        self.assertEqual(ex.calls, [])
+        self.assertEqual(AccountEquitySnapshot.objects.count(), before)
+        ws.refresh_from_db()
+        self.assertEqual(ws.liveness_recovery_count, 0)
+
+    @override_settings(**EST_FLAGS)
+    def test_20_recovery_never_changes_is_active(self):
+        a, _, _ = _down_candidate()
+        self.assertFalse(a.is_active)
+        with override_settings(HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=_ids(a)):
+            LR.run_hosted_liveness_recovery(executor_resolver=_resolver(FakeExecutor()), observe_fn=_down)
+        a.refresh_from_db()
+        self.assertFalse(a.is_active)   # is_active stays an execution gate; recovery never flips it

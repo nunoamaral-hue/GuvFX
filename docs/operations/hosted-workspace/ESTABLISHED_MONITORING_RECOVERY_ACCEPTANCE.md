@@ -67,3 +67,26 @@ action.** Image-only backend rollback is available (no code change is exercised 
 No fabricated/manual snapshots; no broker orders or execution authority; no credential handling by the agent; no
 `is_active` change; no Copy Trading change; no Tailscale/firewall/DNS change; never start a long-running production
 service from an interactive SSH session (use the compose daemon); logins/secrets are masked in all evidence.
+
+## 4. Hardening-118 controls (steady-state safety; all DARK/default-OFF, strictly parsed, fail-closed)
+
+| Setting | Default | Effect |
+|---|---|---|
+| `HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S` | `900` | Dedicated recovery staleness threshold (dashboard 900s untouched). Fail-closed to 900 on malformed/zero/negative/<300s. Practical floor ~600s. |
+| `HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS` | *(unset)* | Fail-closed account allow-list. **Unset/empty/malformed ⇒ zero candidates.** Strict positive ints; narrows only; #46/#48 stay excluded even if listed. |
+| `HOSTED_ESTABLISHED_RECOVERY_HOST_WINDOW_S` | `3600` | Host restart-storm rolling window. |
+| `HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_RELAUNCHES` | `3` | Max relaunches per host per window (else circuit opens). |
+| `HOSTED_ESTABLISHED_RECOVERY_HOST_MAX_DOWN` | `2` | Max concurrently-down siblings per host (else the host cohort is blocked — a host-wide event is not auto-relaunched). |
+
+## 5. Future bounded #50-only pilot sequence (its own Sponsor-gated packet — not authorized here)
+
+1. Production recovery flags initially **OFF**.
+2. Allow-list set to exactly `HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS=50` (no sibling can become a candidate).
+3. Conservative circuit-breaker settings (e.g. `HOST_MAX_RELAUNCHES=1`, `HOST_MAX_DOWN=1`) so a host-wide event is blocked.
+4. Brief flag-on window (both flags for a LIVE subject), backend recreated `--no-deps --force-recreate` (never `--remove-orphans`).
+5. Human confirms #50 flat, then deliberately stops **only #50's** terminal via the account-specific mechanism.
+6. Prove **exactly one** relaunch of #50, identity re-verified, and a **genuine** collector snapshot (no fabrication).
+7. Prove **no sibling** touched (every other account `skipped_allowlist`; no host circuit storm).
+8. Restore both flags **OFF** byte-exact; recreate backend; verify DARK.
+9. Collect the event-level latency evidence (detection→relaunch, relaunch→fresh-read; nulls where unavailable).
+10. **Separate Sponsor decision** before any broader (pilot→full-cohort) steady-state activation.

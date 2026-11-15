@@ -172,6 +172,43 @@ could recover **none** of the live monitoring cohort. `is_active` is an **execut
 The operator/acceptance contract and the bounded positive-acceptance procedure live in
 `docs/operations/hosted-workspace/ESTABLISHED_MONITORING_RECOVERY_ACCEPTANCE.md`.
 
+## Addendum — HARDENING-118 (2026-11-15): steady-state safety controls (allow-list, host circuit breaker, dedicated threshold, latency evidence)
+
+Preflight 117 confirmed the recovery is technically correct and relaunch-safe, but **not yet safe for steady-state
+cohort-wide arming**: there was no host-wide restart-storm circuit breaker, no per-account allow-list (so the LIVE
+flag armed the *whole* eligible cohort), no latency measurement, and the recovery-detection threshold was coupled to
+the dashboard's ~900s freshness window. This addendum adds four independently-governed, strictly-parsed, fail-closed
+controls — all DARK/default-OFF, migration-free, in `backend/hosted_workspace/liveness_recovery.py`:
+
+- **Dedicated recovery stale threshold** — `HOSTED_ESTABLISHED_RECOVERY_SNAPSHOT_STALE_S` (default **900**, so the
+  default is byte-identical). It is the SOLE consumer in `_monitoring_snapshot_fresh`, so recovery's reaction can be
+  shortened **without** altering the dashboard/portfolio freshness semantics (`analytics.equity_snapshots.DEFAULT_FRESHNESS_S`
+  and `execution.monitoring_enrolment.SNAPSHOT_FRESHNESS_S` keep their own 900s). A malformed/zero/negative/**sub-300s**
+  value fails closed to the conservative 900 (slower = safe), never a more-aggressive value.
+- **Fail-closed account allow-list** — `HOSTED_ESTABLISHED_RECOVERY_ACCOUNT_IDS` (strict positive ints). With the
+  established flag on but **no allow-list configured, NO account is a candidate**; any malformed/non-positive entry
+  fails the whole list closed (zero candidates). Membership only **narrows** — it never bypasses eligibility,
+  identity, ownership, the Copy-Trading exclusion (#46/#48 stay excluded even if listed), or the LIVE gate — and is
+  re-checked under the row lock in `_claim_established_attempt`.
+- **Host-wide restart-storm circuit breaker** — `HOSTED_ESTABLISHED_RECOVERY_HOST_WINDOW_S` /
+  `_HOST_MAX_RELAUNCHES` / `_HOST_MAX_DOWN`. Blocks **before any host contact** when: config is malformed; the
+  cohort query fails (fail-closed); more than `HOST_MAX_DOWN` siblings on a host are concurrently down (a host-wide
+  event, not N isolated deaths); or the host's rolling-window recent-relaunch budget is spent. It is deterministic
+  per `rdp_host`, reuses the durable `liveness_recovery_at` (**no migration**), and never contaminates another host.
+- **Truthful event-level latency evidence** — per-attempt detection→request→relaunch timestamps/latencies
+  (structured log) plus the cross-cycle relaunch→fresh-identity-matched-read latency computed at resolution from the
+  durable `liveness_recovery_at` + the real snapshot time. Unavailable measurements are **null, never 0**; no
+  snapshot is fabricated. **p50/p95 percentiles are deliberately NOT claimed** — persistent aggregation needs a
+  durable metrics store / later migration; this packet records event-level evidence only (the documented gap).
+
+**Why the safe initial operating point is ~10 minutes.** Detection is gated by snapshot staleness, and the
+`account_read` collector writes every ~5 min (`*/5` cron + 270s throttle). A threshold below ~2 write intervals
+(~600s) would mark a healthy account stale between writes → the read-only observe finds it UP → a false
+`terminal_up_login_required`. 900s is 3× the cadence (tolerates two missed writes); ~600s is the practical floor on
+the snapshot signal alone. **Materially faster recovery (minute-scale) requires a genuine real-time terminal/process
+signal** (e.g. driving off the observe's `process_running` on a bounded cadence), not merely lowering a
+snapshot-staleness threshold — that is a larger, separate, host-load-bearing change, out of scope here.
+
 ## Evidence
 
 - New: `backend/hosted_workspace/recovery_eligibility.py`, `backend/hosted_workspace/tests_established_recovery.py`
