@@ -7,7 +7,7 @@ import base64
 from django.test import SimpleTestCase
 
 from hosted_workspace import host_protocol as P
-from hosted_workspace.host_agent_dispatch import OP_PRIMITIVES, dispatch
+from hosted_workspace.host_agent_dispatch import OP_PRIMITIVES, _BRIDGE_ENV_ALLOWED_KEYS, dispatch
 
 KR = {"k1": "hmac-secret-value-not-real-01"}
 T = 2_000_000
@@ -159,6 +159,29 @@ class LiveBridgeDispatchTests(SimpleTestCase):
         with self.assertRaises(P.HostProtocolError) as cm:
             _dispatch(_req(env=bad), _Capture())
         self.assertEqual(cm.exception.reason_code, "payload_env_key_not_allowed")
+
+    # --- GFX-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135: the READ-ONLY monitoring key is permitted, and is
+    #     ORTHOGONAL to the MT5_ALLOW_LIVE posture (it may ride on an execution-OFF env, confers no execution) ---
+    def test_readonly_positions_key_is_allowlisted(self):
+        self.assertIn("MT5_LIVE_READONLY_POSITIONS_ENABLED", _BRIDGE_ENV_ALLOWED_KEYS)
+
+    def test_restore_env_may_carry_readonly_positions_key(self):
+        # execution-OFF env (no MT5_ALLOW_LIVE) PLUS the read-only monitoring flag: permitted, OFF posture preserved
+        # (the read key is not a LIVE posture), and the key reaches the runner intact.
+        env = _OFF_ENV + "set MT5_LIVE_READONLY_POSITIONS_ENABLED=1\r\n"
+        cap = _Capture({"ok": True, "account_id": 48, "port": 8801, "allow_live": False})
+        resp = _dispatch(_req(operation=RESTORE, env=env), cap)
+        self.assertEqual(cap.calls[0][0], "restore_tenant_bridge_execution_off")
+        self.assertEqual(cap.calls[0][1]["bridge_env_b64"], _b64(env))
+        P.verify_hosted_response(resp, correlation_id="c1", nonce="n1", keyring=KR)
+
+    def test_readonly_key_never_satisfies_live_posture(self):
+        # the read flag can NEVER masquerade as execution authority: an ACTIVATE carrying the read key but no
+        # MT5_ALLOW_LIVE is still refused by the posture gate.
+        env = _OFF_ENV + "set MT5_LIVE_READONLY_POSITIONS_ENABLED=1\r\n"
+        with self.assertRaises(P.HostProtocolError) as cm:
+            _dispatch(_req(operation=ACTIVATE, env=env), _Capture())
+        self.assertEqual(cm.exception.reason_code, "payload_not_live_authorized")
 
     def test_env_value_cmd_metachar_refused(self):
         # A cmd metacharacter smuggled into an allow-listed value must be refused (would start a 2nd statement

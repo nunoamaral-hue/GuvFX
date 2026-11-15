@@ -152,6 +152,13 @@ _BRIDGE_ENV_ALLOWED_KEYS = frozenset({
     "MT5_ACCOUNT_ID", "MT5_TERMINAL_PATH", "HTTP_SERVER_PORT", "MT5_EXPECTED_LOGIN", "MT5_EXPECTED_SERVER",
     "MT5_EXPECTED_WINDOWS_USERNAME", "MT5_EXPECTED_WORKSPACE_UUID", "MT5_EXPECTED_IS_DEMO",
     "MT5_REQUIRE_IDENTITY_PIN", "MT5_GUARDED_ATTACH", "MT5_ALLOW_LIVE", "MT5_LIVE_EXPIRY",
+    # GFX-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135 — a READ-ONLY monitoring flag that render_bridge_env can emit
+    # (readonly_positions=True). It is ORTHOGONAL to the MT5_ALLOW_LIVE posture below: it may ride on an
+    # execution-OFF (RESTORE) or a LIVE (ACTIVATE) env alike and confers NO order authority (the bridge consults it
+    # only in fetch_positions). Permitting the key lets a rendered monitoring env reach the host; the posture gate
+    # (allow_live_val / live_expiry_val) is unaffected, so RESTORE still refuses MT5_ALLOW_LIVE and ACTIVATE still
+    # requires it. Default-OFF upstream: it is emitted only when readonly_positions_for_account() holds.
+    "MT5_LIVE_READONLY_POSITIONS_ENABLED",
 })
 _MAX_BRIDGE_ENV_BYTES = 8192
 # ADR-0049.1 — host time-bound ceiling. A LIVE env carries MT5_LIVE_EXPIRY (UTC epoch SECONDS); the dispatcher

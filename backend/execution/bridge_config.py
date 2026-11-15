@@ -102,6 +102,11 @@ def readonly_positions_for_account(account) -> bool:
 
       * the broad, default-OFF monitoring authority is armed
         (``LIVE_READONLY_POSITIONS_MONITORING_ENABLED``), OR
+      * (GFX-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135) this account's id is on the default-OFF, ACCOUNT-LEVEL
+        allow-list (``LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST``) — the preferred account-scoped capability for
+        approved live monitoring accounts that are NOT copier followers (e.g. a member's own hosted LIVE terminals),
+        so monitoring is enabled per approved account rather than by a global switch over EVERY live account. Empty/
+        unset/malformed => no account armed (fail-closed), OR
       * (ADR-0094) the dedicated, default-OFF FOLLOWER-read authority is armed
         (``COPIER_FOLLOWER_READONLY_POSITIONS_ENABLED``) AND this account is the FOLLOWER of a live, non-revoked,
         unexpired ``CopierLiveAuthorization`` — i.e. the read is bound to the EXACT authorized follower for the
@@ -119,6 +124,8 @@ def readonly_positions_for_account(account) -> bool:
         if not is_live_environment(account):
             return False
         if _live_readonly_positions_monitoring_armed():
+            return True
+        if _account_is_readonly_positions_allowlisted(account):
             return True
         return _copier_follower_readonly_positions_armed() and _account_is_authorized_live_follower(account)
     except Exception:  # noqa: BLE001 — fail closed
@@ -176,6 +183,8 @@ def follower_positions_read_readiness(account) -> tuple:
             return ("FOLLOWER_POSITIONS_READ_OK", "demo_reads_unconditionally")
         if _live_readonly_positions_monitoring_armed():
             return ("FOLLOWER_POSITIONS_READ_OK", "global_monitoring_armed")
+        if _account_is_readonly_positions_allowlisted(account):
+            return ("FOLLOWER_POSITIONS_READ_OK", "account_allowlisted")
         if _copier_follower_readonly_positions_armed() and _account_is_authorized_live_follower(account):
             return ("FOLLOWER_POSITIONS_READ_OK", "route_scoped_authorized_follower")
         return ("FOLLOWER_POSITIONS_READ_NOT_AUTHORIZED", "live_read_authority_off")
@@ -196,6 +205,44 @@ def _live_readonly_positions_monitoring_armed() -> bool:
     if val is None:
         val = os.getenv("LIVE_READONLY_POSITIONS_MONITORING_ENABLED", "")
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _live_readonly_positions_account_allowlist() -> frozenset:
+    """GFX-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135 — the default-OFF, ACCOUNT-LEVEL allow-list of trading-account
+    ids approved for LIVE read-only position monitoring. Settings override, else env (mirrors
+    ``_live_readonly_positions_monitoring_armed``); the value is a comma/whitespace-separated list of integer account
+    ids. Absent/blank => EMPTY set (OFF). Fail-closed parse: a non-integer token is IGNORED (it can never WIDEN the
+    set), and any error yields the empty set. This is an ACCOUNT-SCOPED authority, never a global switch: only ids
+    explicitly listed here are armed, and only when the account is authoritatively LIVE (enforced by the caller)."""
+    import os
+    val = None
+    try:
+        from django.conf import settings
+        val = getattr(settings, "LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST", None)
+    except Exception:  # noqa: BLE001 — settings unavailable => fall back to env
+        val = None
+    if val is None:
+        val = os.getenv("LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST", "")
+    out = set()
+    try:
+        for tok in str(val).replace(",", " ").split():
+            try:
+                out.add(int(tok))
+            except (TypeError, ValueError):
+                continue   # fail-closed: a malformed token is ignored, never widens the allow-list
+    except Exception:  # noqa: BLE001 — a wholly malformed value is treated as empty (OFF)
+        return frozenset()
+    return frozenset(out)
+
+
+def _account_is_readonly_positions_allowlisted(account) -> bool:
+    """True iff ``account``'s integer id is on the default-OFF account-level allow-list. Fail-closed on a
+    missing/non-integer id or an empty allow-list. Confers a READ gate only (never any execution authority)."""
+    try:
+        acct_id = int(getattr(account, "id", account))
+    except (TypeError, ValueError):
+        return False
+    return acct_id in _live_readonly_positions_account_allowlist()
 
 
 def _kv(key: str, value) -> str:

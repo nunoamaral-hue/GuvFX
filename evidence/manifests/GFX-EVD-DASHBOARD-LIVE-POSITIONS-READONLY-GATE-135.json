@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135",
+  "packet_id": "GFX-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135",
+  "created_at_utc": "2026-11-15T23:30:00Z",
+  "branch": "feat/live-readonly-positions-account-allowlist",
+  "base_commit": "b6a74265ecf0ccf77c01ee2440a382d36dc9c713",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only",
+    "production_touched": false,
+    "host_touched": false,
+    "flag_enablement": false,
+    "migration": false,
+    "note": "Repo-only change. Default-OFF / fail-closed. No production deploy, no host mutation, no flag enablement, no broker/Copy-Trading/credential action by this packet. Prod backend remains ac5bdf0a."
+  },
+  "ci": {
+    "status": "pending",
+    "note": "Exact-head Linux CI (backend/frontend/governance/market-data-foundation/research-foundation) to be driven to terminal after PR open; HARD STOP before merge."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test execution.tests_live_readonly_positions_flag hosted_workspace.tests_live_bridge_dispatch",
+    "cd backend && .venv/bin/python manage.py test execution hosted_workspace trade_copier"
+  ],
+  "expected_results": [
+    "The two directly-affected modules pass, including the new account-level allow-list matrix and host env-key permit tests.",
+    "No regression across execution, hosted_workspace, trade_copier."
+  ],
+  "actual_results": [
+    "execution.tests_live_readonly_positions_flag + hosted_workspace.tests_live_bridge_dispatch: 57 passed, 0 failed (local).",
+    "execution + hosted_workspace + trade_copier full suite: Ran 4244 tests; 2 failures, BOTH pre-existing and unrelated to this change — hosted_workspace.tests_observer_attach.BareTerminalClassifierControlTests.{test_all_enumerators_unavailable_returns_none_fail_closed, test_cim_positive_and_negative_controls} in OA._bare_terminal_pids (a Windows process-enumeration classifier this packet does not touch). CONFIRMED pre-existing: both fail IDENTICALLY on clean canonical main b6a74265 with zero of this branch's files applied (git stash → git diff origin/main empty → same 2 failures). They are platform-dependent (CIM/WMI enumeration; local macOS). This change adds ZERO regressions; every test touching the changed code passes.",
+    "makemigrations execution hosted_workspace --check --dry-run: no changes detected (exit 0) — migration-free."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "This PR delivers the account-level allow-list DECISION capability + the host env-key permit only. It is default-OFF and inert until separately enabled.",
+    "Making the six accounts (#48/#53/#54/#56/#57/#59) actually readable additionally requires, as separate Sponsor-gated steps: (1) populate LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST; (2) a monitoring-provisioning path + host op to render+apply MT5_LIVE_READONLY_POSITIONS_ENABLED on each approved bridge and restart it (HOST mutation); (3) deploy + owner VISUAL acceptance. None are performed here.",
+    "The bridge demo-gate itself is UNCHANGED; the read capability remains default-OFF/fail-closed.",
+    "No new production migration; no frontend change; the dashboard already renders a successful 200 positions read and a structural 400 truthfully.",
+    "CI not yet run at manifest creation; status will advance only when exact-head CI is green."
+  ],
+  "artefact_locations": [
+    "backend/execution/bridge_config.py",
+    "backend/hosted_workspace/host_agent_dispatch.py",
+    "backend/execution/tests_live_readonly_positions_flag.py",
+    "backend/hosted_workspace/tests_live_bridge_dispatch.py",
+    "docs/architecture/ADR-0110-live-positions-readonly-account-allowlist.md",
+    "evidence/manifests/GFX-EVD-DASHBOARD-LIVE-POSITIONS-READONLY-GATE-135.json"
+  ],
+  "checksums": {
+    "backend/execution/bridge_config.py": "sha256:f915d6cac007d238a6f97632660468f66ab73cb52106fcda6defde0ab3421916",
+    "backend/hosted_workspace/host_agent_dispatch.py": "sha256:0b080afdc8c868e982e0c76afae7998f31c732495e2f0d7da2328dbb672817bd",
+    "backend/execution/tests_live_readonly_positions_flag.py": "sha256:50b8add693c99325c217d87b5413e440713b0a1c65ede04018f42b29a97a53d3",
+    "backend/hosted_workspace/tests_live_bridge_dispatch.py": "sha256:696ce646ecf3d8e218ef937700b63012bc13b39cd5afe231cbab67345a9f90ae",
+    "docs/architecture/ADR-0110-live-positions-readonly-account-allowlist.md": "sha256:790b83f595e3aa9c268fe3fb0f1443c7108a7fbf0203c27f96fc1d6b7cc8399b"
+  },
+  "reviewer": "Phase-1 read-only 5-lane adversarial trace (bridge-gate, backend-monitoring, dashboard-path, flags-adr, exec-coupling): root cause = account_not_demo read-gate is execution-separated (coupling lane GAP=None); fix is account-scoped, default-OFF, fail-closed. Post-implementation adversarial review focused on accidental trading authority to follow."
+}
