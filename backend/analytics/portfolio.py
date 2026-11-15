@@ -12,6 +12,7 @@ per-tenant bridge via injected fetchers (the views wire the identity-firewalled,
 """
 from __future__ import annotations
 
+import concurrent.futures as _futures
 import logging
 import time
 from typing import Callable, List, Optional
@@ -43,6 +44,13 @@ _AGG_BUDGET_SECONDS = 10.0
 # hung account among healthy ones — the production topology; several simultaneously-hung accounts still settle
 # bounded and honest-partial, only sooner-stale.)
 _PER_READ_TIMEOUT_SECONDS = 3.0
+
+# Live open-position reads fan out CONCURRENTLY across accounts (bounded worker pool) so total wall-clock is ~one
+# read, not the SUM — one slow/unreachable account can never starve the accounts after it (no head-of-line blocking),
+# and coverage scales to an arbitrary fleet size rather than a fixed 12. The cap bounds thread/connection use;
+# accounts beyond it queue and still complete (or are named STALE if the overall budget elapses). Each read keeps its
+# OWN per-read socket timeout (``_PER_READ_TIMEOUT_SECONDS``), so a read is never shortened by another account's.
+_OPEN_POSITIONS_MAX_WORKERS = 16
 
 # ``source_stage`` is a COMMENT-TAG CLASSIFIER inferred at ingest (TEST/LIVE/UNKNOWN — default UNKNOWN when the
 # broker deal comment carries no recognised tag). It is NOT a performance dimension: virtually every real
@@ -494,6 +502,7 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
     per_account: dict = {}
     if deadline is None:
         deadline = time.monotonic() + _AGG_BUDGET_SECONDS
+    obs = observed_currency or {}
 
     def _unavailable_entry(reason: str) -> dict:
         # One place that turns a low-level read reason into the per-account record: the safe UI category and the
@@ -504,29 +513,64 @@ def open_positions(accounts, *, fetch_positions: Callable, rate_source: FX.FxRat
         return {"open_count": 0, "open_pl_usd": None, "open_pl_basis": "STALE", "stale": True, "pl_items": [],
                 "unavailable_reason": reason, "unavailable_category": cat, "structural": FX.is_structural(cat)}
 
-    for a in accounts:
-        # Currency-integrity: label this account's open-position P/L with the bridge-OBSERVED currency (passed in
-        # by the caller from the verified equity-ledger / live snapshot), falling back to the stored account
-        # currency, and NEVER defaulting an unknown currency to USD — an unknown/non-USD P/L must be excluded from
-        # the USD total (PARTIAL), not silently summed as dollars.
-        cur = FX.resolve_position_currency((observed_currency or {}).get(a.id), getattr(a, "account_currency", None))
-        res = None
-        # Overall wall-clock budget: once the deadline is passed, do NOT start another per-account live read —
-        # mark the remaining accounts stale (identical to a failed read) so the dashboard settles in bounded time
-        # with the slow/unreachable accounts named, never silently dropped. A read that DOES start is given a
-        # deadline-aware socket timeout (capped at _PER_READ_TIMEOUT_SECONDS) so one hung bridge can neither blow
-        # the budget nor starve the accounts after it.
-        budget_left = deadline - time.monotonic()
-        if budget_left <= 0:
-            # The shared wall-clock budget was exhausted before this account was read — a TRANSIENT condition
-            # (it would likely succeed on the next poll), so it stays in the "retrying" bucket, not structural.
-            per_account[a.id] = _unavailable_entry("read_timeout_budget")
-            continue
+    # Currency-integrity (per account, up front — no DB here): label each account's open-position P/L with the
+    # bridge-OBSERVED currency (passed in by the caller from the verified equity-ledger / live snapshot), falling back
+    # to the stored account currency, and NEVER defaulting an unknown currency to USD — an unknown/non-USD P/L must be
+    # excluded from the USD total (PARTIAL), not silently summed as dollars.
+    cur_by_id = {a.id: FX.resolve_position_currency(obs.get(a.id), getattr(a, "account_currency", None))
+                 for a in accounts}
+
+    def _read_one(a):
+        # One account's INDEPENDENT bounded live read (runs in a worker thread). Each account gets its OWN per-read
+        # socket timeout (NOT a shared depleting budget), so a slow/hung bridge can never starve the accounts after
+        # it. Close this worker thread's DB connection afterward so parallel reads never leak connections.
         try:
-            res = fetch_positions(a, timeout=min(_PER_READ_TIMEOUT_SECONDS, budget_left))
+            return fetch_positions(a, timeout=_PER_READ_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 — a broker read must never break the dashboard
             logger.warning("portfolio: open-positions fetch raised for account %s", a.id)
-            res = {"unavailable": True, "reason": "bridge_unreachable"}
+            return {"unavailable": True, "reason": "bridge_unreachable"}
+        finally:
+            try:
+                from django.db import connection
+                connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # Fan the per-account live reads out CONCURRENTLY (bounded worker pool) so one slow account no longer consumes a
+    # shared budget that starves the healthy accounts later in id order (no head-of-line blocking). Each read is still
+    # individually bounded by its own socket timeout; the overall collection is bounded by ``deadline`` so the request
+    # always settles — an account not collected in time is marked STALE (transient), named, never silently dropped.
+    results: dict = {}
+    if accounts:
+        workers = max(1, min(len(accounts), _OPEN_POSITIONS_MAX_WORKERS))
+        ex = _futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="open-pos")
+        try:
+            fut_by_id = {ex.submit(_read_one, a): a.id for a in accounts}
+            for fut in list(fut_by_id):
+                aid = fut_by_id[fut]
+                try:
+                    results[aid] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
+                except _futures.TimeoutError:
+                    pass                      # not collected within the overall budget -> read_timeout_budget below
+                except Exception:  # noqa: BLE001
+                    results[aid] = {"unavailable": True, "reason": "bridge_unreachable"}
+        finally:
+            # Never BLOCK on a straggler at teardown (that would re-introduce head-of-line blocking); its own socket
+            # timeout bounds it and its DB connection is closed in ``_read_one``'s finally.
+            ex.shutdown(wait=False, cancel_futures=True)
+
+    # Assemble in ACCOUNT ORDER for a stable row list (independent of thread completion order). A distinct sentinel
+    # separates "not collected within the budget" (read_timeout_budget) from a fetcher that RETURNED ``None`` (a
+    # legacy/injected failure signal -> "unknown"), so the two never collapse to one reason.
+    _unread = object()
+    for a in accounts:
+        cur = cur_by_id[a.id]
+        res = results.get(a.id, _unread)
+        if res is _unread:
+            # The overall budget elapsed before this account's read was collected — TRANSIENT (it would likely
+            # succeed on the next poll), named rather than dropped.
+            per_account[a.id] = _unavailable_entry("read_timeout_budget")
+            continue
         # The fetcher returns a position ``list`` on success, or a reason dict ``{"unavailable": True, "reason": …}``
         # on failure (ADR-0100). ``None`` is still accepted (legacy/injected fetchers) and treated as an unknown —
         # i.e. transient — exclusion, so prior behaviour is preserved.

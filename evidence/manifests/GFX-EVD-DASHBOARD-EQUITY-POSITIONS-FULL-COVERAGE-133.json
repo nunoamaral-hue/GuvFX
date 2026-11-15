@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-EQUITY-POSITIONS-FULL-COVERAGE-133",
+  "packet_id": "GFX-DASHBOARD-EQUITY-POSITIONS-FULL-COVERAGE-133",
+  "created_at_utc": "2026-11-15T21:00:00Z",
+  "branch": "fix/dashboard-equity-positions-full-coverage",
+  "base_commit": "b97d1f5681a872bca228075ef0496639a49c3256",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / migration-free / additive. Closes the dashboard full-coverage gap behind the authenticated production view: the equity curve read 'latest 9 of 12 accounts' and Open Trades read '6 accounts: live positions temporarily unavailable'. Read-only prod+bridge diagnosis (owner 29): the 3 equity-absent accounts are #49/#52/#56 (all GBP) — PortfolioEquityCurveView converts with FX.NullFxRateSource (USD-only), so every non-USD account's to_usd fails and it is dropped from every bucket; the 6 positions-unavailable accounts #48/#53/#54/#56/#57/#59 return HTTP 400 {ok:false,error:account_not_demo} (bridge demo-gate on LIVE terminals) which _fetch_mt5_open_positions mislabelled as the TRANSIENT bridge_unreachable because urlopen raises HTTPError on a 4xx and the 4xx body was never read. Fix: (1) read the 4xx body and classify it (account_not_demo -> structural positions_unsupported_live; else transient positions_refused); (2) point-in-time historical FX for the equity curve (per-bucket-date rate via fx_source.historical_rate_for_date, ONE bulk query, N+1-safe) so GBP accounts join; (3) independent bounded parallel positions reads so one slow account cannot starve the fleet and coverage scales past a fixed 12. The owner-scoped account universe (resolve_scope), is_active (execution gate only), Copy-Trading isolation, and the per-account reason taxonomy/frontend structural-vs-transient split are UNCHANGED. No production deploy, no migration, no host/MT5 mutation, no manual snapshot, no broker/credential action.",
+    "adr": "docs/architecture/ADR-0109-dashboard-equity-positions-full-coverage.md (new)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + frontend (vitest + eslint + next build) + governance (secret/PII scan + evidence lint). Pure Python change; no PowerShell artefact; no migration; no frontend source change (the existing OpenTradesPanel already splits structural vs transient — the backend reason fix drives it)."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test analytics  (288 OK, 1 skipped)",
+    "cd backend && .venv/bin/python manage.py test analytics execution  (1941 OK, 1 skipped)",
+    "cd backend && .venv/bin/python manage.py check  (System check identified no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations analytics execution hosted_workspace trading --check --dry-run  (No changes detected - migration-free)",
+    "cd frontend && npm run build  (success)",
+    "git diff --stat origin/main -- frontend/  (EMPTY - no frontend source change; the 17 local vitest failures are a pre-existing jsdom localStorage stub issue identical to base, green on CI's clean checkout)",
+    "python3 scripts/check_no_secrets.py  (no findings)"
+  ],
+  "expected_results": [
+    "Equity curve: with FX enabled for the caller, a non-USD (GBP) account converts at its POINT-IN-TIME per-bucket-date rate and JOINS the USD curve (the 3 absent GBP accounts #49/#52/#56 are no longer structurally excluded); when FX is not enabled the curve stays USD-only (byte-identical) and non-USD stays honestly PARTIAL. Never a single TODAY spot rate on history; never a fabricated rate (honest None/PARTIAL).",
+    "Live positions: a demo-gate returned as HTTP 400 {ok:false,error:account_not_demo} is classified STRUCTURAL (positions_unsupported_live), not the transient bridge_unreachable; an unparseable 4xx is the transient positions_refused (never a false 'reachable/0-open'); a real connection failure stays bridge_unreachable. The bridge error string is never echoed.",
+    "Independent bounded reads: one slow/hung account is named STALE (transient) within the overall budget and never starves the healthy accounts, which still contribute; coverage scales to an arbitrary fleet (not fixed at 12); results assembled in account order; a fetcher returning None stays 'unknown' (distinct from 'not collected').",
+    "No false zero: an unreadable account's open_pl_usd is None (never 0.0); the figure the card shows matches the coverage counts; structural vs transient are distinct.",
+    "Migration-free; secret scan clean; no is_active / Copy-Trading / broker / MT5 / credential / host change; account universe unchanged (resolve_scope owner + non-tombstoned)."
+  ],
+  "actual_results": [
+    "backend/analytics/views_trade_history.py: _fetch_mt5_open_positions now catches urllib.error.HTTPError on the /mt5/positions read, reads the 4xx body, and classifies it exactly like the 2xx {ok:false} path (account_not_demo -> structural; else positions_refused); only a connection-level failure stays bridge_unreachable; unparseable body -> positions_refused. Added import urllib.error.",
+    "backend/analytics/fx_source.py: new historical_rate_for_date(pairs, max_date, priority) -> (date -> FxRateSource) built from ONE bulk query per (pair,source), reproducing select_observation semantics in memory (previous-day target, carry-forward, 7-day staleness, priority, latest accepted revision); USD identity; honest None otherwise. Added import bisect.",
+    "backend/analytics/equity_snapshots.py: portfolio_equity_curve gains optional rate_for_date; when supplied it converts each bucket with that bucket's date rate (one lookup per bucket from the pre-loaded cache, no DB). Default path unchanged.",
+    "backend/analytics/views_portfolio.py: PortfolioEquityCurveView (ALL scope) passes rate_for_date=historical_rate_for_date([(GBP,USD)], max_date=today, priority=...) gated by fx_conversion_enabled_for; otherwise NullFxRateSource (DARK default unchanged).",
+    "backend/analytics/portfolio.py: open_positions fans per-account live reads out concurrently over a bounded ThreadPoolExecutor (_OPEN_POSITIONS_MAX_WORKERS=16); each read keeps its own per-read socket timeout (no shared depleting budget -> no head-of-line blocking); overall collection bounded by deadline; results assembled in account order; a distinct sentinel separates 'not collected' (read_timeout_budget) from a fetcher that returned None ('unknown'); each worker closes its DB connection; shutdown never blocks on a straggler.",
+    "Tests: analytics.tests_portfolio FetcherReasonMappingTests +2 (HTTP-400 demo-gate -> account_not_demo structural; unparseable 4xx -> positions_refused transient); OpenTradesTests rewrote the old serial-budget test into test_slow_account_does_not_block_healthy_accounts (+ test_scales_to_arbitrary_fleet_not_fixed_at_12, test_multiple_simultaneous_failures_each_named_with_its_reason). analytics.tests_equity_snapshots +1 (point-in-time rate includes the non-USD account, bounded per-bucket-date lookups). analytics.tests_fx HistoricalRateForDateTests +4 (point-in-time carry-forward + ONE bulk query; staleness->None; latest-revision; no-observation->None-never-zero).",
+    "docs/architecture/ADR-0109-dashboard-equity-positions-full-coverage.md (new): the full-coverage + reason-code contract and deliberate boundaries (no account allow-list; is_active stays execution-only; the bridge demo-gate inconsistency is operational, reported truthfully, not bypassed here).",
+    "Local verification (PostgreSQL): analytics 288 OK; analytics+execution 1941 OK (1 skipped); manage.py check clean; makemigrations --check migration-free; frontend npm run build success; frontend source diff vs base EMPTY; secret scan no findings."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS): repository-only and NOT merged (auto-merge OFF, STOP before merge) and NOT deployed; the production dashboard is corrected only once the PR is merged + deployed (a separate Sponsor-gated step).",
+    "Operational, not a code defect (reported truthfully): the bridge /mt5/positions demo-gate is INCONSISTENT across terminals — 6 LIVE terminals (#46/#49/#50/#51/#52/#58) serve positions while 6 (#48/#53/#54/#56/#57/#59) return account_not_demo. This PR makes the dashboard HONEST (structural vs transient) and removes head-of-line blocking; it does NOT lift the demo-gate or reconcile the per-terminal inconsistency (a separately-gated operational/host change).",
+    "Equity point-in-time conversion depends on fx_conversion_enabled_for(user) + an available within-staleness GBP->USD observation for each bucket's date; a date with no usable rate stays honestly PARTIAL (never fabricated). When FX is not enabled for the caller the curve is byte-identical to today (GBP still PARTIAL-excluded).",
+    "ThreadPoolExecutor query-count note: worker-thread DB queries are not counted by a main-thread assertNumQueries; the N+1 guards here target the equity historical-rate bulk loader (CaptureQueriesContext == 1) and the fake-fetcher open_positions path (no main-thread DB).",
+    "The authoritative exact-head CI is the merge gate; local figures are macOS + PostgreSQL / Node runs of the same commands. Local-only pre-existing frontend failures NOT from this PR: support/login/localization vitest files fail on a jsdom localStorage stub (identical to base; green on CI).",
+    "No credential, snapshot, host deploy, flag enablement, is_active change, Copy-Trading or broker action was performed."
+  ],
+  "artefact_locations": [
+    "backend/analytics/views_trade_history.py (4xx body parsing -> truthful positions reason)",
+    "backend/analytics/fx_source.py (historical_rate_for_date bulk point-in-time loader)",
+    "backend/analytics/equity_snapshots.py (portfolio_equity_curve rate_for_date)",
+    "backend/analytics/views_portfolio.py (PortfolioEquityCurveView point-in-time wiring, FX-gated)",
+    "backend/analytics/portfolio.py (open_positions independent bounded parallel reads)",
+    "backend/analytics/tests_portfolio.py, tests_equity_snapshots.py, tests_fx.py (regression coverage)",
+    "docs/architecture/ADR-0109-dashboard-equity-positions-full-coverage.md (new)",
+    "evidence/manifests/GFX-EVD-DASHBOARD-EQUITY-POSITIONS-FULL-COVERAGE-133.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/analytics/portfolio.py": "sha256:5fd86f7c30ef73bfbe8e982d0513cb80294148fbf42de9a75789231b5ff8af10",
+    "backend/analytics/fx_source.py": "sha256:994ee142c85beaac9e70a9ac42a95063f234b8a47407831fd21f07d80450dda7",
+    "backend/analytics/equity_snapshots.py": "sha256:3e2656b08d78d6528a4fc2ec698ff03debd7be713e6bef900ae218c0b00eb062",
+    "backend/analytics/views_portfolio.py": "sha256:ed03a1ec8145f58c93f65b63ae8a4c5e4d141809f41348719a0b07d8b9d2caae",
+    "backend/analytics/views_trade_history.py": "sha256:ec27ec98ea85e734a8122e696b3c3dce573222c7ac148444d421666eb882f6e6",
+    "docs/architecture/ADR-0109-dashboard-equity-positions-full-coverage.md": "sha256:805e8212a302c812f89ae58e98e1e345fd7ab48020029afb0091ff81ad2979e6"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Read-only production + bridge diagnosis (owner 29, DB + /mt5/positions probe, no mutation) established the 3 GBP equity-absent accounts and the 6 HTTP-400 account_not_demo positions accounts before any code change. Independent 5-vector adversarial review (Workflow, ultracode: concurrency, FX point-in-time, positions-reason security, tenant/false-data, API/UI regression): NO CRITICAL/HIGH/MEDIUM; 1 LOW CONFIRMED and FIXED before the PR — the per-bucket FX date used the UTC calendar day instead of the governed Europe/London business day (safe/conservative, never look-ahead, but deviating from select_observation); fixed by localising each bucket instant to the governed tz inside historical_rate_for_date and bounding the bulk load by governed_today(), with a BST midnight-straddle regression test. Sponsor review pending (auto-merge OFF, STOP before merge)."
+}

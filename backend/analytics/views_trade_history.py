@@ -11,6 +11,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
+import urllib.error
 import json
 
 from trading.models import TradingAccount, Trade
@@ -192,25 +193,42 @@ def _fetch_mt5_open_positions(account, windows_username: str, *, timeout: float 
         logger.warning("MT5 positions identity read failed for account %s: %s", getattr(account, "id", None), e)
         return _unavailable("bridge_unreachable")
     # 2) Read live positions from the SAME identity-verified per-tenant base.
+    def _classify_refusal(body) -> str:
+        # Map a bridge refusal body ``{ok:false, error:…}`` to a FIXED, PII-free reason. ``account_not_demo`` is the
+        # STRUCTURAL demo-gate (a LIVE terminal will not start serving positions here by waiting); any OTHER refusal
+        # maps to the safe TRANSIENT ``positions_refused``. The bridge-controlled ``error`` is NEVER echoed verbatim
+        # into the reason — it is free text that could carry a login/server identifier, and could otherwise collide
+        # with a structural reason key and over-claim a permanent cause we cannot confirm.
+        err = (body.get("error") or "").strip().lower() if isinstance(body, dict) else ""
+        return "account_not_demo" if err == "account_not_demo" else "positions_refused"
+
     try:
         purl = f"{base}/mt5/positions"
         preq = urllib.request.Request(purl, method="GET", headers={"X-GuvFX-Agent-Token": token})
         with urllib.request.urlopen(preq, timeout=timeout) as r:
             pdata = json.loads(r.read().decode("utf-8", "ignore") or "{}")
-        if not (isinstance(pdata, dict) and pdata.get("ok")):
-            # The bridge demo-gates positions for a LIVE terminal: ``{ok:false, error:"account_not_demo"}``. That is
-            # a STRUCTURAL exclusion (the account will not start serving positions here by waiting), not a transient
-            # disconnect — surface the specific reason so the UI does not imply "reconnecting". Any OTHER refusal
-            # maps to the fixed, safe TRANSIENT code ``positions_refused`` — the bridge-controlled ``error`` string is
-            # NEVER echoed verbatim into the reason (it is free text that could carry a login/server identifier, and
-            # could otherwise collide with a structural reason key and over-claim a permanent cause we can't confirm).
-            err = (pdata.get("error") or "").strip().lower() if isinstance(pdata, dict) else ""
-            return _unavailable("account_not_demo" if err == "account_not_demo" else "positions_refused")
-        pos = pdata.get("positions")
-        return pos if isinstance(pos, list) else []
-    except Exception as e:  # noqa: BLE001
+    except urllib.error.HTTPError as he:
+        # The bridge signals a STRUCTURED refusal as a 4xx with a JSON body — e.g. the demo-gate returns
+        # ``HTTP 400 {"ok":false,"error":"account_not_demo"}``. ``urlopen`` RAISES on a 4xx, so the ok-check below
+        # (which only runs for a 2xx) never sees that body and the account would be mislabelled the generic TRANSIENT
+        # ``bridge_unreachable`` ("reconnecting…") — hiding a STRUCTURAL exclusion. Read the error body and classify
+        # it EXACTLY like a 200 ``{ok:false}`` so the specific reason is surfaced. An unparseable body is a safe
+        # refusal (``positions_refused``), never a false "reachable/connected". Only a connection-level failure
+        # (``URLError``/timeout, caught below) is the transient ``bridge_unreachable``.
+        try:
+            body = json.loads(he.read().decode("utf-8", "ignore") or "{}")
+        except Exception:  # noqa: BLE001
+            body = {}
+        logger.warning("MT5 positions refused (HTTP %s) for account %s", he.code, getattr(account, "id", None))
+        return _unavailable(_classify_refusal(body))
+    except Exception as e:  # noqa: BLE001 — a connection-level failure is genuinely transient
         logger.warning("MT5 positions read failed for account %s: %s", getattr(account, "id", None), e)
         return _unavailable("bridge_unreachable")
+    if not (isinstance(pdata, dict) and pdata.get("ok")):
+        # Some bridge builds answer a refusal as HTTP 200 with ``{ok:false, error:…}`` — same classification path.
+        return _unavailable(_classify_refusal(pdata))
+    pos = pdata.get("positions")
+    return pos if isinstance(pos, list) else []
 
 
 # MT5 deal types on a balance-operation deal (NOT a trade): a DEPOSIT/WITHDRAWAL is DEAL_TYPE_BALANCE(2)

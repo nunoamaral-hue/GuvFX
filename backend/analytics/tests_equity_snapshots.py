@@ -169,6 +169,28 @@ class PortfolioCurveTests(TestCase):
         self.assertEqual(p["basis"], "PARTIAL"); self.assertIn(gbp.id, p["stale_accounts"])
         self.assertEqual(p["equity_usd"], 1000.0)                # GBP excluded (no historical rate), never summed
 
+    def test_point_in_time_rate_includes_non_usd_account(self):
+        # pkt-133: with a point-in-time ``rate_for_date`` a GBP account CONVERTS at that bucket's date and JOINS the
+        # USD curve (no longer structurally excluded), and the point is COMPLETE — while the USD-only default
+        # (NullFxRateSource) still excludes it (see ``test_non_usd_without_rate_is_partial``). The source is fixed per
+        # DATE (point-in-time; never one of today's spot rates applied to history), and the curve calls ``rate_for_date``
+        # once per BUCKET DATE, never per account — so coverage rises without an N+1 explosion.
+        u = _user("pc_pit"); usd = _acct(u); gbp = _acct(u, currency="GBP")
+        t = timezone.now()
+        _snap(usd, at=t, equity=1000); _snap(gbp, at=t, equity=800, currency="GBP")
+        seen_dates = set()
+
+        def rate_for_date(d):
+            seen_dates.add(d)
+            return FX.MappingFxRateSource({("GBP", "USD"): 1.25})    # the rate effective ON that date
+        c = EQ.portfolio_equity_curve([usd, gbp], rate_source=FX.NullFxRateSource(), rate_for_date=rate_for_date)
+        p = c["points"][-1]
+        self.assertEqual(p["basis"], "USD"); self.assertTrue(p["complete"])
+        self.assertNotIn(gbp.id, p["stale_accounts"])
+        self.assertEqual(p["equity_usd"], 1000.0 + 800 * 1.25)      # GBP converted at its point-in-time rate and summed
+        self.assertEqual(p["present"], 2)
+        self.assertLessEqual(len(seen_dates), 2)                    # per bucket-DATE, not per account/bucket
+
     def test_nonusd_snapshot_partial_when_account_currency_unset(self):
         # PROD reality (H-CURRENCY): account_currency is NULL, but the SNAPSHOT row carries GBP. The curve must
         # convert using the snapshot's native currency and degrade to PARTIAL, not fabricate GBP as USD.

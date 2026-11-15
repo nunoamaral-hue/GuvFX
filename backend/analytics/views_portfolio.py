@@ -23,7 +23,8 @@ from rest_framework.views import APIView
 
 from analytics import portfolio as PF
 from analytics import portfolio_fx as FX
-from analytics.fx_source import StoredDbFxRateSource, fx_conversion_enabled_for, fx_source_priority
+from analytics.fx_source import (StoredDbFxRateSource, fx_conversion_enabled_for, fx_source_priority,
+                                 governed_today, historical_rate_for_date)
 from analytics.views_trade_history import (
     _account_windows_username, _fetch_mt5_account_balance, _fetch_mt5_open_positions,
 )
@@ -184,8 +185,19 @@ class PortfolioEquityCurveView(APIView):
             days = 90
         since = timezone.now() - timedelta(days=days)
         if scope.strip().upper() == "ALL":
-            # Point-in-time correctness (data.md): a HISTORICAL curve must never be converted with a single
-            # today's spot rate, so the equity curve stays on the honest USD->USD-only source regardless of the
-            # FX flag — a non-USD account's historical points remain honestly excluded (PARTIAL), never distorted.
-            return Response(EQ.portfolio_equity_curve(accounts, rate_source=FX.NullFxRateSource(), since=since))
+            # Point-in-time correctness (data.md): a HISTORICAL curve must never be converted with a single TODAY spot
+            # rate. When FX conversion is enabled FOR THIS USER we convert each bucket with the rate that was EFFECTIVE
+            # at THAT bucket's date (governed previous-day + carry-forward + staleness, built from ONE bulk query via
+            # ``historical_rate_for_date`` — N+1-safe), so a non-USD (e.g. GBP) account JOINS the USD curve at its
+            # historically-correct rate instead of being permanently excluded. When FX is NOT enabled for the caller
+            # the curve stays on the honest USD->USD-only ``NullFxRateSource`` (byte-identical to today; non-USD points
+            # remain honestly PARTIAL-excluded). Either way a single spot rate is never applied to history.
+            rate_for_date = None
+            if fx_conversion_enabled_for(request.user):
+                # Bound the bulk load by the GOVERNED business 'today' (Europe/London), not the UTC date — near UTC
+                # midnight the governed date can be a day ahead, and the curve dates each bucket on the governed day.
+                rate_for_date = historical_rate_for_date(
+                    [("GBP", FX.USD)], max_date=governed_today(), priority=fx_source_priority())
+            return Response(EQ.portfolio_equity_curve(
+                accounts, rate_source=FX.NullFxRateSource(), since=since, rate_for_date=rate_for_date))
         return Response(EQ.account_equity_curve(accounts[0], since=since))

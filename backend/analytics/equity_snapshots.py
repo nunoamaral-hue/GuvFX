@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -117,12 +117,19 @@ def account_equity_curve(account, *, since=None, max_points=1000) -> dict:
 
 def portfolio_equity_curve(accounts, *, rate_source: FX.FxRateSource, since=None,
                            bucket_seconds=DEFAULT_BUCKET_S, freshness_seconds=DEFAULT_FRESHNESS_S,
-                           max_points=1000) -> dict:
+                           max_points=1000, rate_for_date: Optional[Callable] = None) -> dict:
     """Truthful ALL-scope portfolio equity curve (A7): at each time bucket, sum the MOST-RECENT VALID account equity
     within a strict freshness window, converted to USD. Never averages or concatenates account curves; never sums
     materially stale observations without flagging. A bucket missing/stale for some accounts is marked PARTIAL and
     surfaces those accounts; a bucket with no fresh observation for any account is skipped. USD accounts convert
     trivially; a non-USD account with no historical rate makes that bucket PARTIAL (never fabricated).
+
+    ``rate_for_date`` (optional) makes the conversion POINT-IN-TIME: when supplied it is called ONCE per bucket with
+    that bucket's DATE and must return the ``FxRateSource`` effective then (see ``fx_source.historical_rate_for_date``
+    — one bulk query, N+1-safe), so a non-USD account converts at the rate that was effective on each bucket's date
+    and JOINS the curve instead of being structurally excluded. When omitted the single ``rate_source`` is used for
+    every bucket (the default USD-only ``NullFxRateSource`` keeps non-USD accounts honestly PARTIAL-excluded). Either
+    way a single TODAY spot rate is never applied to historical points (data.md point-in-time).
 
     Returns ``{points:[{t, equity_usd, basis, complete, present, total, stale_accounts}], count, state, accounts,
     reporting_currency}``. ``state`` ∈ {BUILDING, SINGLE, OK}.
@@ -177,6 +184,10 @@ def portfolio_equity_curve(accounts, *, rate_source: FX.FxRateSource, since=None
 
     points = []
     for edge in edges:
+        # Point-in-time rate for THIS bucket when a date-aware source is supplied (one lookup per bucket from the
+        # pre-loaded cache — no DB query here); otherwise the single caller-supplied source for every bucket. The
+        # aware bucket instant (not its UTC date) is passed so the FX source dates it on the GOVERNED business day.
+        rs = rate_for_date(edge) if rate_for_date is not None else rate_source
         total_usd = 0.0
         present = 0
         partial = False
@@ -189,7 +200,7 @@ def portfolio_equity_curve(accounts, *, rate_source: FX.FxRateSource, since=None
                 continue
             # Convert with the snapshot's OWN native currency (account_currency on the model is unpopulated), so a
             # non-USD account degrades this bucket to PARTIAL instead of being fabricated as USD (H-CURRENCY).
-            usd = FX.to_usd(s["equity"], FX.normalise_currency(s["account_currency"]), rate_source)
+            usd = FX.to_usd(s["equity"], FX.normalise_currency(s["account_currency"]), rs)
             if usd["ok"]:
                 total_usd += usd["usd"]
                 present += 1
