@@ -135,6 +135,9 @@ jobs:
       - name: Evidence manifest linter tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v
 
+      - name: Single-entry attestation wrapper tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_provision_and_open_oneshot.py' -v
+
   research-foundation:
     runs-on: ubuntu-latest
     steps:

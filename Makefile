@@ -15,6 +15,7 @@ governance-check: secret-scan
 	python3 -m unittest discover -s tests -p 'test_evidence_manifests.py'
 	python3 -m unittest discover -s tests -p 'test_evidence_factuality.py'
 	python3 -m unittest discover -s tests -p 'test_safe_container_env.py'
+	python3 -m unittest discover -s tests -p 'test_provision_and_open_oneshot.py'
 
 backend-test:
 	@if [ -f backend/manage.py ]; then \

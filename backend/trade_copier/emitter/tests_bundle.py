@@ -23,6 +23,7 @@ _ONESHOT_INSTALLER = _BUNDLE / "Install-GuvfxCopierEmitterOneShotTask.ps1"
 _KEY_PROV = _BUNDLE / "operator" / "Provision-GuvfxCopierOneShotKey.ps1"
 _KEY_PROV_TEST = _BUNDLE / "operator" / "tests" / "Test-OneShotKeyProvisioner.Tests.ps1"
 _KEY_PROV_EVD = _ROOT / "evidence" / "manifests" / "GFX-EVD-COPIER-ONESHOT-KEY-PROVISIONER.json"
+_SINGLE_ENTRY_WRAPPER = _BUNDLE / "operator" / "provision_and_open_oneshot.py"
 _ORDER_VERBS = ("order_send", "place_order", "ordersend", "broker_order", "close_position", "modify_position")
 _SECRET_RE = re.compile(r"\b[0-9a-fA-F]{40,}\b")
 
@@ -719,3 +720,73 @@ class OneShotKeyProvisionerTests(SimpleTestCase):
         self.assertIn(rel, checks, "provisioner must be recorded in the governed evidence manifest")
         actual = "sha256:" + hashlib.sha256(_KEY_PROV.read_bytes()).hexdigest()
         self.assertEqual(checks[rel], actual, "provisioner checksum drift vs the evidence manifest")
+
+
+class OneShotKeyProvisionerStdinModeTests(SimpleTestCase):
+    """GFX-COPIER-ONESHOT-SINGLE-ENTRY - the GOVERNED ``-KeyFromStdin`` mode reads ``<phrase>\\n<key>`` from STDIN
+    only (the single-entry wrapper's one hidden entry). It preserves the phrase gate, the full ACL write and the
+    fail-closed contract, and is NOT a test seam (it works in production without the self-test signal)."""
+
+    def _t(self):
+        return _KEY_PROV.read_text()
+
+    def test_switch_present(self):
+        self.assertIn("[switch]$KeyFromStdin", self._t())
+
+    def test_reads_stdin_keeps_interactive_never_env(self):
+        t = self._t()
+        self.assertIn("[Console]::In.ReadToEnd()", t)          # non-interactive key source is STDIN, not env/argv
+        self.assertIn("Read-Host -AsSecureString", t)          # the interactive hidden prompt is still the default
+        self.assertNotIn("[Environment]::GetEnvironmentVariable", t)
+        self.assertNotIn("$env:COPIER_INGEST_HMAC_KEY", t)
+
+    def test_phrase_gate_and_fail_closed_codes(self):
+        t = self._t()
+        self.assertIn("$stdinPhrase -ne $CONFIRM_PHRASE", t)   # the confirmation phrase still gates stdin mode
+        for code in ("stdin_empty", "stdin_malformed", "confirmation_mismatch"):
+            self.assertIn(code, t)
+
+    def test_not_a_test_seam(self):
+        t = self._t()
+        guard = t[t.index("$seamUsed = "):t.index("test_seam_in_production")]
+        self.assertNotIn("KeyFromStdin", guard, "KeyFromStdin must not be gated as a test seam (it is production)")
+
+    def test_provision_only(self):
+        self.assertIn("if ($KeyFromStdin -and ($Remove -or $Verify))", self._t())
+
+
+class OneShotSingleEntryWrapperTests(SimpleTestCase):
+    """The repo-only single-entry operator wrapper: ONE hidden entry delivered BYTE-IDENTICALLY to the host
+    provisioner (``-KeyFromStdin``) and the backend verifier window, the key on STDIN only (never argv/log),
+    fail-closed with host-key shred on any failure. No real endpoint/host/credential is baked in."""
+
+    def _t(self):
+        return _SINGLE_ENTRY_WRAPPER.read_text()
+
+    def test_present_ascii_no_secret(self):
+        self.assertTrue(_SINGLE_ENTRY_WRAPPER.exists(), "single-entry wrapper missing")
+        data = _SINGLE_ENTRY_WRAPPER.read_bytes()
+        self.assertTrue(all(b <= 0x7F for b in data), "non-ASCII byte in single-entry wrapper")
+        self.assertFalse(_SECRET_RE.search(self._t()), "secret-looking literal in the single-entry wrapper")
+
+    def test_single_hidden_entry_stdin_delivery_no_baked_host(self):
+        t = self._t()
+        self.assertIn("getpass.getpass", t)
+        self.assertIn("-KeyFromStdin", t)
+        self.assertIn("copier_verifier_window", t)
+        self.assertIn("key_stdin", t)
+        self.assertIn("--windows-ssh", t)
+        self.assertIn("--backend-ssh", t)
+        self.assertNotIn("100.79.101.19", t)
+        self.assertNotIn("api.guvfx.com", t)
+
+    def test_fail_closed_cleanup_and_scrub(self):
+        t = self._t()
+        self.assertIn("-Remove", t)        # shred the host key on failure
+        self.assertIn("-Verify", t)        # independent ACL verification before the window opens
+        self.assertIn("key = None", t)     # the key reference is scrubbed after use
+
+    def test_no_argv_or_print_key_leak(self):
+        t = self._t()
+        self.assertNotIn("print(key", t)
+        self.assertNotIn("remote_argv + [key", t)
