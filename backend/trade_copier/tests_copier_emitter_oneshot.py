@@ -486,5 +486,103 @@ class OneShotEntrypoint(unittest.TestCase):
             self.assertEqual(posts, [])
 
 
+# ──────────────── Phase 2 diagnostics: sanitised rejection-reason capture (GFX-...-128) ────────────────
+
+class ClassifyPostResponse(unittest.TestCase):
+    """_classify_post_response retains ONLY the backend's sanitised reason code (allow-listed), never raw
+    body content, and stays backward-compatible for success. Covers the backend response surface."""
+
+    def _b(self, obj):
+        return json.dumps(obj).encode("utf-8")
+
+    def test_verified_success_backward_compatible(self):
+        v, r = roa._classify_post_response(200, self._b({"status": "verified", "account_id": 46}))
+        self.assertTrue(v)
+        self.assertEqual(r, "verified")
+
+    def test_rejected_allowlisted_reasons_retained(self):
+        for code in ["bad_signature", "unknown_key_id", "account_mismatch", "broker_login_mismatch",
+                     "broker_server_mismatch", "observed_login_mismatch", "terminal_mismatch", "bridge_mismatch",
+                     "attestation_stale", "attestation_expired", "timestamp_in_future", "build_not_allowed",
+                     "malformed_envelope", "malformed_json"]:
+            v, r = roa._classify_post_response(401, self._b({"status": "rejected", "reason": code}))
+            self.assertFalse(v)
+            self.assertEqual(r, code, code)
+
+    def test_account_not_found_is_200_rejected_not_verified(self):
+        v, r = roa._classify_post_response(200, self._b({"status": "rejected", "reason": "account_not_found"}))
+        self.assertFalse(v)
+        self.assertEqual(r, "account_not_found")
+
+    def test_missing_reason_on_rejected_is_generic(self):
+        v, r = roa._classify_post_response(401, self._b({"status": "rejected"}))
+        self.assertFalse(v)
+        self.assertEqual(r, "rejected_unknown")
+
+    def test_unknown_or_injected_reason_is_generic_never_raw(self):
+        for sneaky in ["totally_new_code", "key=SUPERSECRET", "../../etc/passwd", "<script>", "sig:deadbeef"]:
+            v, r = roa._classify_post_response(401, self._b({"status": "rejected", "reason": sneaky}))
+            self.assertEqual(r, "rejected_unknown")
+            self.assertNotIn(sneaky, r)                 # the raw/unknown reason is NEVER echoed
+
+    def test_non_string_reason_is_generic(self):
+        for bad in [{"status": "rejected", "reason": {"leak": "x"}}, {"status": "rejected", "reason": 42},
+                    {"status": "rejected", "reason": ["a"]}]:
+            v, r = roa._classify_post_response(401, self._b(bad))
+            self.assertEqual(r, "rejected_unknown")
+
+    def test_replayed_disabled_unavailable_surface_as_status(self):
+        self.assertEqual(roa._classify_post_response(409, self._b({"status": "replayed"}))[1], "replayed")
+        self.assertEqual(roa._classify_post_response(503, self._b({"status": "disabled"}))[1], "disabled")
+        self.assertEqual(roa._classify_post_response(503, self._b({"status": "unavailable"}))[1], "unavailable")
+
+    def test_unrecognised_shapes_keep_http_fallback_never_raw(self):
+        self.assertEqual(roa._classify_post_response(502, b"<html>Bad Gateway</html>")[1], "http_502")
+        self.assertEqual(roa._classify_post_response(500, b"")[1], "http_500")
+        self.assertEqual(roa._classify_post_response(200, self._b(["list"]))[1], "http_200")
+        self.assertEqual(roa._classify_post_response(418, self._b({"status": "weird", "reason": "bad_signature"}))[1],
+                         "http_418")                    # unknown status -> fallback, reason field ignored
+        # a verdict body carrying extra identity fields must not leak any of them
+        _, r = roa._classify_post_response(200, self._b({"status": "verified", "broker_login": "9999999",
+                                                         "signature": "sig"}))
+        self.assertEqual(r, "verified")
+
+    def test_only_allowlisted_or_fallback_codes_ever_emitted(self):
+        allowed = roa._SANITISED_ATTEST_REASONS | {"verified", "rejected_unknown"} | roa._SAFE_ATTEST_STATUS
+        samples = [(401, {"status": "rejected", "reason": "bad_signature"}),
+                   (401, {"status": "rejected", "reason": "WHATEVER"}),
+                   (409, {"status": "replayed"}), (503, {"status": "disabled"}),
+                   (200, {"status": "verified"})]
+        for st, body in samples:
+            _, r = roa._classify_post_response(st, self._b(body))
+            self.assertTrue(r in allowed or r.startswith("http_"), r)
+
+
+class OneShotReasonPlumbing(unittest.TestCase):
+    """The sanitised reason from the post path reaches the written result file (so the operator sees WHY)."""
+
+    def test_sanitised_reason_reaches_result_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "config.json")
+            with open(cfg, "w") as fh:
+                json.dump({"account_id": 46, "ingest_key_env": "COPIER_INGEST_HMAC_KEY"}, fh)
+            key = os.path.join(tmp, "ingest.key")
+            with open(key, "w") as fh:
+                fh.write("k" * 40)
+            result = os.path.join(tmp, "out", "attest_result.json")
+            argv = ["--config", cfg, "--verifier-url", "https://api.guvfx.com/api/copy-trading/attest-verify/",
+                    "--key-file", key, "--result-file", result]
+            app = _FakeApp({"ok": True, "envelope": {"signed": {"account_id": 46}, "signature": "sig"}})
+            rc = roa.main(argv, env={}, transport=lambda u, b: (401, False, "observed_login_mismatch"),
+                          app_factory=lambda c, e: app)
+            self.assertEqual(rc, 1)
+            out = json.load(open(result))
+            self.assertEqual(out["reason"], "observed_login_mismatch")   # specific sanitised reason surfaced
+            self.assertEqual(out["http_status"], 401)
+            self.assertFalse(out["verified"])
+            self.assertNotIn("envelope", out)
+            self.assertNotIn("signature", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,26 @@ EMITTER_ONESHOT_ACCOUNT_ID = 46
 # treated as an absent host-local secret so a truncated/placeholder key never produces a bogus attestation.
 _MIN_SECRET_LEN = 32
 
+# Allow-list of the backend attest-verify's SANITISED rejection reason codes (mirrors
+# trade_copier.attestation_api._AUTH_FAIL / _MALFORMED plus the view-level reasons). These are
+# non-secret identifiers. We retain ONLY these so the operator can see WHY an attestation was
+# rejected (e.g. bad_signature vs observed_login_mismatch) without ever echoing a raw response
+# body; any other / missing reason on a "rejected" response collapses to ``rejected_unknown``.
+_SANITISED_ATTEST_REASONS = frozenset({
+    # 401 signature / identity / timestamp / build (attestation_api._AUTH_FAIL)
+    "unknown_key_id", "bad_signature", "attestation_stale", "attestation_expired", "timestamp_in_future",
+    "expiry_too_far", "account_mismatch", "broker_login_mismatch", "broker_server_mismatch", "host_mismatch",
+    "terminal_mismatch", "bridge_mismatch", "build_not_allowed", "observed_login_mismatch", "nonce_too_long",
+    # 400 malformed (attestation_api._MALFORMED) + view-level sanitised reasons
+    "malformed_envelope", "missing_signed_field", "bad_protocol_version", "bad_operation", "bad_timestamp",
+    "bad_account_id", "malformed_json", "body_too_large", "account_not_found",
+})
+# Safe top-level response statuses the backend returns; used when a status carries no sub-reason
+# (e.g. replayed / disabled / unavailable). Never a secret.
+_SAFE_ATTEST_STATUS = frozenset({"verified", "rejected", "replayed", "disabled", "unavailable"})
+# Generic code emitted when a "rejected" response's reason is missing or not allow-listed. Never raw content.
+_REJECTED_UNKNOWN = "rejected_unknown"
+
 
 def _result(ok, account_id, *, reason, posted, now, http_status=None, verified=False, observed_probed=False):
     return {"ok": bool(ok), "account_id": int(account_id), "mode": "oneshot-attest",
@@ -78,6 +98,37 @@ def _shred_key_file(path):
         pass
 
 
+def _classify_post_response(status, raw):
+    """Map the backend attest-verify HTTP status + raw body to (verified, SANITISED reason).
+
+    SANITISATION CONTRACT (fail closed, secret-blind): the only non-success detail retained is the
+    backend's own sanitised top-level ``reason`` code, and ONLY when it is in ``_SANITISED_ATTEST_REASONS``.
+    A "rejected" response with a missing or non-allow-listed reason collapses to ``rejected_unknown``.
+    ``replayed``/``disabled``/``unavailable`` carry no sub-reason and surface as themselves. Any
+    unrecognised body shape keeps the ``http_<code>`` fallback. This never returns the envelope, signature,
+    broker login, raw response body, headers or exception text - only an allow-listed identifier."""
+    verified = False
+    reason = "http_%d" % status      # fallback when the body is not a recognised {status: ...} shape
+    try:
+        j = json.loads(raw.decode("utf-8")) if raw else None
+    except Exception:  # noqa: BLE001 - a non-JSON body leaves the http_<code> reason, verified False
+        j = None
+    if isinstance(j, dict) and isinstance(j.get("status"), str):
+        st = j["status"]
+        if st == "verified":
+            verified = True
+            reason = "verified"      # backward compatible: a success response stays "verified"
+        elif st in _SAFE_ATTEST_STATUS:
+            # ``account_not_found`` is a 200 "rejected" (verified stays False).
+            if st == "rejected":
+                sub = j.get("reason")
+                reason = sub if (isinstance(sub, str) and sub in _SANITISED_ATTEST_REASONS) else _REJECTED_UNKNOWN
+            else:
+                reason = st          # replayed / disabled / unavailable carry no sub-reason by contract
+        # else: an unrecognised status string -> keep the http_<code> fallback (never echo raw body)
+    return verified, reason
+
+
 def _post_once(url, envelope, transport):
     """POST the signed attestation envelope EXACTLY ONCE (no retry). Returns (http_status, verified, reason).
     ``transport`` is injectable for tests; the default uses urllib. Only the signed envelope is sent - no secret."""
@@ -100,15 +151,7 @@ def _post_once(url, envelope, transport):
             raw = b""
     except Exception as e:  # noqa: BLE001 - any transport fault is a non-crashing, fail-closed post failure
         return 0, False, "post_error:" + type(e).__name__
-    verified = False
-    reason = "http_%d" % status
-    try:
-        j = json.loads(raw.decode("utf-8")) if raw else {}
-        if isinstance(j, dict) and j.get("status"):
-            reason = str(j.get("status"))
-            verified = (j.get("status") == "verified")
-    except Exception:  # noqa: BLE001 - a non-JSON body leaves the http_<code> reason, verified False
-        pass
+    verified, reason = _classify_post_response(status, raw)
     return status, verified, reason
 
 

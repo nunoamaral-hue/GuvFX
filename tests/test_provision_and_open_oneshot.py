@@ -68,6 +68,20 @@ _HAPPY = [
     ("-Remove", {"ok": True, "action": "remove", "reason": "removed"}),
 ]
 
+# The backend ``copier_verifier_window`` command emits PRETTY-printed multi-line JSON (json.dumps indent=1).
+# These are byte-for-byte the live-captured shapes. The reviewed _HAPPY above uses json.dumps (compact),
+# which is exactly why the earlier line-by-line parser passed CI yet false-refused in production.
+_PRETTY_STATUS_OPEN_FALSE = '{\n "action": "status",\n "status": {\n  "open": false\n }\n}'
+_PRETTY_OPEN_RESULT = ('{\n "action": "open",\n "window_id": 7,\n "purpose": "ATTEST",\n "max_uses": 1,\n'
+                       ' "expires_at": "z",\n "key_file_written": true,\n "status": {\n  "open": true\n }\n}')
+_HAPPY_PRETTY = [
+    ("copier_verifier_window --status", _PRETTY_STATUS_OPEN_FALSE),   # pretty multi-line, like prod
+    ("-KeyFromStdin", {"ok": True, "action": "provision", "reason": "provisioned", "acl_verified": True}),
+    ("-Verify", {"ok": True, "action": "verify", "acl_verified": True, "reason": "verified"}),
+    ("copier_verifier_window --open", _PRETTY_OPEN_RESULT),           # pretty multi-line, like prod
+    ("-Remove", {"ok": True, "action": "remove", "reason": "removed"}),
+]
+
 
 class SingleEntryWrapperTests(unittest.TestCase):
     def test_happy_path_same_key_to_both_and_never_argv(self):
@@ -136,6 +150,89 @@ class SingleEntryWrapperTests(unittest.TestCase):
         self.assertNotIn(SYNTH, " ".join(pc))
         wc = _mod._backend_window_cmd("c", "python", "--open")
         self.assertEqual(wc[:3], ["docker", "exec", "-i"])
+
+
+class PrettyOutputRegressionTests(unittest.TestCase):
+    """Regression for the production failure: the backend emits PRETTY multi-line JSON. The whole
+    single-entry flow must proceed through the preflight (and the window-open result) with pretty output."""
+
+    def test_preflight_accepts_real_pretty_status_and_proceeds(self):
+        rec = _Recorder(_HAPPY_PRETTY)
+        rc = _run(rec)
+        self.assertEqual(rc, 0, "pretty-printed --status must pass preflight, not false-refuse")
+        # the single key still reached BOTH sides byte-identically
+        self.assertEqual(rec.key_sent_to("-KeyFromStdin"), _mod.CONFIRM_PHRASE + "\n" + SYNTH)
+        self.assertEqual(rec.key_sent_to("copier_verifier_window --open"), SYNTH)
+
+    def test_pretty_open_showing_still_open_is_accepted(self):
+        # the window-open result is also pretty; success requires action==open AND status.open True
+        rec = _Recorder(_HAPPY_PRETTY)
+        self.assertEqual(_run(rec), 0)
+
+    def test_pretty_status_open_true_still_refuses(self):
+        pretty_open_true = '{\n "action": "status",\n "status": {\n  "open": true\n }\n}'
+        rec = _Recorder([("copier_verifier_window --status", pretty_open_true)])
+        rc = _run(rec)
+        self.assertEqual(rc, 2, "an already-open window (pretty) must still refuse")
+        self.assertEqual(rec.key_sent_to("-KeyFromStdin"), "__NO_CALL__")
+
+
+class LastJsonParserTests(unittest.TestCase):
+    """_last_json behaviour matrix: parse compact AND pretty multi-line, tolerate a LEADING banner,
+    and FAIL CLOSED (None) on empty / garbage / partial / ambiguous-multiple / trailing-garbage / non-object."""
+
+    def test_compact_single_line(self):
+        self.assertEqual(_mod._last_json('{"action":"status","status":{"open":false}}'),
+                         {"action": "status", "status": {"open": False}})
+
+    def test_pretty_multiline_real_shape(self):
+        pretty = '{\n "action": "status",\n "status": {\n  "open": false\n }\n}'
+        self.assertEqual(_mod._last_json(pretty), {"action": "status", "status": {"open": False}})
+        self.assertIs(_mod._last_json(pretty).get("status", {}).get("open"), False)
+
+    def test_pretty_with_trailing_newline_ok(self):
+        self.assertEqual(_mod._last_json('{\n "ok": true\n}\n'), {"ok": True})
+
+    def test_leading_banner_then_pretty_json_ok(self):
+        self.assertEqual(_mod._last_json('MOTD\nWARNING: pq banner\n{\n "status": {\n  "open": false\n }\n}'),
+                         {"status": {"open": False}})
+
+    def test_compact_windows_verify_ok(self):
+        v = '{"ok":true,"action":"verify","acl_verified":true,"reason":"verified"}'
+        self.assertIs(_mod._last_json(v).get("acl_verified"), True)
+
+    def test_empty_and_whitespace_are_none(self):
+        self.assertIsNone(_mod._last_json(""))
+        self.assertIsNone(_mod._last_json("   \n\t  "))
+
+    def test_garbage_is_none(self):
+        self.assertIsNone(_mod._last_json("could not connect to docker daemon"))
+
+    def test_partial_truncated_is_none(self):
+        self.assertIsNone(_mod._last_json('{"status": {"open":'))
+        self.assertIsNone(_mod._last_json('banner\n{"status": {"open":'))
+
+    def test_two_payloads_ambiguous_is_none(self):
+        self.assertIsNone(_mod._last_json('{"action":"status","status":{"open":false}}'
+                                          '{"action":"status","status":{"open":true}}'))
+        self.assertIsNone(_mod._last_json('{\n "a": 1\n}\n{\n "b": 2\n}'))
+
+    def test_trailing_garbage_after_value_is_none(self):
+        self.assertIsNone(_mod._last_json('{"status":{"open":false}} rogue-trailing'))
+        self.assertIsNone(_mod._last_json('{"status":{"open":false}}\n{"injected":true} x'))
+
+    def test_non_object_top_level_is_none(self):
+        # a bare scalar / array is valid JSON but not a command result; must not reach a caller's .get()
+        self.assertIsNone(_mod._last_json('true'))
+        self.assertIsNone(_mod._last_json('123'))
+        self.assertIsNone(_mod._last_json('[{"open": false}]'))
+
+    def test_leading_parseable_token_then_object_fails_closed(self):
+        # a leading job-control-style token that is itself valid JSON (e.g. "[1]") makes the output
+        # ambiguous (two top-level values) -> fail closed. The driven BatchMode-SSH/docker commands never
+        # emit such banners, but the refusal is safe: it can only refuse, never wrongly accept a gate.
+        self.assertIsNone(_mod._last_json('[1] {"status": {"open": false}}'))
+        self.assertIsNone(_mod._last_json('[1]\n{"status": {"open": false}}'))
 
 
 if __name__ == "__main__":
