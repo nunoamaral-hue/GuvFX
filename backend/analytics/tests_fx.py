@@ -687,3 +687,59 @@ class FxCohortGateUnitTests(TestCase):
         self.assertFalse(fx_conversion_enabled_for(None))
         self.assertFalse(fx_conversion_enabled_for(self._FakeUser("support@guvfx.com", authed=False)))
         self.assertFalse(fx_conversion_enabled_for(self._FakeUser("", authed=True)))
+
+
+class HistoricalRateForDateTests(TestCase):
+    """fx_source.historical_rate_for_date: point-in-time, carry-forward, staleness, priority — built from ONE bulk
+    query (N+1-safe) so the ALL-scope equity curve can convert non-USD buckets without a per-bucket DB read."""
+
+    def test_point_in_time_carry_forward_and_single_query(self):
+        from analytics.fx_source import historical_rate_for_date
+        _obs(date(2026, 11, 13), "1.30")      # Friday
+        _obs(date(2026, 11, 12), "1.29")      # Thursday
+        with CaptureQueriesContext(connection) as ctx:
+            rfd = historical_rate_for_date([("GBP", "USD")], max_date=date(2026, 11, 20),
+                                           priority=(DailyFxObservation.SOURCE_FED_H10,))
+        self.assertEqual(len(ctx), 1)         # ONE bulk query regardless of how many bucket dates we later look up
+        # Governed TARGET = requested date - 1 (no look-ahead); carry forward to the most recent accepted earlier date.
+        self.assertAlmostEqual(rfd(date(2026, 11, 14)).get_rate("GBP", "USD").rate, 1.30)   # Sat -> target Fri 11-13
+        self.assertAlmostEqual(rfd(date(2026, 11, 16)).get_rate("GBP", "USD").rate, 1.30)   # Mon -> target Sun -> Fri
+        self.assertAlmostEqual(rfd(date(2026, 11, 13)).get_rate("GBP", "USD").rate, 1.29)   # -> target Thu 11-12
+        self.assertEqual(rfd(date(2026, 11, 14)).get_rate("USD", "USD").rate, 1.0)          # identity
+
+    def test_staleness_cap_yields_none(self):
+        from analytics.fx_source import historical_rate_for_date
+        _obs(date(2026, 1, 1), "1.20")
+        rfd = historical_rate_for_date([("GBP", "USD")], max_date=date(2026, 3, 1),
+                                       priority=(DailyFxObservation.SOURCE_FED_H10,))
+        # Target is far beyond MAX_STALENESS_DAYS from the only observation -> honest None (never a fabricated rate).
+        self.assertIsNone(rfd(date(2026, 2, 1)).get_rate("GBP", "USD"))
+
+    def test_latest_accepted_revision_wins(self):
+        from analytics.fx_source import historical_rate_for_date
+        _obs(date(2026, 11, 10), "1.31", rev=1)
+        _obs(date(2026, 11, 10), "1.33", rev=2)   # a later accepted revision for the SAME effective_date
+        rfd = historical_rate_for_date([("GBP", "USD")], max_date=date(2026, 11, 20),
+                                       priority=(DailyFxObservation.SOURCE_FED_H10,))
+        self.assertAlmostEqual(rfd(date(2026, 11, 12)).get_rate("GBP", "USD").rate, 1.33)
+
+    def test_no_observation_is_honest_none_not_zero(self):
+        from analytics.fx_source import historical_rate_for_date
+        rfd = historical_rate_for_date([("GBP", "USD")], max_date=date(2026, 11, 20),
+                                       priority=(DailyFxObservation.SOURCE_FED_H10,))
+        self.assertIsNone(rfd(date(2026, 11, 14)).get_rate("GBP", "USD"))   # no rows -> None (PARTIAL), never 0.0
+
+    def test_bst_midnight_instant_dated_on_governed_london_business_day(self):
+        # A bucket instant near UTC midnight during BST must be dated on the GOVERNED Europe/London business day, not
+        # the UTC calendar day (matches governed_today/select_observation). 2026-07-14 23:30 UTC == 2026-07-15 00:30
+        # London -> governed business date 2026-07-15 -> target 2026-07-14. The UTC date (2026-07-14 -> target 07-13)
+        # would pick the one-day-staler rate; assert the governed target rate is chosen.
+        from analytics.fx_source import historical_rate_for_date
+        _obs(date(2026, 7, 14), "1.40")      # effective on the governed TARGET day
+        _obs(date(2026, 7, 13), "1.35")      # the day the UTC-dated (buggy) path would have used
+        rfd = historical_rate_for_date([("GBP", "USD")], max_date=date(2026, 7, 20),
+                                       priority=(DailyFxObservation.SOURCE_FED_H10,))
+        bucket = datetime(2026, 7, 14, 23, 30, tzinfo=dt_tz.utc)   # BST: London = 2026-07-15 00:30
+        self.assertAlmostEqual(rfd(bucket).get_rate("GBP", "USD").rate, 1.40)
+        # Many intraday buckets on one London business day still share ONE source (cache keyed by business date).
+        self.assertIs(rfd(bucket), rfd(datetime(2026, 7, 14, 23, 45, tzinfo=dt_tz.utc)))

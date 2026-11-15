@@ -19,6 +19,7 @@ An FX read NEVER breaks the dashboard (F5): any failure degrades to honest "unav
 """
 from __future__ import annotations
 
+import bisect
 import logging
 import os
 from dataclasses import dataclass
@@ -224,6 +225,106 @@ def select_prioritised(base: str, quote: str, current_date: date, priority: tupl
         if sel is not None:
             return sel
     return None
+
+
+def historical_rate_for_date(pairs, *, max_date: date, priority: Optional[tuple] = None,
+                             max_staleness_days: int = MAX_STALENESS_DAYS):
+    """Build a point-in-time, carry-forward ``date -> FxRateSource`` for a HISTORICAL curve WITHOUT a per-bucket DB
+    query (N+1-safe). It issues ONE query per (pair, source) — loading every ACCEPTED observation with
+    ``effective_date`` up to the latest TARGET day the curve can ask for (``max_date - 1``) — then selects, per bucket
+    date, the governed rate purely in memory, reproducing ``select_observation``/``select_prioritised`` exactly:
+    the bucket instant is localised to the GOVERNED business tz (Europe/London) FIRST so it is dated on the same
+    business day the governed path uses (not the UTC calendar day), then previous-day TARGET (no look-ahead),
+    carry-forward to the most recent accepted earlier date, ``max_staleness_days`` cap, source PRIORITY failover (never
+    blended), latest-accepted-revision wins. USD<->USD is identity; any pair/date with no usable rate yields ``None``
+    so the caller stays honestly PARTIAL/UNAVAILABLE — never a fabricated rate. ``max_date`` must be the governed
+    business 'today' (``governed_today()``), so the bulk upper bound covers the latest business day any bucket needs.
+
+    This is the point-in-time source the ALL-scope equity curve uses when FX conversion is enabled for the caller, so
+    a non-USD (e.g. GBP) account converts at the rate effective on each bucket's date and JOINS the USD curve instead
+    of being permanently excluded — while still never applying a single TODAY spot rate to historical points."""
+    prio = tuple(priority) if priority else fx_source_priority()
+    latest_target = max_date - timedelta(days=1)
+    # (base, quote, source) -> (sorted effective_dates, {effective_date: Decimal rate for its latest accepted revision})
+    loaded: Dict[Tuple[str, str, str], tuple] = {}
+    for (base, quote) in pairs:
+        b, q = FX.normalise_currency(base), FX.normalise_currency(quote)
+        if b == q:
+            continue
+        for src in prio:
+            by_date: Dict[date, tuple] = {}
+            try:
+                rows = (DailyFxObservation.objects
+                        .filter(base_currency=b, quote_currency=q, source=src,
+                                acceptance_state=DailyFxObservation.STATE_ACCEPTED,
+                                effective_date__lte=latest_target)
+                        .order_by("effective_date", "revision_number")
+                        .values_list("effective_date", "revision_number", "rate"))
+                for ed, rev, rate in rows:
+                    prev = by_date.get(ed)
+                    if prev is None or rev >= prev[0]:   # latest ACCEPTED revision wins for one effective_date
+                        by_date[ed] = (rev, rate)
+            except Exception:  # noqa: BLE001 — an FX read must never break the curve; degrade to honest unavailable
+                logger.warning("fx_source: historical bulk load failed; curve stays USD-only for %s->%s", b, q)
+                by_date = {}
+            loaded[(b, q, src)] = (sorted(by_date.keys()), by_date)
+
+    def _select(b: str, q: str, target_date: date):
+        for src in prio:                                  # explicit, disclosed failover order (never blended)
+            entry = loaded.get((b, q, src))
+            if not entry:
+                continue
+            dates_sorted, by_date = entry
+            i = bisect.bisect_right(dates_sorted, target_date) - 1   # most recent effective_date <= target_date
+            if i < 0:
+                continue
+            ed = dates_sorted[i]
+            if (target_date - ed).days > max_staleness_days:         # carried-forward value too stale -> unusable
+                continue
+            return float(by_date[ed][1]), ed, src
+        return None
+
+    _gtz = ZoneInfo(GOVERNED_TZ)
+
+    def _business_date(when) -> date:
+        # The GOVERNED business date, matching ``governed_today``/``select_observation``: an aware bucket instant is
+        # localised to the governed tz (Europe/London) FIRST, so a point near UTC midnight is dated on the same
+        # business day the governed path would use (not the UTC calendar day). A naive date/datetime is taken as
+        # already a business date (direct/test callers).
+        if isinstance(when, datetime):
+            return when.astimezone(_gtz).date() if when.tzinfo is not None else when.date()
+        return when
+
+    class _AtDate:
+        """An ``FxRateSource`` fixed at one business date's governed TARGET (previous day), from the bulk cache."""
+        __slots__ = ("_target",)
+
+        def __init__(self, business_date: date):
+            self._target = business_date - timedelta(days=1)   # previous-day target == select_observation (no look-ahead)
+
+        def get_rate(self, base: str, quote: str) -> Optional[FX.FxRate]:
+            b, q = FX.normalise_currency(base), FX.normalise_currency(quote)
+            if b == q:
+                return FX.FxRate(b, q, 1.0, source="identity")
+            sel = _select(b, q, self._target)
+            if sel is None:
+                return None
+            rate, ed, src = sel
+            return FX.FxRate(b, q, rate, as_of=ed.isoformat(), source=f"{src}:historical")
+
+    cache: Dict[date, _AtDate] = {}
+
+    def rate_for_date(when) -> _AtDate:
+        # ``when`` is the bucket's aware datetime (from the equity curve) or a plain business date (direct callers);
+        # the cache is keyed by the GOVERNED business date so many intraday buckets on one business day share one source.
+        biz = _business_date(when)
+        src = cache.get(biz)
+        if src is None:
+            src = _AtDate(biz)
+            cache[biz] = src
+        return src
+
+    return rate_for_date
 
 
 class StoredDbFxRateSource:

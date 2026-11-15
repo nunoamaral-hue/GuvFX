@@ -413,26 +413,76 @@ class OpenTradesTests(TestCase):
                                       rate_source=FX.NullFxRateSource())
         self.assertEqual(rows, []); self.assertTrue(per[a.id]["stale"])
 
-    def test_aggregation_deadline_bounds_fan_out(self):
-        # Overall wall-clock budget: once the deadline is passed, remaining accounts are marked STALE WITHOUT
-        # another ~10s live read. Healthy accounts already fetched still contribute; the slow ones are named
-        # (present + stale), never dropped — so the dashboard settles in bounded time with a labelled partial.
-        u = _user("o_deadline"); a1 = _acct(u); a2 = _acct(u); a3 = _acct(u)
-        calls = []
+    def test_slow_account_does_not_block_healthy_accounts(self):
+        # INDEPENDENT bounded reads (parallel fan-out): a SLOW/hung account is named STALE within a bounded overall
+        # budget and NEVER starves the healthy accounts, which still contribute. (Previously a shared serial budget let
+        # one slow account at the front consume the whole budget and leave later accounts unread; now each per-account
+        # read is independent and the slow one cannot block the fleet — the packet's head-of-line-blocking guard.)
+        import threading, time as _t
+        u = _user("o_deadline"); fast1 = _acct(u); slow = _acct(u); fast2 = _acct(u)
+        release = threading.Event()
 
         def fetch(account, timeout=None):
-            calls.append(account.id)
+            if account.id == slow.id:
+                release.wait(timeout=5.0)        # hung bridge: blocks past the short overall budget (released below)
+                return [{"ticket": 9, "symbol": "Z", "side": "BUY", "volume": 1, "profit": 1.0, "magic": 0}]
             return [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1, "profit": 10.0, "magic": 0}]
 
-        # deadline=100.0; monotonic() returns 50 (a1 in budget → fetched), then 150, 151 (a2, a3 past → stale).
-        with mock.patch("analytics.portfolio.time.monotonic", side_effect=[50.0, 150.0, 151.0]):
-            rows, per = PF.open_positions([a1, a2, a3], fetch_positions=fetch,
-                                          rate_source=FX.NullFxRateSource(), deadline=100.0)
-        self.assertEqual(calls, [a1.id])                                  # only the in-budget account was read
-        self.assertFalse(per[a1.id]["stale"]); self.assertEqual(per[a1.id]["open_count"], 1)
-        self.assertTrue(per[a2.id]["stale"]); self.assertTrue(per[a3.id]["stale"])   # named, not dropped
-        self.assertEqual(set(per.keys()), {a1.id, a2.id, a3.id})
-        self.assertEqual(len(rows), 1)                                    # a1's position contributed
+        t0 = _t.monotonic()
+        try:
+            rows, per = PF.open_positions([fast1, slow, fast2], fetch_positions=fetch,
+                                          rate_source=FX.NullFxRateSource(),
+                                          observed_currency={fast1.id: "USD", slow.id: "USD", fast2.id: "USD"},
+                                          deadline=_t.monotonic() + 0.5)   # short overall budget
+            elapsed = _t.monotonic() - t0
+            # Healthy accounts contributed despite the hung one (no head-of-line blocking).
+            self.assertFalse(per[fast1.id]["stale"]); self.assertEqual(per[fast1.id]["open_count"], 1)
+            self.assertFalse(per[fast2.id]["stale"]); self.assertEqual(per[fast2.id]["open_count"], 1)
+            # The slow account is NAMED stale (transient), never dropped or turned into a false zero.
+            self.assertTrue(per[slow.id]["stale"])
+            self.assertFalse(per[slow.id]["structural"])
+            self.assertIsNone(per[slow.id]["open_pl_usd"])
+            self.assertEqual(set(per.keys()), {fast1.id, slow.id, fast2.id})
+            self.assertEqual(len(rows), 2)                                 # only the two healthy positions
+            self.assertLess(elapsed, 3.0)                                  # bounded — not the ~5s a serial path took
+        finally:
+            release.set()                                                  # free the hung worker so it never lingers
+
+    def test_scales_to_arbitrary_fleet_not_fixed_at_12(self):
+        # Coverage must not assume a fixed 12-account fleet: a larger owned population is ALL read (parallel, bounded)
+        # and every account appears in the per-account result — included or named — never silently dropped.
+        u = _user("o_fleet")
+        accts = [_acct(u) for _ in range(30)]
+        mapping = {a.id: [{"ticket": i, "symbol": "X", "side": "BUY", "volume": 1, "profit": 1.0, "magic": 0}]
+                   for i, a in enumerate(accts)}
+        rows, per = PF.open_positions(accts, fetch_positions=_fake_positions(mapping),
+                                      rate_source=FX.NullFxRateSource(),
+                                      observed_currency={a.id: "USD" for a in accts})
+        self.assertEqual(set(per.keys()), {a.id for a in accts})           # all 30 present
+        self.assertEqual(len(rows), 30)                                    # every account's position contributed
+        self.assertTrue(all(not per[a.id]["stale"] for a in accts))
+
+    def test_multiple_simultaneous_failures_each_named_with_its_reason(self):
+        # Several accounts fail at once with DIFFERENT causes: each is named with its OWN structural/transient reason
+        # (never a blanket "stale"), and the healthy account still contributes — no false zero for the failed ones.
+        u = _user("o_multi")
+        ok = _acct(u); demo_gated = _acct(u); down = _acct(u); refused = _acct(u)
+        mapping = {
+            ok.id: [{"ticket": 1, "symbol": "X", "side": "BUY", "volume": 1, "profit": 5.0, "magic": 0}],
+            demo_gated.id: {"unavailable": True, "reason": "account_not_demo"},   # structural
+            down.id: {"unavailable": True, "reason": "bridge_unreachable"},       # transient
+            refused.id: {"unavailable": True, "reason": "positions_refused"},     # transient
+        }
+        all_accts = [ok, demo_gated, down, refused]
+        rows, per = PF.open_positions(all_accts, fetch_positions=_reason_fetch(mapping),
+                                      rate_source=FX.NullFxRateSource(),
+                                      observed_currency={a.id: "USD" for a in all_accts})
+        self.assertFalse(per[ok.id]["stale"]); self.assertEqual(len(rows), 1)
+        self.assertTrue(per[demo_gated.id]["structural"])                  # account_not_demo -> structural
+        self.assertFalse(per[down.id]["structural"])                       # bridge_unreachable -> transient
+        self.assertFalse(per[refused.id]["structural"])                    # positions_refused -> transient
+        for a in (demo_gated, down, refused):
+            self.assertTrue(per[a.id]["stale"]); self.assertIsNone(per[a.id]["open_pl_usd"])  # named, never false 0
 
     def test_open_pl_aggregation(self):
         u = _user("o5"); a1 = _acct(u); a2 = _acct(u)
@@ -1127,6 +1177,87 @@ class FetcherReasonMappingTests(TestCase):
             res = VTH._fetch_mt5_open_positions(a, "wu")
         self.assertEqual(res, {"unavailable": True, "reason": "account_not_demo"})
         self.assertTrue(FX.is_structural(FX.position_reason_category(res["reason"])))
+
+    def test_live_terminal_account_not_demo_via_http_400_mapped_structural(self):
+        # THE pkt-133 fix: the bridge demo-gate answers as HTTP 400 with body {"ok":false,"error":"account_not_demo"}
+        # (``urlopen`` RAISES ``HTTPError`` on a 4xx). The fetcher must READ the error body and classify it STRUCTURAL
+        # — never collapse the HTTPError into the generic transient ``bridge_unreachable`` (which the UI reads as a
+        # misleading "reconnecting…"). This is exactly the production shape observed on the 6 demo-gated terminals.
+        import io, json as _json, urllib.error
+        from contextlib import contextmanager
+        from analytics import views_trade_history as VTH
+        u = _user("fr2b"); a = _acct(u, broker="IS6")
+
+        class _ST:
+            ok = True; base_url = "http://bridge.invalid"; per_tenant = True; reason_code = ""
+
+        class _Verify:
+            ok = True
+
+        @contextmanager
+        def _resp(payload):
+            class _R:
+                def read(self_inner):
+                    return _json.dumps(payload).encode()
+            yield _R()
+
+        calls = {"n": 0}
+
+        def _urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _resp({"account_login": a.account_number, "account_server": "IS6Technologies-Live",
+                              "trade_mode": 0})                       # identity read OK (live terminal)
+            raise urllib.error.HTTPError(                             # positions read — demo-gate returned as HTTP 400
+                "http://bridge.invalid/mt5/positions", 400, "Bad Request", {},
+                io.BytesIO(_json.dumps({"ok": False, "error": "account_not_demo"}).encode()))
+
+        with mock.patch.object(VTH, "_get_windows_agent_config", return_value=("http://bridge.invalid", "tok")), \
+                mock.patch("execution.snapshot_transport.resolve_account_snapshot_base", return_value=_ST()), \
+                mock.patch("execution.snapshot_transport.verify_snapshot_identity", return_value=_Verify()), \
+                mock.patch.object(VTH.urllib.request, "urlopen", side_effect=_urlopen):
+            res = VTH._fetch_mt5_open_positions(a, "wu")
+        self.assertEqual(res, {"unavailable": True, "reason": "account_not_demo"})   # NOT "bridge_unreachable"
+        self.assertTrue(FX.is_structural(FX.position_reason_category(res["reason"])))
+
+    def test_http_4xx_unparseable_body_is_transient_refused_never_reachable(self):
+        # A 4xx whose body we cannot parse is a SAFE refusal (``positions_refused``, transient) — never silently
+        # treated as a successful/empty read (which would fabricate "0 open, reachable"), never a structural over-claim.
+        import io, urllib.error
+        from contextlib import contextmanager
+        from analytics import views_trade_history as VTH
+        import json as _json
+        u = _user("fr2c"); a = _acct(u, broker="IS6")
+
+        class _ST:
+            ok = True; base_url = "http://bridge.invalid"; per_tenant = True; reason_code = ""
+
+        class _Verify:
+            ok = True
+
+        @contextmanager
+        def _resp(payload):
+            class _R:
+                def read(self_inner):
+                    return _json.dumps(payload).encode()
+            yield _R()
+
+        calls = {"n": 0}
+
+        def _urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _resp({"account_login": a.account_number, "account_server": "IS6Technologies-Live", "trade_mode": 2})
+            raise urllib.error.HTTPError("http://bridge.invalid/mt5/positions", 503, "Server Error", {},
+                                         io.BytesIO(b"<html>upstream unavailable</html>"))   # not JSON
+
+        with mock.patch.object(VTH, "_get_windows_agent_config", return_value=("http://bridge.invalid", "tok")), \
+                mock.patch("execution.snapshot_transport.resolve_account_snapshot_base", return_value=_ST()), \
+                mock.patch("execution.snapshot_transport.verify_snapshot_identity", return_value=_Verify()), \
+                mock.patch.object(VTH.urllib.request, "urlopen", side_effect=_urlopen):
+            res = VTH._fetch_mt5_open_positions(a, "wu")
+        self.assertEqual(res, {"unavailable": True, "reason": "positions_refused"})
+        self.assertFalse(FX.is_structural(FX.position_reason_category(res["reason"])))   # transient, not over-claimed
 
     def test_arbitrary_bridge_refusal_is_transient_never_echoed(self):
         # A non-account_not_demo refusal must map to the fixed TRANSIENT "positions_refused" — the bridge's free-text
