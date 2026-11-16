@@ -21,7 +21,8 @@ from .flags import (broker_account_contact_enabled, broker_generic_detection_all
                     broker_unknown_sender_discovery_allowlist, broker_unknown_sender_discovery_enabled,
                     broker_unknown_sender_discovery_enabled_for,
                     broker_identity_verification_enabled,
-                    broker_mailbox_connect_enabled, broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
+                    broker_mailbox_connect_enabled, broker_mailbox_operator_health_enabled,
+                    broker_mailbox_status_enabled, broker_multi_mailbox_enabled,
                     broker_multi_mailbox_enabled_for,
                     broker_withdrawal_demo_include_synthetic, broker_withdrawal_speed_enabled_for,
                     broker_withdrawal_ux_enabled)
@@ -868,6 +869,26 @@ class MailboxStatusView(APIView):
         can_add = broker_multi_mailbox_enabled_for(request.user) and live < _mailbox_cap()
         return Response({"connected": connected, "mailboxes": items,
                          "can_add_mailbox": can_add, "mailbox_limit": _mailbox_cap()})
+
+
+class MailboxIngestHealthView(APIView):
+    """GET /api/broker-intelligence/operator/mailbox-health/ — OPERATOR-facing, value-blind mailbox OAuth ingestion
+    health projection (pkt-149, ADR-0113). STAFF ONLY (``IsAdminUser``) AND DARK
+    (``broker_mailbox_operator_health_enabled`` → 404 while off). It surfaces, across ALL connected mailboxes (fleet),
+    the seven-status OAuth health classification + coverage counts + the synchronizer-stall determination, so an
+    operator can see — before prolonged blindness — that a grant needs re-consent vs a transient blip.
+
+    Secret-free by construction: it returns ONLY the ``oauth_health.aggregate_oauth_health`` payload (masked identity,
+    stable diagnostic code, HTTP status, counts, ages, booleans, recommended action) — NEVER a token, refresh token,
+    authorization code, client secret, credential ref, raw cursor, email subject/body, or a full email address. It
+    MUTATES NOTHING, contacts no Gmail/broker, and grants no execution/strategy/credential/financial authority."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        if not broker_mailbox_operator_health_enabled():
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        from .oauth_health import aggregate_oauth_health
+        return Response(aggregate_oauth_health(include_all_statuses=True))
 
 
 # ======================================================================================================
