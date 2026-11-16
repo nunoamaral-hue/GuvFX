@@ -52,11 +52,19 @@ host, after the bridge-token rotation. "Last rotation" is recorded only where kn
 | `TELEGRAM_API_HASH` | Telethon app credential for the signal listener | VPS `wayond-listener.env` (`600`) | wayond listener | Reissue at my.telegram.org | Nuno | unknown |
 | `TELEGRAM_STRING_SESSION` | Telethon **session** (equivalent to a logged-in account) | VPS `wayond-listener.env` (`600`) | wayond listener | Re-provision via `provision_telegram_session`; see [[telegram de-auth]] history | Nuno | unknown |
 
-## D. Beta provisioning (dark — not yet installed)
+## D. Signed host-executor + beta provisioning keyrings (LIVE)
+
+> HMAC `{key_id: secret}` maps. Rotate **without downtime** via dual-key overlap: ADD a new `key_id`
+> everywhere (old stays active) → recreate/restart consumers → prove new accepted + old still accepted →
+> switch the active `*_KEY_ID` to the new id → prove new live + old still accepted → REMOVE the old id
+> everywhere → prove old rejected. A governed, value-blind operator rotator exists (VPS
+> `_rotation/rotation_ring_op.py`, Windows `C:\GuvFX\_rotation\Rotate-GuvfxRingMachineVar.ps1`, driven by a
+> hidden-input wrapper): it never places a secret in argv/log/history and only reports id/count metadata.
 
 | Secret | Purpose | Authoritative location | Consumed by | Rotation | Owner | Last rotation |
 |---|---|---|---|---|---|---|
-| `BETA_AGENT_KEYRING` / `BETA_AGENT_KEY_ID` | HMAC keyring for the signed beta provisioning channel (`key_id` supports rotation without downtime) | Not yet provisioned — B3 install only | beta provisioning agent (Windows), backend beta worker | Add a new `key_id`, roll clients, retire the old id | Nuno | n/a |
+| `HOSTED_EXECUTOR_KEYRING` / `HOSTED_EXECUTOR_KEY_ID` | HMAC keyring for the Stream-5 signed host-executor transport (backend **signs** requests + verifies signed responses; the Windows host executor **verifies** + signs responses) | **VPS:** `/home/ubuntu/guvfx-prod/hosted-executor.env` (`600`); **Windows (GFX-144 / ADR-0112):** FILE-FIRST `C:\GuvFX\hosted\secrets\hosted_executor_keyring.json` (ACL: inheritance off; read only by SYSTEM / Administrators / the `GuvFXHostedExecutor` service principal), with the machine env var (host `WIN-RD8VDS93DK7`) as the DEPRECATED migration fallback used only when the file is absent | `guvfx-backend` (signer), Windows service `GuvFXHostedExecutor` (verifier) | Dual-key overlap (above). Update the VPS env file + the Windows machine var together (same bytes); recreate `guvfx-backend`; then **write the host keyring file** with the value-blind `deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1` + `Restart-Service GuvFXHostedExecutor` (**NO reboot** - ADR-0112 fixes the SCM boot-time env-cache trap; a bare `Restart-Service` alone does **NOT** pick up a machine-var change on a host not rebooted since the rotation, which caused GFX-143's `unknown_key_id`). Rollback: re-provision from the reverted machine var, or `-Remove` the file to fall back to env | Nuno | **2026-11-15** (post-exposure rotation; active id `hx-20261115`) |
+| `BETA_AGENT_KEYRING` / `BETA_AGENT_KEY_ID` | HMAC keyring for the signed beta provisioning channel (`key_id` supports rotation without downtime) | **VPS:** `/home/ubuntu/guvfx-prod/beta.env` (`600`) + `deploy/beta-provisioner/beta-provisioner.secret.env` (`600`); **Windows:** machine env var | `guvfx-backend`, `guvfx-beta-provisioner`, Windows service `GuvFXBetaAgent` (verifier) | Dual-key overlap (above). Update **all three** VPS files + the Windows machine var together; recreate `guvfx-backend` + `guvfx-beta-provisioner` + `Restart-Service GuvFXBetaAgent` | Nuno | **2026-11-15** (post-exposure rotation; active id `beta-20261115`) |
 
 ---
 

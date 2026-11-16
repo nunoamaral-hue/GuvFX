@@ -44,6 +44,16 @@ No command / script / path / username is expressible on the wire. The host deriv
 
 - **HMAC keyring** — `HOSTED_EXECUTOR_KEYRING` (JSON `{key_id: secret}`), active `HOSTED_EXECUTOR_KEY_ID`. The
   host dispatcher holds the SAME keyring locally (RULE 3 — its own secret, distinct from `BETA_AGENT_KEYRING`).
+  **GFX-144 / ADR-0112:** on the host the dispatcher reads this keyring **FILE-FIRST** from the ACL-protected
+  `C:\GuvFX\hosted\secrets\hosted_executor_keyring.json` (inheritance off; read only by SYSTEM / Administrators /
+  the `GuvFXHostedExecutor` service principal), falling back to the machine env var **only when the file is
+  absent**. The file exists because the Windows SCM caches the system env block at boot, so a machine-var
+  rotation is invisible to a restarted service until the host reboots. Write the file from the current machine
+  vars with the value-blind `Provision-GuvfxHostedExecutorKeyringFile.ps1` (atomic, ACL-restricted; `-Verify` and
+  `-Remove` modes), then `Restart-Service GuvFXHostedExecutor` — **no reboot**. A bare `Restart-Service` WITHOUT
+  first writing the file does **not** pick up a machine-var rotation on a host not rebooted since it (this was
+  GFX-143's `unknown_key_id`). **Rollback:** re-provision from the reverted machine var, or `-Remove` the file to
+  fall back to the machine env on the next start.
 - **Envelope keys** (Windows password sealing, ADR-0027) — backend holds the **public** key
   `HOSTED_EXECUTOR_ENC_PUBKEYS` + `HOSTED_EXECUTOR_ENC_KEY_ID`; the host holds the matching **private** key.
 - **Endpoint** — `HOSTED_EXECUTOR_BASE_URL` (the host's Tailscale origin).
