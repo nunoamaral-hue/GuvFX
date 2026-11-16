@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-ATTEST-TRANSPORT-RECONCILIATION-139",
+  "packet_id": "GFX-COPIER-ATTEST-TRANSPORT-RECONCILIATION-139",
+  "created_at_utc": "2026-11-16T01:20:00Z",
+  "branch": "feat/copier-attest-transport-reconciliation",
+  "base_commit": "98ce80cde925a2597c6019278911368769a5396e",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK. Prevents a TRANSIENT proxy/network failure from wasting the account-46 one-use attestation key while preserving EXACTLY-ONCE, fail-closed semantics. The pkt-138 live attempt hit HTTP 502 (a transient Traefik connection drop); the single POST never reached the verifier (window uses=0, CopierIngestNonce unchanged at 2), but run_oneshot shreds the host key on every path so the one-use key was spent. This change adds AUTHORITATIVE post-failure reconciliation (NOT a blind retry): after an AMBIGUOUS transport outcome the operator orchestration queries existing durable backend state - CopierVerifierWindow.uses (incremented when the key is CLAIMED, before the verdict) and CopierIngestNonce (burned only after a FULL verify) - and classifies PROCESSED_VERIFIED / PROCESSED_REJECTED / NOT_PROCESSED / AMBIGUOUS. Only a PROVEN NOT_PROCESSED permits a retry, at most ONCE, reprovisioning the SAME in-memory key (no second human prompt) into the still-OPEN window. A verifier HTTP verdict (200/400/401/403/409) is NEVER retried. NO migration (existing records suffice). NO deploy, host contact, real secret, verifier window, flag enablement, task trigger, account-48 contact or broker action.",
+    "adr": "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test --parallel 4) + governance (secret/PII scan + evidence lint + governance unit tests incl. test_provision_and_open_oneshot) + frontend (untouched) + research-foundation + market-data-foundation; plus a separate throwaway windows-latest PowerShell 5.1 ParseFile + Pester gate pinned to the exact PR head (no .ps1 changed - no-regression confirmation). Run IDs + conclusions recorded in the PR body and the Notion Copy Trading Ledger / Current State."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_provision_and_open_oneshot.py'  (36 tests OK: adds DriveAttestationTests matrix + TeardownAndScopeTests)",
+    "cd backend && manage.py test trade_copier.tests_attest_reconcile  (14 tests OK: the four-way classifier + read-only command)",
+    "cd backend && manage.py test trade_copier.tests_copier_emitter_oneshot  (adds ClassifyTransportAmbiguous + OneShotResultPlumbing)",
+    "cd backend && manage.py test trade_copier.emitter.tests_bundle trade_copier.tests_attestation_verify  (bundle ASCII+MANIFEST hash green; attest-verify surface unchanged)",
+    "cd backend && manage.py test trade_copier --keepdb --parallel 4  (1042 tests OK - full app, no regression)",
+    "make governance-check  (secret scan + evidence lint + governance unit tests)",
+    "cd backend && manage.py check  (System check identified no issues)",
+    "cd backend && manage.py makemigrations --check --dry-run  (this PR adds NO models and NO migration)"
+  ],
+  "expected_results": [
+    "Reconciliation is authoritative, not a blind retry: after an ambiguous transport outcome the classifier returns NOT_PROCESSED (the ONLY retry signal) ONLY when the window is still OPEN, unexpired, uses==0 and the nonce is not burned; a burned nonce is PROCESSED_VERIFIED; uses>=1 without a burned nonce is PROCESSED_REJECTED; any missing/conflicting/unreadable evidence is AMBIGUOUS. Fail-closed throughout.",
+    "The operator orchestration retries AT MOST ONCE and ONLY from NOT_PROCESSED, reprovisioning the SAME in-memory key; it NEVER retries a verifier HTTP verdict (200/400/401/403/409); it guarantees teardown (in-memory key dropped, host key shredded, window closed) on every terminal path including an exception; it never contacts account 48 or any broker/execution endpoint.",
+    "run_oneshot_attest.py returns the (non-secret) envelope nonce + a transport_ambiguous flag in its sanitised result, and still never emits the envelope/signature/secret. No migration; existing CopierVerifierWindow.uses + CopierIngestNonce are sufficient. Repository-only, DARK."
+  ],
+  "actual_results": [
+    "backend/trade_copier/attest_reconcile.py (NEW): pure reconcile_attestation(nonce, correlation_id, purpose) reading ONLY CopierIngestNonce + CopierVerifierWindow; returns the four-way classification + sanitised metadata; fail-closed on bad nonce / unreadable store / missing window / conflicting burned-but-uses0 / closed-or-expired-uses0. backend/trade_copier/management/commands/copier_attest_reconcile.py (NEW): read-only command printing the classification JSON (no key, no mutation, no host/broker).",
+    "deploy/copier-emitter/run_oneshot_attest.py: _classify_post_response now returns (verified, reason, transport_ambiguous) - ambiguous=True unless the backend returned a RECOGNISED verdict body; _post_once returns the 4-tuple (and tolerates a legacy 3-tuple injected transport as definitive); the result carries nonce + transport_ambiguous. deploy/copier-emitter/MANIFEST.json: run_oneshot_attest.py hash re-synced.",
+    "deploy/copier-emitter/operator/provision_and_open_oneshot.py: new drive_attestation() decision core (pure, injectable trigger/reconcile/reprovision) + _normalise_trigger_result + _provision_host_key/_shred_host_key/_close_window; main() gains --drive-attestation which drives trigger+reconcile+<=1 retry under a guaranteed-teardown finally. Default (no flag) behaviour is unchanged (open + 'Reply DONE'). ASCII-only (RULE 9); takes no key/secret argument.",
+    "Tests: wrapper 36/36 (DriveAttestationTests covers 502->NOT_PROCESSED->one safe retry->success; verified-response-lost->no retry; rejection-lost->no retry; unreadable->UNKNOWN; conflicting->UNKNOWN; retry-also-fails->stop no third attempt; verifier verdict never retried; ambiguous-no-nonce; reprovision-failure; outcome carries no key; teardown guaranteed on success AND on a mid-drive exception; commands are attestation-only, never 48/broker/execute). reconcile 14/14. emitter one-shot incl. ClassifyTransportAmbiguous + OneShotResultPlumbing. Full trade_copier 1042/1042. Bundle ASCII+MANIFEST-hash green. No migration (manage.py makemigrations --check clean).",
+    "Exactly-once preserved: the only retry-permitting state (NOT_PROCESSED) is proven from CopierVerifierWindow.uses==0 on a still-OPEN window; the retry reuses that window's UNCHANGED backend key, so the same key bytes reach host and verifier; the fresh attempt signs a NEW nonce (run_oneshot generates a uuid4 nonce per run), so replay protection and the single-use nonce burn are intact. copier_attest_reconcile is strictly read-only (creates no window/nonce - asserted).",
+    "No secret in argv/output/logs/fixtures/exception text: the key is delivered on SSH stdin only; results are sanitised; the nonce is non-secret; the wrapper takes no key argument (asserted); the drive_attestation outcome carries no key (asserted). Diff scope: 2 NEW backend files + 1 NEW backend test + 2 MODIFIED bundle artefacts + MANIFEST.json + 2 MODIFIED test files + 1 MODIFIED runbook + this NEW evidence manifest. No .ps1 change, no model, no migration, no workflow, no production mutation.",
+    "Independent blind adversarial review (sub-agent) verdict: exactly-once and fail-closed HOLD (no duplicate processing, the only retry is gated on a proven NOT_PROCESSED/uses==0, every parse/read/unknown error degrades to AMBIGUOUS/None => no retry, no secret leak, replay intact). It found three safe-direction defects; two were fixed and one documented: F1 (fixed) - a LOST trigger RESULT after a successful POST was misreported as REJECTED; now _normalise_trigger_result uses host_contacted to split 'host never ran' (definitive REJECTED) from 'host ran, result lost' (AMBIGUOUS -> window-based reconcile by correlation, new PROCESSED_INDETERMINATE => UNKNOWN, never a false REJECTED and never retried). F2 (fixed) - teardown now covers the setup phase: provision + window-open + drive run under ONE guaranteed-teardown finally, so a provision/window-open exception still shreds the host key + closes the window (proven by test_drive_mode_teardown_on_provision_exception). F3 (documented, not weakened) - _last_json fails closed on trailing stdout noise (safe direction; the driven docker-exec/manage.py commands put JSON on stdout and warnings on stderr, read separately); the pkt-128 hardening is intentionally kept. A narrow sub-millisecond race between claim_key's uses-commit and the nonce-burn-commit could momentarily read a verified request as PROCESSED_REJECTED - this fails SAFE (processed => no retry; exactly-once intact) and is a documented limitation. Re-verified after the fixes: wrapper 40/40, reconcile 18/18, emitter+bundle+attest-verify green, governance-check EXIT 0."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS): the exact-head Linux CI (5 conclusions) and the separate windows-latest PowerShell 5.1 ParseFile + Pester gate are driven on CI runners against the pushed head; their run IDs and conclusions are recorded in the PR body and Notion, not inside this committed manifest (authored before those runs complete).",
+    "Repository-only / DARK. Auto-merge OFF; NOT merged, NOT deployed. Re-running the account-46 attestation with the new --drive-attestation path (real key entry, verifier window, flag enablement, task trigger) remains a SEPARATE Sponsor/human gate. No real secret handled in this packet.",
+    "The reconciliation distinguishes PROCESSED from NOT_PROCESSED authoritatively from existing records; it cannot recover the exact sanitised REJECTION sub-reason when the response was lost (the backend stores no per-request reason) - it reports PROCESSED_REJECTED (no retry), which is the safety-relevant fact. A future verified attempt whose response is NOT lost still surfaces the exact reason via the pkt-128 sanitised-reason path.",
+    "The Windows ParseFile/Pester gate validates the .ps1 provisioner bundle, which this PR does not change; it is re-run at the PR head as a no-regression confirmation.",
+    "Backend flags and the host emitter config gate return-to-DARK remain the agent's separate enable/teardown (unchanged); the wrapper's guaranteed teardown covers its own domain (in-memory key, host key, verifier window); the one-shot TASK is re-disabled host-side by the signed trigger."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/attest_reconcile.py (authoritative four-way reconciliation classifier, read-only)",
+    "backend/trade_copier/management/commands/copier_attest_reconcile.py (read-only reconcile command)",
+    "deploy/copier-emitter/run_oneshot_attest.py (nonce + transport_ambiguous in the sanitised result)",
+    "deploy/copier-emitter/operator/provision_and_open_oneshot.py (drive_attestation orchestration + guaranteed teardown)",
+    "deploy/copier-emitter/MANIFEST.json (bundle integrity - run_oneshot_attest.py hash re-synced)",
+    "backend/trade_copier/tests_attest_reconcile.py (classifier + command matrix)",
+    "backend/trade_copier/tests_copier_emitter_oneshot.py (ClassifyTransportAmbiguous + OneShotResultPlumbing)",
+    "tests/test_provision_and_open_oneshot.py (DriveAttestationTests + TeardownAndScopeTests)",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md (transport reconciliation section)",
+    "evidence/manifests/GFX-EVD-COPIER-ATTEST-TRANSPORT-RECONCILIATION-139.json (this manifest)"
+  ],
+  "checksums": {
+    "backend/trade_copier/attest_reconcile.py": "sha256:6f6b59bb4d6ca69ee5900c995038424e6145fc3e0a9e6545a02fcebb47d8ce58",
+    "backend/trade_copier/management/commands/copier_attest_reconcile.py": "sha256:e1772899a3cf7be7a198e65ee503dfba61e499ea2ad8ef24df68e311b5b63260",
+    "deploy/copier-emitter/run_oneshot_attest.py": "sha256:161e07f71ace3f9a0b5807f73844f297a773b90bc531c628ece62cd9e4f32528",
+    "deploy/copier-emitter/operator/provision_and_open_oneshot.py": "sha256:4c3fc36e7f5e024906e10ae6a47202ca1118f4881412152a4a0ee2829ea217dc",
+    "deploy/copier-emitter/MANIFEST.json": "sha256:30c095400cd994c87a2abe2f0f8a001448b0e9ec554b272eef923df389633ebf",
+    "backend/trade_copier/tests_attest_reconcile.py": "sha256:ad4291584f3b63f68cb27f02bae8f1c041191440197f0c23c81d48a128ec662e",
+    "backend/trade_copier/tests_copier_emitter_oneshot.py": "sha256:b8a79ec682e18b47430288d1d16d3b32e12dade75a434cc5ddd5a4a05517a030",
+    "tests/test_provision_and_open_oneshot.py": "sha256:87179a2572bba02d5f5034fdcb10e054939f6dec6d2233b1d5d60d33f255361d",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md": "sha256:901a529964ad79bef1882fc51963e39c769d677f86ee06b92f4faa54dee5f4e6"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) with an independent blind adversarial reviewer sub-agent (duplicate-processing / lost-response / replay / secret-lifetime / false-success). Verdict: exactly-once and fail-closed HOLD. Two safe-direction findings fixed (F1 lost-result false-REJECTED -> PROCESSED_INDETERMINATE/UNKNOWN; F2 setup-phase teardown gap -> single guaranteed-teardown finally) and one documented (F3 _last_json trailing-noise strictness, safe direction, pkt-128 hardening kept). A sub-ms uses-commit/nonce-burn race can momentarily misreport verified as rejected - fails SAFE, documented."
+}

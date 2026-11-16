@@ -125,3 +125,38 @@ not print it). Validate this on the Windows runner with the Pester mock before t
   separate, governed change.
 - **`GUVFX_AGENT_TOKEN` rotation.** This token remains scheduled for project-closure rotation; it must never be
   displayed or copied during this work.
+
+## Transport reconciliation (packet 139) - `--drive-attestation`
+
+The host emitter sends its signed envelope to the attest-verify endpoint EXACTLY ONCE. A transient
+proxy/network failure (connection dropped / HTTP 502 / no response) is AMBIGUOUS: the verifier may have
+processed the request even though the HTTP response was lost. A blind retry is FORBIDDEN - it could
+double-process and it wastes the one-use key.
+
+With `--drive-attestation` the single-entry operator wrapper (`provision_and_open_oneshot.py`) drives the
+attestation itself, holding the human-entered key only in process memory for the bounded operation:
+
+1. Provision host key + open the verifier window (as before).
+2. Trigger the one-shot attestation once (`request_copier_emitter_oneshot_attest --apply`).
+3. Classify the result:
+   * `verified` -> VERIFIED (done);
+   * a DEFINITIVE backend verdict (`transport_ambiguous=false`: rejected/replayed/disabled/unavailable/...)
+     -> REJECTED. A verifier HTTP verdict is NEVER retried.
+   * an AMBIGUOUS transport outcome -> reconcile against AUTHORITATIVE state (`copier_attest_reconcile
+     --nonce <n> [--correlation-id <c>]`), which reads only existing durable records:
+       - `CopierVerifierWindow.uses` (incremented when the key is CLAIMED, before the verdict) and
+       - `CopierIngestNonce` (the envelope nonce is burned only after a FULL verify),
+     and returns PROCESSED_VERIFIED / PROCESSED_REJECTED / NOT_PROCESSED / AMBIGUOUS.
+       * PROCESSED_* -> report, NEVER retry;
+       * NOT_PROCESSED (window still OPEN, uses==0, nonce not burned) -> reprovision the host key from the
+         SAME in-memory bytes (no second human prompt) and retry EXACTLY ONCE;
+       * AMBIGUOUS (or NOT_PROCESSED again after the single retry) -> report UNKNOWN, NEVER retry.
+4. GUARANTEED teardown on every terminal path: drop the in-memory key reference, shred the host key
+   (provisioner `-Remove`), close the verifier window (`copier_verifier_window --close`). The one-shot TASK
+   is re-disabled host-side by the signed trigger itself. Backend flags and the host emitter config gate
+   remain the agent's separate enable/teardown.
+
+At most ONE retry. Exactly-once is preserved: the only state that permits a retry is a PROVEN NOT_PROCESSED
+(the request never reached verification), and the retry reuses the still-OPEN window's unchanged backend key.
+`copier_attest_reconcile` is strictly read-only (no key, no mutation, no host/broker contact) and NEVER
+contacts account #48. The attestation nonce used for reconciliation is a non-secret single-use value.

@@ -22,7 +22,7 @@
     "Status-GuvfxCopierEmitter.ps1": "8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",
     "Attest-GuvfxCopierEmitter.ps1": "cccbf1416ed5c798f2c6b62320b588194ee64fdbbfce31fbd99c79ae6cf63378",
     "Install-GuvfxCopierEmitterOneShotTask.ps1": "826ff7f6fdb3a01d8abefe73a65c4bc9ebaf5a6489fa2e305a04e13c2f47d9cd",
-    "run_oneshot_attest.py": "cba7a5abe1c096694c9643a482900b5802563b06b4f9826c58757275e35636ac",
+    "run_oneshot_attest.py": "161e07f71ace3f9a0b5807f73844f297a773b90bc531c628ece62cd9e4f32528",
     "emitter_task_template.xml": "76f2eec7b7fedf13ae1b407b6177a99a3220055504d0a804404260a78130a724",
     "oneshot_attest_task_template.xml": "cd778354947504cb671d2900b29ae0062e09f2624d16100ba8931fae0ba38e84",
     "config.template.json": "56f1bd86e6ba23314b32262b442190e5f998a1cfee6dac0c0ebd9a55f5662d85",

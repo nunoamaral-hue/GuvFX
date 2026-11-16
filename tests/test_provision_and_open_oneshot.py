@@ -237,3 +237,246 @@ class LastJsonParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─────────── packet 139: transport-reconciliation decision core (drive_attestation) ───────────
+
+def _res(*, verified=False, ambiguous=False, nonce="", reason="", http_status=None):
+    return {"verified": verified, "transport_ambiguous": ambiguous, "nonce": nonce, "reason": reason,
+            "http_status": http_status}
+
+
+class _Seq:
+    """Deterministic injected callable: pops a queued value per call and counts invocations."""
+    def __init__(self, values):
+        self._values = list(values)
+        self.calls = 0
+
+    def __call__(self, *a, **k):
+        self.calls += 1
+        return self._values.pop(0)
+
+
+class DriveAttestationTests(unittest.TestCase):
+    """The authoritative-reconciliation decision core: no blind retry, at most ONE safe retry (only from a
+    proven NOT_PROCESSED), verifier verdicts never retried, exactly-once preserved, fail-closed."""
+
+    def _run(self, triggers, reconciles=None, reprovision_ok=True):
+        trig = _Seq(triggers)
+        rec = _Seq(reconciles or [])
+        reprov = _Seq([reprovision_ok] * 3)
+        out = _mod.drive_attestation(trigger=trig, reconcile=rec, reprovision=reprov)
+        return out, trig, rec, reprov
+
+    def test_502_not_processed_then_one_safe_retry_success(self):
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="n1", reason="http_502"), _res(verified=True, reason="verified")],
+            [{"classification": "NOT_PROCESSED"}])
+        self.assertEqual(out["outcome"], "VERIFIED")
+        self.assertEqual(out["attempts"], 2)
+        self.assertEqual(trig.calls, 2)          # exactly one retry
+        self.assertEqual(reprov.calls, 1)        # reprovisioned once (same in-memory key)
+
+    def test_verified_response_lost_reports_verified_no_retry(self):
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="n1", reason="http_502")],
+            [{"classification": "PROCESSED_VERIFIED"}])
+        self.assertEqual(out["outcome"], "VERIFIED")
+        self.assertEqual(trig.calls, 1)
+        self.assertEqual(reprov.calls, 0)        # never retried
+
+    def test_rejection_response_lost_reports_rejected_no_retry(self):
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="n1")], [{"classification": "PROCESSED_REJECTED"}])
+        self.assertEqual(out["outcome"], "REJECTED")
+        self.assertEqual(trig.calls, 1)
+        self.assertEqual(reprov.calls, 0)
+
+    def test_backend_state_unreadable_is_unknown_no_retry(self):
+        out, trig, rec, reprov = self._run([_res(ambiguous=True, nonce="n1")], [{}])  # empty -> AMBIGUOUS
+        self.assertEqual(out["outcome"], "UNKNOWN")
+        self.assertEqual(reprov.calls, 0)
+
+    def test_conflicting_state_ambiguous_is_unknown(self):
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="n1")], [{"classification": "AMBIGUOUS"}])
+        self.assertEqual(out["outcome"], "UNKNOWN")
+        self.assertEqual(reprov.calls, 0)
+
+    def test_retry_also_transport_fails_stops_no_third_attempt(self):
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="n1"), _res(ambiguous=True, nonce="n2")],
+            [{"classification": "NOT_PROCESSED"}, {"classification": "NOT_PROCESSED"}])
+        self.assertEqual(out["outcome"], "UNKNOWN")
+        self.assertEqual(out["reason"], "not_processed_exhausted")
+        self.assertEqual(trig.calls, 2)          # NO third trigger
+        self.assertEqual(reprov.calls, 1)
+
+    def test_verifier_verdict_never_retried(self):
+        for reason in ["terminal_mismatch", "bad_signature", "account_not_found", "replayed", "disabled"]:
+            out, trig, rec, reprov = self._run([_res(verified=False, ambiguous=False, reason=reason)])
+            self.assertEqual(out["outcome"], "REJECTED")
+            self.assertEqual(out["reason"], reason)
+            self.assertEqual(trig.calls, 1)      # exactly once
+            self.assertEqual(rec.calls, 0)       # a definitive verdict is NEVER reconciled
+            self.assertEqual(reprov.calls, 0)    # NEVER retried
+
+    def test_first_attempt_verified_no_reconcile(self):
+        out, trig, rec, reprov = self._run([_res(verified=True)])
+        self.assertEqual(out["outcome"], "VERIFIED")
+        self.assertEqual(rec.calls, 0)
+        self.assertEqual(reprov.calls, 0)
+
+    def test_lost_result_empty_nonce_reconciled_processed_indeterminate(self):
+        # a lost trigger RESULT (ambiguous, no nonce) is reconciled window-based: PROCESSED_INDETERMINATE ->
+        # UNKNOWN (a processed request is NEVER retried, and is NOT misreported as REJECTED).
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="")], [{"classification": "PROCESSED_INDETERMINATE"}])
+        self.assertEqual(out["outcome"], "UNKNOWN")
+        self.assertEqual(out["reason"], "processed_verdict_indeterminate")
+        self.assertEqual(rec.calls, 1)       # reconciled even WITHOUT a nonce (window-based)
+        self.assertEqual(reprov.calls, 0)    # processed -> never retried
+
+    def test_lost_result_empty_nonce_not_processed_retries_once(self):
+        # a lost result whose window proves NOT_PROCESSED (uses==0) is safe to retry exactly once.
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce=""), _res(verified=True)], [{"classification": "NOT_PROCESSED"}])
+        self.assertEqual(out["outcome"], "VERIFIED")
+        self.assertEqual(trig.calls, 2)
+        self.assertEqual(reprov.calls, 1)
+
+    def test_host_not_contacted_is_definitive_rejected_no_reconcile(self):
+        # host_contacted=False (gate off / executor down) -> definitive setup failure; nothing processed.
+        r = _mod._normalise_trigger_result({"host_contacted": False, "reason": "copier_emitter_oneshot_disabled"})
+        self.assertFalse(r["transport_ambiguous"])
+        out, trig, rec, reprov = self._run([r])
+        self.assertEqual(out["outcome"], "REJECTED")
+        self.assertEqual(out["reason"], "copier_emitter_oneshot_disabled")
+        self.assertEqual(rec.calls, 0)
+        self.assertEqual(reprov.calls, 0)
+
+    def test_reprovision_failure_is_unknown_no_second_trigger(self):
+        out, trig, rec, reprov = self._run(
+            [_res(ambiguous=True, nonce="n1")], [{"classification": "NOT_PROCESSED"}], reprovision_ok=False)
+        self.assertEqual(out["outcome"], "UNKNOWN")
+        self.assertEqual(out["reason"], "reprovision_failed")
+        self.assertEqual(trig.calls, 1)          # the retry trigger never happened
+        self.assertEqual(reprov.calls, 1)
+
+    def test_outcome_carries_no_secret(self):
+        out, *_ = self._run([_res(ambiguous=True, nonce="n1")], [{"classification": "PROCESSED_REJECTED"}])
+        self.assertNotIn(SYNTH, json.dumps(out))
+
+
+class TeardownAndScopeTests(unittest.TestCase):
+    def test_wrapper_commands_are_attestation_only_never_48_or_broker(self):
+        # the ONLY manage.py subcommands the wrapper can invoke are the three attestation/window ones; it never
+        # builds a command that names account 48, a broker/execution/mutation action, or any order.
+        class _A:  # minimal args stand-in
+            backend_container = "guvfx-backend"; remote_python = "python"
+        a = _A()
+        built = []
+        built.append(_mod._backend_window_cmd_nostdin(a.backend_container, a.remote_python, "--status"))
+        built.append(_mod._backend_window_cmd(a.backend_container, a.remote_python, "--open"))
+        built.append(_mod._backend_trigger_cmd(a.backend_container, a.remote_python))
+        built.append(_mod._backend_reconcile_cmd(a.backend_container, a.remote_python, "n1", "c1"))
+        subcommands = set()
+        for cmd in built:
+            if "manage.py" in cmd:
+                subcommands.add(cmd[cmd.index("manage.py") + 1])
+            joined = " ".join(cmd).lower()
+            for bad in ["48", "place_order", "create_live", "broker_order", "mutation", "execute",
+                        "live_execute", "arm"]:
+                self.assertNotIn(bad, joined, "wrapper command must not reference %r: %s" % (bad, joined))
+        self.assertEqual(subcommands, {"copier_verifier_window", "request_copier_emitter_oneshot_attest",
+                                       "copier_attest_reconcile"})
+
+    def test_wrapper_is_ascii_and_no_key_param(self):
+        data = open(_WRAP, "rb").read()
+        self.assertTrue(all(b <= 0x7F for b in data), "operator wrapper must be ASCII-only (RULE 9)")
+        head = data.decode("utf-8")
+        for bad in ["--key", "--secret", "--password", "--ingest-key"]:
+            self.assertNotIn(bad, head, "wrapper must never take a key/secret as an argument")
+
+    def test_drive_mode_guarantees_teardown_on_success_and_on_exception(self):
+        # main(--drive-attestation): the finally MUST shred the host key + close the window on EVERY path.
+        import argparse
+        for raise_mid in (False, True):
+            closed = {"shred": 0, "close": 0}
+            orig = {"ssh": _mod._ssh, "getpass": _mod.getpass.getpass, "drive": _mod.drive_attestation,
+                    "shred": _mod._shred_host_key, "close": _mod._close_window, "prov": _mod._provision_host_key}
+            try:
+                # window --status (not open), provision ok, window --open ok; everything else canned.
+                def fake_ssh(target, argv, key_stdin=None, timeout=90):
+                    joined = " ".join(argv)
+                    if "--status" in joined:
+                        return (json.dumps({"action": "status", "status": {"open": False}}), "", 0)
+                    if "--open" in joined:
+                        return (json.dumps({"action": "open", "status": {"open": True}, "window_id": 1,
+                                            "purpose": "ATTEST", "expires_at": "z", "max_uses": 1}), "", 0)
+                    return ("{}", "", 0)
+                _mod._ssh = fake_ssh
+                _mod.getpass.getpass = lambda *a, **k: SYNTH
+                _mod._provision_host_key = lambda a, key: (True, True)
+                _mod._shred_host_key = lambda a: closed.__setitem__("shred", closed["shred"] + 1)
+                _mod._close_window = lambda a: closed.__setitem__("close", closed["close"] + 1)
+
+                def fake_drive(**kw):
+                    if raise_mid:
+                        raise RuntimeError("boom mid-drive")
+                    return {"outcome": "VERIFIED", "reason": "verified", "attempts": 1}
+                _mod.drive_attestation = fake_drive
+
+                argv = ["--windows-ssh", "w", "--backend-ssh", "b", "--drive-attestation"]
+                if raise_mid:
+                    with self.assertRaises(RuntimeError):
+                        _mod.main(argv)
+                else:
+                    rc = _mod.main(argv)
+                    self.assertEqual(rc, 0)
+                # the guaranteed-cleanup finally ran on BOTH paths
+                self.assertEqual(closed["shred"], 1, "host key must be shredded on every path")
+                self.assertEqual(closed["close"], 1, "verifier window must be closed on every path")
+            finally:
+                _mod._ssh = orig["ssh"]; _mod.getpass.getpass = orig["getpass"]
+                _mod.drive_attestation = orig["drive"]; _mod._shred_host_key = orig["shred"]
+                _mod._close_window = orig["close"]; _mod._provision_host_key = orig["prov"]
+
+    def test_normalise_trigger_result_cases(self):
+        # unparsable trigger output -> AMBIGUOUS (we cannot tell whether the host ran)
+        r = _mod._normalise_trigger_result(None)
+        self.assertTrue(r["transport_ambiguous"]); self.assertEqual(r["nonce"], "")
+        # host contacted but result sub-dict lost -> AMBIGUOUS (reconcile window-based), no nonce
+        r = _mod._normalise_trigger_result({"host_contacted": True})
+        self.assertTrue(r["transport_ambiguous"]); self.assertEqual(r["reason"], "trigger_result_lost")
+        self.assertEqual(r["nonce"], "")
+        # a real result sub-dict passes through verbatim
+        r = _mod._normalise_trigger_result({"result": {"verified": False, "reason": "terminal_mismatch",
+                                                        "nonce": "n1", "transport_ambiguous": False}})
+        self.assertFalse(r["transport_ambiguous"]); self.assertEqual(r["nonce"], "n1")
+
+    def test_drive_mode_teardown_on_provision_exception(self):
+        # F2: an exception DURING provisioning (setup phase) must still run the guaranteed teardown.
+        closed = {"shred": 0, "close": 0}
+        orig = {"ssh": _mod._ssh, "getpass": _mod.getpass.getpass, "shred": _mod._shred_host_key,
+                "close": _mod._close_window, "prov": _mod._provision_host_key}
+        try:
+            def fake_ssh(target, argv, key_stdin=None, timeout=90):
+                if "--status" in " ".join(argv):
+                    return (json.dumps({"action": "status", "status": {"open": False}}), "", 0)
+                return ("{}", "", 0)
+            _mod._ssh = fake_ssh
+            _mod.getpass.getpass = lambda *a, **k: SYNTH
+            def boom_prov(a, key):
+                raise RuntimeError("ssh timeout during provision")
+            _mod._provision_host_key = boom_prov
+            _mod._shred_host_key = lambda a: closed.__setitem__("shred", closed["shred"] + 1)
+            _mod._close_window = lambda a: closed.__setitem__("close", closed["close"] + 1)
+            with self.assertRaises(RuntimeError):
+                _mod.main(["--windows-ssh", "w", "--backend-ssh", "b", "--drive-attestation"])
+            self.assertEqual(closed["shred"], 1, "host key must be shredded even on a setup-phase exception")
+            self.assertEqual(closed["close"], 1, "verifier window must be closed even on a setup-phase exception")
+        finally:
+            _mod._ssh = orig["ssh"]; _mod.getpass.getpass = orig["getpass"]
+            _mod._shred_host_key = orig["shred"]; _mod._close_window = orig["close"]
+            _mod._provision_host_key = orig["prov"]
