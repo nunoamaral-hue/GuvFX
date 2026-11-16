@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-LIVE-POSITIONS-PROVISIONING-WIRING-137",
+  "packet_id": "GFX-DASHBOARD-LIVE-POSITIONS-PROVISIONING-WIRING-137",
+  "created_at_utc": "2026-11-16T00:10:00Z",
+  "branch": "feat/monitoring-readonly-provisioning-reconciler",
+  "base_commit": "98ce80cde925a2597c6019278911368769a5396e",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only",
+    "production_touched": false,
+    "host_touched": false,
+    "bridge_restarted": false,
+    "allow_list_populated": false,
+    "flag_enablement": false,
+    "migration": false,
+    "note": "Repo-only. Default DRY-RUN. No production deploy, host contact, bridge restart, allow-list population, flag enablement, Copy-Trading mutation or broker action by this packet. Prod backend remains ac5bdf0a; canonical main 98ce80cd."
+  },
+  "ci": {
+    "status": "pending",
+    "note": "Exact-head Linux CI (backend/frontend/governance/market-data-foundation/research-foundation) to be driven to terminal after PR open; HARD STOP before merge."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_monitoring_reconcile",
+    "cd backend && .venv/bin/python manage.py test execution.tests_hosted_capstone hosted_workspace.tests_live_bridge_dispatch execution.tests_live_readonly_positions_flag",
+    "cd backend && .venv/bin/python manage.py makemigrations hosted_workspace execution --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace execution trade_copier"
+  ],
+  "expected_results": [
+    "The reconciler matrix passes (dry-run no-op, single approved read-only apply, tenant isolation, refusals, #48 execution-off, env-delta guard, byte-exact rollback, partial-failure isolation, idempotency, synthetic read-back, host allow-list fail-closed).",
+    "The hosted-capstone order-surface sweep still passes (the new module touches no order_send/order_check and imports no MetaTrader5).",
+    "Migration-free. No regression across hosted_workspace, execution, trade_copier."
+  ],
+  "actual_results": [
+    "hosted_workspace.tests_monitoring_reconcile: Ran 22 tests, OK (local).",
+    "execution.tests_hosted_capstone + hosted_workspace.tests_live_bridge_dispatch + execution.tests_live_readonly_positions_flag: Ran 87 tests, OK (local) — the capstone sweep includes the new module.",
+    "makemigrations hosted_workspace execution --check --dry-run: No changes detected (exit 0) — migration-free.",
+    "Full hosted_workspace + execution + trade_copier suite: Ran 4266 tests; 2 failures, BOTH pre-existing and unrelated — hosted_workspace.tests_observer_attach.BareTerminalClassifierControlTests.{test_all_enumerators_unavailable_returns_none_fail_closed, test_cim_positive_and_negative_controls} (the SAME platform-dependent CIM/macOS observer-attach tests proven pre-existing on clean main in pkt-135). This change adds ZERO regressions.",
+    "Post-adversarial-review hardening (copier execution-check fail-closed; CONSUMED authorizations treated as mid-execution; read-back double-failure reports rollback_reason): reconcile matrix re-run 22/22 OK.",
+    "4-lane adversarial review (accidental trading authority / tenant leakage / rollback failure / #48 coupling): ALL SAFE; 3 low findings fixed, 0 CONCERN/DEFECT remaining."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "This PR delivers the monitoring-provisioning OPERATION only, default dry-run. It changes nothing in production and contacts no host.",
+    "Making the six accounts (#48/#53/#54/#56/#57/#59) actually readable additionally requires separate Sponsor-gated steps: (1) populate LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST; (2) a human-approved --commit run of the command over the operator path to apply + restart each bridge (HOST mutation); (3) DARK deploy of main; (4) owner VISUAL acceptance. None are performed here.",
+    "_RealMonitoringOps.read_back_positions is intentionally left to operator wiring so CI contacts no bridge; all read-back in tests is synthetic.",
+    "The real signed host transport (_RealMonitoringOps) is operator-run and NOT exercised in CI; the fake MonitoringReconcileOps drives every test.",
+    "CI not yet run at manifest creation; status advances only when exact-head CI is green."
+  ],
+  "artefact_locations": [
+    "backend/hosted_workspace/monitoring_reconcile.py",
+    "backend/hosted_workspace/management/commands/reconcile_monitoring_readonly_positions.py",
+    "backend/hosted_workspace/tests_monitoring_reconcile.py",
+    "docs/architecture/ADR-0111-monitoring-readonly-positions-reconciler.md",
+    "evidence/manifests/GFX-EVD-DASHBOARD-LIVE-POSITIONS-PROVISIONING-WIRING-137.json"
+  ],
+  "checksums": {
+    "backend/hosted_workspace/monitoring_reconcile.py": "sha256:5f8b8dbc15e0c5a5237a3f73b308a9f77558ac3a2b5922983d7b15cb81d287e3",
+    "backend/hosted_workspace/management/commands/reconcile_monitoring_readonly_positions.py": "sha256:6a5739f29562aca0df91fac66a21699ed3d3f753d1d48134e7ab100e7a3009f2",
+    "backend/hosted_workspace/tests_monitoring_reconcile.py": "sha256:ffa208f442feab54549971194b025bca52bb6a97d208f144c287f45facf8eecf",
+    "docs/architecture/ADR-0111-monitoring-readonly-positions-reconciler.md": "sha256:4123c2aa173560f8345bbec4392be354248a668839350006e387a8dfb06a1115"
+  },
+  "reviewer": "Pre-implementation read-only trace of the render->sign->dispatch->apply path (live_bridge_provision.restore_off + host_executor + RESTORE validator). Post-implementation 4-lane adversarial review (accidental trading authority / tenant leakage / rollback failure / #48 coupling) pending."
+}
