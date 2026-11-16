@@ -127,10 +127,16 @@ Describe 'host-local STANDING emitter key provisioner (synthetic)' {
             $ace = $acl.Access | Where-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $script:RunnerSid }
             $ace | Should -Not -BeNullOrEmpty
             $rights = [int]$ace.FileSystemRights
-            $writeMask = [int]([System.Security.AccessControl.FileSystemRights]::Write -bor
-                               [System.Security.AccessControl.FileSystemRights]::Modify -bor
-                               [System.Security.AccessControl.FileSystemRights]::FullControl -bor
-                               [System.Security.AccessControl.FileSystemRights]::Delete)
+            # Granular write/delete/permission bits ONLY. Composite Modify/FullControl carry the Synchronize bit
+            # that ReadAndExecute also sets, so OR-ing them would false-positive a correct read-only grant.
+            $writeMask = ([int][System.Security.AccessControl.FileSystemRights]::WriteData -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::AppendData -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::Delete -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+                          [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
             (($rights -band $writeMask) -eq 0) | Should -BeTrue
         }
         It '7. removes the temp file after success' {

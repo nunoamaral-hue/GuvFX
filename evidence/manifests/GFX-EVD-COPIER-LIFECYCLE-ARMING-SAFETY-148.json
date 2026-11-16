@@ -77,7 +77,7 @@
     "deploy/copier-emitter/run_emitter.py": "sha256:f93496161cd15e167c434668e5da47f08be47c8a519754515d5f1f68c70a3f01",
     "deploy/copier-emitter/MANIFEST.json": "sha256:bd04aa587549b3f43b63a8f935e39dcb06dbf7ec86a6a719bd6ed12ccc6eec4b",
     "deploy/copier-emitter/operator/Provision-GuvfxCopierEmitterKey.ps1": "sha256:51bcb051e4ea0d952b0f2b86a6a0623879f74f4787db48cf4a7c00ee8a249cde",
-    "deploy/copier-emitter/operator/tests/Test-EmitterKeyProvisioner.Tests.ps1": "sha256:7ccdf304e0addce5294c092487e8f890a8b968bffb7d445871a34ea604abc8b0",
+    "deploy/copier-emitter/operator/tests/Test-EmitterKeyProvisioner.Tests.ps1": "sha256:606a895a7a3e164b05504e76b782f6592e4505c25aaf861a8f928c8c62b60241",
     "docs/architecture/ADR-0113-copier-lifecycle-arming-safety.md": "sha256:af730631ad2a825e0e613fdd4c176eb4d951118e9ab5dba70a417747e2ca906a"
   },
   "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) self-review + INDEPENDENT adversarial review subagent (stranded follower, OPEN-before-CLOSE race, authority/flag mismatch, expiry, duplicate order, rollback failure, stale key reuse, secret leakage, arbitrary-account/#48 targeting, task principal mismatch, host admission left ON, teardown omission, concurrent race, negative latency). 2 HIGH + 1 MEDIUM confirmed findings fixed; runtime guard deferred with rationale. Sponsor review pending; auto-merge OFF; STOP before merge."
