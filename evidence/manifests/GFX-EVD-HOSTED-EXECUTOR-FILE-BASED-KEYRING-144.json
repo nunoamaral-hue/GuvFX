@@ -1,0 +1,64 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-HOSTED-EXECUTOR-FILE-BASED-KEYRING-144",
+ "packet_id": "GFX-HOSTED-EXECUTOR-FILE-BASED-KEYRING-144",
+ "created_at_utc": "2026-11-16T07:20:00Z",
+ "branch": "feat/hosted-executor-file-based-keyring",
+ "base_commit": "c355773c8c5ad38c4097726b71a0e73952bd4381",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Durable fix for the Windows SCM boot-time environment-cache defect (GFX-143): the hosted executor now reads its HMAC keyring FILE-FIRST from one fixed ACL-protected file, env loader retained as a documented migration fallback. No production deploy, Windows-host mutation, service restart, reboot, keyring mutation, allow-list enablement, bridge commit, Copy-Trading change or broker action by this packet."
+ },
+ "ci": {
+  "status": "pending",
+  "note": "Exact-head Linux CI (backend/frontend/governance/market-data-foundation/research-foundation) to be driven to terminal after PR open; HARD STOP before merge. The PowerShell provisioner + Pester tests are validated on a Windows PowerShell 5.1 host out-of-band (repo convention: ci.yml has no Windows runner); the daemon loader BEHAVIOUR is covered by the backend job."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_host_daemon",
+  "python3 scripts/check_no_secrets.py",
+  "python3 scripts/check_evidence_manifests.py",
+  "python3 -c \"<daemon_config file-first loader smoke: fallback / file-primary / over-permissive / malformed-fail-closed / active-absent>\""
+ ],
+ "expected_results": [
+  "GuvFXHostedExecutor reads its HMAC keyring FILE-FIRST from HOSTED_EXECUTOR_KEYRING_FILE / DEFAULT_KEYRING_FILE with explicit fail-closed parsing + validation; the env loader is used ONLY when the file is ABSENT (migration fallback); a present-but-bad file fails closed and never falls back; load_config records a non-secret keyring_source ('file'|'env').",
+  "Provision-GuvfxHostedExecutorKeyringFile.ps1 copies the machine-variable keyring + active id into the file value-blind (never printing/hashing/logging/returning/persisting either value elsewhere), atomic temp->restrict-ACL->write->read-back->rename, ACL inheritance off with only SYSTEM/Administrators/service-principal read; output only safe metadata; -Verify and -Remove; rotation supported.",
+  "Backend tests cover valid file load, missing->env fallback, malformed/over-permissive/active-absent/placeholder refusal, rotation, rollback and no-secret-leakage; Pester tests cover the same for the operator with synthetic keys."
+ ],
+ "actual_results": [
+  "hosted_workspace.tests_host_daemon: Ran 37 tests, OK (local; +13 new KeyringFileLoaderTests + 1 env-source test). Covers: file-primary-over-env, absent->env fallback, malformed-file fail-closed (no fallback), over-permissive refused (POSIX), directory-at-path refused, active-id-absent refused, placeholder refused, rotation reflected, rollback (remove->env), both-absent fail-closed, error-messages-carry-no-secret.",
+  "daemon_config file-first loader smoke (local): fallback_source=env; file_source=file; over-permissive(0o644) refused; present-but-malformed fail-closed (not fallback); active-absent fail-closed. All as expected.",
+  "Provision-GuvfxHostedExecutorKeyringFile.ps1: ASCII-only (0 non-ASCII bytes), no BOM, #Requires 5.1; balanced delimiters by inspection. Pester suite Test-HostedExecutorKeyringFileProvisioner.Tests.ps1 added (synthetic keys only): provision+ACL+metadata, value-blind (no secret in output), well-formed {keyring,key_id}, verify, absent/malformed/empty-secret/active-absent/active-not-in-ring refusals, rotation, rollback(-Remove), seam-refused-in-production, write-failure cleanup, fixed-leaf violation.",
+  "Secret scan (check_no_secrets.py) + evidence linter (check_evidence_manifests.py): to be run at exact head; synthetic keys only in all tests; no secret value in any tracked file."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only. Making the live host use the file requires separate Sponsor-gated steps (run the provisioner over RDP; Restart-Service GuvFXHostedExecutor; confirm keyring_source=='file'). NOT performed by this packet.",
+  "ci.yml has no Windows/PowerShell runner (repo convention), so the PowerShell ParseFile (Windows PS 5.1, RULE 9) + Pester run are validated on a Windows host out-of-band, NOT in GitHub exact-head CI. The script is written ASCII-only so it parses encoding-independently; the daemon LOADER behaviour (the actual fix) is covered by the backend CI job. No local pwsh was available to run Pester at authoring time.",
+  "On Windows the daemon's over-permissive check is deferred to the NTFS ACL (operator-set + provisioner -Verify); the POSIX-mode refusal is exercised on Linux. A win32security DACL assertion in the daemon is a possible future hardening.",
+  "SECRET_INVENTORY.md's section D 'LIVE keyrings' pre-existed uncommitted in the working tree (2026-11-15 rotation work); this PR brings it forward together with the ADR-0112 file-first additions (flagged in the PR). No secret VALUES are introduced (key IDs only).",
+  "deploy/hosted-executor/config.example.env is gitignored (untracked), so its file-first documentation edit is NOT part of the committed PR; the config contract is documented by daemon_config DEFAULT_KEYRING_FILE + ADR-0112 + the runbook + SECRET_INVENTORY instead."
+ ],
+ "artefact_locations": [
+  "deploy/hosted-executor/daemon_config.py",
+  "deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1",
+  "deploy/hosted-executor/tests/Test-HostedExecutorKeyringFileProvisioner.Tests.ps1",
+  "backend/hosted_workspace/tests_host_daemon.py",
+  "deploy/hosted-executor/winsw/GuvFXHostedExecutor.xml",
+  "deploy/hosted-executor/winsw/GuvFXHostedExecutor.supervised.xml",
+  "docs/architecture/ADR-0112-hosted-executor-file-based-keyring.md",
+  "docs/SECRET_INVENTORY.md",
+  "docs/operations/hosted-workspace/SIGNED_HOST_EXECUTOR_RUNBOOK.md"
+ ],
+ "checksums": {
+  "deploy/hosted-executor/daemon_config.py": "sha256:ae2bdccf034f34529502315dfcdf4e864f837cd37c6921147a30595763876334",
+  "deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1": "sha256:5c7b82a4e39f1757449198509cb9d00785897f290d4bf9c0b61e17bc5de9ed5e",
+  "deploy/hosted-executor/tests/Test-HostedExecutorKeyringFileProvisioner.Tests.ps1": "sha256:073584fdfbf4ee11fe8592610adbeaf1e33c18ba723e9da8a58d2b01f814e77a",
+  "backend/hosted_workspace/tests_host_daemon.py": "sha256:6bb9d2a4e3d9c44e5c2fe0dfba2c2ae52b731a33a8e2363afa968a3ba378d4d1",
+  "docs/architecture/ADR-0112-hosted-executor-file-based-keyring.md": "sha256:d4c5e627e8ee9bd4a6138ec1f8b27f5678d494c922d5d0fcc1ed668596d84df3"
+ },
+ "reviewer": "Author self-review + planned multi-lane adversarial review (fail-closed parsing/fallback; ACL correctness + over-permissive refusal; value-blind operator / secret-leakage; PS 5.1 parse/ASCII + atomic-write; test coverage). GFX-143 production diagnosis (SCM boot-time env cache) motivated the file-first design. Findings and fixes recorded before PR finalisation."
+}

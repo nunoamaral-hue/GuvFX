@@ -107,6 +107,115 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(cfgmod.ConfigError):
             cfgmod.load_config(self._env(HOSTED_EXECUTOR_BIND_HOST="127.0.0.1"))   # private but != expected
 
+    def test_env_source_is_reported(self):
+        # with no keyring file configured, the env loader is used and labelled 'env' (migration fallback).
+        cfg = cfgmod.load_config(self._env(HOSTED_EXECUTOR_KEYRING_FILE=os.path.join(tempfile.mkdtemp(), "absent.json")))
+        self.assertEqual(cfg["keyring_source"], "env")
+
+
+# ── GFX-144 / ADR-0112: file-first keyring loader ────────────────────────────────────────────────────────────
+class KeyringFileLoaderTests(unittest.TestCase):
+    """The hosted executor reads its HMAC keyring FILE-FIRST (durable; immune to the Windows SCM boot-time env
+    cache), with the env loader as a documented fallback DURING MIGRATION. A present-but-bad file FAILS CLOSED and
+    NEVER silently falls back to a possibly-stale env. Synthetic keys only (no real secret, in or out)."""
+
+    _FILE_SECRET = "synthetic-file-hmac-secret-0123456789"
+    _ENV_SECRET = "synthetic-env-hmac-secret-0123456789"
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._path = os.path.join(self._dir, "hosted_executor_keyring.json")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def _write_file(self, doc, mode=0o600):
+        with open(self._path, "w", encoding="utf-8") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+        os.chmod(self._path, mode)
+
+    def _env(self, file_path=None, with_env_keyring=True, **over):
+        env = {
+            "HOSTED_EXECUTOR_BIND_HOST": "100.79.101.19",
+            "HOSTED_EXECUTOR_ENC_PRIVKEYS": '{"enc-1":"c29tZS1iNjQta2V5"}',
+            "HOSTED_EXECUTOR_KEYRING_FILE": file_path if file_path is not None else self._path,
+        }
+        if with_env_keyring:
+            env["HOSTED_EXECUTOR_KEYRING"] = '{"hx-env":"%s"}' % self._ENV_SECRET
+            env["HOSTED_EXECUTOR_KEY_ID"] = "hx-env"
+        env.update(over)
+        return env
+
+    def test_file_is_primary_source_over_env(self):
+        # the env keyring is present with a DIFFERENT active id; the file must win and be labelled 'file'.
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"})
+        cfg = cfgmod.load_config(self._env())
+        self.assertEqual(cfg["keyring_source"], "file")
+        self.assertEqual(cfg["key_id"], "hx-file")
+        self.assertEqual(cfg["keyring"]["hx-file"], self._FILE_SECRET)
+
+    def test_absent_file_falls_back_to_env(self):
+        cfg = cfgmod.load_config(self._env(file_path=os.path.join(self._dir, "nope.json")))
+        self.assertEqual(cfg["keyring_source"], "env")
+        self.assertEqual(cfg["key_id"], "hx-env")
+
+    def test_malformed_file_fails_closed_no_fallback(self):
+        self._write_file("{not valid json")                 # env keyring present, but a present-but-bad file wins -> raise
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_over_permissive_file_refused(self):
+        if os.name == "nt":
+            self.skipTest("POSIX mode check is deferred to the NTFS ACL on Windows (ADR-0112)")
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"}, mode=0o644)
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_directory_at_path_refused(self):
+        os.mkdir(self._path)                                 # a directory where the file is expected
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_active_id_absent_in_file_refused(self):
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "nope"})
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_placeholder_secret_in_file_refused(self):
+        self._write_file({"keyring": {"hx-file": "changeme"}, "key_id": "hx-file"})
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_rotation_file_rewrite_reflected(self):
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"})
+        self.assertEqual(cfgmod.load_config(self._env())["key_id"], "hx-file")
+        self._write_file({"keyring": {"hx-rotated": self._FILE_SECRET}, "key_id": "hx-rotated"})
+        cfg = cfgmod.load_config(self._env())
+        self.assertEqual(cfg["keyring_source"], "file")
+        self.assertEqual(cfg["key_id"], "hx-rotated")
+
+    def test_rollback_remove_file_falls_back_to_env(self):
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"})
+        self.assertEqual(cfgmod.load_config(self._env())["keyring_source"], "file")
+        os.remove(self._path)
+        self.assertEqual(cfgmod.load_config(self._env())["keyring_source"], "env")
+
+    def test_file_and_env_both_absent_fails_closed(self):
+        env = self._env(file_path=os.path.join(self._dir, "nope.json"), with_env_keyring=False)
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(env)
+
+    def test_error_messages_carry_no_secret(self):
+        # a structurally-invalid file (active id absent) must raise WITHOUT the secret appearing in the message.
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "nope"})
+        try:
+            cfgmod.load_config(self._env())
+            self.fail("expected ConfigError")
+        except cfgmod.ConfigError as e:
+            self.assertNotIn(self._FILE_SECRET, str(e))
+            self.assertNotIn(self._ENV_SECRET, str(e))
+
 
 # ── dispatch handler ───────────────────────────────────────────────────────────────────────────────────────
 class HandlerTests(unittest.TestCase):

@@ -13,8 +13,14 @@ deliberately strict:
    open the sealed Windows password for PROVISION_IDENTITY; it is never the HMAC key and never logged.
  - The bind port may never collide with Nuno's estate / RDP / the beta agent / the trade bridge.
 
-Self-contained (Django-free): loaded from the process environment via an approved Windows secret mechanism at
-deploy time, mirroring the proven ``deploy/beta-agent/config.py`` construction.
+Self-contained (Django-free). The HMAC signing keyring is loaded FILE-FIRST from one fixed, ACL-protected host
+file (``HOSTED_EXECUTOR_KEYRING_FILE`` / ``DEFAULT_KEYRING_FILE``), with the historical process-environment
+loader kept ONLY as a documented backward-compatible fallback during migration
+(GFX-HOSTED-EXECUTOR-FILE-BASED-KEYRING-144 / ADR-0112). The file source exists because the Windows Service
+Control Manager caches the system environment block at BOOT, so a machine-variable keyring rotation is
+invisible to a restarted service until the host reboots; reading the keyring from a file the operator rewrites
+atomically removes that reboot coupling. The env construction still mirrors the proven
+``deploy/beta-agent/config.py``.
 """
 from __future__ import annotations
 
@@ -37,6 +43,13 @@ _PLACEHOLDER_MARKERS = ("replace", "changeme", "change-me", "example", "placehol
 
 DEFAULT_STATE_DIR = r"C:\GuvFX\hosted\executor-state"
 DEFAULT_SCRIPTS_DIR = r"C:\GuvFX\hosted\scripts"
+
+# GFX-144 / ADR-0112: the ONE fixed, ACL-protected file the daemon reads its HMAC keyring from (primary source,
+# immune to the Windows SCM boot-time environment cache). Overridable per-host via HOSTED_EXECUTOR_KEYRING_FILE
+# (e.g. a disposable cert host or a test sandbox). The operator writes it with the value-blind provisioner
+# ``Provision-GuvfxHostedExecutorKeyringFile.ps1`` (inheritance off; only SYSTEM, Administrators and the exact
+# service principal may read it).
+DEFAULT_KEYRING_FILE = r"C:\GuvFX\hosted\secrets\hosted_executor_keyring.json"
 
 
 class ConfigError(Exception):
@@ -79,9 +92,34 @@ def _looks_placeholder(value: str) -> bool:
     return any(m in low for m in _PLACEHOLDER_MARKERS)
 
 
+def _validate_keyring_map(keyring, key_id, *, name: str, key_id_name: str) -> tuple[dict, str]:
+    """Shared fail-closed structural validation for an HMAC ``{key_id: secret}`` map + its active id, used by
+    BOTH the file loader (primary) and the env loader (fallback) so the two paths accept EXACTLY the same
+    shape. Missing/malformed/placeholder/active-absent -> ConfigError. Never returns a partial or substituted
+    credential. Error messages carry only the key id + a safe reason, NEVER a secret value."""
+    if not isinstance(keyring, dict) or not keyring:
+        raise ConfigError(f"{name} must be a non-empty JSON object")
+    if not all(isinstance(k, str) and isinstance(v, str) and v for k, v in keyring.items()):
+        raise ConfigError(f"{name} must map string key ids to non-empty string secrets")
+    for k, v in keyring.items():
+        if _looks_placeholder(v):
+            raise ConfigError(f"{name} entry {k!r} looks like placeholder text, not a real secret")
+    if not key_id:
+        raise ConfigError(f"{key_id_name} is not configured")
+    if key_id not in keyring:
+        raise ConfigError(f"{key_id_name} {key_id!r} is not present in {name}")
+    return keyring, key_id
+
+
 def _load_keyring(env: dict, *, name: str, key_id_name: str) -> tuple[dict, str]:
-    """Load a JSON ``{key_id: secret}`` map + its active key id, fail-closed (RULE 3). Missing/malformed/
-    placeholder -> ConfigError. Never returns a partial or substituted credential."""
+    """ENV loader -- the backward-compatible FALLBACK during the GFX-144 migration (see ``_load_hmac_keyring``).
+    Load a JSON ``{key_id: secret}`` map + its active key id from the process environment, fail-closed (RULE 3).
+    Missing/malformed/placeholder -> ConfigError. Never returns a partial or substituted credential.
+
+    DEPRECATED as the PRIMARY source: the process env is captured by the Windows Service Control Manager at
+    BOOT, so a machine-variable rotation is invisible to a restarted service until the host reboots
+    (GFX-HOSTED-EXECUTOR-FILE-BASED-KEYRING-144). The durable source is the ACL-protected file; this path
+    remains only so a host not yet file-provisioned keeps working during migration."""
     raw = (env.get(name) or "").strip()
     if not raw:
         raise ConfigError(f"{name} is not configured (provision via the Windows secret store); "
@@ -90,19 +128,74 @@ def _load_keyring(env: dict, *, name: str, key_id_name: str) -> tuple[dict, str]
         keyring = json.loads(raw)
     except (ValueError, TypeError):
         raise ConfigError(f"{name} is not valid JSON")
-    if not isinstance(keyring, dict) or not keyring:
-        raise ConfigError(f"{name} must be a non-empty JSON object")
-    if not all(isinstance(k, str) and isinstance(v, str) and v for k, v in keyring.items()):
-        raise ConfigError(f"{name} must map string key ids to non-empty string secrets")
-    for k, v in keyring.items():
-        if _looks_placeholder(v):
-            raise ConfigError(f"{name} entry {k!r} looks like placeholder text, not a real secret")
     key_id = (env.get(key_id_name) or "").strip()
-    if not key_id:
-        raise ConfigError(f"{key_id_name} is not configured")
-    if key_id not in keyring:
-        raise ConfigError(f"{key_id_name} {key_id!r} is not present in {name}")
-    return keyring, key_id
+    return _validate_keyring_map(keyring, key_id, name=name, key_id_name=key_id_name)
+
+
+def _file_is_over_permissive(path: str) -> bool:
+    """Cross-platform over-permissive guard for a secret file. On POSIX any group/other permission bit is a
+    refusal (the file must be owner-only). On Windows the POSIX mode bits are NOT a real ACL, so enforcement is
+    deferred to the NTFS ACL, which the operator provisioner SETS (inheritance off; only SYSTEM, Administrators
+    and the exact service principal may read) and INDEPENDENTLY VERIFIES (``-Verify``) -- see ADR-0112. (Running
+    a POSIX-mode check on Windows would false-positive, since Python reports NTFS files as mode 0o666.)"""
+    if os.name == "nt":
+        return False
+    import stat as _stat
+    return bool(_stat.S_IMODE(os.stat(path).st_mode) & 0o077)
+
+
+def _load_keyring_from_file(path: str, *, name: str, key_id_name: str) -> tuple[dict, str]:
+    """PRIMARY loader (GFX-144 / ADR-0112): load the HMAC keyring + active id from ONE fixed, ACL-protected
+    JSON file ``{"keyring": {key_id: secret}, "key_id": "<active>"}``. Fail-closed and explicit:
+      * absent            -> FileNotFoundError (the caller ALONE decides the documented env fallback);
+      * not a regular file / over-permissive / unreadable / non-JSON / structurally invalid / active-absent
+                          -> ConfigError (a PRESENT-but-bad secret file is a security condition, NEVER a reason
+                             to fall back to the possibly-stale env).
+    Never logs the file content; ConfigError messages carry only the path + a safe reason, never a secret."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    if not os.path.isfile(path):
+        raise ConfigError(f"{name} file is not a regular file: {path!r}")
+    if _file_is_over_permissive(path):
+        raise ConfigError(f"{name} file {path!r} is over-permissive (group/other access); refusing to read a "
+                          f"secret file readable beyond its owner")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        raise ConfigError(f"{name} file {path!r} could not be read")
+    try:
+        doc = json.loads(raw)
+    except (ValueError, TypeError):
+        raise ConfigError(f"{name} file {path!r} is not valid JSON")
+    if not isinstance(doc, dict):
+        raise ConfigError(f"{name} file {path!r} must be a JSON object with 'keyring' and 'key_id'")
+    kid = doc.get("key_id")
+    kid = kid.strip() if isinstance(kid, str) else ""
+    return _validate_keyring_map(doc.get("keyring"), kid, name=name, key_id_name=key_id_name)
+
+
+def _load_hmac_keyring(env: dict) -> tuple[dict, str, str]:
+    """Load the HMAC signing keyring + active id FILE-FIRST, with the env loader as a documented
+    backward-compatible fallback DURING MIGRATION (GFX-144 / ADR-0112).
+
+    Why: the Windows Service Control Manager caches the system environment block at BOOT, so a machine-variable
+    keyring rotation is invisible to a restarted service until the host reboots. Reading the keyring from a file
+    the operator rewrites atomically removes that reboot coupling.
+
+    Semantics (fail-closed): the fixed file (``HOSTED_EXECUTOR_KEYRING_FILE`` or ``DEFAULT_KEYRING_FILE``) is the
+    PRIMARY source. If it is ABSENT the service falls back to the process ENV (a host not yet file-provisioned
+    keeps working). If it is PRESENT but malformed / over-permissive / invalid the service FAILS CLOSED and does
+    NOT fall back -- a present-but-bad secret file is a security condition, not an absence. Returns
+    ``(keyring, key_id, source)`` with ``source`` in {'file','env'} (safe, non-secret metadata)."""
+    path = (env.get("HOSTED_EXECUTOR_KEYRING_FILE") or DEFAULT_KEYRING_FILE)
+    try:
+        keyring, key_id = _load_keyring_from_file(
+            path, name="HOSTED_EXECUTOR_KEYRING", key_id_name="HOSTED_EXECUTOR_KEY_ID")
+        return keyring, key_id, "file"
+    except FileNotFoundError:
+        keyring, key_id = _load_keyring(env, name="HOSTED_EXECUTOR_KEYRING", key_id_name="HOSTED_EXECUTOR_KEY_ID")
+        return keyring, key_id, "env"
 
 
 def _int(env: dict, name: str, default: int) -> int:
@@ -129,7 +222,9 @@ def load_config(env: dict | None = None) -> dict:
     if not (1 <= port <= 65535):
         raise ConfigError(f"bind port {port} out of range")
 
-    keyring, key_id = _load_keyring(env, name="HOSTED_EXECUTOR_KEYRING", key_id_name="HOSTED_EXECUTOR_KEY_ID")
+    # GFX-144 / ADR-0112: FILE-FIRST (durable; immune to the Windows SCM boot-time env cache); env fallback only
+    # when the file is ABSENT; a present-but-bad file fails closed (never a silent fallback to a stale env).
+    keyring, key_id, keyring_source = _load_hmac_keyring(env)
 
     # Envelope PRIVATE keyring (for opening the sealed Windows password on PROVISION_IDENTITY). A DISTINCT
     # scope from the HMAC keyring; presence is required at startup so a credentialed op never fails mid-flight
@@ -161,6 +256,7 @@ def load_config(env: dict | None = None) -> dict:
         "bind_port": port,
         "keyring": keyring,
         "key_id": key_id,
+        "keyring_source": keyring_source,     # safe metadata: 'file' (primary) or 'env' (migration fallback)
         "enc_privkeys_raw": enc_raw,          # passed to envelope_open; never logged
         "scripts_dir": scripts_dir,
         "state_db": env.get("HOSTED_EXECUTOR_STATE_DB", state_dir + r"\executor-state.sqlite"),
