@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-DASHBOARD-MONITORING-CANONICAL-STATE-FIX-141",
+  "packet_id": "GFX-DASHBOARD-MONITORING-CANONICAL-STATE-FIX-141",
+  "created_at_utc": "2026-11-16T01:30:00Z",
+  "branch": "fix/monitoring-canonical-state-gate",
+  "base_commit": "cc4faf1c883b3e76595590b6f87afe32eea46187",
+  "head_commit": null,
+  "environment": {
+    "scope": "repository-only",
+    "production_touched": false,
+    "host_touched": false,
+    "migration": false,
+    "note": "Repo-only gate correction. No production deploy, host contact, allow-list population, bridge restart or --commit by this packet. Prod backend remains cc4faf1c; canonical main cc4faf1c."
+  },
+  "ci": {
+    "status": "pending",
+    "note": "Exact-head Linux CI (backend/frontend/governance/market-data-foundation/research-foundation) to be driven to terminal after PR open; HARD STOP before merge."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_monitoring_reconcile",
+    "cd backend && .venv/bin/python manage.py test execution.tests_hosted_capstone hosted_workspace.tests_live_bridge_dispatch",
+    "cd backend && .venv/bin/python manage.py makemigrations hosted_workspace execution --check --dry-run",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace execution trade_copier"
+  ],
+  "expected_results": [
+    "workspace_supported now decides from canonical_state ({CONNECTED, EXECUTION_READY}, exact match); legacy state is ignored; proj_connected is not authority; all other canonical states and missing/malformed fail closed.",
+    "The six production shapes (stale state=NOT_PROVISIONED + canonical_state=CONNECTED) pass the corrected gate; #48 execution-OFF; delta read-flag-only; MT5_ALLOW_LIVE absent; teardown/rollback unchanged.",
+    "Migration-free; capstone order-surface sweep unaffected; no regression across hosted_workspace, execution, trade_copier."
+  ],
+  "actual_results": [
+    "hosted_workspace.tests_monitoring_reconcile: Ran 28 tests (22 prior + 6 new GFX-141 regression), OK (local).",
+    "execution.tests_hosted_capstone + hosted_workspace.tests_live_bridge_dispatch: Ran 59 tests, OK (local).",
+    "makemigrations hosted_workspace execution --check --dry-run: No changes detected (exit 0) — migration-free.",
+    "Full hosted_workspace + execution + trade_copier suite: Ran 4272 tests; 2 failures, BOTH pre-existing and unrelated — hosted_workspace.tests_observer_attach.BareTerminalClassifierControlTests.{test_all_enumerators_unavailable_returns_none_fail_closed, test_cim_positive_and_negative_controls} (the SAME platform-dependent CIM/macOS observer-attach tests proven pre-existing on clean main in pkt-135). This change adds ZERO regressions.",
+    "Reconcile matrix re-run on final (post-review-comment-fix) code: 28/28 OK."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "Repo-only gate correction. It does NOT enable the six accounts: enablement still requires separate Sponsor-gated steps (populate LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST; human-approved --commit host apply+restart; owner VISUAL). A re-run of the GFX-140 production dry-run after this merges+deploys is expected to show 6/6 pass the corrected gate.",
+    "The GFX-140 dry-run evidence (state=NOT_PROVISIONED, canonical_state=CONNECTED for all six) is reproduced here as fixtures; the live re-run is a separate step.",
+    "No production/host mutation; migration-free; no frontend/model change.",
+    "CI not yet run at manifest creation; status advances only when exact-head CI is green."
+  ],
+  "artefact_locations": [
+    "backend/hosted_workspace/monitoring_reconcile.py",
+    "backend/hosted_workspace/tests_monitoring_reconcile.py",
+    "docs/architecture/ADR-0111-monitoring-readonly-positions-reconciler.md",
+    "evidence/manifests/GFX-EVD-DASHBOARD-MONITORING-CANONICAL-STATE-FIX-141.json"
+  ],
+  "checksums": {
+    "backend/hosted_workspace/monitoring_reconcile.py": "sha256:39aed681578d040b52d0ea12c441d4b1a79a2df6261dcf928643ee1a81a8c9c1",
+    "backend/hosted_workspace/tests_monitoring_reconcile.py": "sha256:ec5b7be5f2ba7010c4b5dc91a329e7b94d5458fe8050ce95dc8834bb2ebf000e",
+    "docs/architecture/ADR-0111-monitoring-readonly-positions-reconciler.md": "sha256:ddb2e233ceb6c6d69b01b890648aa8cd517f7ab44dbd7109c932b6f8e26fbbc1"
+  },
+  "reviewer": "GFX-140 dry-run surfaced the defect (canonical_state=CONNECTED, legacy state=NOT_PROVISIONED). Post-fix 2-lane adversarial review (fail-closed canonical predicate + safety preservation): BOTH SAFE; 0 defects/concerns; all nine lifecycle states correctly classified (CONNECTED/EXECUTION_READY permit, others incl. EXECUTING + missing/malformed/case-variant fail closed); render/delta/execution_off/identity/rollback/teardown unchanged; EXECUTION_READY does not enable execution (guarded by the unchanged execution_off gate, matching CONNECTED's prior handling). One doc-precision comment nit (EXECUTING catch-scope) fixed."
+}
