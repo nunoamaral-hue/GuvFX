@@ -54,6 +54,58 @@ def _revoke_authorizations(master_account_id, follower_account_id, *, reason, no
         return {"ok": False, "reason": type(e).__name__}
 
 
+def _open_copier_positions(follower_account_id, *, now=None) -> dict:
+    """Conservative backend-evidence proof of whether any copier-originated LIVE follower OPEN remains unflattened
+    (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149). Fail-closed: a DB error, or any OPEN whose position state is
+    not provably absent, counts as NOT proven flat (over-reports rather than under-reports — teardown must never
+    declare DARK over a possibly-open position). Three unflattened classes:
+
+      * a LIVE OPEN that reached execution (REQUESTED/VERIFIED) with no VERIFIED copier FULL CLOSE of its ticket;
+      * a LIVE OPEN not yet reconciled to a ticket (``follower_ticket`` None) — its fate is unproven;
+      * a LIVE PLACE_ORDER reported FAILED that may still have FILLED (lost-ACK — execution_health Control 5),
+        within the failed-filled ambiguity window. The copier reconciler never revisits an ``EXECUTION_FAILED``
+        rep (``reconcile._unreconciled_open_qs`` only looks at ``EXECUTION_REQUESTED``), and such a rep has no
+        ``follower_ticket``, so no copier FULL CLOSE could clear it — it MUST be surfaced for an identity-firewalled
+        position read, never silently treated as flat. Beyond the window the execution_health failed-filled
+        backstop has run its course (its own 3600 s default), so the position is treated as resolved."""
+    from django.utils import timezone as _tz
+    now = now or _tz.now()
+    try:
+        from datetime import timedelta
+        from trade_copier.models import CopierReplication, ReplicationStatus
+        try:
+            from execution.execution_health import FAILED_FILLED_LOOKBACK_SECONDS as _LOOKBACK
+        except Exception:  # noqa: BLE001 — same default execution_health uses, single-sourced when importable
+            _LOOKBACK = 3600
+        base = CopierReplication.objects.filter(
+            follower__follower_account_id=follower_account_id, requested_op="OPEN",
+            execution_job__isnull=False, execution_job__payload__execution_mode="LIVE")
+        open_reps = list(base.filter(
+            status__in=(ReplicationStatus.EXECUTION_REQUESTED, ReplicationStatus.EXECUTION_VERIFIED)
+            ).values("id", "follower_ticket"))
+        failed_ambiguous = list(base.filter(
+            status=ReplicationStatus.EXECUTION_FAILED,
+            updated_at__gte=now - timedelta(seconds=_LOOKBACK),
+            ).values("id", "follower_ticket"))
+        closed_tickets = set(CopierReplication.objects.filter(
+            follower__follower_account_id=follower_account_id,
+            requested_op="CLOSE",
+            status=ReplicationStatus.EXECUTION_VERIFIED,
+            follower_ticket__isnull=False,
+        ).values_list("follower_ticket", flat=True))
+    except Exception as e:  # noqa: BLE001 — cannot prove flat ⇒ fail closed
+        return {"proven_flat": False, "error": type(e).__name__, "unflattened": None}
+    unflattened = [{"replication_id": r["id"], "follower_ticket": r["follower_ticket"], "reason": "open_unclosed"}
+                   for r in open_reps
+                   if r["follower_ticket"] is None or r["follower_ticket"] not in closed_tickets]
+    unflattened += [{"replication_id": r["id"], "follower_ticket": r["follower_ticket"],
+                     "reason": "failed_order_possibly_filled"} for r in failed_ambiguous]
+    return {"proven_flat": not unflattened,
+            "unflattened_count": len(unflattened), "unflattened": unflattened,
+            "open_candidates": len(open_reps), "failed_ambiguous": len(failed_ambiguous),
+            "verified_closed_tickets": len(closed_tickets)}
+
+
 def _call_actuator(actuator: Optional[Callable], label: str) -> dict:
     """Run an injected signed-host actuator. Absent actuator => the host step is UNPROVEN (fail-closed), never
     silently reported as done."""
@@ -102,10 +154,15 @@ def _dark_verification(master_account_id, follower_account_id, *, admission, emi
         out["verifier_windows_open"] = CopierVerifierWindow.objects.filter(closed_at__isnull=True).count()
     except Exception:  # noqa: BLE001
         out["verifier_windows_open"] = None
+    # Flatness is the AUTHORITATIVE position proof (GFX-149): a RECORDED follower ticket alone is not "not DARK"
+    # (a cleanly-closed position keeps its ticket row), so DARK is gated on no UNFLATTENED open position, not on
+    # the blunt presence of any ticket. ``follower_tickets`` stays reported as informational evidence only.
+    flat = _open_copier_positions(follower_account_id)
+    out["open_copier_positions"] = flat
     authz_ok = (out.get("active_authorizations", 1) == 0) if require_authz_absent else True
     backend_dark = (out.get("engaged_arms") == 0 and authz_ok
                     and (out.get("copier_jobs_open") in (0, None))
-                    and out.get("follower_tickets") == 0
+                    and bool(flat.get("proven_flat"))
                     and (out.get("verifier_windows_open") in (0, None)))
     out["require_authz_absent"] = bool(require_authz_absent)
     host_dark = bool(admission.get("proven")) and bool(emitter.get("proven")) and bool(key.get("proven"))
@@ -130,6 +187,24 @@ def teardown_live_dark(*, master_account_id: int, follower_account_id: int,
     are injected signed-host actuators; absent, the corresponding host step is reported UNPROVEN (never 'done')."""
     now = now or timezone.now()
     steps: dict = {}
+
+    # GFX-149 requirement 7 — PROVE no open copier-originated follower position remains BEFORE any mutation that
+    # would withdraw the money/close path. If flatness cannot be proven, STOP in an explicit cleanup-required
+    # (non-DARK) state having changed NOTHING: the arm stays engaged, the authorization stays active and host
+    # admission stays on, so the open position can still be flattened through the normal close path; the operator
+    # propagates/awaits the FULL CLOSE and re-runs teardown. This is the safest, fully-reversible halt.
+    flatness = _open_copier_positions(follower_account_id)
+    steps["flatness"] = flatness
+    if not flatness.get("proven_flat"):
+        return {"ok": False, "dark": False, "cleanup_required": True,
+                "backend_dark": False, "host_dark": False,
+                "route": f"{master_account_id}->{follower_account_id}",
+                "steps": steps, "checked_at": now.isoformat(),
+                "note": "CLEANUP REQUIRED: a copier-originated LIVE follower position could not be proven flat. "
+                        "No teardown mutation was performed — the engaged arm, the active authorization and host "
+                        "admission are left INTACT so the position can be flattened (propagate/await the FULL "
+                        "CLOSE, then re-run teardown). DARK is deliberately NOT declared."}
+
     steps["disarm"] = _disengage_arms(master_account_id, follower_account_id, reason=reason, now=now)
     steps["revoke_authorization"] = (
         _revoke_authorizations(master_account_id, follower_account_id, reason=reason, now=now,

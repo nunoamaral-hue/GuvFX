@@ -33,9 +33,15 @@ User = get_user_model()
 
 LIVE_ARMED = dict(COPIER_ENABLED="1", COPIER_EXECUTE_ENABLED="1", COPIER_LIVE_EXECUTE_ENABLED="1",
                   HOSTED_LIVE_EXECUTION_ENABLED="1")
-# Real-time OPEN stack: the live arm + the synchronous trigger + projection + replication.
+# Real-time OPEN stack: the live arm + the synchronous trigger + projection + replication. ADR-0114: a LIVE OPEN
+# now requires the MODIFY+FULL_CLOSE lifecycle armed (no OPEN without a durable, armed close path), so the OPEN
+# stack includes the per-op MODIFY/FULL_CLOSE arms, mutation dispatch+transport and the post-expiry close-only
+# policy arm. (Partial-close stays OFF — excluded.)
 REALTIME = dict(LIVE_ARMED, COPIER_IMMEDIATE_DISPATCH_ENABLED="1", COPIER_EVENT_PROJECTION_ENABLED="1",
-                COPIER_REPLICATION_ENABLED="1")
+                COPIER_REPLICATION_ENABLED="1",
+                COPIER_LIVE_MODIFY_ENABLED="1", COPIER_LIVE_FULL_CLOSE_ENABLED="1",
+                COPIER_MUTATION_DISPATCH_ENABLED="1", COPIER_MUTATION_TRANSPORT_ENABLED="1",
+                COPIER_LIVE_CLOSE_ONLY_AFTER_EXPIRY_ENABLED="1")
 # Full lifecycle stack (MODIFY/CLOSE) adds the lifecycle projection + per-op arms + mutation dispatch/transport.
 REALTIME_LIFECYCLE = dict(REALTIME, COPIER_LIFECYCLE_ENABLED="1", COPIER_LIVE_MODIFY_ENABLED="1",
                           COPIER_LIVE_FULL_CLOSE_ENABLED="1", COPIER_MUTATION_DISPATCH_ENABLED="1",
@@ -88,7 +94,7 @@ class _LiveRT(TestCase):
             max_volume=Decimal("0.01"), max_concurrent_positions=1, max_orders=1, orders_consumed=0,
             valid_from=now - timedelta(minutes=1), expires_at=now + timedelta(hours=1),
             watermark_at=now - timedelta(hours=1), watermark_event_sequence=0,
-            modify_authority=True, full_close_authority=True,
+            modify_authority=True, full_close_authority=True, close_only_after_expiry=True,
             status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=self.staff, reason="rt-test")
         d.update(over)
         authz = CopierLiveAuthorization.objects.create(**d)

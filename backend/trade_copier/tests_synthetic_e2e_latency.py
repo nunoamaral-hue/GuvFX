@@ -69,10 +69,11 @@ from trade_copier.verifier_window import verification_window
 from trade_copier.tests_event_ingestion import SECRET
 from trade_copier.tests_immediate_dispatch import _LiveRT, _applied, REALTIME, REALTIME_LIFECYCLE
 
-# Authenticated-HTTP stack: ingestion ON; mutation TRANSPORT OFF so MODIFY/CLOSE jobs are still
-# CREATED (producer step) but nothing is ever SENT — zero network, deterministic.
-HTTP_STACK = dict(REALTIME_LIFECYCLE, COPIER_EVENT_INGESTION_ENABLED="1",
-                  COPIER_MUTATION_TRANSPORT_ENABLED="0")
+# Authenticated-HTTP stack: ingestion ON; the full lifecycle armed (ADR-0114 requires the close path armed for a
+# LIVE OPEN, so transport stays ON, inherited from REALTIME_LIFECYCLE). MODIFY/CLOSE jobs are still CREATED
+# (producer step) but nothing is SENT, because the synthetic follower has NO per-tenant endpoint so the real
+# mutation transport fails closed pre-send (``_blocked``, no socket) — proven by the hard ``_NoNetwork`` guard.
+HTTP_STACK = dict(REALTIME_LIFECYCLE, COPIER_EVENT_INGESTION_ENABLED="1")
 
 
 def _pct(samples, q):
@@ -243,7 +244,8 @@ class SyntheticAuthenticatedLatencyTests(_E2ECommon):
             self.assertEqual(self._place_jobs().count(), 1)
             rep = CopierReplication.objects.get(requested_op="OPEN")
             self._bind_open(rep, follower_ticket)
-            # MODIFY — authenticated → exactly one MODIFY_POSITION job (not sent: transport OFF).
+            # MODIFY — authenticated → exactly one MODIFY_POSITION job (not sent: no per-tenant endpoint, so the
+            # real mutation transport fails closed pre-send; _NoNetwork proves zero socket).
             r, _ = self._timed_post([self._rev(ticket, 2, sl=3995.0)], nonce="auth-modify")
             self.assertEqual(r.status_code, 200, r.content)
             self.assertEqual(ExecutionJob.objects.filter(
@@ -315,7 +317,7 @@ class SyntheticLatencySampleTests(_E2ECommon):
             max_volume=D("0.01"), max_concurrent_positions=1, max_orders=1, orders_consumed=0,
             valid_from=now - timedelta(minutes=1), expires_at=now + timedelta(hours=1),
             watermark_at=now - timedelta(hours=1), watermark_event_sequence=0,
-            modify_authority=True, full_close_authority=True,
+            modify_authority=True, full_close_authority=True, close_only_after_expiry=True,
             status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=self.staff, reason="lat")
         attach_engaged_arm(authz)
         return master, macct, facct, mnum

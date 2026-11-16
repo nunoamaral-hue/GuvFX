@@ -2,23 +2,22 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 Copier runtime OPEN gate does not yet enforce no-OPEN-without-executable-CLOSE (ADR-0113 deferred; 2026-11-16)
+## ✅ RESOLVED — Copier runtime OPEN gate now enforces no-OPEN-without-executable-CLOSE (ADR-0114 / pkt-149; 2026-11-16)
 
-- pkt-148 closes the stranding at the ARMING layer: the atomic `arm_copier_live_lifecycle` enforces full
-  OPEN+MODIFY+FULL_CLOSE flag+authority coherence, and the legacy `copier_live_arm` now refuses an OPEN-only /
-  partial-close / incoherent authorization (authority layer, flag-independent).
-- **Residual:** `trade_copier.live_execution.admit_open_live` still admits a LIVE OPEN under a complete
-  authorization even if the operator later enables `COPIER_LIVE_EXECUTE_ENABLED` WITHOUT
-  `COPIER_LIVE_FULL_CLOSE_ENABLED` (+ mutation dispatch/transport) — a flag-timing stranding on the legacy path
-  (flags are enabled after the arm). Repro: legacy arm with a complete authz (flags OFF) → later enable only the
-  OPEN flag stack → a copied OPEN executes while FULL_CLOSE is refused.
-- **Why not fixed here:** a runtime guard in `admit_open_live` alters an established execution-path pattern (the
-  existing live-copier suite admits OPEN under an OPEN-only authorization) — an Amber change needing its own
-  approved decision + full regression, not an in-passing edit under pkt-148's HARD STOP.
-- **Workaround / mitigation:** use the atomic `arm_copier_live_lifecycle` (enforces coherence) and enable the full
-  flag set together per the runbook; the preflight `arm_readiness` and the atomic op refuse incoherent states.
-- **Bounded next action:** a focused packet adding the fail-closed `no_executable_close` guard to `admit_open_live`
-  with the live-copier fixture/regression updates.
+- pkt-148 (ADR-0113) closed the stranding at the ARMING layer. The residual RUNTIME flag-timing gap —
+  `admit_open_live` admitting a LIVE OPEN while `COPIER_LIVE_FULL_CLOSE_ENABLED` (+ mutation dispatch/transport)
+  was off — is now closed by **pkt-149 / ADR-0114** (repository-only, DARK, unmerged in PR #676):
+  - `open_close_lifecycle_armable` gates `admit_open_live` (and `create_live_open_job` under the lock): no OPEN
+    unless `modify_authority` + `full_close_authority`, partial-close excluded, `close_only_after_expiry`, AND the
+    MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry arms are all on. Both arm paths fail closed.
+  - Revocation-surviving FULL_CLOSE containment (opt-in `COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED`, default
+    OFF, auto-bounded) so a revocation can never trap an open position.
+  - Teardown proves no unflattened copier position remains before declaring DARK, else halts `cleanup_required`.
+- **Amber note (carried):** ADR-0114 adds a FOURTH branch to `allow_live_for_account`
+  (`copier_live_revocation_containment_authorized`) — a default-OFF, FULL-CLOSE-only, auto-closing-once-flat
+  extension of the execution LIVE wall. With the arm OFF (production default) the boundary is byte-identical to
+  pre-ADR-0114. A Sponsor arming revocation-containment deliberately keeps `MT5_ALLOW_LIVE` on (close-only) for a
+  revoked pair until its position is flat.
 
 ## 🟡 Copier independent emitter one-shot attestation — repository-only, NOT merged/deployed (GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093 / ADR-0104, 2026-11-13)
 

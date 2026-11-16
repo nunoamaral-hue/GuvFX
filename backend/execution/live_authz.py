@@ -175,6 +175,56 @@ def copier_live_lifecycle_authorized(account) -> bool:
         return False
 
 
+def copier_live_revocation_containment_authorized(account) -> bool:
+    """ADR-0114 — the runtime ``MT5_ALLOW_LIVE`` boundary for FLATTENING an already-bound LIVE follower position
+    whose governing authorization was REVOKED, so a revocation can never TRAP an open live position. Kept SEPARATE
+    from the entry and lifecycle boundaries, DARK / default-OFF, and TIGHTLY auto-bounded. It authorizes the
+    runtime for a FULL CLOSE ONLY, and ONLY when ALL of:
+
+      * the opt-in ``copier_live_contain_after_revocation_enabled`` arm is on (hence the whole LIVE stack), AND
+      * the hosted-live gate is on, AND
+      * this account is named as follower by a recently-REVOKED authorization that still carried
+        ``full_close_authority`` whose pinned identity still matches, AND
+      * at least one copier-originated open position for this follower is NOT yet proven flat.
+
+    The instant the position is proven flat this returns ``False``, so ``MT5_ALLOW_LIVE`` drops on the next render —
+    the boundary is never left open after the stranded position is closed (auto-bounded, not a standing widening).
+    It authorizes NO order by itself (the per-order admission produces ONLY a FULL_CLOSE containment command and
+    re-checks the full-close authority + the opt-in arm) and never widens entry / modify / partial-close authority.
+    With the arm OFF (the default) it returns ``False``, so the runtime boundary is byte-identical to pre-ADR-0114.
+    Fail-closed on any error."""
+    try:
+        from trade_copier.flags import copier_live_contain_after_revocation_enabled
+        if not (copier_live_contain_after_revocation_enabled() and _hosted_live_execution_enabled()):
+            return False
+        from trading.account_policy import is_live_environment
+        if not is_live_environment(account):
+            return False
+        acct_id = getattr(account, "id", None) or getattr(account, "pk", None)
+        if acct_id is None:
+            return False
+        from trade_copier.models import CopierLiveAuthorization
+        authz = (CopierLiveAuthorization.objects
+                 .filter(follower_account_id=acct_id, revoked_at__isnull=False, full_close_authority=True)
+                 .order_by("-revoked_at").first())
+        if authz is None:
+            return False
+        login, server = _current_identity(account)
+        if not login or str(authz.follower_login).strip() != login or str(authz.follower_server).strip() != server:
+            return False
+        # Auto-bounded: authorize the runtime ONLY while a copier-originated position remains UNFLATTENED. The same
+        # conservative backend-evidence proof the teardown uses; once flat it returns proven_flat ⇒ boundary closes.
+        # A flatness DB error (``error`` set) is UNCERTAINTY, not evidence of an open position, so it fails CLOSED
+        # (deny) — MT5_ALLOW_LIVE is never left on under uncertainty; teardown independently halts cleanup-required.
+        from trade_copier.lifecycle_teardown import _open_copier_positions
+        flat = _open_copier_positions(acct_id)
+        if flat.get("error"):
+            return False
+        return not bool(flat.get("proven_flat", False))
+    except Exception:  # noqa: BLE001 — total fail-closed
+        return False
+
+
 def _material_facts_unchanged(authz, account) -> bool:
     """D4c invalidation: the authorized STRATEGY + SIZING must still match what was authorized. A reassigned,
     removed, deactivated, or resized strategy is a MATERIAL change that makes the authorization stale ⇒ invalid

@@ -113,6 +113,59 @@ def open_live_copier_count(follower) -> int:
     return qs.count()
 
 
+def open_close_lifecycle_armable(authz) -> tuple[bool, str]:
+    """Fail-closed: may a LIVE OPEN be admitted for a position that MUST remain closeable for its whole life?
+    ``(ok, reason)`` — the runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0114).
+
+    THE RUNTIME INVARIANT: no follower OPEN is admitted unless that position has a durable, armed path to MODIFY
+    and FULL_CLOSE throughout its lifecycle. The bounded entry allowance always grants entry, so without this a
+    copied LIVE OPEN could be left with no executable CLOSE — a stranded real position. This closes the residual
+    risk on BOTH admission paths (the atomic arm and the legacy ``copier_live_arm``), because it is enforced HERE,
+    in the single runtime OPEN admission, not only in the arming command.
+
+    The guarantee has two layers, both required:
+
+      * AUTHORITY (immutable on the authorization, so it cannot drift after OPEN): the authorization MUST carry
+        ``modify_authority`` AND ``full_close_authority`` and MUST NOT carry partial-close, and MUST set
+        ``close_only_after_expiry`` so the bound position stays closeable once the entry window lapses.
+      * EXECUTION ARM (the flags the close/modify path actually needs to reach the broker): the per-op FULL_CLOSE
+        and MODIFY arms AND the mutation dispatch AND transport AND the post-expiry close-only policy arm must all
+        be on. These mirror ``trade_copier.lifecycle_arm_contract.execution_flag_blockers`` /
+        ``_per_op_flag_armed`` exactly — a flag flip after OPEN is defended by the containment path + the
+        teardown flatness proof, not here.
+
+    Partial-close stays excluded (the demo invariant). Revocation survival is a separate, opt-in containment arm
+    (``copier_live_contain_after_revocation_enabled``) and is deliberately NOT required at OPEN."""
+    from trade_copier.flags import (copier_live_modify_enabled, copier_live_full_close_enabled,
+                                    copier_mutation_dispatch_enabled, copier_mutation_transport_enabled,
+                                    copier_live_close_only_after_expiry_enabled)
+    if authz is None:
+        return False, "no_live_authorization"
+    # Authority layer — immutable on the authorization (cannot drift after the OPEN is placed).
+    if not bool(authz.modify_authority):
+        return False, "open_requires_modify_authority"
+    if not bool(authz.full_close_authority):
+        return False, "open_requires_full_close_authority"          # entry with no close authority == stranding
+    if bool(authz.partial_close_authority):
+        return False, "open_excludes_partial_close_authority"
+    if not bool(authz.close_only_after_expiry):
+        return False, "open_requires_close_survives_expiry"
+    # Execution-arm layer — the MODIFY+FULL_CLOSE send path must be fully armed (per-op arm AND dispatch AND
+    # transport), plus the post-expiry close-only policy arm, so the close is actually deliverable for the life of
+    # the position. Each is ANDed with the whole LIVE stack inside its accessor.
+    if not copier_mutation_dispatch_enabled():
+        return False, "open_requires_mutation_dispatch_armed"
+    if not copier_mutation_transport_enabled():
+        return False, "open_requires_mutation_transport_armed"
+    if not copier_live_full_close_enabled():
+        return False, "open_requires_full_close_execution_armed"
+    if not copier_live_modify_enabled():
+        return False, "open_requires_modify_execution_armed"
+    if not copier_live_close_only_after_expiry_enabled():
+        return False, "open_requires_close_after_expiry_arm"
+    return True, "ok"
+
+
 def admit_open_live(replication, *, now=None) -> tuple[bool, str]:
     """Fail-closed admission for producing a LIVE follower OPEN. Safe to call before AND inside the lock.
 
@@ -176,6 +229,14 @@ def admit_open_live(replication, *, now=None) -> tuple[bool, str]:
 
     # Structural binding (cross-user/self-follow/broker binding) — defence in depth.
     ok, reason = validate_follower_binding(follower)
+    if not ok:
+        return False, reason
+
+    # 8b (ADR-0114). RUNTIME CLOSE-AUTHORITY GUARD — no OPEN without a durable, armed MODIFY+FULL_CLOSE lifecycle.
+    # Enforced HERE (the single runtime OPEN admission) so BOTH the atomic arm and the legacy copier_live_arm path
+    # fail closed; a copied LIVE OPEN that could not be closed (missing close authority / close path not armed /
+    # close not surviving the entry-window expiry) is never admitted. Never widens anything — purely additive deny.
+    ok, reason = open_close_lifecycle_armable(authz)
     if not ok:
         return False, reason
 
@@ -339,6 +400,13 @@ def create_live_open_job(locked_replication) -> dict:
     if not ok:
         return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
 
+    # ADR-0114: re-assert the runtime close-authority guard UNDER the authorization lock, so a close flag/authority
+    # that changed between preflight and here is seen and the OPEN fails closed (never place an order we cannot
+    # then close). The authority bits are immutable on the row; the execution flags are read live.
+    ok, reason = open_close_lifecycle_armable(authz)
+    if not ok:
+        return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
+
     # Concurrency cap re-checked UNDER the authorization row lock (which serializes all order creation for this
     # pair), so two near-simultaneous OPENs on different events cannot both slip past a stale preflight count
     # when max_orders > max_concurrent — the second, serialized after the first commits, sees the new count.
@@ -493,11 +561,16 @@ def _linked_follower_open(replication):
     return open_repl, int(open_repl.follower_ticket), "ok"
 
 
-def _governing_authorization(open_repl):
+def _governing_authorization(open_repl, *, include_revoked=False):
     """The EXACT authorization the bound position was OPENED under — the ``copier_live_authorization_id`` the
     LIVE OPEN recorded on its job payload. ADR-0083: a lifecycle op is governed by the position's OWN reviewed
     grant, NEVER the newest grant for the pair (a later re-grant must not retroactively widen authority or
-    borrow a fresh window for an already-open position). Non-REVOKED only. Returns ``(authz|None, reason)``."""
+    borrow a fresh window for an already-open position). Returns ``(authz|None, reason)``.
+
+    ``include_revoked`` is False by default (ADR-0083: a REVOKED authorization governs nothing). It is set True
+    ONLY by the FULL-CLOSE revocation-containment fallback (ADR-0114), which re-resolves the SAME recorded id
+    including a revoked row so an already-open position can still be flattened — never to confer any other
+    authority. The caller re-checks ``full_close_authority`` and the opt-in containment flag."""
     if open_repl is None or open_repl.execution_job_id is None:
         return None, "open_has_no_live_job"
     try:
@@ -508,10 +581,42 @@ def _governing_authorization(open_repl):
         return None, "governing_authorization_unresolved"
     if aid is None:
         return None, "open_not_live_authorized"
-    authz = CopierLiveAuthorization.objects.filter(id=aid, revoked_at__isnull=True).first()
+    qs = CopierLiveAuthorization.objects.filter(id=aid)
+    if not include_revoked:
+        qs = qs.filter(revoked_at__isnull=True)
+    authz = qs.first()
     if authz is None:
-        return None, "governing_authorization_revoked_or_absent"
+        return None, ("governing_authorization_absent" if include_revoked
+                      else "governing_authorization_revoked_or_absent")
     return authz, "ok"
+
+
+def _resolve_governing_with_revocation_containment(open_repl, op):
+    """Resolve the governing authorization for a lifecycle op, applying the ADR-0114 FULL-CLOSE
+    revocation-containment fallback. Returns ``(authz|None, reason, revocation_containment: bool)``.
+
+    Normal resolution excludes a REVOKED authorization. ONLY for a FULL CLOSE, ONLY when the opt-in
+    ``copier_live_contain_after_revocation_enabled`` arm is on, and ONLY when the recorded authorization was
+    revoked but still carried ``full_close_authority``, the fallback re-resolves it (including the revoked row) so
+    the already-open position can be flattened. It never applies to OPEN/MODIFY/PARTIAL and never resurrects the
+    grant for anything but this one exposure-reducing close."""
+    authz, reason = _governing_authorization(open_repl)
+    if authz is not None:
+        return authz, "ok", False
+    if op != OP_FULL_CLOSE:
+        return None, reason, False
+    from trade_copier.flags import copier_live_contain_after_revocation_enabled
+    if not copier_live_contain_after_revocation_enabled():
+        return None, reason, False
+    cand, creason = _governing_authorization(open_repl, include_revoked=True)
+    if cand is None:
+        return None, creason, False
+    if cand.revoked_at is None:
+        # Not actually revoked — the normal path should have resolved it; fail closed rather than guess.
+        return None, reason, False
+    if not bool(cand.full_close_authority):
+        return None, "revocation_containment_no_full_close_authority", False
+    return cand, "contain_after_revocation", True
 
 
 def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int, str]:
@@ -557,8 +662,10 @@ def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int
     if ticket is None:
         return False, None, 0, reason
 
-    # 5. The GOVERNING authorization — the one THIS position was opened under (by recorded id), never REVOKED.
-    authz, reason = _governing_authorization(open_repl)
+    # 5. The GOVERNING authorization — the one THIS position was opened under (by recorded id). Normally never
+    #    REVOKED; the ADR-0114 FULL-CLOSE revocation-containment fallback (opt-in, flag-gated) resolves a revoked
+    #    grant ONLY to flatten an already-open position (never for OPEN/MODIFY/PARTIAL, never to widen authority).
+    authz, reason, revocation_containment = _resolve_governing_with_revocation_containment(open_repl, op)
     if authz is None:
         return False, None, 0, reason
     if not (authz.user_id == facct.user_id == macct.user_id):
@@ -570,9 +677,15 @@ def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int
     ok, reason = _lifecycle_authority_ok(authz, op)
     if not ok:
         return False, None, 0, reason
-    ok, window_reason = _lifecycle_window_ok(authz, op, now)
-    if not ok:
-        return False, None, 0, window_reason
+    if revocation_containment:
+        # Revocation containment bypasses the window-revoked denial (that IS the point) but every other gate —
+        # authority (full_close only, just checked), identity, symbol, ticket, reducing-only, kill-switch — still
+        # applies, and the op is a FULL CLOSE by construction (exposure strictly reduced).
+        window_reason = "contain_after_revocation"
+    else:
+        ok, window_reason = _lifecycle_window_ok(authz, op, now)
+        if not ok:
+            return False, None, 0, window_reason
     ok, killswitch_reason = _kill_switch_policy_ok(op)
     if not ok:
         return False, None, 0, killswitch_reason
@@ -639,6 +752,7 @@ def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int
     # (OPEN) is arm-gated in ``admit_open_live``. The exemption widens nothing.
     is_containment_close = (op in _CLOSE_OPS and
                             (window_reason == "close_only_after_expiry" or
+                             window_reason == "contain_after_revocation" or
                              killswitch_reason == "kill_switch_close_only_containment"))
     if not is_containment_close:
         from trade_copier.arm import require_engaged_arm
@@ -769,19 +883,29 @@ def _relock_live_authz_for_lifecycle(locked_replication, op, *, now):
     open_repl, _ticket, reason = _linked_follower_open(locked_replication)
     if open_repl is None:
         return None, reason
-    gov, reason = _governing_authorization(open_repl)
+    gov, reason, revocation_containment = _resolve_governing_with_revocation_containment(open_repl, op)
     if gov is None:
         return None, reason
-    authz = (CopierLiveAuthorization.objects.select_for_update()
-             .filter(id=gov.id, revoked_at__isnull=True).first())
+    # Lock the governing row. For a revocation-containment FULL CLOSE the row is REVOKED by design, so we must not
+    # filter it out here; the normal path keeps the revoked_at IS NULL filter so a revoke committed mid-flight is
+    # seen and fails closed.
+    lock_qs = CopierLiveAuthorization.objects.select_for_update().filter(id=gov.id)
+    if not revocation_containment:
+        lock_qs = lock_qs.filter(revoked_at__isnull=True)
+    authz = lock_qs.first()
     if authz is None:
         return None, "governing_authorization_revoked_or_absent"
+    # Re-verify the containment decision under the lock (a revoke/un-revoke committed between resolve and lock is
+    # seen here and fails closed rather than acting on a stale decision).
+    if revocation_containment and authz.revoked_at is None:
+        return None, "revocation_containment_race"
     ok, reason = _lifecycle_authority_ok(authz, op)
     if not ok:
         return None, reason
-    ok, reason = _lifecycle_window_ok(authz, op, now)
-    if not ok:
-        return None, reason
+    if not revocation_containment:
+        ok, reason = _lifecycle_window_ok(authz, op, now)
+        if not ok:
+            return None, reason
     ok, reason = _kill_switch_policy_ok(op)
     if not ok:
         return None, reason

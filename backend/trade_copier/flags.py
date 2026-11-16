@@ -371,6 +371,25 @@ def copier_live_contain_on_kill_switch_enabled() -> bool:
     return copier_live_execute_enabled() and _flag("COPIER_LIVE_CONTAIN_ON_KILL_SWITCH_ENABLED")
 
 
+def copier_live_contain_after_revocation_enabled() -> bool:
+    """DARK policy arm for SAFETY-REDUCING FULL-CLOSE containment of an already-bound follower position AFTER its
+    governing authorization was REVOKED (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0114). DEFAULT OFF.
+
+    ADR-0083's default is that a REVOKED authorization governs nothing — the operator deliberately withdrew it and
+    contains any open position manually. That default is PRESERVED here (this flag defaults OFF, so behaviour is
+    byte-identical until a Sponsor opts in). When ON it permits exactly ONE deliberately-chosen exception so a
+    live follower position can never be TRAPPED by a revocation: a FULL CLOSE (never a MODIFY, never a partial,
+    never an entry) of the ALREADY-BOUND copier-originated position may still be propagated after the position's
+    OWN governing authorization was revoked, provided that authorization carried ``full_close_authority``. Exposure
+    is strictly reduced/closed — it can never open, increase or reopen. It is ANDed with
+    ``copier_live_full_close_enabled`` (hence the whole LIVE stack) and with the per-authorization
+    ``full_close_authority``; like the other containment exemptions it is arm-exempt by construction (a revocation
+    disengages the arm, so no arm can exist in this state) and narrowly scoped to the pinned route/symbol and the
+    verified follower ticket. It never widens entry authority and never resurrects a revoked grant for any other
+    purpose."""
+    return copier_live_full_close_enabled() and _flag("COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED")
+
+
 def execution_status(*, note: str = "Saving configuration does not activate trading.") -> dict:
     """The copier's execution posture for the UI, DERIVED LIVE from the real execute flags — never a
     hardcoded label. While the execute producer is off (the default) this is observation/shadow and reads

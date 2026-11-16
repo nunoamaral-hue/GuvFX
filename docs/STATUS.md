@@ -1,5 +1,19 @@
 # GuvFX — Project Status
 
+> **2026-11-16 — Copier runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0114;
+> repository-only; migration-free; DARK; extends PR #676 before merge; auto-merge OFF; STOP before merge).**
+> Closes the residual RUNTIME gap PR #676's review found: `admit_open_live` admitted a LIVE OPEN without a durable,
+> armed MODIFY+FULL_CLOSE path (a flag-timing stranding on the legacy arm). Adds (1) `open_close_lifecycle_armable`
+> gating `admit_open_live` + `create_live_open_job` — no OPEN unless modify+full-close AUTHORITY, no partial-close,
+> `close_only_after_expiry`, AND the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry arms are all on (both
+> arm paths fail closed; legacy OPEN-only authz now denied); (2) opt-in, default-OFF, auto-bounded
+> revocation-surviving FULL_CLOSE containment (`COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED`; copier admission +
+> a FOURTH `allow_live_for_account` branch `copier_live_revocation_containment_authorized` — **Amber**, execution
+> LIVE wall, byte-identical with the arm OFF); (3) teardown proves no unflattened copier position before DARK, else
+> halts `cleanup_required` with no mutation. Fixtures updated (the Amber change ADR-0113 deferred): the ADR-0057/0094
+> OPEN suites now use complete lifecycle-armed authorizations. New regression `tests_runtime_close_authority_guard`
+> **48 OK**. Repository-only, DARK; execution gates OFF by default; no prod/host/key/flag mutation. STOP before merge.
+
 > **2026-11-16 — Copier lifecycle-arming safety (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0113;
 > repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
 > `600d7f3d`, on `feat/copier-lifecycle-arming-safety`. Closes the two pkt-147 live-demo blockers: (1) the standing
