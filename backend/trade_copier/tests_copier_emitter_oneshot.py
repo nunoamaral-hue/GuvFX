@@ -496,7 +496,7 @@ class ClassifyPostResponse(unittest.TestCase):
         return json.dumps(obj).encode("utf-8")
 
     def test_verified_success_backward_compatible(self):
-        v, r = roa._classify_post_response(200, self._b({"status": "verified", "account_id": 46}))
+        v, r, _amb = roa._classify_post_response(200, self._b({"status": "verified", "account_id": 46}))
         self.assertTrue(v)
         self.assertEqual(r, "verified")
 
@@ -505,30 +505,30 @@ class ClassifyPostResponse(unittest.TestCase):
                      "broker_server_mismatch", "observed_login_mismatch", "terminal_mismatch", "bridge_mismatch",
                      "attestation_stale", "attestation_expired", "timestamp_in_future", "build_not_allowed",
                      "malformed_envelope", "malformed_json"]:
-            v, r = roa._classify_post_response(401, self._b({"status": "rejected", "reason": code}))
+            v, r, _amb = roa._classify_post_response(401, self._b({"status": "rejected", "reason": code}))
             self.assertFalse(v)
             self.assertEqual(r, code, code)
 
     def test_account_not_found_is_200_rejected_not_verified(self):
-        v, r = roa._classify_post_response(200, self._b({"status": "rejected", "reason": "account_not_found"}))
+        v, r, _amb = roa._classify_post_response(200, self._b({"status": "rejected", "reason": "account_not_found"}))
         self.assertFalse(v)
         self.assertEqual(r, "account_not_found")
 
     def test_missing_reason_on_rejected_is_generic(self):
-        v, r = roa._classify_post_response(401, self._b({"status": "rejected"}))
+        v, r, _amb = roa._classify_post_response(401, self._b({"status": "rejected"}))
         self.assertFalse(v)
         self.assertEqual(r, "rejected_unknown")
 
     def test_unknown_or_injected_reason_is_generic_never_raw(self):
         for sneaky in ["totally_new_code", "key=SUPERSECRET", "../../etc/passwd", "<script>", "sig:deadbeef"]:
-            v, r = roa._classify_post_response(401, self._b({"status": "rejected", "reason": sneaky}))
+            v, r, _amb = roa._classify_post_response(401, self._b({"status": "rejected", "reason": sneaky}))
             self.assertEqual(r, "rejected_unknown")
             self.assertNotIn(sneaky, r)                 # the raw/unknown reason is NEVER echoed
 
     def test_non_string_reason_is_generic(self):
         for bad in [{"status": "rejected", "reason": {"leak": "x"}}, {"status": "rejected", "reason": 42},
                     {"status": "rejected", "reason": ["a"]}]:
-            v, r = roa._classify_post_response(401, self._b(bad))
+            v, r, _amb = roa._classify_post_response(401, self._b(bad))
             self.assertEqual(r, "rejected_unknown")
 
     def test_replayed_disabled_unavailable_surface_as_status(self):
@@ -543,8 +543,8 @@ class ClassifyPostResponse(unittest.TestCase):
         self.assertEqual(roa._classify_post_response(418, self._b({"status": "weird", "reason": "bad_signature"}))[1],
                          "http_418")                    # unknown status -> fallback, reason field ignored
         # a verdict body carrying extra identity fields must not leak any of them
-        _, r = roa._classify_post_response(200, self._b({"status": "verified", "broker_login": "9999999",
-                                                         "signature": "sig"}))
+        _, r, _amb = roa._classify_post_response(200, self._b({"status": "verified", "broker_login": "9999999",
+                                                               "signature": "sig"}))
         self.assertEqual(r, "verified")
 
     def test_only_allowlisted_or_fallback_codes_ever_emitted(self):
@@ -554,7 +554,7 @@ class ClassifyPostResponse(unittest.TestCase):
                    (409, {"status": "replayed"}), (503, {"status": "disabled"}),
                    (200, {"status": "verified"})]
         for st, body in samples:
-            _, r = roa._classify_post_response(st, self._b(body))
+            _, r, _amb = roa._classify_post_response(st, self._b(body))
             self.assertTrue(r in allowed or r.startswith("http_"), r)
 
 
@@ -586,3 +586,95 @@ class OneShotReasonPlumbing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ──────────── packet 139: transport-ambiguity flag + nonce plumbing (reconciliation inputs) ────────────
+
+class ClassifyTransportAmbiguous(unittest.TestCase):
+    """_classify_post_response reports transport_ambiguous=True ONLY when the body is NOT a recognised backend
+    verdict (502 / empty / unparsable). A recognised verdict is DEFINITIVE (ambiguous=False) and is never
+    reconciled/retried by the operator orchestration."""
+
+    def _b(self, obj):
+        return json.dumps(obj).encode("utf-8")
+
+    def test_recognised_verdicts_are_not_ambiguous(self):
+        for status, body in [(200, {"status": "verified"}),
+                             (401, {"status": "rejected", "reason": "bad_signature"}),
+                             (200, {"status": "rejected", "reason": "account_not_found"}),
+                             (409, {"status": "replayed"}), (503, {"status": "disabled"}),
+                             (503, {"status": "unavailable"})]:
+            _v, _r, amb = roa._classify_post_response(status, self._b(body))
+            self.assertFalse(amb, body)
+
+    def test_proxy_or_unparsable_bodies_are_ambiguous(self):
+        for status, raw in [(502, b"<html>Bad Gateway</html>"), (504, b""), (503, b"upstream dropped"),
+                            (500, b""), (200, b"["), (200, json.dumps(["x"]).encode("utf-8"))]:
+            v, r, amb = roa._classify_post_response(status, raw)
+            self.assertFalse(v)
+            self.assertTrue(amb, (status, raw))
+            self.assertTrue(r.startswith("http_"))
+
+    def test_post_once_passes_through_ambiguity_and_exception_is_ambiguous(self):
+        # a recognised 4-tuple transport is returned verbatim
+        self.assertEqual(roa._post_once("u", {"signed": {}}, lambda u, b: (401, False, "bad_signature", False)),
+                         (401, False, "bad_signature", False))
+        # a legacy 3-tuple transport is treated as definitive (ambiguous=False)
+        self.assertEqual(roa._post_once("u", {"signed": {}}, lambda u, b: (200, True, "verified")),
+                         (200, True, "verified", False))
+
+
+class OneShotResultPlumbing(unittest.TestCase):
+    """run_oneshot's sanitised result carries the (non-secret) NONCE and the transport_ambiguous flag the
+    operator orchestration needs to reconcile - and still never carries the envelope/signature/secret."""
+
+    def _args(self, tmp):
+        cfg = os.path.join(tmp, "config.json")
+        with open(cfg, "w") as fh:
+            json.dump({"account_id": 46, "ingest_key_env": "COPIER_INGEST_HMAC_KEY"}, fh)
+        key = os.path.join(tmp, "ingest.key")
+        with open(key, "w") as fh:
+            fh.write("k" * 40)
+        result = os.path.join(tmp, "out", "attest_result.json")
+        return ["--config", cfg, "--verifier-url", "https://api.guvfx.com/api/copy-trading/attest-verify/",
+                "--key-file", key, "--result-file", result], result
+
+    def _app(self):
+        return _FakeApp({"ok": True, "observed_identity_probed": True,
+                         "envelope": {"signed": {"account_id": 46, "nonce": "NONCE_ABC123"}, "signature": "sig"}})
+
+    def test_ambiguous_502_result_carries_nonce_and_flag_no_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv, result = self._args(tmp)
+            rc = roa.main(argv, env={}, transport=lambda u, b: (502, False, "http_502", True),
+                          app_factory=lambda c, e: self._app())
+            self.assertEqual(rc, 1)
+            out = json.load(open(result))
+            self.assertFalse(out["verified"])
+            self.assertTrue(out["posted"])
+            self.assertTrue(out["transport_ambiguous"])
+            self.assertEqual(out["nonce"], "NONCE_ABC123")     # the non-secret nonce for reconciliation
+            self.assertEqual(out["reason"], "http_502")
+            self.assertNotIn("envelope", out)
+            self.assertNotIn("signature", out)
+            self.assertNotIn("k" * 40, json.dumps(out))         # the key never appears
+
+    def test_verified_result_is_not_ambiguous_and_carries_nonce(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv, result = self._args(tmp)
+            rc = roa.main(argv, env={}, transport=lambda u, b: (200, True, "verified", False),
+                          app_factory=lambda c, e: self._app())
+            self.assertEqual(rc, 0)
+            out = json.load(open(result))
+            self.assertTrue(out["verified"])
+            self.assertFalse(out["transport_ambiguous"])
+            self.assertEqual(out["nonce"], "NONCE_ABC123")
+
+    def test_definitive_rejection_is_not_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv, result = self._args(tmp)
+            roa.main(argv, env={}, transport=lambda u, b: (401, False, "terminal_mismatch", False),
+                     app_factory=lambda c, e: self._app())
+            out = json.load(open(result))
+            self.assertFalse(out["verified"])
+            self.assertFalse(out["transport_ambiguous"])
+            self.assertEqual(out["reason"], "terminal_mismatch")

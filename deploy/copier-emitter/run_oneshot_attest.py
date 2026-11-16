@@ -63,10 +63,16 @@ _SAFE_ATTEST_STATUS = frozenset({"verified", "rejected", "replayed", "disabled",
 _REJECTED_UNKNOWN = "rejected_unknown"
 
 
-def _result(ok, account_id, *, reason, posted, now, http_status=None, verified=False, observed_probed=False):
+def _result(ok, account_id, *, reason, posted, now, http_status=None, verified=False, observed_probed=False,
+            nonce="", transport_ambiguous=False):
+    # ``nonce`` is the attestation envelope's single-use NONCE (non-secret) - the operator orchestration needs
+    # it to reconcile an AMBIGUOUS transport outcome against authoritative backend state. ``transport_ambiguous``
+    # is True when the single POST got NO recognised backend verdict (connection dropped / 502 / unparsable
+    # body) - i.e. the request may or may not have been processed; a blind retry is forbidden.
     return {"ok": bool(ok), "account_id": int(account_id), "mode": "oneshot-attest",
             "http_status": http_status, "verified": bool(verified), "posted": bool(posted),
-            "observed_identity_probed": bool(observed_probed), "reason": str(reason), "at": float(now())}
+            "observed_identity_probed": bool(observed_probed), "reason": str(reason),
+            "nonce": str(nonce or ""), "transport_ambiguous": bool(transport_ambiguous), "at": float(now())}
 
 
 def _read_key_file(path):
@@ -99,42 +105,59 @@ def _shred_key_file(path):
 
 
 def _classify_post_response(status, raw):
-    """Map the backend attest-verify HTTP status + raw body to (verified, SANITISED reason).
+    """Map the backend attest-verify HTTP status + raw body to (verified, SANITISED reason, transport_ambiguous).
 
     SANITISATION CONTRACT (fail closed, secret-blind): the only non-success detail retained is the
     backend's own sanitised top-level ``reason`` code, and ONLY when it is in ``_SANITISED_ATTEST_REASONS``.
     A "rejected" response with a missing or non-allow-listed reason collapses to ``rejected_unknown``.
     ``replayed``/``disabled``/``unavailable`` carry no sub-reason and surface as themselves. Any
     unrecognised body shape keeps the ``http_<code>`` fallback. This never returns the envelope, signature,
-    broker login, raw response body, headers or exception text - only an allow-listed identifier."""
+    broker login, raw response body, headers or exception text - only an allow-listed identifier.
+
+    ``transport_ambiguous`` is True unless the backend returned a RECOGNISED verdict body (a
+    ``{"status": ...}`` we understand). A 502/504/503-from-the-proxy or any unparsable/empty body therefore
+    reports ambiguous=True: the verifier may or may not have processed the request, so the caller must
+    RECONCILE against authoritative state rather than retry blindly. A recognised verdict (verified / rejected
+    / replayed / disabled / unavailable) is definitive => ambiguous=False."""
     verified = False
     reason = "http_%d" % status      # fallback when the body is not a recognised {status: ...} shape
+    transport_ambiguous = True       # default: no recognised backend verdict => ambiguous
     try:
         j = json.loads(raw.decode("utf-8")) if raw else None
-    except Exception:  # noqa: BLE001 - a non-JSON body leaves the http_<code> reason, verified False
+    except Exception:  # noqa: BLE001 - a non-JSON body leaves the http_<code> reason, verified False, ambiguous
         j = None
     if isinstance(j, dict) and isinstance(j.get("status"), str):
         st = j["status"]
         if st == "verified":
             verified = True
             reason = "verified"      # backward compatible: a success response stays "verified"
+            transport_ambiguous = False
         elif st in _SAFE_ATTEST_STATUS:
+            transport_ambiguous = False   # a recognised backend verdict is definitive (never a transport blip)
             # ``account_not_found`` is a 200 "rejected" (verified stays False).
             if st == "rejected":
                 sub = j.get("reason")
                 reason = sub if (isinstance(sub, str) and sub in _SANITISED_ATTEST_REASONS) else _REJECTED_UNKNOWN
             else:
                 reason = st          # replayed / disabled / unavailable carry no sub-reason by contract
-        # else: an unrecognised status string -> keep the http_<code> fallback (never echo raw body)
-    return verified, reason
+        # else: an unrecognised status string -> keep the http_<code> fallback + ambiguous (never echo body)
+    return verified, reason, transport_ambiguous
 
 
 def _post_once(url, envelope, transport):
-    """POST the signed attestation envelope EXACTLY ONCE (no retry). Returns (http_status, verified, reason).
-    ``transport`` is injectable for tests; the default uses urllib. Only the signed envelope is sent - no secret."""
+    """POST the signed attestation envelope EXACTLY ONCE (no retry). Returns
+    (http_status, verified, reason, transport_ambiguous). ``transport`` is injectable for tests; the default
+    uses urllib. Only the signed envelope is sent - no secret. A transport fault (no response / dropped
+    connection) returns ambiguous=True so the caller reconciles instead of retrying blindly."""
     body = json.dumps(envelope).encode("utf-8")
     if transport is not None:
-        return transport(url, body)
+        r = transport(url, body)
+        # Tolerate a legacy 3-tuple transport (status, verified, reason): a transport that returned a value
+        # at all is DEFINITIVE here (ambiguous=False); a new 4-tuple carries the flag explicitly.
+        if isinstance(r, tuple) and len(r) == 3:
+            s, v, rs = r
+            return s, v, rs, False
+        return r
     import urllib.error
     import urllib.request
     req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
@@ -149,10 +172,10 @@ def _post_once(url, envelope, transport):
             raw = e.read()
         except Exception:  # noqa: BLE001
             raw = b""
-    except Exception as e:  # noqa: BLE001 - any transport fault is a non-crashing, fail-closed post failure
-        return 0, False, "post_error:" + type(e).__name__
-    verified, reason = _classify_post_response(status, raw)
-    return status, verified, reason
+    except Exception as e:  # noqa: BLE001 - any transport fault is a non-crashing, AMBIGUOUS post failure
+        return 0, False, "post_error:" + type(e).__name__, True
+    verified, reason, transport_ambiguous = _classify_post_response(status, raw)
+    return status, verified, reason, transport_ambiguous
 
 
 def _run(args, *, env, transport, app_factory, now):
@@ -188,9 +211,16 @@ def _run(args, *, env, transport, app_factory, now):
                 reason = "SECRET_UNAVAILABLE"   # normalise the key-absent reason to the one contract code
             return _result(False, account_id, reason=reason, posted=False, now=now, observed_probed=probed)
 
-        http_status, verified, post_reason = _post_once(args.verifier_url, att_out["envelope"], transport)
+        nonce = ""
+        try:
+            nonce = str(att_out["envelope"]["signed"]["nonce"])   # non-secret single-use value for reconciliation
+        except Exception:  # noqa: BLE001 - a missing nonce just means the caller cannot reconcile (fail closed)
+            nonce = ""
+        http_status, verified, post_reason, transport_ambiguous = _post_once(
+            args.verifier_url, att_out["envelope"], transport)
         return _result(bool(verified), account_id, reason=post_reason, posted=True, now=now,
-                       http_status=http_status, verified=verified, observed_probed=probed)
+                       http_status=http_status, verified=verified, observed_probed=probed,
+                       nonce=nonce, transport_ambiguous=transport_ambiguous)
     finally:
         try:
             if key_env_name:
