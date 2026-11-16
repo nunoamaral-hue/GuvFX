@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-ATTESTATION-GATE-143",
+  "packet_id": "GFX-COPIER-ATTESTATION-GATE-143",
+  "created_at_utc": "2026-11-16T09:00:00Z",
+  "branch": "feat/copier-attestation-gate-toggle",
+  "base_commit": "c355773c8c5ad38c4097726b71a0e73952bd4381",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only / DARK durable correction. The account-46 one-shot identity attestation (executed + VERIFIED on 2026-11-16) requires THREE independent gates ON: backend COPIER_ENABLED (master), backend COPIER_ATTESTATION_VERIFY_ENABLED (the attest-verify endpoint), and the HOST emitter config attestation_allowed=true (checked by EmitterApp.attest() in trade_copier/emitter/app.py BEFORE any key read, identity probe or POST). The host gate is HOST-side and invisible to the backend; a backend-only enable yields reason attestation_gate_off. The attestation runbook (Role A/B2) previously documented only the backend attest-verify gate and omitted both the master gate and the host config gate, which caused two no-consume rejects during the live run. This packet makes the correction durable: it commits the reviewed, reversible, rollback-first toggle Set-GuvfxCopierAttestationGate.ps1 for the host attestation_allowed gate, documents ALL THREE gates (with their reason codes and the persistent-override caveat) in the runbook, and adds a Pester regression suite. NO production, host, key, verifier-window, flag-enable, task-trigger, execution, account-48 or broker mutation; this is repository code + docs + tests only.",
+    "adr": "docs/architecture/ADR-0104-COPIER-INDEPENDENT-EMITTER-ONESHOT-ATTEST.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance (secret/PII scan + evidence lint) + frontend (untouched) + research-foundation + market-data-foundation; plus a SEPARATE throwaway windows-latest Windows PowerShell 5.1 gate pinned to the exact PR head that (a) ParseFiles + ASCII-checks every deploy/copier-emitter operator/bundle .ps1 including the new Set-GuvfxCopierAttestationGate.ps1 (RULE 9), and (b) runs the new Pester suite Test-AttestationGate.Tests.ps1 against synthetic configs (no secret). Run IDs + conclusions recorded in the PR body and the Notion Copy Trading Ledger / Current State."
+  },
+  "commands": [
+    "windows-latest PS5.1: [System.Management.Automation.Language.Parser]::ParseFile() over every deploy/copier-emitter/**/*.ps1 (RULE 9) + ASCII/no-BOM byte scan",
+    "windows-latest PS5.1 + Pester 5.x: Invoke-Pester -Path deploy/copier-emitter/operator/tests/Test-AttestationGate.Tests.ps1 (synthetic configs; no secret)",
+    "python3 scripts/check_no_secrets.py  (no findings)",
+    "python3 scripts/check_evidence_manifests.py  (EVIDENCE-LINT PASS)",
+    "git diff --stat origin/main  (3 files: 1 modified runbook, 2 new operator files + this evidence manifest; NO .py, NO model, NO migration, NO workflow, NO production/host/compose change)"
+  ],
+  "expected_results": [
+    "A reviewed, reversible, rollback-first host-side toggle (Set-GuvfxCopierAttestationGate.ps1) that flips ONLY config.json attestation_allowed (false<->true), preserves every identity field byte-for-byte, keeps observation_allowed and delivery_allowed OFF, handles NO secret, and fails closed on a missing/invalid config, an incomplete identity, a reserved account id (<=1), observation/delivery already true, or an attestation_allowed token not present exactly once.",
+    "The attestation runbook documents ALL THREE required gates (backend COPIER_ENABLED, backend COPIER_ATTESTATION_VERIFY_ENABLED, host attestation_allowed), their absence reason codes (copier_emitter_oneshot_disabled / attestation_gate_off / 503 disabled|unavailable), the per-trigger COPIER_EMITTER_ONESHOT_ENABLED injection, and the persistent-override caveat (a default-file backend recreate drops a throwaway -f overlay, silently turning gates OFF).",
+    "A Pester regression suite covers enable/disable/status, round-trip, identity byte-preservation, idempotent noop, every refusal path asserted byte-for-byte NON-mutating, absent-token refusal, and StrictMode-safe absent-optional-key handling, plus a no-secret-in-output assertion.",
+    "The .ps1 parses under Windows PowerShell 5.1 (RULE 9, ASCII + no BOM) and the Pester suite passes on a windows-latest runner (RULE 11 positive control)."
+  ],
+  "actual_results": [
+    "deploy/copier-emitter/operator/Set-GuvfxCopierAttestationGate.ps1 (NEW): -Enable/-Disable/-Status + -ConfigPath (default C:\\GuvFX\\copier-emitter\\46\\config.json). Single unique literal-token replace of '\"attestation_allowed\": false,' <-> '\"attestation_allowed\": true,' (the exact config.template.json format); rollback-first backup before mutate; write+verify wrapped in try/catch that restores the backup on ANY verify mismatch OR write exception; StrictMode-safe property reads (missing key => OFF/empty, matching the emitter's rule); identity-completeness mirrors EmitterConfig.require_complete_identity() (account_id>1, broker_login, broker_server, host_id, bridge_base_url, ingest_url) PLUS terminal_fingerprint + bridge_id (both carried in the attestation envelope and compared by the backend). Output is redacted JSON only; no secret is ever read or emitted (config.json holds only env-var NAMES).",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md (MODIFIED): new 'Required gates - all THREE' section; Role A step 2 corrected from 'set only COPIER_ATTESTATION_VERIFY_ENABLED' to enabling all three gates (persistent override for the two backend flags + the host toggle) and verifying all three before requesting the key; Role A step 5 and the Abort path corrected to restore all three gates OFF at teardown.",
+    "deploy/copier-emitter/operator/tests/Test-AttestationGate.Tests.ps1 (NEW): 17 Pester cases - status; enable (backup byte-equal to original); disable; round-trip; identity byte-preservation; idempotent noop (no backup, unchanged); refusals for incomplete identity (empty terminal_fingerprint AND empty host_id), observation_allowed true, delivery_allowed true, reserved account, absent attestation_allowed token - each asserted byte-for-byte NON-mutating; StrictMode-safe absent-optional-key; config_missing; config_unparsable; missing enable/disable; and a no-secret-in-output assertion.",
+    "Independent blind adversarial review (sub-agent) verdict: HOLDS on every critical property - fail-closed, handles no secret and emits none, can never enable observation_allowed/delivery_allowed, preserves identity byte-for-byte, ASCII/no-BOM, runbook reason codes accurate against code. No CRITICAL or HIGH. Findings fixed in this revision: F1 (MEDIUM) identity check now mirrors require_complete_identity (adds host_id/bridge_base_url/ingest_url); F2 (MEDIUM) added rollback/refusal-immutability tests (backup byte-equality + every refusal path asserted non-mutating); F3 (LOW) uniqueness now requires false+true token count == 1; F4 (LOW) StrictMode-safe property reads added (+absent-key test); F5 (LOW) write+verify wrapped in try/catch restoring the backup on ANY exception; F6 (NIT) backup timestamp now true UTC.",
+    "Scope: 3 content files (1 modified runbook + 2 new operator files) + this evidence manifest. NO .py, NO model, NO migration, NO workflow in the PR, NO production/host/compose/credential change. check_no_secrets: no findings; evidence-lint: PASS."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "PARTIAL (not PASS): the exact-head Linux CI conclusions and the separate windows-latest PowerShell 5.1 ParseFile + Pester gate are driven on CI runners against the pushed head; their run IDs and conclusions are recorded in the PR body and Notion, not inside this committed manifest (authored before those runs complete). Per RULE 11, the on-host 5.1 ParseFile + Pester run is the positive control and gates the claim.",
+    "Repository-only / DARK. Auto-merge OFF; NOT merged. This commits tooling + documentation + tests only; it performs NO attestation, enables NO gate, and mutates NO host/backend/key/window. Any future attestation run remains a separate Sponsor/human-gated action.",
+    "The toggle is account-scoped by its default ConfigPath (account 46) and refuses a reserved account id; it is not a general-purpose config editor. It changes ONLY attestation_allowed and never observation_allowed/delivery_allowed.",
+    "The backend gates (COPIER_ENABLED, COPIER_ATTESTATION_VERIFY_ENABLED) are enabled/torn-down separately via the persistent compose override (documented in the runbook); this script covers only gate 3 (host attestation_allowed)."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/operator/Set-GuvfxCopierAttestationGate.ps1 (reviewed reversible rollback-first host attestation_allowed toggle)",
+    "deploy/copier-emitter/operator/tests/Test-AttestationGate.Tests.ps1 (Pester regression suite, synthetic configs, no secret)",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md (three-gate documentation + corrected enable/teardown/abort)",
+    "evidence/manifests/GFX-EVD-COPIER-ATTESTATION-GATE-143.json (this manifest)"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/operator/Set-GuvfxCopierAttestationGate.ps1": "sha256:3ecc122ae755573b96eb95640983feb6941623cc8aa62eeb200082ce3e992900",
+    "deploy/copier-emitter/operator/tests/Test-AttestationGate.Tests.ps1": "sha256:3556cb1c73ab0ed39e4b34efe9b58b7644ec41cb5bc8fc924dbe968aae207eeb",
+    "docs/COPIER_ONE_SHOT_ATTESTATION_RUNBOOK.md": "sha256:154b983e858e1f60f90303aa4972ee8b6de2a707dc038463e73fdba7cd9f9509"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) with an independent blind adversarial reviewer sub-agent (secret emission / enabling observation|delivery / identity corruption / unintended attestation_allowed state / mutation on a refusal path / token-uniqueness / rollback completeness / PS 5.1 RULE 9 compat). Verdict: HOLDS - fail-closed, no secret handled or emitted, observation/delivery can never be enabled, identity preserved byte-for-byte, ASCII/no-BOM, runbook reason codes accurate. No CRITICAL/HIGH. Two MEDIUM (identity mirror; rollback test) + three LOW + one NIT all fixed in this revision; the mandatory on-host PS5.1 ParseFile + Pester positive control runs in the pinned windows-latest gate."
+}
