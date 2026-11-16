@@ -362,6 +362,54 @@ def probe_operational_events() -> SubsystemHealth:
     return _ok("operational_events", "enabled; no open events", "operational_events")
 
 
+# The seven-status mailbox OAuth health model (broker_intelligence.oauth_health, ADR-0113) mapped into the operator
+# health vocabulary. RECONSENT_REQUIRED / SECURITY_CONFIGURATION_ERROR are a missing/expired credential posture
+# (MISCONFIGURED); SYNCHRONIZER_STALLED is the worker being down (OFFLINE); transient/degraded are DEGRADED.
+_MAILBOX_OAUTH_HEALTH_MAP = {
+    "HEALTHY": HealthState.HEALTHY,
+    "TRANSIENT_FAILURE": HealthState.DEGRADED,
+    "DEGRADED": HealthState.DEGRADED,
+    "RECONSENT_REQUIRED": HealthState.MISCONFIGURED,
+    "SECURITY_CONFIGURATION_ERROR": HealthState.MISCONFIGURED,
+    "SYNCHRONIZER_STALLED": HealthState.OFFLINE,
+    "UNKNOWN_FAIL_CLOSED": HealthState.DEGRADED,
+}
+
+
+@_subsystem("mailbox_ingest")
+def probe_mailbox_ingest() -> SubsystemHealth:
+    """Withdrawal Intelligence Gmail mailbox ingestion (pkt-149, ADR-0113). DARK (AWAITING_SPONSOR) while the ingest
+    WORKER flag is off; when armed, a value-blind rollup of the OAuth health model across connected mailboxes. It
+    surfaces RECONSENT_REQUIRED (an expired/withdrawn Google grant — the 7-day Testing-mode case) and
+    SYNCHRONIZER_STALLED (the worker not running) as real faults so a dead grant / dead worker is never hidden behind
+    a green service exit. Reads only the secret-free aggregate — no Gmail/credential/cursor access, mutates nothing."""
+    try:
+        from broker_intelligence.flags import broker_intelligence_ingest_enabled
+    except Exception:
+        return _unobserved("mailbox_ingest", "broker_intelligence unavailable", "broker_intelligence")
+    if not broker_intelligence_ingest_enabled():
+        return _dark("mailbox_ingest", "BROKER_INTELLIGENCE_INGEST_ENABLED off (ingestion worker dark)",
+                     "broker_intelligence.flags", dependency="Sponsor flag enablement")
+    from broker_intelligence.oauth_health import aggregate_oauth_health
+    agg = aggregate_oauth_health(include_all_statuses=True)
+    n = int(agg.get("monitored_mailbox_count") or 0)
+    if n == 0:
+        return _dark("mailbox_ingest", "ingestion armed; no connected mailbox yet",
+                     "broker_intelligence.oauth_health", dependency="first owner mailbox connect")
+    if agg.get("synchronizer_stalled"):
+        return SubsystemHealth("mailbox_ingest", HealthState.OFFLINE, True,
+                               f"ingestion worker appears stalled; {n} mailbox(es); {agg.get('counts_by_status')}",
+                               "broker_intelligence.oauth_health")
+    worst = HealthState.HEALTHY
+    for c in agg.get("mailboxes", []):
+        mapped = _MAILBOX_OAUTH_HEALTH_MAP.get(c.get("oauth_status"), HealthState.DEGRADED)
+        worst = _worse(worst, mapped)
+    detail = (f"{n} mailbox(es); reconsent={agg.get('reconsent_required_count')}; "
+              f"healthy={agg.get('healthy_count')}; worst_sev={agg.get('worst_alert_severity')}; "
+              f"{agg.get('counts_by_status')}")
+    return SubsystemHealth("mailbox_ingest", worst, True, detail, "broker_intelligence.oauth_health")
+
+
 # --------------------------------------------------------------------------------------------------
 # Hosted Workspace subsystem family (master / execution / delivery / onboarding).
 # All DARK by default -> AWAITING_SPONSOR, and host-cert-blocked for the delivery/execution HOST paths.
@@ -445,7 +493,7 @@ def probe_onboarding() -> SubsystemHealth:
 _PROBES = (
     probe_backend, probe_database, probe_cache,
     probe_workers, probe_bridge, probe_mt5, probe_guacamole,
-    probe_broker_health, probe_agent_monitor, probe_operational_events,
+    probe_broker_health, probe_agent_monitor, probe_operational_events, probe_mailbox_ingest,
     probe_hosted_workspace, probe_delivery, probe_execution, probe_onboarding,
 )
 

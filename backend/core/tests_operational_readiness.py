@@ -136,6 +136,57 @@ class HealthFrameworkTests(TestCase):
         self.assertEqual(faults, [])
 
 
+class MailboxIngestProbeTests(TestCase):
+    """pkt-149 / ADR-0113 — the mailbox-ingestion subsystem probe maps the OAuth health model into the operator
+    vocabulary and never fabricates health: dark when the worker flag is off, MISCONFIGURED for an expired grant,
+    OFFLINE when the synchronizer is stalled."""
+
+    def _byname(self):
+        return {s["name"]: s for s in build_operational_health()["subsystems"]}
+
+    def _mailbox(self, **kw):
+        import datetime
+        from django.utils import timezone
+        from broker_intelligence.models import ConnectedMailbox
+        u = U.objects.create_user(username="mbxp%d" % U.objects.count(),
+                                  email="mbxp%d@x.invalid" % U.objects.count(), password="x")
+        now = timezone.now()
+        defaults = dict(user=u, provider=ConnectedMailbox.Provider.GMAIL,
+                        provider_mailbox_id="probe-%d" % ConnectedMailbox.objects.count(),
+                        primary_email="probe@example.com", status=ConnectedMailbox.Status.CONNECTED,
+                        last_successful_sync=now - datetime.timedelta(seconds=120),
+                        last_attempted_sync=now - datetime.timedelta(seconds=120))
+        defaults.update(kw)
+        return ConnectedMailbox.objects.create(**defaults)
+
+    def test_dark_when_worker_flag_off(self):
+        byname = self._byname()
+        self.assertIn("mailbox_ingest", byname)
+        self.assertEqual(byname["mailbox_ingest"]["state"], HealthState.AWAITING_SPONSOR)
+
+    @override_settings(BROKER_INTELLIGENCE_INGEST_ENABLED="1")
+    def test_armed_no_mailbox_is_awaiting_first_connect(self):
+        self.assertEqual(self._byname()["mailbox_ingest"]["state"], HealthState.AWAITING_SPONSOR)
+
+    @override_settings(BROKER_INTELLIGENCE_INGEST_ENABLED="1")
+    def test_reconsent_mailbox_is_misconfigured(self):
+        import datetime
+        from django.utils import timezone
+        self._mailbox(last_error_code="OAUTH_PERMISSION_DENIED", consecutive_failures=5,
+                      last_successful_sync=timezone.now() - datetime.timedelta(seconds=4000))
+        self.assertEqual(self._byname()["mailbox_ingest"]["state"], HealthState.MISCONFIGURED)
+
+    @override_settings(BROKER_INTELLIGENCE_INGEST_ENABLED="1")
+    def test_stalled_worker_is_offline(self):
+        import datetime
+        from django.utils import timezone
+        now = timezone.now()
+        for _ in range(2):
+            self._mailbox(last_successful_sync=now - datetime.timedelta(seconds=8000),
+                          last_attempted_sync=now - datetime.timedelta(seconds=7200), last_error_code="")
+        self.assertEqual(self._byname()["mailbox_ingest"]["state"], HealthState.OFFLINE)
+
+
 class PreflightTests(TestCase):
     def test_host_certification_is_always_blocked(self):
         result = run_preflight()

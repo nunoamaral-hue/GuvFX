@@ -12,6 +12,9 @@ export type AdminPermissions = {
   workers: "full" | "none";
   entitlements: "full" | "none";
   execution_jobs: "full" | "read" | "none";
+  // pkt-149 / ADR-0113: read-only mailbox OAuth ingestion health projection. The backend endpoint is the real gate
+  // (IsAdminUser + DARK flag); this only drives whether the overview card renders.
+  mailbox_health: "read" | "none";
 };
 
 // ---- Reconciliation ----

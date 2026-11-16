@@ -41,6 +41,13 @@ const SECTIONS = [
     href: "/admin/operations/execution-jobs",
     permKey: "execution_jobs" as const,
   },
+  {
+    key: "mailbox-health",
+    title: "Mailbox Health",
+    description: "Withdrawal Intelligence email ingestion health — reconnect / degraded coverage (read-only).",
+    href: "/admin/operations/mailbox-health",
+    permKey: "mailbox_health" as const,
+  },
 ];
 
 export default function AdminOperationsOverview() {

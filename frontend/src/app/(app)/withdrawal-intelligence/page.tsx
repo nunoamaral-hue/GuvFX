@@ -19,6 +19,7 @@
  */
 import { useLang } from "@/components/AppShell";
 import { ConnectedEmailAccounts } from "@/components/accounts/ConnectedEmailAccounts";
+import { MailboxIngestionNotice } from "@/components/accounts/MailboxIngestionNotice";
 import { WithdrawalsPanel } from "@/components/dashboard/WithdrawalsPanel";
 import { WithdrawalSpeed } from "@/components/dashboard/WithdrawalSpeed";
 import { WithdrawalsHistory } from "@/components/dashboard/WithdrawalsHistory";
@@ -92,6 +93,10 @@ export default function WithdrawalIntelligencePage() {
         <div style={{ ...sectionLabel, color: "#7ee3b0", marginTop: 0 }}>{S.neverTitle[L]}</div>
         <p style={{ margin: 0, fontSize: "0.86rem", color: "#c7e8d6", lineHeight: 1.6 }}>{S.never[L]}</p>
       </div>
+
+      {/* Ingestion-degraded notice (pkt-149) — additive, derived from the existing owner-scoped mailbox status;
+          hides itself unless a connected mailbox is actually degraded/needs reconnection. Never zeroes data. */}
+      <MailboxIngestionNotice lang={L} />
 
       {/* Connection state — self-hides (null) until BROKER_MAILBOX_STATUS_ENABLED is armed */}
       <section>

@@ -9,6 +9,7 @@
   "src/components/accounts/BrokerIdentityVerification.tsx",
   "src/components/accounts/ConnectedEmailAccounts.tsx",
   "src/components/accounts/HostedWorkspaceStatus.tsx",
+  "src/components/accounts/MailboxIngestionNotice.tsx",
   "src/components/admin/AdminShared.tsx",
   "src/components/admin/useAdminRole.ts",
   "src/components/backtests/BacktestDiagnostics.tsx",

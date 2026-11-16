@@ -5,8 +5,8 @@ from .views import (AccountBrokerContactCreateView, AccountBrokerContactListView
                     DiscoveryCandidateActionView, DiscoveryCandidateListView,
                     GenericReviewCandidateActionView, GenericReviewCandidateListView,
                     IdentityListView, IdentityVerifyView, MailboxCallbackView, MailboxConnectView,
-                    MailboxRevokeView, MailboxStatusView, WithdrawalHistoryView, WithdrawalMetricsView,
-                    WithdrawalSpeedView)
+                    MailboxIngestHealthView, MailboxRevokeView, MailboxStatusView, WithdrawalHistoryView,
+                    WithdrawalMetricsView, WithdrawalSpeedView)
 
 urlpatterns = [
     path("withdrawals/metrics/", WithdrawalMetricsView.as_view(), name="broker-intelligence-withdrawal-metrics"),
@@ -24,6 +24,9 @@ urlpatterns = [
     path("mailboxes/connect/", MailboxConnectView.as_view(), name="broker-intelligence-mailbox-connect"),
     path("mailboxes/callback/", MailboxCallbackView.as_view(), name="broker-intelligence-mailbox-callback"),
     path("mailboxes/<int:mailbox_id>/revoke/", MailboxRevokeView.as_view(), name="broker-intelligence-mailbox-revoke"),
+    # pkt-149 / ADR-0113 operator-facing, value-blind mailbox OAuth health projection (staff-only + DARK-gated).
+    path("operator/mailbox-health/", MailboxIngestHealthView.as_view(),
+         name="broker-intelligence-operator-mailbox-health"),
     # ADR-0088 generic-detection review surface (owner-scoped read + staff-gated audited action).
     path("review-candidates/", GenericReviewCandidateListView.as_view(),
          name="broker-intelligence-review-candidates"),
