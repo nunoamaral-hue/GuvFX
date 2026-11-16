@@ -7,8 +7,12 @@
        is NOT applied by the Stream 7C repository packet. Bind is the hosted-executor port only; the beta
        agent (:8791) and the trade bridge (:8788) are never touched.
 
-       SECRETS ARE NOT IN THIS FILE. HOSTED_EXECUTOR_KEYRING / _KEY_ID / _ENC_PRIVKEYS are provisioned as
-       MACHINE environment variables via the approved Windows secret mechanism; the WinSW child inherits them
+       SECRETS ARE NOT IN THIS FILE. HOSTED_EXECUTOR_ENC_PRIVKEYS is provisioned as a MACHINE environment
+       variable via the approved Windows secret mechanism; the WinSW child inherits it. GFX-144 / ADR-0112: the
+       HMAC keyring is read FILE-FIRST from the ACL-protected C:\GuvFX\hosted\secrets\hosted_executor_keyring.json
+       (immune to the Windows SCM boot-time env cache), falling back to the MACHINE variables
+       HOSTED_EXECUTOR_KEYRING / _KEY_ID only when that file is ABSENT; write it with
+       Provision-GuvfxHostedExecutorKeyringFile.ps1 then restart the service -- no reboot required
        and the daemon fails closed if any is missing. -->
   <id>GuvFXHostedExecutor</id>
   <name>GuvFX Hosted Signed Executor</name>

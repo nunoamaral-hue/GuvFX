@@ -6,10 +6,15 @@
        Stream 7C repository packet. Bind is the hosted-executor port only; the beta agent (:8791) and the
        trade bridge (:8788) are never touched.
 
-       SECRETS ARE NOT IN THIS FILE. The HMAC keyring (HOSTED_EXECUTOR_KEYRING / _KEY_ID) and the envelope
-       private keyring (HOSTED_EXECUTOR_ENC_PRIVKEYS) are provisioned as MACHINE environment variables via the
-       approved Windows secret mechanism at deploy time; the WinSW child inherits them. The daemon refuses to
-       start if any is missing (fail closed). -->
+       SECRETS ARE NOT IN THIS FILE. The HMAC keyring and the envelope private keyring
+       (HOSTED_EXECUTOR_ENC_PRIVKEYS) are provisioned by the approved Windows secret mechanism; the daemon
+       refuses to start if any is missing (fail closed).
+       GFX-144 / ADR-0112: the daemon reads the HMAC keyring FILE-FIRST from the ACL-protected file
+       C:\GuvFX\hosted\secrets\hosted_executor_keyring.json (so a machine-variable rotation is NOT masked by the
+       Windows SCM boot-time environment cache), falling back to the MACHINE variables HOSTED_EXECUTOR_KEYRING /
+       _KEY_ID only when that file is ABSENT. Write the file with Provision-GuvfxHostedExecutorKeyringFile.ps1
+       (inheritance off; only SYSTEM, Administrators and the exact service principal may read it), then restart
+       the service -- no reboot required. -->
   <id>GuvFXHostedExecutor</id>
   <name>GuvFX Hosted Signed Executor</name>
   <description>GuvFX hosted signed provisioning executor - narrow, allow-listed, no-RCE host transport for prepare_hosted_slot. Install-only DARK profile.</description>
