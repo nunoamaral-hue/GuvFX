@@ -11,6 +11,7 @@ from io import StringIO
 from unittest import mock
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import override_settings
 from django.utils import timezone
 
@@ -160,6 +161,33 @@ class ArmOrchestrationTests(_Base):
         self.assertTrue(CopierLiveArm.objects.filter(
             authorization=authz, state=CopierLiveArmState.ENGAGED).exists())
 
+    def test_post_arm_verify_tolerates_flipped_host_state(self):
+        # After a real commit the admission is ON and the emitter ENABLED; the post-arm re-verify must NOT tear
+        # down a correctly-armed stack by re-requiring the (now intentionally flipped) entry preconditions.
+        authz = self._authz()
+        state = {"admitted": False, "emitter_on": False}
+
+        def admission(a):
+            state["admitted"] = True
+            return {"ok": True, "armed": True}
+
+        def emitter():
+            state["emitter_on"] = True
+            return {"ok": True, "enabled": True}
+
+        res = arm_live_lifecycle(
+            master_account_id=self.macct.id, follower_account_id=self.facct.id,
+            source_symbol="XAUUSD", follower_symbol="XAUUSD.std", authorization_id=authz.id,
+            follower_flat_confirmed=True, emitter_key_probe=lambda: {"ready": True, "identity_ok": True},
+            host_admission_probe=lambda: {"off": not state["admitted"]},
+            emitter_task_probe=lambda: {"disabled": not state["emitter_on"]},
+            admission_provisioner=admission, emitter_enabler=emitter,
+            commit=True, by_email=self.staff.email, reason="t")
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["armed"])
+        self.assertTrue(CopierLiveArm.objects.filter(
+            authorization=authz, state=CopierLiveArmState.ENGAGED).exists())
+
     def test_missing_emitter_key_refuses_before_mutation(self):
         res, authz = self._arm(commit=True, key_probe=lambda: {"ready": False})
         self.assertFalse(res["ok"])
@@ -210,6 +238,11 @@ class ArmOrchestrationTests(_Base):
         self.assertEqual(res["reason"], "admission_failed")
         self.assertIn("rolled_back", res)
         self.assertFalse(CopierLiveArm.objects.filter(authorization=authz).exists())
+        # a rollback that preserves the still-valid authorization is still backend-DARK (no engaged arm remains;
+        # the arm is the execution AND-condition) — require_authz_absent=False.
+        self.assertTrue(res["rolled_back"]["backend_dark"])
+        authz.refresh_from_db()
+        self.assertEqual(authz.status, CopierLiveAuthorizationStatus.ACTIVE)
 
     def test_emitter_enable_failure_rolls_back(self):
         res, authz = self._arm(commit=True, emitter=lambda: {"ok": False})
@@ -302,6 +335,29 @@ class TeardownTests(_Base):
         self.assertTrue(res["steps"]["revoke_authorization"].get("skipped"))
         authz.refresh_from_db()
         self.assertEqual(authz.status, CopierLiveAuthorizationStatus.ACTIVE)
+
+
+# ───────────────────────────── legacy copier_live_arm authority guard (ADR-0113) ─────────────────────────────
+class LegacyArmAuthorityGuardTests(_Base):
+    """The legacy control-plane arm must ALSO refuse an authorization that would permit an OPEN with no executable
+    CLOSE, so the stranding guard is not bypassable by using the pre-existing command."""
+
+    def test_legacy_arm_refuses_open_only_authz(self):
+        authz = self._authz(full_close_authority=False)
+        with self.assertRaises(CommandError) as cm:
+            self._arm(authorization_id=authz.id, by=self.staff.email, reason="t")
+        self.assertIn("authority contract", str(cm.exception))
+
+    def test_legacy_arm_refuses_partial_close_authz(self):
+        authz = self._authz(partial_close_authority=True)
+        with self.assertRaises(CommandError) as cm:
+            self._arm(authorization_id=authz.id, by=self.staff.email, reason="t")
+        self.assertIn("authority contract", str(cm.exception))
+
+    def test_legacy_arm_accepts_full_lifecycle_authz(self):
+        authz = self._authz()  # modify + full_close authority by default
+        out = self._arm(authorization_id=authz.id, by=self.staff.email, reason="t")
+        self.assertIn('"action": "arm"', out)
 
 
 # ───────────────────────────── hardened preflight arm_readiness ─────────────────────────────

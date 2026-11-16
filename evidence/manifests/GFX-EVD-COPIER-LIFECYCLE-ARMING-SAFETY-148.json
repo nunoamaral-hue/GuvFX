@@ -2,12 +2,12 @@
   "schema_version": "1.0",
   "handoff_id": "GFX-EVD-COPIER-LIFECYCLE-ARMING-SAFETY-148",
   "packet_id": "GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148",
-  "created_at_utc": "2026-11-16T16:40:00Z",
+  "created_at_utc": "2026-11-16T17:10:00Z",
   "branch": "feat/copier-lifecycle-arming-safety",
   "base_commit": "600d7f3d318d54c4e1bd342d82ae79a99c3abf76",
   "head_commit": null,
   "environment": {
-    "scope": "Repository-only corrective implementation (ADR-0113). Closes the two pkt-147 live-demo blockers: (1) the standing immediate emitter had no ingest signing key so the <=1s path could not operate; (2) provision_authorized_live_copier_bridge enables the OPEN flag stack but NOT the per-op LIVE MODIFY/FULL_CLOSE execution flags, so a copied OPEN could strand a real position on the live follower. Delivers: a single fail-closed arming contract (lifecycle_arm_contract) enforcing MODIFY+FULL_CLOSE authority AND execution-flag coherence with the no-OPEN-without-executable-CLOSE invariant and partial-close exclusion; one atomic arm_copier_live_lifecycle operation (validate-all -> provision admission -> enable emitter -> create arm, full rollback to DARK on any failure; host effects injected); an idempotent teardown_copier_live_dark; a value-blind emitter-key readiness contract (run_emitter.py auto-loads a protected standing key file; reviewed account-46-pinned Provision-GuvfxCopierEmitterKey.ps1 provisioner with value-blind -Verify, idempotent -Remove, tenant READ-ONLY ACL, #48/CZ/arbitrary refusal); and a hardened copier_live_demo_preflight arm_readiness section. NO production/host/flag/key/admission/task/#48/broker mutation.",
+    "scope": "Repository-only corrective implementation (ADR-0113). Closes the two pkt-147 live-demo blockers at the ARMING layer: (1) the standing immediate emitter had no ingest signing key; (2) OPEN could be armed without an executable MODIFY/FULL_CLOSE, stranding a real follower position. Delivers: lifecycle_arm_contract (fail-closed authority+flag coherence, no-OPEN-without-executable-CLOSE, partial-close excluded); atomic arm_copier_live_lifecycle (validate-all -> provision admission -> enable emitter -> create arm, FULL rollback to DARK incl. signed host-admission restore; host effects injected); idempotent teardown_copier_live_dark; value-blind standing emitter-key readiness (run_emitter.py auto-loads a protected key file; reviewed account-46-pinned Provision-GuvfxCopierEmitterKey.ps1, tenant READ-ONLY ACL, value-blind -Verify, idempotent -Remove, #48/CZ/arbitrary refusal); hardened preflight arm_readiness; and a legacy copier_live_arm authority guard so the stranding guard is not bypassable via the pre-existing command. NO production/host/flag/key/admission/task/#48/broker mutation.",
     "adr": "docs/architecture/ADR-0113-copier-lifecycle-arming-safety.md",
     "production_or_db_mutation": false,
     "deploy_or_migration_apply": false,
@@ -20,65 +20,65 @@
   "ci": {
     "provider": "github-actions",
     "workflow_name": "CI",
-    "lane": "backend (manage.py test) + governance-check + secret/PII scan + evidence lint + frontend parity/lint/build; plus a throwaway exact-head Windows PowerShell 5.1 ParseFile + Pester gate for the new operator provisioner."
+    "lane": "backend (manage.py test) + governance-check + secret/PII scan + evidence lint + frontend; plus a throwaway exact-head Windows PowerShell 5.1 ParseFile + Pester gate for the new operator provisioner."
   },
   "commands": [
-    "cd backend && .venv/bin/python manage.py test trade_copier.tests_lifecycle_arming   (Ran 38 OK)",
-    "cd backend && .venv/bin/python manage.py test trade_copier   (Ran 1085 OK after MANIFEST run_emitter.py hash update)",
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_lifecycle_arming   (Ran 42 OK)",
+    "cd backend && .venv/bin/python manage.py test trade_copier   (Ran 1086 OK)",
     "cd backend && .venv/bin/python manage.py test trade_copier.emitter.tests_bundle   (Ran 67 OK)",
     "cd backend && .venv/bin/python manage.py check   (no issues)",
     "cd backend && .venv/bin/python manage.py makemigrations trade_copier --check --dry-run   (No changes detected - migration-free)",
     "cd backend && .venv/bin/python manage.py test core.tests_adr_governance   (Ran 3 OK; ADR-0113 unique)",
-    "python3 scripts/check_no_secrets.py   (pending in CI)",
-    "python3 scripts/check_evidence_manifests.py   (pending in CI)",
-    "Windows PS 5.1 ParseFile + Pester Test-EmitterKeyProvisioner (exact-head gate; pending on Windows runner)"
+    "make governance-check   (secret-scan + evidence-lint + governance suites: all OK)",
+    "Windows PS 5.1 ParseFile + Pester Test-EmitterKeyProvisioner (exact-head gate)"
   ],
   "expected_results": [
-    "The authority contract refuses an authorization missing MODIFY or FULL_CLOSE authority (OPEN_WITHOUT_CLOSE_REFUSED), any partial-close authority, volume>0.01, max_orders!=1, or a wrong route/symbol.",
-    "The flag contract (ARM time) refuses unless OPEN+MODIFY+FULL_CLOSE execution flags + mutation dispatch/transport all agree with the authorities; OPEN executable while FULL_CLOSE is not is refused; a flag without its authority is LIFECYCLE_AUTHORITY_FLAG_MISMATCH; partial-close flag on is refused.",
-    "arm_copier_live_lifecycle validates the complete contract before any mutation; on admission/emitter/arm failure it rolls the entire stack back to DARK and creates no arm; missing emitter-key readiness, unconfirmed #48 flatness, host admission not OFF, or emitter task not disabled all refuse fail-closed.",
-    "teardown_copier_live_dark is idempotent and returns backend DARK after success/partial/abort; host steps without a signed actuator are reported UNPROVEN, never done; --no-revoke preserves the authorization for rollback.",
-    "copier_live_demo_preflight emits a fail-closed arm_readiness section + arm_ready boolean with the new blocker codes, WITHOUT changing the legacy blockers list consumed by copier_live_arm.",
-    "The standing emitter-key provisioner provisions on the fixed account-46 path only, refuses #48/Customer Zero/arbitrary accounts, grants the tenant READ-ONLY, writes atomically with a value-blind -Verify, is idempotent on -Remove, never prints the key, and run_emitter.py auto-loads the protected key file process-local."
+    "Authority contract refuses an authorization missing MODIFY/FULL_CLOSE authority (OPEN_WITHOUT_CLOSE_REFUSED), any partial-close authority, volume>0.01, max_orders!=1, or wrong route/symbol.",
+    "Flag contract (ARM time) refuses unless OPEN+MODIFY+FULL_CLOSE flags + mutation dispatch/transport agree with the authorities; OPEN executable while FULL_CLOSE is not is refused; a flag without its authority is LIFECYCLE_AUTHORITY_FLAG_MISMATCH.",
+    "arm_copier_live_lifecycle validates the complete contract before any mutation; on any post-validation failure it rolls the entire stack back to DARK (including the signed host-admission OFF) and creates no arm; the post-arm re-verification tolerates the deliberately-flipped armed host state.",
+    "teardown_copier_live_dark is idempotent and backend-DARK after success/partial/abort; an authorization-preserving rollback is still backend-DARK (no engaged arm remains); host steps without a signed actuator are UNPROVEN.",
+    "The legacy copier_live_arm refuses an OPEN-only / partial-close authorization (authority contract), closing the stranding on the pre-existing command path too.",
+    "The standing emitter-key provisioner provisions account-46-only, refuses #48/CZ/arbitrary, grants the tenant READ-ONLY (verified by granular write/delete bits, not composite rights), value-blind -Verify, idempotent -Remove, never prints the key."
   ],
   "actual_results": [
-    "trade_copier.tests_lifecycle_arming: Ran 38 OK (contract units, arming orchestration + full rollback, teardown idempotency, preflight arm_readiness).",
-    "trade_copier full app: Ran 1085 OK (1 pre-existing bundle hash drift from the run_emitter.py edit fixed by updating MANIFEST.json; re-run green).",
-    "trade_copier.emitter.tests_bundle: Ran 67 OK (manifest hashes match, ASCII/no-BOM, defaults disabled).",
-    "manage.py check: no issues. makemigrations --check: No changes detected (migration-free). ADR governance: Ran 3 OK.",
-    "PowerShell provisioner + Pester test are ASCII-only / no-BOM / no-CRLF (RULE 9 pre-check); real ParseFile + Pester to run on the exact-head Windows gate."
+    "trade_copier.tests_lifecycle_arming: Ran 42 OK (contract units, arming orchestration + full rollback incl. flipped-host-state post-arm, teardown idempotency + rollback-DARK, preflight arm_readiness, legacy-arm authority guard).",
+    "trade_copier full app: Ran 1086 OK.",
+    "trade_copier.emitter.tests_bundle: Ran 67 OK. manage.py check clean; makemigrations --check: No changes (migration-free); ADR governance Ran 3 OK; governance-check green.",
+    "Independent adversarial review (6 dimensions) found 2 HIGH + 1 MEDIUM confirmed defects beyond the author's own finds: (a) PS tenant_read_only false-positive via composite Modify/FullControl Synchronize bit -> fixed to granular write/delete bits (the Windows gate caught this, RULE-11 spirit); (b) post-arm re-verify re-required flipped entry preconditions -> fixed (check_host_entry=False); (c) rollback did not restore provisioned host admission -> fixed (inject signed restore_off). The runtime admit_open_live no-executable-close guard is DEFERRED (Amber core-gate change) and recorded in KNOWN_ISSUES + ADR as the one bounded next action.",
+    "PowerShell provisioner + Pester test ASCII-only / no-BOM / no-CRLF (RULE 9); the exact-head Windows gate re-run on the fixed head."
   ],
   "status": "PARTIAL",
   "limitations": [
-    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production/host/flag/key/admission/verifier-window/task/#48/broker mutation. Production stays at c355773c; canonical main 600d7f3d.",
-    "No real key provisioned; no real arm/teardown executed. The atomic operation's host effects (signed-host admission provision, emitter enable, key probe/remove) are exercised only via injected fakes in tests; a real run is a separate Sponsor-gated step that wires signed-host actuators.",
-    "Backend execution ENV flags are deploy-time process env, not runtime-mutable by a command; the arming operation VERIFIES their coherence and refuses OPEN-without-executable-CLOSE, and teardown restores host admission OFF (the final host gate) while reporting the env-flag revert as the separate operator deploy step.",
-    "The Windows PowerShell 5.1 ParseFile/Pester results are produced by the exact-head CI Windows gate (not reproducible on the macOS dev host); ASCII/BOM/CRLF were pre-checked locally.",
-    "The standing-emitter task-template/installer wiring to the auto-loaded key file is documented as the deployment step; this PR does not change installed host artefacts."
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production/host/flag/key/verifier-window/admission/task/#48/broker mutation. Production stays at c355773c; canonical main 600d7f3d.",
+    "No real key provisioned; no real arm/teardown executed. The atomic operation's host effects are exercised only via injected fakes in tests; a real run wiring signed-host actuators + the single hidden key entry is a separate Sponsor-gated step. The shipped command passes emitter_enabler=None so a backend --commit fails closed (emitter enablement is a reviewed host step).",
+    "The stranding is closed at the ARMING layer (atomic op + legacy authority guard). A residual flag-timing stranding on the LEGACY path (operator enables OPEN flag without FULL_CLOSE flag AFTER a legacy arm) remains, since a runtime admit_open_live guard is an Amber core-gate change deferred to a focused follow-up (KNOWN_ISSUES, ADR-0113).",
+    "Backend execution ENV flags are deploy-time process env, not runtime-mutable by a command; the arming operation verifies coherence; teardown restores host admission OFF (the final host gate) and reports the env-flag revert as the operator deploy step.",
+    "The Windows PowerShell 5.1 ParseFile/Pester results come from the exact-head CI Windows gate (not reproducible on macOS); ASCII/BOM/CRLF pre-checked locally."
   ],
   "artefact_locations": [
-    "backend/trade_copier/lifecycle_arm_contract.py (NEW - single fail-closed contract + blocker codes)",
-    "backend/trade_copier/lifecycle_arming.py + management/commands/arm_copier_live_lifecycle.py (NEW - atomic arming + rollback)",
-    "backend/trade_copier/lifecycle_teardown.py + management/commands/teardown_copier_live_dark.py (NEW - idempotent DARK teardown)",
-    "backend/trade_copier/management/commands/copier_live_demo_preflight.py (MODIFIED - arm_readiness hardening, legacy blockers untouched)",
-    "backend/trade_copier/tests_lifecycle_arming.py (NEW - 38 tests)",
-    "deploy/copier-emitter/run_emitter.py (MODIFIED - standing key auto-loader) + MANIFEST.json (hash)",
+    "backend/trade_copier/lifecycle_arm_contract.py (NEW contract + blocker codes)",
+    "backend/trade_copier/lifecycle_arming.py + management/commands/arm_copier_live_lifecycle.py (NEW atomic arming + rollback incl. signed admission restore)",
+    "backend/trade_copier/lifecycle_teardown.py + management/commands/teardown_copier_live_dark.py (NEW idempotent DARK teardown)",
+    "backend/trade_copier/management/commands/copier_live_demo_preflight.py (MODIFIED arm_readiness) + copier_live_arm.py (MODIFIED legacy authority guard)",
+    "backend/trade_copier/tests_lifecycle_arming.py (NEW 42 tests)",
+    "deploy/copier-emitter/run_emitter.py (MODIFIED standing key auto-loader) + MANIFEST.json (hash)",
     "deploy/copier-emitter/operator/Provision-GuvfxCopierEmitterKey.ps1 + operator/tests/Test-EmitterKeyProvisioner.Tests.ps1 (NEW)",
-    "docs/architecture/ADR-0113-copier-lifecycle-arming-safety.md (NEW); docs/COPIER_46_48_DEMO_RUNBOOK.md (MODIFIED)"
+    "docs/architecture/ADR-0113-copier-lifecycle-arming-safety.md (NEW); docs/COPIER_46_48_DEMO_RUNBOOK.md, docs/STATUS.md, docs/NEXT.md, docs/KNOWN_ISSUES.md (MODIFIED)"
   ],
   "checksums": {
     "backend/trade_copier/lifecycle_arm_contract.py": "sha256:e5dbf7c601a959949f82b44b670d37805fbbd12d1091c7c3a29d2288fde887b5",
-    "backend/trade_copier/lifecycle_arming.py": "sha256:7aed7845ad162b723a5b3a4cc55964f74da324fded1d4f18ca9ed63263a2e46a",
-    "backend/trade_copier/lifecycle_teardown.py": "sha256:1ccb73e8c59663c6c5c7841cee3fc17081e5da248fde892022343c012360cd4b",
+    "backend/trade_copier/lifecycle_arming.py": "sha256:65a619fea0c88e6ba609c41e653c47044e761e64a391b8c6bca4b0e64a68d4fe",
+    "backend/trade_copier/lifecycle_teardown.py": "sha256:63695e1333bd92f5fa14a1e486c5d75dcd3917c37913aefd7feea48f0c97d432",
     "backend/trade_copier/management/commands/arm_copier_live_lifecycle.py": "sha256:910e71e382bf2f091595ff53512e99683c8cfb9fe93fd8cafa6affd22abe8fd8",
     "backend/trade_copier/management/commands/teardown_copier_live_dark.py": "sha256:fc462a9651251aa29318283f393c2194abba080fbf801c14fd2673f0bf907301",
     "backend/trade_copier/management/commands/copier_live_demo_preflight.py": "sha256:5d22eb9f167f4ed27ed57c0a834c272ef57b4412e5825d5b304ac32d1fc90cca",
-    "backend/trade_copier/tests_lifecycle_arming.py": "sha256:b73ba1c6fc0b26135a336f0114dbb381264357a86a93fdf13b7204d4689e9c36",
+    "backend/trade_copier/management/commands/copier_live_arm.py": "sha256:27639103f4cdcc0a79bb1f87aec2aa9b2f00fecb2965086bb26732d6f2b72682",
+    "backend/trade_copier/tests_lifecycle_arming.py": "sha256:9295ff23c5e54545f5d073ca28318f5967a6bfafe14ac105e61f48dfc7af6199",
     "deploy/copier-emitter/run_emitter.py": "sha256:f93496161cd15e167c434668e5da47f08be47c8a519754515d5f1f68c70a3f01",
     "deploy/copier-emitter/MANIFEST.json": "sha256:bd04aa587549b3f43b63a8f935e39dcb06dbf7ec86a6a719bd6ed12ccc6eec4b",
-    "deploy/copier-emitter/operator/Provision-GuvfxCopierEmitterKey.ps1": "sha256:70ad29217ed00dd35f54a3d5b0f11e6b1959d2a564ba82c5626f33fc9e2775f4",
+    "deploy/copier-emitter/operator/Provision-GuvfxCopierEmitterKey.ps1": "sha256:51bcb051e4ea0d952b0f2b86a6a0623879f74f4787db48cf4a7c00ee8a249cde",
     "deploy/copier-emitter/operator/tests/Test-EmitterKeyProvisioner.Tests.ps1": "sha256:7ccdf304e0addce5294c092487e8f890a8b968bffb7d445871a34ea604abc8b0",
-    "docs/architecture/ADR-0113-copier-lifecycle-arming-safety.md": "sha256:75376f02c215e17eec911cb7a379126537868f89c657792504939897fd75ddcc"
+    "docs/architecture/ADR-0113-copier-lifecycle-arming-safety.md": "sha256:af730631ad2a825e0e613fdd4c176eb4d951118e9ab5dba70a417747e2ca906a"
   },
-  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) - self-review + independent adversarial review (stranded follower, OPEN-before-CLOSE race, authority/flag mismatch, expiry between OPEN and CLOSE, emitter duplicate/duplicate follower order, rollback failure, stale key reuse, secret leakage, arbitrary-account/#48 targeting, task principal mismatch, host admission left ON, teardown omission, concurrent operator race, negative/unknown latency). Sponsor review pending; auto-merge OFF; STOP before merge."
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) self-review + INDEPENDENT adversarial review subagent (stranded follower, OPEN-before-CLOSE race, authority/flag mismatch, expiry, duplicate order, rollback failure, stale key reuse, secret leakage, arbitrary-account/#48 targeting, task principal mismatch, host admission left ON, teardown omission, concurrent race, negative latency). 2 HIGH + 1 MEDIUM confirmed findings fixed; runtime guard deferred with rationale. Sponsor review pending; auto-merge OFF; STOP before merge."
 }

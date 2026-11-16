@@ -2,6 +2,24 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copier runtime OPEN gate does not yet enforce no-OPEN-without-executable-CLOSE (ADR-0113 deferred; 2026-11-16)
+
+- pkt-148 closes the stranding at the ARMING layer: the atomic `arm_copier_live_lifecycle` enforces full
+  OPEN+MODIFY+FULL_CLOSE flag+authority coherence, and the legacy `copier_live_arm` now refuses an OPEN-only /
+  partial-close / incoherent authorization (authority layer, flag-independent).
+- **Residual:** `trade_copier.live_execution.admit_open_live` still admits a LIVE OPEN under a complete
+  authorization even if the operator later enables `COPIER_LIVE_EXECUTE_ENABLED` WITHOUT
+  `COPIER_LIVE_FULL_CLOSE_ENABLED` (+ mutation dispatch/transport) — a flag-timing stranding on the legacy path
+  (flags are enabled after the arm). Repro: legacy arm with a complete authz (flags OFF) → later enable only the
+  OPEN flag stack → a copied OPEN executes while FULL_CLOSE is refused.
+- **Why not fixed here:** a runtime guard in `admit_open_live` alters an established execution-path pattern (the
+  existing live-copier suite admits OPEN under an OPEN-only authorization) — an Amber change needing its own
+  approved decision + full regression, not an in-passing edit under pkt-148's HARD STOP.
+- **Workaround / mitigation:** use the atomic `arm_copier_live_lifecycle` (enforces coherence) and enable the full
+  flag set together per the runbook; the preflight `arm_readiness` and the atomic op refuse incoherent states.
+- **Bounded next action:** a focused packet adding the fail-closed `no_executable_close` guard to `admit_open_live`
+  with the live-copier fixture/regression updates.
+
 ## 🟡 Copier independent emitter one-shot attestation — repository-only, NOT merged/deployed (GFX-COPIER-INDEPENDENT-EMITTER-IMPLEMENT-093 / ADR-0104, 2026-11-13)
 
 - **DARK + repository-only.** Nothing is deployed or contacted. The one-shot task is NEVER installed/enabled/

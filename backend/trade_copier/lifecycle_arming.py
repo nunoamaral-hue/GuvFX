@@ -60,9 +60,17 @@ def _probe_bool(probe: Optional[Callable], key: str):
 
 
 def _validate(*, master_account_id, follower_account_id, source_symbol, follower_symbol, authorization_id,
-              follower_flat_confirmed, emitter_key_probe, host_admission_probe, emitter_task_probe, now):
+              follower_flat_confirmed, emitter_key_probe, host_admission_probe, emitter_task_probe, now,
+              check_host_entry=True):
     """Evaluate the COMPLETE arm-time contract read-only. Returns ``(authz, result_dict)`` where result_dict has
-    ``ok`` and, on failure, a de-duplicated ``blockers`` list. Mutates nothing."""
+    ``ok`` and, on failure, a de-duplicated ``blockers`` list. Mutates nothing.
+
+    ``check_host_entry`` gates the two ENTRY-PRECONDITION host gates (admission currently OFF, emitter task
+    currently DISABLED). It is True for the pre-arm validation; the post-arm re-verification passes False because
+    those two are DELIBERATELY flipped by the arming sequence (admission provisioned ON, emitter enabled) and are
+    already confirmed by the provision/emitter read-backs — re-requiring them OFF would spuriously tear down a
+    correctly-armed stack. Every money-path INVARIANT (authority + flag coherence, master-clean, kill switch,
+    identity, authz window, emitter-key readiness, follower flatness, no conflicting arm) is still re-checked."""
     from trade_copier.models import (CopierLiveArm, CopierLiveArmState, CopierLiveAuthorization,
                                       CopierLiveAuthorizationStatus)
     from trade_copier.live_execution import _identities_match, kill_switch_engaged
@@ -134,8 +142,15 @@ def _validate(*, master_account_id, follower_account_id, source_symbol, follower
         emitter_key_ready = True
     else:
         emitter_key_ready = None if key_ready is None else False
-    host_admission_off = _probe_bool(host_admission_probe, "off")
-    emitter_task_disabled = _probe_bool(emitter_task_probe, "disabled")
+    if check_host_entry:
+        host_admission_off = _probe_bool(host_admission_probe, "off")
+        emitter_task_disabled = _probe_bool(emitter_task_probe, "disabled")
+    else:
+        # Post-arm: admission is intentionally ON and the emitter ENABLED (confirmed by the provision/emitter
+        # read-backs). Treat these two entry gates as satisfied so the standing-invariant re-check does not
+        # roll back a correctly-armed stack; all other invariants are still enforced below.
+        host_admission_off = True
+        emitter_task_disabled = True
 
     readiness = contract.evaluate_arm_readiness(
         authz, emitter_key_ready=emitter_key_ready, follower_flat_confirmed=bool(follower_flat_confirmed) or None,
@@ -202,6 +217,12 @@ def arm_live_lifecycle(*, master_account_id: int, follower_account_id: int, sour
     if not commit:
         return {"ok": True, "armed": False, "dry_run": True, "reason": "dry_run_contract_ok", "detail": v}
 
+    def _default_admission_restore():
+        # Signed host-admission OFF — idempotent, needs no flags/authorization; so a partial arm that provisioned
+        # host admission can never leave the host LIVE-admitted. Fail-closed if the signed executor is absent.
+        from trade_copier.live_bridge_provision import restore_off
+        return restore_off(int(follower_account_id), commit=True)
+
     def _teardown(reason_code):
         try:
             if teardown is not None:
@@ -210,8 +231,9 @@ def arm_live_lifecycle(*, master_account_id: int, follower_account_id: int, sour
                 from trade_copier.lifecycle_teardown import teardown_live_dark
                 td = teardown_live_dark(
                     master_account_id=master_account_id, follower_account_id=follower_account_id,
-                    authorization_id=authorization_id, admission_restore=None, emitter_disabler=None,
-                    emitter_key_remover=None, now=timezone.now(), revoke_authorization=False)
+                    authorization_id=authorization_id, admission_restore=_default_admission_restore,
+                    emitter_disabler=None, emitter_key_remover=None, now=timezone.now(),
+                    revoke_authorization=False)
         except Exception as e:  # noqa: BLE001 — teardown must never raise past the caller
             td = {"ok": False, "reason": f"teardown_error:{type(e).__name__}"}
         return {"ok": False, "armed": False, "reason": reason_code, "rolled_back": td, "detail": v}
@@ -242,13 +264,16 @@ def arm_live_lifecycle(*, master_account_id: int, follower_account_id: int, sour
     except Exception as e:  # noqa: BLE001
         return _teardown(f"arm_create_exception:{type(e).__name__}")
 
-    # 4 — final full-stack re-verification (TOCTOU): the contract must still hold with the arm now present.
+    # 4 — final standing-invariant re-verification (TOCTOU): every money-path invariant must still hold with the
+    # arm now present. The two entry-precondition host gates (admission OFF, emitter task disabled) are
+    # DELIBERATELY flipped by steps 1-2 and already attested by their read-backs, so check_host_entry=False
+    # excludes them — otherwise a correctly-armed stack would always be torn down.
     _authz2, v2 = _validate(
         master_account_id=master_account_id, follower_account_id=follower_account_id,
         source_symbol=source_symbol, follower_symbol=follower_symbol, authorization_id=authorization_id,
         follower_flat_confirmed=follower_flat_confirmed, emitter_key_probe=emitter_key_probe,
-        host_admission_probe=host_admission_probe, emitter_task_probe=emitter_task_probe, now=timezone.now())
-    # Only CONFLICTING_ENGAGED_ARM is expected to clear now; any OTHER new blocker fails closed.
+        host_admission_probe=host_admission_probe, emitter_task_probe=emitter_task_probe, now=timezone.now(),
+        check_host_entry=False)
     residual = [b for b in v2["blockers"]]
     if residual:
         return _teardown("post_arm_verify_failed")

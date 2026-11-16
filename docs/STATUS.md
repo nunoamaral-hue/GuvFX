@@ -13,10 +13,15 @@
 > a **value-blind** emitter-key readiness contract (`run_emitter.py` auto-loads a protected standing key file; reviewed
 > account-46-pinned `Provision-GuvfxCopierEmitterKey.ps1` with value-blind `-Verify`, idempotent `-Remove`, tenant READ-ONLY
 > ACL, #48/CZ/arbitrary refusal); and a hardened `copier_live_demo_preflight` `arm_readiness` section (legacy `blockers`
-> untouched). Verified: `tests_lifecycle_arming` **38 OK**, full `trade_copier` **1085 OK**, bundle **67 OK**, check clean,
-> **migration-free**, ADR-0113 unique, governance-check + secret-scan + evidence-lint green. NO production/host/flag/key/
-> admission/task/#48/broker mutation. **One bounded next action:** governed review + exact-head Linux CI + Windows PS5.1
-> gate, then Sponsor `GO — merge PR`. STOP before merge.
+> untouched). Verified: `tests_lifecycle_arming` **42 OK**, full `trade_copier` **1086 OK**, bundle **67 OK**, check clean,
+> **migration-free**, ADR-0113 unique, governance-check + secret-scan + evidence-lint green. **Independent adversarial
+> review** found 2 HIGH + 1 MEDIUM confirmed defects — all fixed: PS `tenant_read_only` Synchronize-bit false positive
+> (granular write/delete bits; the Windows gate caught it), post-arm re-verify re-requiring the flipped entry
+> preconditions (`check_host_entry=False`), and a rollback that did not restore provisioned host admission (now injects
+> signed `restore_off`). Also added a **legacy `copier_live_arm` authority guard**; the runtime `admit_open_live`
+> no-executable-close guard is **DEFERRED** (Amber core-gate change; KNOWN_ISSUES + ADR). NO production/host/flag/key/
+> admission/task/#48/broker mutation. **One bounded next action:** exact-head Linux CI + Windows PS5.1 gate green, then
+> Sponsor `GO — merge PR`. STOP before merge.
 
 > **2026-11-13 — Monitoring health observability (GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106;
 > repository-only; migration-free; observation-only; governed PR; auto-merge OFF; STOP before merge).** Off canonical

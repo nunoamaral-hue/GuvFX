@@ -209,12 +209,18 @@ function Test-ProtectedAcl([string]$path, [string]$tenantSid) {
     $acl = Get-Acl -LiteralPath $path
     if (-not $acl.AreAccessRulesProtected) { return @($false, $false) }
     $allowed = @('S-1-5-18', 'S-1-5-32-544', $tenantSid)
-    $writeMask = ([System.Security.AccessControl.FileSystemRights]::Write -bor
-                  [System.Security.AccessControl.FileSystemRights]::Modify -bor
-                  [System.Security.AccessControl.FileSystemRights]::FullControl -bor
-                  [System.Security.AccessControl.FileSystemRights]::Delete -bor
-                  [System.Security.AccessControl.FileSystemRights]::WriteData -bor
-                  [System.Security.AccessControl.FileSystemRights]::AppendData)
+    # GRANULAR write/delete/permission bits ONLY. Must NOT include the composite Modify/FullControl rights: those
+    # carry the Synchronize (0x100000) and Read bits that ReadAndExecute also sets, which would make a correctly
+    # read-only tenant grant appear writable (false positive). A Modify/Write/FullControl grant still trips this
+    # mask via its own WriteData/AppendData/Delete bits.
+    $writeMask = ([int][System.Security.AccessControl.FileSystemRights]::WriteData -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::AppendData -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::Delete -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+                  [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
     $tenantReadOnly = $true
     foreach ($rule in $acl.Access) {
         if ($rule.IsInherited) { return @($false, $false) }

@@ -75,6 +75,34 @@ disabled; opens no window; enables no flag). Rotation is key_id-scoped with over
 contract (`require_flag_coherence=False` pre-arm). The legacy `blockers`/`verdict` are untouched, so
 `copier_live_arm`'s control-plane preflight is unaffected.
 
+### 6. Legacy arm authority guard
+
+To ensure the stranding guard is not bypassable through the pre-existing control-plane command, `copier_live_arm`
+now routes the authorization through `authority_contract_blockers` (flag-independent) before engaging: it refuses
+any authorization lacking MODIFY+FULL_CLOSE authority, carrying partial-close authority, or breaching the bounded
+caps. This fits the legacy arm's flags-OFF timing (authority is flag-independent) and applies the guard to both
+arm paths, not only the new atomic one.
+
+## Adversarial review outcome (fixed in this packet)
+
+Independent adversarial review confirmed and the following were fixed: a PowerShell `tenant_read_only` check that
+false-positived (composite `Modify`/`FullControl` rights carry the `Synchronize` bit that `ReadAndExecute` also
+sets → granular write/delete/permission bits only); a post-arm re-verification that re-required the entry
+preconditions the arming deliberately flips (admission ON / emitter enabled) and would roll back a correct arm
+(`check_host_entry=False` post-arm); a rollback that did not restore host admission it provisioned (the rollback
+now injects the signed `restore_off`); and DARK-verdict semantics for an authorization-preserving rollback
+(`require_authz_absent=False`).
+
+## Deferred (bounded follow-up — NOT in this packet)
+
+A **runtime** guard in `trade_copier.live_execution.admit_open_live` that refuses a LIVE OPEN unless the FULL_CLOSE
+execution path is armed end-to-end would close the residual *flag-timing* stranding on the LEGACY path (an
+operator arming OPEN-only flags after a legacy arm). It is deliberately **not** done here: it alters an
+established execution-path pattern (the existing suite admits OPEN under an OPEN-only authorization) — an Amber
+change requiring its own approved decision and a full live-copier regression, not an in-passing edit under this
+packet's HARD STOP. In this packet the stranding is closed at the ARMING layer (atomic op + legacy authority
+guard); the runtime hardening is recorded as the one bounded next action.
+
 ## Consequences
 
 - OPEN can never be armed for this demo route unless the authorized MODIFY and FULL_CLOSE lifecycle is also safely

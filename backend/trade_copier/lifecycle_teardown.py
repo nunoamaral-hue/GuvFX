@@ -68,9 +68,13 @@ def _call_actuator(actuator: Optional[Callable], label: str) -> dict:
         return {"ok": False, "proven": False, "reason": f"{label}_exception:{type(e).__name__}"}
 
 
-def _dark_verification(master_account_id, follower_account_id, *, admission, emitter, key) -> dict:
-    """Confirm the command-reachable DARK state: no engaged arm, no ACTIVE authorization, zero copier jobs /
-    tickets / open verifier windows, and the host steps attested. Fail-closed on any DB error."""
+def _dark_verification(master_account_id, follower_account_id, *, admission, emitter, key,
+                       require_authz_absent=True) -> dict:
+    """Confirm the command-reachable DARK state: no engaged arm, (when ``require_authz_absent``) no ACTIVE
+    authorization, zero copier jobs / tickets / open verifier windows, and the host steps attested. The
+    arm-rollback path preserves the still-valid authorization (``require_authz_absent=False``); there the money
+    path is already OFF because no engaged arm remains (the arm is the execution AND-condition), so a preserved
+    authorization does not make the backend non-DARK. Fail-closed on any DB error."""
     out: dict = {}
     try:
         from trade_copier.models import (CopierLiveArm, CopierLiveArmState, CopierLiveAuthorization,
@@ -98,10 +102,12 @@ def _dark_verification(master_account_id, follower_account_id, *, admission, emi
         out["verifier_windows_open"] = CopierVerifierWindow.objects.filter(closed_at__isnull=True).count()
     except Exception:  # noqa: BLE001
         out["verifier_windows_open"] = None
-    backend_dark = (out.get("engaged_arms") == 0 and out.get("active_authorizations", 1) == 0
+    authz_ok = (out.get("active_authorizations", 1) == 0) if require_authz_absent else True
+    backend_dark = (out.get("engaged_arms") == 0 and authz_ok
                     and (out.get("copier_jobs_open") in (0, None))
                     and out.get("follower_tickets") == 0
                     and (out.get("verifier_windows_open") in (0, None)))
+    out["require_authz_absent"] = bool(require_authz_absent)
     host_dark = bool(admission.get("proven")) and bool(emitter.get("proven")) and bool(key.get("proven"))
     out["backend_dark"] = backend_dark
     out["host_dark"] = host_dark
@@ -139,7 +145,8 @@ def teardown_live_dark(*, master_account_id: int, follower_account_id: int,
                 "separate operator deploy step for full-DARK hygiene."}
     verification = _dark_verification(
         master_account_id, follower_account_id,
-        admission=steps["host_admission_off"], emitter=steps["emitter_disabled"], key=steps["emitter_key_shredded"])
+        admission=steps["host_admission_off"], emitter=steps["emitter_disabled"], key=steps["emitter_key_shredded"],
+        require_authz_absent=bool(revoke_authorization))
     overall = bool(verification.get("ok"))  # command-provable backend DARK; host DARK needs the actuators.
     return {"ok": overall, "dark": overall and verification.get("host_dark", False),
             "backend_dark": verification.get("backend_dark", False),
