@@ -16,7 +16,7 @@
     "auto_restart": false
   },
   "files": {
-    "run_emitter.py": "10f88be54f407c5f5389042dd63629affae9aca21b60524121e0788b04c5377d",
+    "run_emitter.py": "f93496161cd15e167c434668e5da47f08be47c8a519754515d5f1f68c70a3f01",
     "Install-GuvfxCopierEmitter.ps1": "87023dc2148e0db4b93ec6635c27681188422d89506d111e983c5d7437ca29f0",
     "Uninstall-GuvfxCopierEmitter.ps1": "8512ed4147235beb52ec7ebd1fdab4759cdb82c8a53831ffe1c5d31008140570",
     "Status-GuvfxCopierEmitter.ps1": "8ddca6701c2d8b9c7e0e409fd1e52c4981e6c8187b031d161e7821a5d7d26b16",

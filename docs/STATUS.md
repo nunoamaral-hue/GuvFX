@@ -1,5 +1,23 @@
 # GuvFX — Project Status
 
+> **2026-11-16 — Copier lifecycle-arming safety (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0113;
+> repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
+> `600d7f3d`, on `feat/copier-lifecycle-arming-safety`. Closes the two pkt-147 live-demo blockers: (1) the standing
+> immediate emitter had **no ingest signing key** so the <=1s path could not run; (2) `provision_authorized_live_copier_bridge`
+> arms OPEN but NOT the per-op LIVE MODIFY/FULL_CLOSE execution flags, so a copied OPEN could **strand a real #48 position**.
+> Delivers one fail-closed `lifecycle_arm_contract` (MODIFY+FULL_CLOSE authority AND execution-flag coherence; the central
+> **no-OPEN-without-executable-CLOSE** invariant; partial-close excluded; new codes `EMITTER_KEY_ABSENT`,
+> `MODIFY/FULL_CLOSE_EXECUTION_NOT_ARMABLE`, `LIFECYCLE_AUTHORITY_FLAG_MISMATCH`, `FOLLOWER_FLAT_HUMAN_CONFIRM_REQUIRED`,
+> `TEARDOWN_NOT_PROVEN`); one **atomic** `arm_copier_live_lifecycle` (validate-all -> provision admission -> enable emitter ->
+> create arm LAST, **full rollback to DARK on any failure**; host effects injected); an idempotent `teardown_copier_live_dark`;
+> a **value-blind** emitter-key readiness contract (`run_emitter.py` auto-loads a protected standing key file; reviewed
+> account-46-pinned `Provision-GuvfxCopierEmitterKey.ps1` with value-blind `-Verify`, idempotent `-Remove`, tenant READ-ONLY
+> ACL, #48/CZ/arbitrary refusal); and a hardened `copier_live_demo_preflight` `arm_readiness` section (legacy `blockers`
+> untouched). Verified: `tests_lifecycle_arming` **38 OK**, full `trade_copier` **1085 OK**, bundle **67 OK**, check clean,
+> **migration-free**, ADR-0113 unique, governance-check + secret-scan + evidence-lint green. NO production/host/flag/key/
+> admission/task/#48/broker mutation. **One bounded next action:** governed review + exact-head Linux CI + Windows PS5.1
+> gate, then Sponsor `GO — merge PR`. STOP before merge.
+
 > **2026-11-13 — Monitoring health observability (GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106;
 > repository-only; migration-free; observation-only; governed PR; auto-merge OFF; STOP before merge).** Off canonical
 > main `10f89d0d`, on `feat/monitoring-health-observability`. **Read-only prod diagnosis (no host contact) found the

@@ -93,8 +93,10 @@ class Command(BaseCommand):
         active = list(CopierLiveAuthorization.objects.filter(
             master_account_id=mpk, follower_account_id=fpk, status=CopierLiveAuthorizationStatus.ACTIVE))
         unexpired = [a for a in active if a.expires_at > now]
+        authz_obj = None
         if len(unexpired) == 1 and len(active) == 1:
             a = unexpired[0]
+            authz_obj = a
             gate("authorization", True, "AUTHZ_OK", id=a.id,
                  remaining_seconds=int((a.expires_at - now).total_seconds()),
                  modify=a.modify_authority, full_close=a.full_close_authority,
@@ -191,10 +193,29 @@ class Command(BaseCommand):
         secret_names = ["GUVFX_AGENT_TOKEN|WINDOWS_AGENT_TOKEN|GUVFX_WINDOWS_AGENT_TOKEN (bridge auth)",
                         "COPIER_INGEST_HMAC_KEY (event ingest)"]
 
-        verdict = "READY_TO_ARM" if not blockers and not host_probe else "NOT_READY"
-        out = {"verdict": verdict, "checked_at": now.isoformat(),
+        # 14 — ADR-0113 lifecycle-arming safety contract (GFX-...-148). A SEPARATE, strictly fail-closed
+        # ``arm_readiness`` verdict layered on top of the legacy gates (the legacy ``blockers`` list is left
+        # untouched, so ``copier_live_arm``'s control-plane preflight is unaffected). This verifies the
+        # AUTHORITY-layer lifecycle contract (MODIFY+FULL_CLOSE authority present, partial-close excluded, caps,
+        # route/symbols) and that the host/human/teardown gates are proven; execution-flag coherence is NOT
+        # required here because flags are legitimately OFF pre-arm (``require_flag_coherence=False``). The
+        # emitter-key readiness, host-admission-OFF, emitter-task-disabled and #48-flatness facts need a host
+        # probe / human confirmation the backend cannot make, so they stay unverified (None) and keep
+        # ``arm_ready`` False — fail-closed. The atomic ``arm_copier_live_lifecycle`` operation re-evaluates the
+        # same contract WITH flag coherence and the operator attestations at arm time.
+        from trade_copier import lifecycle_arm_contract as _contract
+        arm_readiness = _contract.evaluate_arm_readiness(
+            authz_obj, emitter_key_ready=None, follower_flat_confirmed=None,
+            host_admission_off=None, emitter_task_disabled=None, require_flag_coherence=False,
+            source_symbol=o["source_symbol"], follower_symbol=o["follower_symbol"],
+            master_account_id=mpk, follower_account_id=fpk)
+
+        arm_ready = bool(arm_readiness["arm_ready"])
+        verdict = "READY_TO_ARM" if (not blockers and not host_probe and arm_ready) else "NOT_READY"
+        out = {"verdict": verdict, "arm_ready": arm_ready, "checked_at": now.isoformat(),
                "route": {"master": mpk, "follower": fpk,
                          "source_symbol": o["source_symbol"], "follower_symbol": o["follower_symbol"]},
                "blockers": sorted(set(blockers)), "host_probe_required": host_probe,
+               "arm_readiness": arm_readiness,
                "required_secret_names": secret_names, "gates": gates}
         self.stdout.write(json.dumps(out, default=str, indent=1))

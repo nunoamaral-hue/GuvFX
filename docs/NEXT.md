@@ -1,5 +1,15 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPIER LIFECYCLE-ARMING SAFETY (2026-11-16; GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0113; repository-only PR)
+Closes the two pkt-147 #46->#48 live-demo blockers (no emitter ingest key; OPEN armable without executable MODIFY/FULL_CLOSE ->
+stranded-position risk) off main `600d7f3d` on `feat/copier-lifecycle-arming-safety`. Adds a fail-closed `lifecycle_arm_contract`
+(no-OPEN-without-executable-CLOSE; partial-close excluded), an atomic `arm_copier_live_lifecycle` (full DARK rollback), an
+idempotent `teardown_copier_live_dark`, a value-blind standing emitter-key readiness contract + reviewed account-46-pinned
+`Provision-GuvfxCopierEmitterKey.ps1`, and a hardened preflight `arm_readiness`. Migration-free, DARK, execution gates
+unchanged; `tests_lifecycle_arming` 38 OK, trade_copier 1085 OK, governance green. **One bounded next action:** governed review
++ exact-head Linux CI + Windows PS5.1 gate, then Sponsor `GO — merge PR`. **Separate Sponsor-gated step (NOT this PR):** a real
+arm/teardown wiring the signed-host actuators + the single hidden key entry. STOP before merge.
+
 ## ★ MONITORING HEALTH OBSERVABILITY (2026-11-13; GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106; repository-only PR)
 Read-only prod diagnosis found the scalable dynamic monitoring mechanism ALREADY exists (dynamic `capture_equity_snapshots`
 `*/5` + `ingest_monitored_deals` `*/15`, flags ON; new accounts auto-appear). The 6 stale accounts are an INFRASTRUCTURE
