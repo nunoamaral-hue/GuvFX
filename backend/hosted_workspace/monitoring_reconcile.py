@@ -38,11 +38,17 @@ import hashlib
 _READONLY_KEY = "MT5_LIVE_READONLY_POSITIONS_ENABLED"
 _FORBIDDEN_EXECUTION_KEYS = ("MT5_ALLOW_LIVE", "MT5_LIVE_EXPIRY")
 
-# Workspace states in which a monitoring read-only reconcile is meaningful: the per-tenant terminal is broker
-# CONNECTED (the only HostedMt5Workspace.WorkspaceState in which it is attached and serving). Anything else
-# (NOT_PROVISIONED / PROVISIONING / AWAITING_USER_LOGIN / ACTIVE_ACCOUNT_MISMATCH / DISCONNECTED / STOPPED / ERROR)
-# fails closed — we never touch an unsettled runtime.
-_SUPPORTED_WORKSPACE_STATES = frozenset({"CONNECTED"})
+# Authoritative established, monitoring-capable lifecycle states (GFX-141): HostedMt5Workspace.canonical_state
+# (WorkspaceLifecycleState, ADR-0034 §3 — the nine canonical states every subsystem consumes). A reconcile is
+# meaningful only when the per-tenant terminal is broker-CONNECTED (optionally EXECUTION_READY — still broker
+# connected; the reconciler always renders allow_live=False, so execution stays OFF). EVERY other canonical state
+# FAILS CLOSED: PROVISIONING / WAITING_FOR_LOGIN (transitional / login-required), EXECUTING (active live execution —
+# refused HERE directly, so a canonical-EXECUTING runtime is rejected even with no authorization row; the separate
+# execution_off gate additionally refuses any account holding an active/consumed authorization or engaged arm),
+# DISCONNECTED / RECOVERING / SUSPENDED / RETIRED, and any missing / empty / unknown value. The legacy ``state`` (WorkspaceState) field is DELIBERATELY IGNORED for eligibility — persistent-
+# workspace accounts leave it at a stale NOT_PROVISIONED — and ``proj_connected`` is NEVER the authority either (a
+# True projection cannot override an unsafe canonical state).
+_SUPPORTED_CANONICAL_STATES = frozenset({"CONNECTED", "EXECUTION_READY"})
 
 
 def _mask(v) -> str:
@@ -168,8 +174,13 @@ def evaluate_monitoring_gates(account, *, expected_owner_id, expected_login=None
     except Exception as e:  # noqa: BLE001
         ws = None
         g("workspace_lookup", False, type(e).__name__)
-    ws_state = str(getattr(ws, "state", "")) if ws is not None else ""
-    g("workspace_supported", ws is not None and ws_state.upper() in _SUPPORTED_WORKSPACE_STATES, ws_state)
+    # GFX-141: decide eligibility from the AUTHORITATIVE canonical_state (WorkspaceLifecycleState), never the stale
+    # legacy ``state`` field and never ``proj_connected``. Fail closed on a missing/empty/unknown/transitional/
+    # login-required/disconnected/recovering/suspended/retired/executing canonical state.
+    canonical = str(getattr(ws, "canonical_state", "")) if ws is not None else ""
+    # EXACT match against the canonical enum values (always upper-case) — a case/format variation is malformed and
+    # fails closed, never normalised into eligibility.
+    g("workspace_supported", ws is not None and canonical in _SUPPORTED_CANONICAL_STATES, canonical)
     # 5) LIVE only — a DEMO account reads positions unconditionally and must never be touched by this op.
     g("is_live", is_live_environment(account))
     # 6) explicitly allow-listed (the sole arming authority; empty/malformed allow-list ⇒ False ⇒ refuse)
