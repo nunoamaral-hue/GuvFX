@@ -69,3 +69,22 @@ readable still requires, as separate governed steps: (1) populate `LIVE_READONLY
 (2) a human-approved `--commit` run of this command over RDP/operator path to apply + restart each bridge (**host
 mutation**); (3) DARK deploy of `main`; (4) owner VISUAL acceptance. The `_RealMonitoringOps.read_back_positions`
 real wiring is likewise left to that operator step so CI contacts no bridge. Prod backend remains `ac5bdf0a`.
+
+## Amendment — GFX-141 (2026-11-16): `workspace_supported` uses the authoritative `canonical_state`
+
+The GFX-140 read-only production dry-run (prod `cc4faf1c`, zero host contact) for #48/#53/#54/#56/#57/#59 proved the
+original `workspace_supported` gate was mis-calibrated: it read the stale legacy `HostedMt5Workspace.state`
+(`WorkspaceState`), which persistent-workspace accounts leave at `NOT_PROVISIONED`, so all six were refused even
+though every other gate (identity, owner, allow-list, endpoint, LIVE, execution-OFF) passed 6/6 and the proposed
+delta was read-flag-only 6/6. The authoritative lifecycle is **`canonical_state`** (`WorkspaceLifecycleState`,
+ADR-0034 §3), which was `CONNECTED` for all six.
+
+**Correction (repo-only, migration-free, no other gate changed):** `workspace_supported` now decides eligibility from
+`canonical_state`, permitting **only** `{CONNECTED, EXECUTION_READY}` — the established, monitoring-capable states —
+by **exact** match. Every other canonical state fails closed: `PROVISIONING` / `WAITING_FOR_LOGIN` (transitional /
+login-required), `EXECUTING` (active live execution — also caught by the `execution_off` gate), `DISCONNECTED` /
+`RECOVERING` / `SUSPENDED` / `RETIRED`, and any missing / empty / unknown / case-variant value. The legacy `state`
+field is **deliberately ignored** for eligibility, and `proj_connected` is **never** the authority (a `True`
+projection cannot override an unsafe canonical state). `EXECUTION_READY` is monitoring-capable because the render is
+always `allow_live=False`, so execution stays OFF. All six production shapes pass the corrected gate; every other
+reconciler gate, the render-delta guard, the rollback/teardown behaviour and the safety boundaries are unchanged.

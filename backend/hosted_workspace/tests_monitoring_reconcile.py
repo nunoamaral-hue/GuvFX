@@ -121,7 +121,7 @@ class ReconcileMatrix(TestCase):
         cls._n += 1
         return "9%05d" % cls._n
 
-    def _mk(self, owner, *, state="CONNECTED", ep_ready=True, ep_is_demo=False, login=None, server=None):
+    def _mk(self, owner, *, canonical_state="CONNECTED", ep_ready=True, ep_is_demo=False, login=None, server=None):
         from trading.models import TradingAccount, BrokerServer
         from execution.models import HostedExecutionEndpoint, TerminalNode
         from hosted_workspace.models import HostedMt5Workspace
@@ -136,7 +136,9 @@ class ReconcileMatrix(TestCase):
             is_active=True, broker_server=bs, terminal_node=node,
             readiness_provider="persistent_workspace")
         ws = HostedMt5Workspace.objects.create(
-            trading_account=acct, execution_node=node, workspace_node=node, state=state, execution_enabled=False)
+            trading_account=acct, execution_node=node, workspace_node=node,
+            state="NOT_PROVISIONED",                      # stale legacy field (production shape) — must be IGNORED
+            canonical_state=canonical_state, proj_connected=True, execution_enabled=False)
         ep_state = HostedExecutionEndpoint.State.READY if ep_ready else HostedExecutionEndpoint.State.ALLOCATED
         HostedExecutionEndpoint.objects.create(
             workspace=ws, trading_account=acct, terminal_node=node, host="h",
@@ -228,12 +230,76 @@ class ReconcileMatrix(TestCase):
 
     # (4c) unsupported workspace state refuses
     def test_unsupported_workspace_refused(self):
-        a, _ = self._mk(self.owner, state="PROVISIONING")
+        a, _ = self._mk(self.owner, canonical_state="PROVISIONING")
         ops = _FakeOps()
         with self._allow(a):
             r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)
         self.assertFalse(r["results"][0]["ok"])
         self.assertIn("workspace_supported", r["results"][0]["failed_gates"])
+
+    # ───── GFX-141: workspace_supported uses the AUTHORITATIVE canonical_state, not the stale legacy state ─────
+    def test_gfx141_legacy_state_ignored_canonical_connected_permitted(self):
+        # The exact production shape: stale legacy state=NOT_PROVISIONED, authoritative canonical_state=CONNECTED.
+        a, ws = self._mk(self.owner, canonical_state="CONNECTED")
+        self.assertEqual(ws.state, "NOT_PROVISIONED")              # the stale field the OLD gate wrongly read
+        with self._allow(a):
+            r = MR.reconcile([a.id], commit=False, expected_owner_id=self.owner.id)["results"][0]
+        self.assertTrue(r["ok"], r)
+        self.assertNotIn("workspace_supported", r.get("failed_gates", []))
+
+    def test_gfx141_canonical_execution_ready_permitted_execution_off(self):
+        from trade_copier.models import CopierLiveArm
+        from execution.models import LiveExecutionAuthorization
+        a, ws = self._mk(self.owner, canonical_state="EXECUTION_READY")
+        ops = _FakeOps()
+        with self._allow(a):
+            r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+        self.assertTrue(r["ok"] and r["applied"], r)              # EXECUTION_READY is monitoring-capable...
+        ws.refresh_from_db()
+        self.assertFalse(ws.execution_enabled)                    # ...and execution stays OFF
+        self.assertFalse(CopierLiveArm.objects.filter(follower_account_id=a.id).exists())
+        self.assertFalse(LiveExecutionAuthorization.objects.filter(trading_account_id=a.id).exists())
+
+    def test_gfx141_unsafe_canonical_states_refused(self):
+        # transitional / login-required / disconnected / recovering / suspended / retired / active-execution all refuse
+        for cs in ("PROVISIONING", "WAITING_FOR_LOGIN", "DISCONNECTED", "RECOVERING",
+                   "SUSPENDED", "RETIRED", "EXECUTING"):
+            a, _ = self._mk(self.owner, canonical_state=cs)
+            ops = _FakeOps()
+            with self._allow(a):
+                r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+            self.assertFalse(r["ok"], cs)
+            self.assertIn("workspace_supported", r["failed_gates"], cs)
+            self.assertEqual(ops.applies, [], cs)                 # nothing dispatched
+
+    def test_gfx141_missing_or_malformed_canonical_refused(self):
+        # empty, unknown, and a case/format variation of a real state are all malformed => fail closed
+        for cs in ("", "BOGUS_STATE", "connected"):
+            a, _ = self._mk(self.owner, canonical_state=cs)
+            with self._allow(a):
+                r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=_FakeOps())["results"][0]
+            self.assertFalse(r["ok"], repr(cs))
+            self.assertIn("workspace_supported", r["failed_gates"], repr(cs))
+
+    def test_gfx141_proj_connected_cannot_override_unsafe_canonical(self):
+        # _mk always sets proj_connected=True; a DISCONNECTED canonical must STILL refuse (proj_connected is not authority)
+        a, ws = self._mk(self.owner, canonical_state="DISCONNECTED")
+        self.assertTrue(ws.proj_connected)
+        with self._allow(a):
+            r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=_FakeOps())["results"][0]
+        self.assertFalse(r["ok"])
+        self.assertIn("workspace_supported", r["failed_gates"])
+
+    def test_gfx141_six_production_shapes_pass(self):
+        # six accounts in the exact prod shape (stale state=NOT_PROVISIONED, canonical=CONNECTED) all pass the gate
+        accts = [self._mk(self.owner, canonical_state="CONNECTED")[0] for _ in range(6)]
+        ops = _FakeOps()
+        with self._allow(*accts):
+            rep = MR.reconcile([a.id for a in accts], commit=True, expected_owner_id=self.owner.id, ops=ops)
+        self.assertEqual(rep["summary"]["ok"], 6)
+        self.assertEqual(rep["summary"]["applied"], 6)
+        for r in rep["results"]:
+            self.assertEqual(r["read_back"]["http_status"], 200)
 
     # (5) #48-style read enablement leaves Copy-Trading execution controls OFF
     def test_readonly_enable_leaves_execution_off(self):
