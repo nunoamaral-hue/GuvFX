@@ -26,15 +26,42 @@ throughout.
   single request; nothing is stored on either host by this procedure — the window file is tmpfs and is shredded on
   close. The agent never receives, enters, or sees any of these values.
 
+## Required gates — all THREE must be ON (and are restored OFF at teardown)
+
+A successful attestation requires three **independent** gates. Enabling fewer produces a fail-closed rejection, never
+an unsafe state. They are, with the exact reason code each one's absence yields:
+
+1. **Backend master gate `COPIER_ENABLED`** — ANDed into every copier backend capability, including the one-shot
+   trigger. Missing ⇒ the signed trigger `request_copier_emitter_oneshot_attest` refuses with
+   `copier_emitter_oneshot_disabled` (host NOT contacted).
+2. **Backend attest-verify gate `COPIER_ATTESTATION_VERIFY_ENABLED`** — arms the `/attest-verify/` endpoint. OFF ⇒
+   `503 {"status":"disabled"}`; ON with no open window ⇒ `503 {"status":"unavailable"}` (still no key).
+3. **Host emitter config gate `attestation_allowed`** in `C:\GuvFX\copier-emitter\46\config.json` — checked by
+   `EmitterApp.attest()` (`trade_copier/emitter/app.py`) **before** the key is read, the identity is probed, or any
+   POST is made. It is HOST-side and **invisible to the backend**, so a backend-only enable can never satisfy it.
+   `false` ⇒ the host returns `attestation_gate_off` (host contacted, **no POST**). Toggle it with the reviewed,
+   reversible, rollback-first `operator/Set-GuvfxCopierAttestationGate.ps1 -Enable` / `-Disable` / `-Status`
+   (`observation_allowed` and `delivery_allowed` MUST stay `false`; it refuses otherwise and on an incomplete
+   identity, and never handles a secret). Per-trigger, the operator wrapper additionally injects
+   `COPIER_EMITTER_ONESHOT_ENABLED=1` into the single `docker exec` trigger — this is NOT a persistent flag.
+
+Enable gates 1 and 2 by adding `COPIER_ENABLED=1` and `COPIER_ATTESTATION_VERIFY_ENABLED=1` to the **persistent,
+auto-loaded** compose override (not a throwaway `-f` overlay: a backend recreate on the default files — e.g. a
+routine redeploy — drops an overlay, leaving the gate silently OFF when the human runs the wrapper). Verify all three
+are ON before requesting the key, and restore all three OFF at teardown.
+
 ## Role A — Claude Copy Trading operator (non-secret only)
 
 1. Pre-checks (read-only): endpoint returns 503; `copier_verifier_window --status` reports `open:false` (backend
    holds no key); account-46 task DISABLED / never-run; no emitter process; spool empty; `LiveExecutionAuthorization`=0,
    `CopierLiveAuthorization`=0, kill switch 0, zero QUEUED/RUNNING copier jobs; record pre-counts (`CopierIngestNonce`,
    `MasterEvent`, `CopierPositionLifecycle`, `CopierReplication`, `ExecutionJob`).
-2. **Enable the gate (flag only, no secret):** set **only** `COPIER_ATTESTATION_VERIFY_ENABLED` ON and apply the
-   minimum backend recreate. Verify health, route resolves, no migration ran, execution/delivery controls still OFF.
-   The endpoint now returns `503 {"status":"unavailable"}` (gate on, but **still no key** — no window is open yet).
+2. **Enable all three gates (no secret):** add `COPIER_ENABLED=1` and `COPIER_ATTESTATION_VERIFY_ENABLED=1` to the
+   persistent compose override and recreate the backend; run `operator/Set-GuvfxCopierAttestationGate.ps1 -Enable` on
+   the host to set `attestation_allowed=true` (obs/delivery stay OFF). Verify health, route resolves, no migration ran,
+   **execution/mutation/live controls still OFF**, and confirm all three gates ON (backend `copier_enabled()` +
+   `copier_attestation_verify_enabled()` true and host `-Status` reports `attestation_allowed:true`) BEFORE requesting
+   the key. With gate 2 on and no window open, the endpoint returns `503 {"status":"unavailable"}` (still **no key**).
 3. Tell the human operator: "gate is ON — run the operator wrapper now." The wrapper **provisions the bounded
    verifier window** (hidden prompt → stdin → `copier_verifier_window --open --purpose attest --max-uses 1`; the key
    never touches argv/env/logs), then runs the account-46 emitter one-shot, then **guarantees** `--close`. Start the
@@ -42,8 +69,10 @@ throughout.
 4. Receive ONLY the wrapper's redacted result (http status, verified, reason code, timestamp, correlation id).
 5. Verify cleanup and restore OFF: confirm `copier_verifier_window --status` reports `open:false` and the tmpfs key
    file is gone (the wrapper's guaranteed `--close`; if in doubt, run `copier_verifier_window --close` yourself — it is
-   idempotent and handles no secret). Then restore `COPIER_ATTESTATION_VERIFY_ENABLED` OFF and recreate; verify the
-   endpoint returns `503 {"status":"disabled"}` again.
+   idempotent and handles no secret). Then restore **all three gates OFF**: `operator/Set-GuvfxCopierAttestationGate.ps1
+   -Disable` on the host (`attestation_allowed` back to `false`), and remove `COPIER_ENABLED` + `COPIER_ATTESTATION_VERIFY_ENABLED`
+   from the persistent override and recreate; verify the endpoint returns `503 {"status":"disabled"}` again and the host
+   `-Status` reports `attestation_allowed:false`.
 6. Verify exactly one new `CopierIngestNonce` (iff success), no new `MasterEvent`/lifecycle/replication/`ExecutionJob`,
    task still DISABLED/never-run, zero broker orders. Record evidence (redacted).
 
@@ -104,9 +133,10 @@ backend or broker; it only places (or removes) the one ephemeral key file.
 
 If the human does not complete the invocation within the agreed short window (e.g., 10 minutes), or anything looks
 wrong, **Role A closes the verifier window and restores the gate OFF immediately**: run `copier_verifier_window
---close` (idempotent; shreds the tmpfs key, handles no secret), confirm `--status` reports `open:false`, set
-`COPIER_ATTESTATION_VERIFY_ENABLED` OFF (minimum recreate), verify the `503 {"status":"disabled"}` response, and
-record an aborted-window note. Neither the key window nor the gate may be left on while reports are written. The
+--close` (idempotent; shreds the tmpfs key, handles no secret), confirm `--status` reports `open:false`, restore **all
+three gates OFF** (`Set-GuvfxCopierAttestationGate.ps1 -Disable` on the host, then remove `COPIER_ENABLED` +
+`COPIER_ATTESTATION_VERIFY_ENABLED` from the persistent override and recreate), verify the `503 {"status":"disabled"}`
+response, and record an aborted-window note. Neither the key window nor any gate may be left on while reports are written. The
 bounded window also self-expires (≤ 900 s) and its tmpfs key dies on any container restart, so a missed close still
 fails closed.
 
