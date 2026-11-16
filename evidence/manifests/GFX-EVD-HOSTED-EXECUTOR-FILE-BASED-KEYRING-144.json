@@ -14,8 +14,8 @@
   "note": "Durable fix for the Windows SCM boot-time environment-cache defect (GFX-143): the hosted executor now reads its HMAC keyring FILE-FIRST from one fixed ACL-protected file, env loader retained as a documented migration fallback. No production deploy, Windows-host mutation, service restart, reboot, keyring mutation, allow-list enablement, bridge commit, Copy-Trading change or broker action by this packet."
  },
  "ci": {
-  "status": "pending",
-  "note": "Exact-head Linux CI (backend/frontend/governance/market-data-foundation/research-foundation) to be driven to terminal after PR open; HARD STOP before merge. The PowerShell provisioner + Pester tests are validated on a Windows PowerShell 5.1 host out-of-band (repo convention: ci.yml has no Windows runner); the daemon loader BEHAVIOUR is covered by the backend job."
+  "status": "linux-5of5-at-79599aa8; windows-gate-fix-applied",
+  "note": "Linux CI 5/5 SUCCESS at head 79599aa8 (run 43826236724). Out-of-band Windows PowerShell 5.1 gate (throwaway branch, windows-latest): ParseFile ZERO errors (RULE 9) + Pester 20/21 at 79599aa8 -- the 1 failure was the not-a-JSON-object case returning active_id_not_in_ring instead of machine_ring_not_object (PS 5.1: an array satisfies -is [psobject], so the -isnot [psobject] guard did not reject it). Fixed in Get-RingMetadata (reject [Array]/[ValueType]/[string]; count NoteProperty members only); the daemon side was already correct (backend test green). New head requires fresh Linux 5/5 + Windows green before PR-ready. HARD STOP before merge."
  },
  "commands": [
   "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_host_daemon",
@@ -55,7 +55,7 @@
  ],
  "checksums": {
   "deploy/hosted-executor/daemon_config.py": "sha256:a4193d0d35f6389840309ae4a821dce6fcdfed3e742ae16322e5e5e56bb21021",
-  "deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1": "sha256:6a52b30b3c78cacad562427660c00b6f1e53ec94bab84bb015b4c1c5b0362c89",
+  "deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1": "sha256:d4e36eff611f351f11b16f4e3252d2c7b799b2d08572e365ebc3fb988530918c",
   "deploy/hosted-executor/tests/Test-HostedExecutorKeyringFileProvisioner.Tests.ps1": "sha256:8b95c4e91c97fb1b25bc4b07ce054f777661a98ff04ddaa4a46d31219ad0e437",
   "backend/hosted_workspace/tests_host_daemon.py": "sha256:fd17bfa1880cbc6e4ab299efdc0ef51853c6179d440920878f8092dca49ea57f",
   "docs/architecture/ADR-0112-hosted-executor-file-based-keyring.md": "sha256:45262a397a9cd72308514c0ceb886f95720cc75407bd938f4c606a344a2f124c"

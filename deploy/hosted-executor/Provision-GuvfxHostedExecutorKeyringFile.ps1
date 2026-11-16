@@ -109,11 +109,16 @@ function Get-RingMetadata([string]$ringJson) {
     if ([string]::IsNullOrWhiteSpace($ringJson)) { throw 'machine_ring_absent' }
     $o = $null
     try { $o = $ringJson | ConvertFrom-Json } catch { throw 'machine_ring_invalid_json' }
-    if ($null -eq $o -or $o -isnot [psobject]) { throw 'machine_ring_not_object' }
-    $names = @($o.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    # ConvertFrom-Json maps a JSON OBJECT -> PSCustomObject, an ARRAY -> Object[], a SCALAR -> a value type/string.
+    # `-isnot [psobject]` does NOT reject an array under PS 5.1 (arrays satisfy -is [psobject]), so test the concrete
+    # shapes: anything that is not a NoteProperty-bearing object is refused.
+    if ($null -eq $o -or $o -is [System.Array] -or $o -is [System.ValueType] -or $o -is [string]) { throw 'machine_ring_not_object' }
+    $names = @($o.PSObject.Properties |
+        Where-Object { $_.MemberType -eq [System.Management.Automation.PSMemberTypes]::NoteProperty } |
+        ForEach-Object { [string]$_.Name })
     if ($names.Count -lt 1) { throw 'machine_ring_empty' }
-    foreach ($pr in $o.PSObject.Properties) {
-        if ([string]::IsNullOrEmpty([string]$pr.Value)) { throw 'machine_ring_empty_secret' }
+    foreach ($nm in $names) {
+        if ([string]::IsNullOrEmpty([string]$o.$nm)) { throw 'machine_ring_empty_secret' }
     }
     return @{ Count = [int]$names.Count; Names = $names }
 }
