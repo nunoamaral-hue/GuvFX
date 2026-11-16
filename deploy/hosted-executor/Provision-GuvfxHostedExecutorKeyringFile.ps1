@@ -153,7 +153,27 @@ function Test-ProtectedAcl([string]$path, [string]$principalSid) {
     }
     $ownerSid = $null
     try { $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSid = $null }
-    if ($ownerSid -and ($allowed -notcontains $ownerSid)) { return $false }
+    if (-not $ownerSid -or ($allowed -notcontains $ownerSid)) { return $false }   # indeterminate owner fails closed
+    return $true
+}
+
+# Read-only DIRECTORY ACL check: inheritance disabled AND the allowed principals are EXACTLY {SYSTEM,
+# Administrators, svc}. Mirrors Test-ProtectedAcl (the per-principal identity is the security property; the dir
+# grants the svc ReadAndExecute rather than Read, which is why rights are not matched here).
+function Test-ProtectedDirAcl([string]$path, [string]$principalSid) {
+    $acl = Get-Acl -LiteralPath $path
+    if (-not $acl.AreAccessRulesProtected) { return $false }
+    $allowed = @('S-1-5-18', 'S-1-5-32-544', $principalSid)
+    foreach ($rule in $acl.Access) {
+        if ($rule.IsInherited) { return $false }
+        $sid = $null
+        try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { return $false }
+        if ($allowed -notcontains $sid) { return $false }
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { return $false }
+    }
+    $ownerSid = $null
+    try { $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value } catch { $ownerSid = $null }
+    if (-not $ownerSid -or ($allowed -notcontains $ownerSid)) { return $false }
     return $true
 }
 
@@ -193,8 +213,10 @@ function Remove-SecretFile([string]$path) {
 function Remove-TempSiblings([string]$dir) {
     try {
         if (Test-Path -LiteralPath $dir) {
-            Get-ChildItem -LiteralPath $dir -Filter '.hosted_executor_keyring.json.tmp.*' -Force -ErrorAction SilentlyContinue |
-                ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch { } }
+            foreach ($pat in @('.hosted_executor_keyring.json.tmp.*', 'hosted_executor_keyring.json.rotating.bak')) {
+                Get-ChildItem -LiteralPath $dir -Filter $pat -Force -ErrorAction SilentlyContinue |
+                    ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch { } }
+            }
         }
     } catch { }
 }
@@ -286,12 +308,13 @@ try {
     $result.key_count = [int]$meta.Count
     $result.active_present = $true
 
-    # Create the fixed directory tree (admin-controlled) if missing, then re-verify the FULL path chain carries
-    # NO reparse point immediately before writing.
-    if (-not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Set-ProtectedDirAcl $dir $principalSid
-    }
+    # Create the fixed directory tree (admin-controlled) if missing. On EVERY run (including rotation, where the
+    # dir already exists) RE-ASSERT the protected dir ACL and VERIFY it before trusting the dir for the atomic
+    # temp write -- a dir created outside this script could carry broad inherited ACEs that would defeat the
+    # temp-window / anti-planting argument. Then re-verify the FULL path chain carries NO reparse point.
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    Set-ProtectedDirAcl $dir $principalSid
+    if (-not (Test-ProtectedDirAcl $dir $principalSid)) { $result.reason = 'dir_acl_failed'; Write-Redacted $result; exit 2 }
     if (-not (Test-NoReparseChain $keyPath)) { $result.reason = 'reparse_point_detected'; Write-Redacted $result; exit 2 }
 
     # Build the file content by composing the ring JSON VERBATIM (no re-serialisation of secret values) with the
@@ -299,46 +322,57 @@ try {
     $idJson = ConvertTo-Json ([string]$activeId) -Compress
     $content = '{"keyring":' + $ringJson + ',"key_id":' + $idJson + '}'
 
-    # atomic protected write: restrict the same-dir temp BEFORE the secret bytes land, then rename onto the path.
+    # atomic protected write: restrict the same-dir temp BEFORE the secret bytes land, then atomically PLACE it.
     $tmp = Join-Path $dir ('.hosted_executor_keyring.json.tmp.' + [guid]::NewGuid().ToString('N'))
+    $bak = $keyPath + '.rotating.bak'
     $utf8 = New-Object System.Text.UTF8Encoding($false)              # UTF-8, no BOM
     try {
         [System.IO.File]::WriteAllText($tmp, '', $utf8)             # create empty (no secret yet)
         Set-ProtectedAcl $tmp $principalSid                        # restrict BEFORE writing the secret
         [System.IO.File]::WriteAllText($tmp, $content, $utf8)       # secret bytes into the already-restricted temp
         $content = $null; $ringJson = $null
-        # value-blind read-back BEFORE the rename: the temp must parse and carry EXACTLY the same key_count + active.
+        # value-blind read-back BEFORE placing: the temp must parse and carry EXACTLY the same key_count + active.
         $rb = (Get-Content -LiteralPath $tmp -Raw) | ConvertFrom-Json
         $rbNames = @($rb.keyring.PSObject.Properties | ForEach-Object { [string]$_.Name })
         if ([int]$rbNames.Count -ne [int]$meta.Count -or ($rbNames -notcontains $activeId) -or ([string]$rb.key_id -ne $activeId)) {
             throw 'readback_mismatch'
         }
         if ($null -ne $AfterTempForTest) { & $AfterTempForTest }    # test-only failure injection (production: null)
-        # Rotation support: the file is a DURABLE, re-provisionable secret (unlike the copier one-shot). On a
-        # rotation the destination already exists; shred+remove it immediately before the rename so the final path
-        # is the freshly-ACL'd temp (File.Move fails closed if the dest still exists). The brief absence window is
-        # harmless -- the daemon reads the keyring ONCE at startup and the operator restarts the service AFTER
-        # provisioning, and the admin-owned directory ACL (service principal traverse-only, no write) prevents any
-        # non-admin from planting a reparse/file in the window.
+        # Place atomically. ROTATION (dest exists) uses File.Replace: atomic AND crash-safe -- on ANY failure the
+        # destination is left UNCHANGED (the prior valid keyring), never absent; the prior content goes to $bak and
+        # is shredded on success. FIRST provision (dest absent) uses Move onto the absent path. The admin-owned
+        # directory ACL (re-asserted + verified above; service principal traverse-only, no write) prevents any
+        # non-admin from planting a reparse/file during placement.
         if (Test-Path -LiteralPath $keyPath) {
             $destItem = Get-Item -LiteralPath $keyPath -Force
             if (($destItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) { throw 'dest_reparse' }
-            Remove-SecretFile $keyPath
+            if (Test-Path -LiteralPath $bak) { Remove-SecretFile $bak }
+            [System.IO.File]::Replace($tmp, $keyPath, $bak)        # atomic replace; dest unchanged on failure
+            $tmp = $null
+            Remove-SecretFile $bak
+        } else {
+            [System.IO.File]::Move($tmp, $keyPath)                 # atomic rename onto the absent fixed path
+            $tmp = $null
         }
-        [System.IO.File]::Move($tmp, $keyPath)                     # atomic rename onto the (now-absent) fixed path
-        $tmp = $null
-        Set-ProtectedAcl $keyPath $principalSid                     # re-assert on the final path (defensive)
     } catch {
         $content = $null; $ringJson = $null
         if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-SecretFile $tmp }
+        if (Test-Path -LiteralPath $bak) { Remove-SecretFile $bak }
         Remove-TempSiblings $dir
         $result.reason = 'write_failed'; Write-Redacted $result; exit 2
     }
 
+    # Post-placement OUTSIDE the write try/catch (so a re-assert/verify failure cannot leave the reported status
+    # diverging from disk): defensively re-assert the ACL (best-effort), then AUTHORITATIVELY verify it. If the
+    # final file is not correctly protected, SHRED it -- never leave a weakly-protected secret -- so file_present
+    # and acl_verified both reflect the real on-disk state.
+    try { Set-ProtectedAcl $keyPath $principalSid } catch { }
+    $aclOk = $false
+    try { $aclOk = (Test-ProtectedAcl $keyPath $principalSid) } catch { $aclOk = $false }
+    if (-not $aclOk -and (Test-Path -LiteralPath $keyPath)) { Remove-SecretFile $keyPath }
     $result.file_present = (Test-Path -LiteralPath $keyPath)
-    $result.acl_verified = (Test-ProtectedAcl $keyPath $principalSid)
+    $result.acl_verified = $aclOk
     $ok = ($result.file_present -and $result.acl_verified)
-    if (-not $ok) { Remove-SecretFile $keyPath }                    # never leave a weakly-protected secret on disk
     $result.ok = $ok
     $result.reason = if ($ok) { 'provisioned' } else { 'acl_failed' }
     Write-Redacted $result

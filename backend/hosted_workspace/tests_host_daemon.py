@@ -216,6 +216,55 @@ class KeyringFileLoaderTests(unittest.TestCase):
             self.assertNotIn(self._FILE_SECRET, str(e))
             self.assertNotIn(self._ENV_SECRET, str(e))
 
+    def test_non_utf8_file_fails_closed_clean(self):
+        # a UTF-16/BOM file (invalid UTF-8) must fail closed as a clean ConfigError, never a raw UnicodeDecodeError
+        with open(self._path, "wb") as fh:
+            fh.write(b"\xff\xfe" + json.dumps(
+                {"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"}).encode("utf-16-le"))
+        os.chmod(self._path, 0o600)
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_symlink_file_refused(self):
+        target = os.path.join(self._dir, "real.json")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"}))
+        os.chmod(target, 0o600)
+        try:
+            os.symlink(target, self._path)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest("symlinks unsupported here")
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_present_but_unreadable_fails_closed_no_fallback(self):
+        if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+            self.skipTest("unreadable-file check requires POSIX non-root")
+        self._write_file({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "hx-file"}, mode=0o000)
+        # present-but-inaccessible is a security condition -> ConfigError, NEVER a silent env fallback
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_not_object_keyring_in_file_refused(self):
+        self._write_file('{"keyring": [1, 2], "key_id": "hx-file"}')
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.load_config(self._env())
+
+    def test_error_messages_carry_no_secret_across_refusals(self):
+        cases = [
+            "{not json",                                                                   # malformed
+            json.dumps({"keyring": {"hx-file": "changeme"}, "key_id": "hx-file"}),          # placeholder
+            json.dumps({"keyring": {"hx-file": self._FILE_SECRET}, "key_id": "nope"}),      # active absent
+        ]
+        for doc in cases:
+            self._write_file(doc)
+            try:
+                cfgmod.load_config(self._env())
+                self.fail("expected ConfigError for %r" % doc[:24])
+            except cfgmod.ConfigError as e:
+                self.assertNotIn(self._FILE_SECRET, str(e))
+                self.assertNotIn(self._ENV_SECRET, str(e))
+
 
 # ── dispatch handler ───────────────────────────────────────────────────────────────────────────────────────
 class HandlerTests(unittest.TestCase):

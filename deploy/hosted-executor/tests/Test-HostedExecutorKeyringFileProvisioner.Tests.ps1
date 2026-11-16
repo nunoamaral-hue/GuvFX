@@ -183,4 +183,68 @@ Describe 'hosted-executor keyring-file provisioner (synthetic)' {
         $r.Json.ok | Should -BeFalse
         $r.Json.reason | Should -Be 'fixed_path_leaf_violation'
     }
+
+    It 'refuses a ring that is not a JSON object (fail closed)' {
+        $dest = New-DestPath
+        $r = Invoke-Prov -Dest $dest -Ring '[1,2]'
+        $r.Json.ok | Should -BeFalse
+        $r.Json.reason | Should -Be 'machine_ring_not_object'
+        Test-Path -LiteralPath $dest | Should -BeFalse
+    }
+
+    It 'refuses an empty-object ring (fail closed)' {
+        $dest = New-DestPath
+        $r = Invoke-Prov -Dest $dest -Ring '{}'
+        $r.Json.ok | Should -BeFalse
+        $r.Json.reason | Should -Be 'machine_ring_empty'
+        Test-Path -LiteralPath $dest | Should -BeFalse
+    }
+
+    It 'verify reports file_absent for a never-provisioned path' {
+        $dest = New-DestPath
+        $r = Invoke-Prov -Dest $dest -Verify
+        $r.Json.ok | Should -BeFalse
+        $r.Json.reason | Should -Be 'file_absent'
+    }
+
+    It 'verify fails for a tampered document whose active id is not a key' {
+        $dest = New-DestPath
+        Invoke-Prov -Dest $dest | Out-Null
+        [System.IO.File]::WriteAllText($dest, '{"keyring":{"k":"SYNTH_SECRET_VALUE_DO_NOT_LEAK_0009"},"key_id":"not-k"}', (New-Object System.Text.UTF8Encoding($false)))
+        $r = Invoke-Prov -Dest $dest -Verify
+        $r.Json.ok | Should -BeFalse
+        $r.Json.active_present | Should -BeFalse
+    }
+
+    It 'verify fails when the file ACL is widened to a broad principal' {
+        $dest = New-DestPath
+        Invoke-Prov -Dest $dest | Out-Null
+        (Invoke-Prov -Dest $dest -Verify).Json.acl_verified | Should -BeTrue
+        $acl = Get-Acl -LiteralPath $dest
+        $users = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')     # BUILTIN\Users
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($users, [System.Security.AccessControl.FileSystemRights]::Read, [System.Security.AccessControl.AccessControlType]::Allow)))
+        Set-Acl -LiteralPath $dest -AclObject $acl
+        $r = Invoke-Prov -Dest $dest -Verify
+        $r.Json.ok | Should -BeFalse
+        $r.Json.acl_verified | Should -BeFalse
+        $r.Json.reason | Should -Be 'verify_failed'
+    }
+
+    It 'leaks no secret on error/exception paths (write failure + malformed ring)' {
+        $dest = New-DestPath
+        (Invoke-Prov -Dest $dest -AfterTemp { throw 'injected' }).Raw | Should -Not -Match $script:LeakMarker
+        $dest2 = New-DestPath
+        (Invoke-Prov -Dest $dest2 -Ring ('{"hx-20261115":"' + $script:LeakMarker + '_bad"')).Raw | Should -Not -Match $script:LeakMarker
+    }
+
+    It 'rotation is crash-safe: a failure during placement leaves the PRIOR keyring intact' {
+        $dest = New-DestPath
+        Invoke-Prov -Dest $dest | Out-Null                                        # v1 in place
+        $before = (Get-Content -LiteralPath $dest -Raw)
+        # inject a failure AFTER the temp is written but during placement
+        $r = Invoke-Prov -Dest $dest -Ring $script:RingV2 -ActiveId $script:ActiveV2 -AfterTemp { throw 'injected' }
+        $r.Json.ok | Should -BeFalse
+        Test-Path -LiteralPath $dest | Should -BeTrue                             # prior file still there
+        (Get-Content -LiteralPath $dest -Raw) | Should -Be $before                # unchanged (still v1)
+    }
 }

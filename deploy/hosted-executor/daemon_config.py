@@ -132,38 +132,54 @@ def _load_keyring(env: dict, *, name: str, key_id_name: str) -> tuple[dict, str]
     return _validate_keyring_map(keyring, key_id, name=name, key_id_name=key_id_name)
 
 
-def _file_is_over_permissive(path: str) -> bool:
-    """Cross-platform over-permissive guard for a secret file. On POSIX any group/other permission bit is a
-    refusal (the file must be owner-only). On Windows the POSIX mode bits are NOT a real ACL, so enforcement is
-    deferred to the NTFS ACL, which the operator provisioner SETS (inheritance off; only SYSTEM, Administrators
-    and the exact service principal may read) and INDEPENDENTLY VERIFIES (``-Verify``) -- see ADR-0112. (Running
-    a POSIX-mode check on Windows would false-positive, since Python reports NTFS files as mode 0o666.)"""
+def _file_is_over_permissive(st) -> bool:
+    """Over-permissive guard for a secret file, taking an ``os.stat`` result. On POSIX it refuses any group/other
+    permission bit (it asserts the group/other bits are clear; it does NOT assert ownership -- the production
+    path is Windows). On Windows the POSIX mode bits are NOT a real ACL (Python reports NTFS files as mode
+    0o666), so enforcement is deferred to the NTFS ACL, which the operator provisioner SETS (inheritance off;
+    only SYSTEM, Administrators and the exact service principal may read) and INDEPENDENTLY VERIFIES
+    (``-Verify``). The daemon does NOT re-assert the NTFS ACL at read time -- that confidentiality guarantee
+    holds from provision time; see ADR-0112."""
     if os.name == "nt":
         return False
     import stat as _stat
-    return bool(_stat.S_IMODE(os.stat(path).st_mode) & 0o077)
+    return bool(_stat.S_IMODE(st.st_mode) & 0o077)
 
 
 def _load_keyring_from_file(path: str, *, name: str, key_id_name: str) -> tuple[dict, str]:
     """PRIMARY loader (GFX-144 / ADR-0112): load the HMAC keyring + active id from ONE fixed, ACL-protected
     JSON file ``{"keyring": {key_id: secret}, "key_id": "<active>"}``. Fail-closed and explicit:
-      * absent            -> FileNotFoundError (the caller ALONE decides the documented env fallback);
-      * not a regular file / over-permissive / unreadable / non-JSON / structurally invalid / active-absent
-                          -> ConfigError (a PRESENT-but-bad secret file is a security condition, NEVER a reason
-                             to fall back to the possibly-stale env).
-    Never logs the file content; ConfigError messages carry only the path + a safe reason, never a secret."""
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-    if not os.path.isfile(path):
+      * truly ABSENT      -> FileNotFoundError (the caller ALONE decides the documented env fallback);
+      * symlink / present-but-inaccessible / not a regular file / over-permissive / unreadable / non-UTF-8 /
+        non-JSON / structurally invalid / active-absent
+                          -> ConfigError (a PRESENT-but-bad or inaccessible secret file is a security condition,
+                             NEVER a reason to fall back to the possibly-stale env).
+    ``os.stat`` (not ``os.path.exists``) distinguishes true absence from a PermissionError/IO error, so an
+    inaccessible-but-present file fails closed instead of silently falling back. Never logs the file content;
+    ConfigError messages carry only the path + a safe reason, never a secret or raw file bytes."""
+    import stat as _stat
+    if os.path.islink(path):
+        raise ConfigError(f"{name} file {path!r} is a symlink; refusing (the keyring file must be a real regular file)")
+    try:
+        st = os.stat(path)                        # NOT os.path.exists -- that swallows PermissionError/IO as "absent"
+    except FileNotFoundError:
+        raise                                     # genuine absence -> the caller does the documented env fallback
+    except OSError:
+        raise ConfigError(f"{name} file {path!r} is present but could not be accessed")
+    if not _stat.S_ISREG(st.st_mode):
         raise ConfigError(f"{name} file is not a regular file: {path!r}")
-    if _file_is_over_permissive(path):
+    if _file_is_over_permissive(st):
         raise ConfigError(f"{name} file {path!r} is over-permissive (group/other access); refusing to read a "
                           f"secret file readable beyond its owner")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = fh.read()
+        with open(path, "rb") as fh:
+            raw_bytes = fh.read()
     except OSError:
         raise ConfigError(f"{name} file {path!r} could not be read")
+    try:
+        raw = raw_bytes.decode("utf-8")           # explicit decode so a non-UTF-8 (e.g. UTF-16 BOM) file fails
+    except (UnicodeDecodeError, ValueError):      # closed as a clean, secret-free ConfigError (RULE 9/11 trap)
+        raise ConfigError(f"{name} file {path!r} is not valid UTF-8")
     try:
         doc = json.loads(raw)
     except (ValueError, TypeError):

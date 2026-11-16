@@ -29,7 +29,7 @@
   "Backend tests cover valid file load, missing->env fallback, malformed/over-permissive/active-absent/placeholder refusal, rotation, rollback and no-secret-leakage; Pester tests cover the same for the operator with synthetic keys."
  ],
  "actual_results": [
-  "hosted_workspace.tests_host_daemon: Ran 37 tests, OK (local; +13 new KeyringFileLoaderTests + 1 env-source test). Covers: file-primary-over-env, absent->env fallback, malformed-file fail-closed (no fallback), over-permissive refused (POSIX), directory-at-path refused, active-id-absent refused, placeholder refused, rotation reflected, rollback (remove->env), both-absent fail-closed, error-messages-carry-no-secret.",
+  "hosted_workspace.tests_host_daemon: Ran 42 tests, OK (local; +18 new KeyringFileLoaderTests/env-source). Covers: file-primary-over-env, absent->env fallback, malformed/over-permissive/directory/active-absent/placeholder/not-object refusal, rotation reflected, rollback (remove->env), both-absent fail-closed, non-UTF-8 fail-closed-clean, symlink refused, present-but-unreadable fail-closed-no-fallback (POSIX non-root), error-messages-carry-no-secret across refusals.",
   "daemon_config file-first loader smoke (local): fallback_source=env; file_source=file; over-permissive(0o644) refused; present-but-malformed fail-closed (not fallback); active-absent fail-closed. All as expected.",
   "Provision-GuvfxHostedExecutorKeyringFile.ps1: ASCII-only (0 non-ASCII bytes), no BOM, #Requires 5.1; balanced delimiters by inspection. Pester suite Test-HostedExecutorKeyringFileProvisioner.Tests.ps1 added (synthetic keys only): provision+ACL+metadata, value-blind (no secret in output), well-formed {keyring,key_id}, verify, absent/malformed/empty-secret/active-absent/active-not-in-ring refusals, rotation, rollback(-Remove), seam-refused-in-production, write-failure cleanup, fixed-leaf violation.",
   "Secret scan (check_no_secrets.py) + evidence linter (check_evidence_manifests.py): to be run at exact head; synthetic keys only in all tests; no secret value in any tracked file."
@@ -54,11 +54,11 @@
   "docs/operations/hosted-workspace/SIGNED_HOST_EXECUTOR_RUNBOOK.md"
  ],
  "checksums": {
-  "deploy/hosted-executor/daemon_config.py": "sha256:ae2bdccf034f34529502315dfcdf4e864f837cd37c6921147a30595763876334",
-  "deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1": "sha256:5c7b82a4e39f1757449198509cb9d00785897f290d4bf9c0b61e17bc5de9ed5e",
-  "deploy/hosted-executor/tests/Test-HostedExecutorKeyringFileProvisioner.Tests.ps1": "sha256:073584fdfbf4ee11fe8592610adbeaf1e33c18ba723e9da8a58d2b01f814e77a",
-  "backend/hosted_workspace/tests_host_daemon.py": "sha256:6bb9d2a4e3d9c44e5c2fe0dfba2c2ae52b731a33a8e2363afa968a3ba378d4d1",
-  "docs/architecture/ADR-0112-hosted-executor-file-based-keyring.md": "sha256:d4c5e627e8ee9bd4a6138ec1f8b27f5678d494c922d5d0fcc1ed668596d84df3"
+  "deploy/hosted-executor/daemon_config.py": "sha256:a4193d0d35f6389840309ae4a821dce6fcdfed3e742ae16322e5e5e56bb21021",
+  "deploy/hosted-executor/Provision-GuvfxHostedExecutorKeyringFile.ps1": "sha256:6a52b30b3c78cacad562427660c00b6f1e53ec94bab84bb015b4c1c5b0362c89",
+  "deploy/hosted-executor/tests/Test-HostedExecutorKeyringFileProvisioner.Tests.ps1": "sha256:8b95c4e91c97fb1b25bc4b07ce054f777661a98ff04ddaa4a46d31219ad0e437",
+  "backend/hosted_workspace/tests_host_daemon.py": "sha256:fd17bfa1880cbc6e4ab299efdc0ef51853c6179d440920878f8092dca49ea57f",
+  "docs/architecture/ADR-0112-hosted-executor-file-based-keyring.md": "sha256:45262a397a9cd72308514c0ceb886f95720cc75407bd938f4c606a344a2f124c"
  },
- "reviewer": "Author self-review + planned multi-lane adversarial review (fail-closed parsing/fallback; ACL correctness + over-permissive refusal; value-blind operator / secret-leakage; PS 5.1 parse/ASCII + atomic-write; test coverage). GFX-143 production diagnosis (SCM boot-time env cache) motivated the file-first design. Findings and fixes recorded before PR finalisation."
+ "reviewer": "Author self-review + 4-lane adversarial review (fail-closed parsing/fallback; ACL correctness + over-permissive refusal; value-blind operator / secret-leakage; PS 5.1 parse/ASCII + atomic-write + coverage). VALUE-BLIND lane SAFE (no secret-leakage finding). Fixed the 3 MEDIUMs + clear LOWs: present-but-inaccessible now fails closed via os.stat (not os.path.exists); non-UTF-8 -> clean ConfigError (not raw UnicodeDecodeError); symlink refused; directory ACL re-asserted + verified on every provision (not only on creation); rotation made crash-safe via File.Replace (prior keyring left intact on failure); ACL re-assert/verify moved outside the write try so reported status matches disk; Test-ProtectedAcl/-DirAcl fail closed on indeterminate owner; added Pester + backend negative tests (broad-ACL -Verify, tampered/absent -Verify, not-object/empty ring, no-leak on error paths, crash-safe rotation). Two LOWs kept as DOCUMENTED decisions: daemon does no read-time NTFS ACL check on Windows (confidentiality holds from provision time; ADR-0112); POSIX over-permissive check asserts mode bits not ownership (production path is Windows). GFX-143 production diagnosis (SCM boot-time env cache) motivated the file-first design."
 }

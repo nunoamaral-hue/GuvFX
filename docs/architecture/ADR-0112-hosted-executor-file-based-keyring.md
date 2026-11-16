@@ -54,11 +54,26 @@ Make the keyring source a **file the operator rewrites atomically**, removing th
 
 ## Permission validation across platforms
 
-The daemon's over-permissive refusal is cross-platform: on POSIX any group/other bit is a refusal (the file must
-be owner-only, exercised by the backend tests on Linux CI); on Windows the POSIX mode bits are not a real ACL
-(Python reports NTFS files as mode 0o666), so enforcement is **deferred to the NTFS ACL**, which the operator
-provisioner sets and independently verifies. The authoritative Windows protection is therefore the NTFS ACL plus
-the provisioner's `-Verify`, not a POSIX-mode check.
+The daemon's over-permissive refusal is cross-platform: on POSIX any group/other bit is a refusal (it asserts the
+group/other bits are clear, exercised by the backend tests on Linux CI; it does not assert ownership); on Windows
+the POSIX mode bits are not a real ACL (Python reports NTFS files as mode 0o666), so enforcement is **deferred to
+the NTFS ACL**, which the operator provisioner sets and independently verifies. The authoritative Windows
+protection is therefore the NTFS ACL plus the provisioner's `-Verify`, not a POSIX-mode check. **The daemon does
+NOT re-assert the NTFS ACL at every read** (that would need a Windows-only dependency); the confidentiality
+guarantee holds from provision time, and a later ACL loosening is out of the daemon's read-time scope — a
+possible future hardening is a win32security DACL assertion at startup.
+
+### Fail-closed hardening (adversarial review)
+
+A present secret file must never cause a silent fallback to the possibly-stale env. The loader therefore: uses
+`os.stat` (not `os.path.exists`, which conflates a `PermissionError`/IO error with absence) so a present-but-
+**inaccessible** file fails closed; refuses a **symlink** at the path; and maps a **non-UTF-8** file (e.g. a
+UTF-16/BOM file saved by an editor — the RULE 9/11 encoding trap) to a clean, secret-free `ConfigError` rather
+than a raw `UnicodeDecodeError` that could surface file bytes. Only a genuine `FileNotFoundError` reaches the env
+fallback. The provisioner's rotation is **crash-safe**: it uses `File.Replace` when the destination exists, so a
+failure during placement leaves the **prior** valid keyring in place (never absent), and it re-asserts +
+verifies the directory ACL on every run (not only on first creation) before trusting the directory for the
+atomic temp write.
 
 ## Rotation and rollback (operator, value-blind - Sponsor-gated; NOT performed by this packet)
 
