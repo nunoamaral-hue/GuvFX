@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149",
+  "packet_id": "GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149",
+  "created_at_utc": "2026-11-16T20:30:00Z",
+  "branch": "feat/copier-lifecycle-arming-safety",
+  "base_commit": "650d3c6645cdd2de9701793f07302072a5d5c384",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only corrective implementation (ADR-0115) extending PR #676 before merge. Closes the residual RUNTIME gap PR #676's review found: admit_open_live admitted a LIVE OPEN without a durable, armed MODIFY+FULL_CLOSE path (flag-timing stranding on the legacy arm). Delivers: (A) open_close_lifecycle_armable gating admit_open_live + under-lock create_live_open_job (no OPEN unless modify+full-close AUTHORITY, no partial-close, close_only_after_expiry, AND the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry execution arms; both arm paths fail closed; legacy OPEN-only authz now denied); (B) opt-in default-OFF auto-bounded revocation-surviving FULL_CLOSE containment (new flag COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED; copier admission via _resolve_governing_with_revocation_containment + preamble/relock, AND a FOURTH allow_live_for_account branch copier_live_revocation_containment_authorized - an Amber execution-LIVE-wall change, byte-identical with the arm OFF, FULL-CLOSE-only, exposure-reducing, auto-closing once flat); (C) teardown proves no unflattened copier position (incl. the lost-ACK EXECUTION_FAILED-but-filled case) before DARK, else halts cleanup_required with NO mutation. NO production/host/flag/key/admission/task/#48/broker mutation; execution gates OFF by default.",
+    "adr": "docs/architecture/ADR-0115-copier-runtime-close-authority-guard.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test, full) + governance-check + secret/PII scan + evidence lint + frontend. No Windows gate needed (no PowerShell artefacts changed in pkt-149)."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_runtime_close_authority_guard   (Ran 50 OK)",
+    "cd backend && .venv/bin/python manage.py test trade_copier   (Ran 1091 OK)",
+    "cd backend && .venv/bin/python manage.py test execution   (OK; the shared allow_live_for_account boundary change)",
+    "cd backend && .venv/bin/python manage.py test execution trade_copier hosted_workspace   (4376 tests; only 2 PRE-EXISTING macOS-env failures in hosted_workspace.tests_observer_attach, proven on clean HEAD 650d3c66 - unrelated to pkt-149)",
+    "cd backend && .venv/bin/python manage.py check   (no issues)",
+    "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run   (No changes detected - migration-free)"
+  ],
+  "expected_results": [
+    "admit_open_live (and create_live_open_job under the authz lock) refuse a LIVE OPEN unless the authorization carries modify_authority + full_close_authority, NOT partial_close_authority, AND close_only_after_expiry, AND the COPIER_LIVE_MODIFY/FULL_CLOSE/MUTATION_DISPATCH/MUTATION_TRANSPORT/CLOSE_ONLY_AFTER_EXPIRY arms are all on; each missing precondition yields a distinct open_requires_* / open_excludes_* reason. A legacy OPEN-only authorization fails closed.",
+    "With COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED off (default), a revoked authorization governs nothing (unchanged ADR-0083). With it on, a FULL CLOSE - and ONLY a full close, never a modify/partial/open - may contain an already-bound position after revocation, requiring full_close_authority; the runtime boundary authorizes MT5_ALLOW_LIVE for that close ONLY while the position is not proven flat, and closes once flat.",
+    "teardown_copier_live_dark halts in cleanup_required (no mutation: arm engaged, authz intact, admission on) while any copier-originated OPEN is unflattened - including a recent EXECUTION_FAILED PLACE_ORDER that may have filled (lost-ACK); it reaches DARK only once every such position is provably closed or resolved beyond the failed-filled window.",
+    "The runtime boundary predicate fails CLOSED (deny MT5_ALLOW_LIVE) on a flatness DB error."
+  ],
+  "actual_results": [
+    "trade_copier.tests_runtime_close_authority_guard: Ran 50 OK (Part A OPEN guard incl. under-lock; Part B revocation containment incl. produce-path, full-close-authority requirement, modify/partial never contained; Part C teardown flatness incl. the two failed-filled regression tests).",
+    "trade_copier full app: Ran 1091 OK. execution suite: OK (shared allow_live_for_account boundary). manage.py check clean; makemigrations --check: No changes (migration-free).",
+    "Broad run execution+trade_copier+hosted_workspace: 4376 tests, the ONLY 2 failures are pre-existing macOS-environment failures in hosted_workspace.tests_observer_attach (_bare_terminal_pids CIM/WMI enumeration; psutil-present swallows the test's own SkipTest). Proven to fail identically on clean HEAD 650d3c66 in a throwaway worktree with NONE of the pkt-149 changes -> not caused by this packet; green on Linux CI (pkt-148 full-backend CI was green).",
+    "Independent adversarial review (6 hunt categories: money-path, OPEN bypass, fail-closed, revocation correctness, teardown flatness, fixture integrity) cleared parts A and B and found 1 HIGH + 3 LOW. HIGH (teardown flatness under-reported an EXECUTION_FAILED-but-FILLED lost-ACK open -> could DARK over an open position) FIXED: _open_copier_positions now counts a recent EXECUTION_FAILED LIVE PLACE_ORDER within FAILED_FILLED_LOOKBACK_SECONDS as not-proven-flat, with 2 new regression tests. LOW-1 (boundary fail-open on a flatness DB error) FIXED (now fails closed). LOW-3 (stale test comment) FIXED. LOW-2 (orphan EXECUTION_REQUESTED keeps the boundary on - safe direction, surfaced in the unflattened list) accepted as-is."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production/host/flag/key/verifier-window/admission/task/#48/broker mutation. Production unchanged; canonical main 600d7f3d; PR #676 base 650d3c66.",
+    "The revocation-surviving containment (part B) is an Amber change to the shared execution LIVE wall (a FOURTH allow_live_for_account branch): with the default-OFF arm it is byte-identical to pre-ADR-0115; a Sponsor arming it deliberately keeps MT5_ALLOW_LIVE on (close-only) for a revoked pair until its position is flat. Documented in ADR-0115 and KNOWN_ISSUES.",
+    "The teardown flatness proof is conservative BACKEND evidence, not a broker read. The DEFINITIVE proof of a lost-ACK (EXECUTION_FAILED-but-filled) open's absence is an identity-firewalled follower position read; teardown bounds the ambiguity by FAILED_FILLED_LOOKBACK_SECONDS (the same window execution_health uses) and surfaces such opens as cleanup_required rather than guessing.",
+    "Backend execution ENV flags are deploy-time process env; the runtime guard READS them live and refuses incoherent states, but does not mutate them. The whole copier LIVE subsystem is DARK in production (all flags OFF), so there is no production behaviour change from this packet.",
+    "The 2 hosted_workspace.tests_observer_attach failures are a pre-existing macOS-local environment artefact (not introduced here); they pass/skip on Linux CI."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/live_execution.py (open_close_lifecycle_armable + admit_open_live/create_live_open_job wiring; _governing_authorization include_revoked; _resolve_governing_with_revocation_containment; _live_lifecycle_preamble + _relock_live_authz_for_lifecycle revocation-containment)",
+    "backend/trade_copier/flags.py (new copier_live_contain_after_revocation_enabled, default OFF)",
+    "backend/trade_copier/lifecycle_teardown.py (_open_copier_positions incl. failed-filled; flatness gate; _dark_verification folds proven_flat)",
+    "backend/execution/live_authz.py (copier_live_revocation_containment_authorized) + backend/execution/bridge_config.py (OR into allow_live_for_account)",
+    "backend/trade_copier/tests_runtime_close_authority_guard.py (NEW 50 tests)",
+    "backend/trade_copier/tests_live_copier.py + tests_immediate_dispatch.py + tests_synthetic_e2e_latency.py (fixtures: complete lifecycle-armed authorizations - the Amber change ADR-0114 deferred)",
+    "docs/architecture/ADR-0115-copier-runtime-close-authority-guard.md (NEW); docs/architecture/ADR-0114-*.md (Deferred->implemented), docs/KNOWN_ISSUES.md, docs/STATUS.md, docs/NEXT.md (MODIFIED)"
+  ],
+  "checksums": {
+    "backend/trade_copier/flags.py": "sha256:1953f7999fb5fb682c3cbf24c6c4de78d9ff013d46e93d8dee286c7e4937fe8a",
+    "backend/trade_copier/live_execution.py": "sha256:cfe564f73baf2e63e3cb70fc31e9d3f50d9a4826b5dd1ddff62a4f9a6475ad0d",
+    "backend/trade_copier/lifecycle_teardown.py": "sha256:12e1e9b5ebf99b511e0dcfdc3d1400f873e09808156f412df3861f810aadcb9c",
+    "backend/execution/live_authz.py": "sha256:12e04e8474bd736f8c859a083ee4f85b800f0705b1b66bfdb36831e4c435e659",
+    "backend/execution/bridge_config.py": "sha256:44549fbb0fa1c83406fa963736b95de9fb969ac8d60e488a9a02807db066ddb5",
+    "backend/trade_copier/tests_runtime_close_authority_guard.py": "sha256:8167c63f7173327e2d52001a907615e1b669fa3283ce56a7580469a8c856ada1",
+    "backend/trade_copier/tests_live_copier.py": "sha256:777e6dec566c75aad000c2d66e78c5c147963436488d25d66da90c5e6f7d71bc",
+    "backend/trade_copier/tests_immediate_dispatch.py": "sha256:3f9844b01ed0c96843befdd5420ea99848333f04a9b77b58e858c61f5865b23b",
+    "backend/trade_copier/tests_synthetic_e2e_latency.py": "sha256:ebfca3995307259ca2ce124bdc0fccd5174f0e1a3242f12875d27cbfd82d5b92",
+    "docs/architecture/ADR-0115-copier-runtime-close-authority-guard.md": "sha256:d8c1fe03f26a6f950c1ad0a8be8bacd299f2bdb00c58729870e1f2a7ce71f226"
+  },
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) self-review + INDEPENDENT adversarial review subagent (money-path / MT5_ALLOW_LIVE widening, OPEN bypass across admission paths, fail-closed on error, revocation-containment correctness + resolve/lock race, teardown flatness soundness incl. lost-ACK failed-filled, fixture integrity + no-network). Parts A and B cleared; 1 HIGH + 3 LOW found, HIGH + LOW-1 + LOW-3 fixed with regression tests. Sponsor review pending; auto-merge OFF; STOP before merge."
+}

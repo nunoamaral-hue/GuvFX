@@ -88,6 +88,15 @@ class Command(BaseCommand):
         if approver is None or not approver.is_staff:
             raise CommandError("--by must be an existing STAFF user (non-staff approver rejected)")
 
+        # 0. ADR-0114 lifecycle authority contract (flag-independent): never engage an arm whose authorization
+        #    would permit an OPEN with no executable CLOSE. Requires MODIFY+FULL_CLOSE authority, excludes
+        #    partial-close, and enforces the bounded caps — so the stranding guard applies to BOTH the legacy arm
+        #    and the atomic arm_copier_live_lifecycle, not only the new path.
+        from trade_copier.lifecycle_arm_contract import authority_contract_blockers
+        auth_blockers = authority_contract_blockers(authz)
+        if auth_blockers:
+            raise CommandError(f"lifecycle authority contract failed: {auth_blockers}")
+
         # 1. Authorization ACTIVE, unexpired, not revoked, with a useful remaining window + entry allowance.
         if authz.status != CopierLiveAuthorizationStatus.ACTIVE or authz.revoked_at is not None:
             raise CommandError(f"authorization not ACTIVE (status={authz.status}, revoked={authz.revoked_at})")

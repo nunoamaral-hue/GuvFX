@@ -1,5 +1,26 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPIER RUNTIME CLOSE-AUTHORITY GUARD (2026-11-16; GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0115; extends PR #676)
+Closes PR #676's residual RUNTIME gap: `admit_open_live` admitted a LIVE OPEN without a durable, armed
+MODIFY+FULL_CLOSE path. Adds `open_close_lifecycle_armable` (gates `admit_open_live` + under-lock
+`create_live_open_job`: no OPEN without modify+full-close authority, no partial-close, close-survives-expiry, and
+the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry arms); opt-in default-OFF auto-bounded
+revocation-surviving FULL_CLOSE containment (copier admission + a FOURTH `allow_live_for_account` branch — **Amber**,
+execution LIVE wall); and a teardown flatness proof (halts `cleanup_required` rather than DARK over an open
+position). Repository-only, migration-free, DARK. Updated the ADR-0057/0094 OPEN fixtures (the Amber change
+ADR-0114 deferred) + new `tests_runtime_close_authority_guard` (48 OK). **One bounded next action:** governed
+adversarial review + exact-head Linux CI, then Sponsor `GO — merge PR #676`. STOP before merge.
+
+## ★ COPIER LIFECYCLE-ARMING SAFETY (2026-11-16; GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0114; repository-only PR)
+Closes the two pkt-147 #46->#48 live-demo blockers (no emitter ingest key; OPEN armable without executable MODIFY/FULL_CLOSE ->
+stranded-position risk) off main `600d7f3d` on `feat/copier-lifecycle-arming-safety`. Adds a fail-closed `lifecycle_arm_contract`
+(no-OPEN-without-executable-CLOSE; partial-close excluded), an atomic `arm_copier_live_lifecycle` (full DARK rollback), an
+idempotent `teardown_copier_live_dark`, a value-blind standing emitter-key readiness contract + reviewed account-46-pinned
+`Provision-GuvfxCopierEmitterKey.ps1`, and a hardened preflight `arm_readiness`. Migration-free, DARK, execution gates
+unchanged; `tests_lifecycle_arming` 38 OK, trade_copier 1085 OK, governance green. **One bounded next action:** governed review
++ exact-head Linux CI + Windows PS5.1 gate, then Sponsor `GO — merge PR`. **Separate Sponsor-gated step (NOT this PR):** a real
+arm/teardown wiring the signed-host actuators + the single hidden key entry. STOP before merge.
+
 ## ★ MONITORING HEALTH OBSERVABILITY (2026-11-13; GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106; repository-only PR)
 Read-only prod diagnosis found the scalable dynamic monitoring mechanism ALREADY exists (dynamic `capture_equity_snapshots`
 `*/5` + `ingest_monitored_deals` `*/15`, flags ON; new accounts auto-appear). The 6 stale accounts are an INFRASTRUCTURE
