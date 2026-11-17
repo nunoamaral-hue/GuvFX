@@ -31,9 +31,15 @@ from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
 
-# The whole stack armed, incl. the explicit LIVE arm and the DARK hosted-live gate.
+# The whole stack armed, incl. the explicit LIVE arm and the DARK hosted-live gate. ADR-0115: a LIVE OPEN now
+# requires the MODIFY+FULL_CLOSE lifecycle to be armed too (no OPEN without a durable, armed close path), so the
+# armed baseline includes the per-op MODIFY/FULL_CLOSE arms, mutation dispatch+transport and the post-expiry
+# close-only policy arm. (Partial-close stays OFF — excluded.)
 LIVE_ARMED = dict(COPIER_ENABLED="1", COPIER_EXECUTE_ENABLED="1", COPIER_LIVE_EXECUTE_ENABLED="1",
-                  HOSTED_LIVE_EXECUTION_ENABLED="1")
+                  HOSTED_LIVE_EXECUTION_ENABLED="1",
+                  COPIER_LIVE_MODIFY_ENABLED="1", COPIER_LIVE_FULL_CLOSE_ENABLED="1",
+                  COPIER_MUTATION_DISPATCH_ENABLED="1", COPIER_MUTATION_TRANSPORT_ENABLED="1",
+                  COPIER_LIVE_CLOSE_ONLY_AFTER_EXPIRY_ENABLED="1")
 
 
 def _live_acct(user, name, num, *, server, display):
@@ -106,6 +112,9 @@ class LiveAdmissionTests(TestCase):
             max_volume=Decimal("0.01"), max_concurrent_positions=1, max_orders=1, orders_consumed=0,
             valid_from=now - timedelta(minutes=1), expires_at=now + timedelta(hours=1),
             watermark_at=now - timedelta(hours=1), watermark_event_sequence=5,
+            # ADR-0115: a LIVE OPEN is admitted only with a durable, armed close lifecycle — the authorization must
+            # carry modify + full-close authority and the post-expiry close-only policy (partial-close excluded).
+            modify_authority=True, full_close_authority=True, close_only_after_expiry=True,
             status=CopierLiveAuthorizationStatus.ACTIVE, approved_by=self.staff, reason="test")
         d.update(over)
         authz = CopierLiveAuthorization.objects.create(**d)

@@ -1,5 +1,42 @@
 # GuvFX — Project Status
 
+> **2026-11-16 — Copier runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0115;
+> repository-only; migration-free; DARK; extends PR #676 before merge; auto-merge OFF; STOP before merge).**
+> Closes the residual RUNTIME gap PR #676's review found: `admit_open_live` admitted a LIVE OPEN without a durable,
+> armed MODIFY+FULL_CLOSE path (a flag-timing stranding on the legacy arm). Adds (1) `open_close_lifecycle_armable`
+> gating `admit_open_live` + `create_live_open_job` — no OPEN unless modify+full-close AUTHORITY, no partial-close,
+> `close_only_after_expiry`, AND the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry arms are all on (both
+> arm paths fail closed; legacy OPEN-only authz now denied); (2) opt-in, default-OFF, auto-bounded
+> revocation-surviving FULL_CLOSE containment (`COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED`; copier admission +
+> a FOURTH `allow_live_for_account` branch `copier_live_revocation_containment_authorized` — **Amber**, execution
+> LIVE wall, byte-identical with the arm OFF); (3) teardown proves no unflattened copier position before DARK, else
+> halts `cleanup_required` with no mutation. Fixtures updated (the Amber change ADR-0114 deferred): the ADR-0057/0094
+> OPEN suites now use complete lifecycle-armed authorizations. New regression `tests_runtime_close_authority_guard`
+> **48 OK**. Repository-only, DARK; execution gates OFF by default; no prod/host/key/flag mutation. STOP before merge.
+
+> **2026-11-16 — Copier lifecycle-arming safety (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0114;
+> repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
+> `600d7f3d`, on `feat/copier-lifecycle-arming-safety`. Closes the two pkt-147 live-demo blockers: (1) the standing
+> immediate emitter had **no ingest signing key** so the <=1s path could not run; (2) `provision_authorized_live_copier_bridge`
+> arms OPEN but NOT the per-op LIVE MODIFY/FULL_CLOSE execution flags, so a copied OPEN could **strand a real #48 position**.
+> Delivers one fail-closed `lifecycle_arm_contract` (MODIFY+FULL_CLOSE authority AND execution-flag coherence; the central
+> **no-OPEN-without-executable-CLOSE** invariant; partial-close excluded; new codes `EMITTER_KEY_ABSENT`,
+> `MODIFY/FULL_CLOSE_EXECUTION_NOT_ARMABLE`, `LIFECYCLE_AUTHORITY_FLAG_MISMATCH`, `FOLLOWER_FLAT_HUMAN_CONFIRM_REQUIRED`,
+> `TEARDOWN_NOT_PROVEN`); one **atomic** `arm_copier_live_lifecycle` (validate-all -> provision admission -> enable emitter ->
+> create arm LAST, **full rollback to DARK on any failure**; host effects injected); an idempotent `teardown_copier_live_dark`;
+> a **value-blind** emitter-key readiness contract (`run_emitter.py` auto-loads a protected standing key file; reviewed
+> account-46-pinned `Provision-GuvfxCopierEmitterKey.ps1` with value-blind `-Verify`, idempotent `-Remove`, tenant READ-ONLY
+> ACL, #48/CZ/arbitrary refusal); and a hardened `copier_live_demo_preflight` `arm_readiness` section (legacy `blockers`
+> untouched). Verified: `tests_lifecycle_arming` **42 OK**, full `trade_copier` **1086 OK**, bundle **67 OK**, check clean,
+> **migration-free**, ADR-0114 unique, governance-check + secret-scan + evidence-lint green. **Independent adversarial
+> review** found 2 HIGH + 1 MEDIUM confirmed defects — all fixed: PS `tenant_read_only` Synchronize-bit false positive
+> (granular write/delete bits; the Windows gate caught it), post-arm re-verify re-requiring the flipped entry
+> preconditions (`check_host_entry=False`), and a rollback that did not restore provisioned host admission (now injects
+> signed `restore_off`). Also added a **legacy `copier_live_arm` authority guard**; the runtime `admit_open_live`
+> no-executable-close guard is **DEFERRED** (Amber core-gate change; KNOWN_ISSUES + ADR). NO production/host/flag/key/
+> admission/task/#48/broker mutation. **One bounded next action:** exact-head Linux CI + Windows PS5.1 gate green, then
+> Sponsor `GO — merge PR`. STOP before merge.
+
 > **2026-11-13 — Monitoring health observability (GFX-DASHBOARD-AUTO-FRESHNESS-AND-ENROLMENT-099; ADR-0106;
 > repository-only; migration-free; observation-only; governed PR; auto-merge OFF; STOP before merge).** Off canonical
 > main `10f89d0d`, on `feat/monitoring-health-observability`. **Read-only prod diagnosis (no host contact) found the

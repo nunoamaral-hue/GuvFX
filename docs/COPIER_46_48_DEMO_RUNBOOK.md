@@ -139,3 +139,35 @@ The authoritative, fully-labelled ordered sequence follows below; the quick-star
 [HUMAN] set backend flags OFF → [PROD-OPERATOR] `restore_copier_bridge_execution_off --commit` → [HUMAN] manually close any #48 position in MT5 → [HUMAN] revoke the authorization → capture state. The kill switch (`copier_live_disarm`) is engaged only if separately authorized for containment. **The system never re-opens or late-reconciles a failed/late entry** (transport one-shot; admission time-bound + fail-closed on restart/expiry).
 
 **No step here is armed or executed by Claude. Claude's role is read-only preflight, read-back verification, and observation only.**
+
+## Corrected atomic arming (pkt-148, ADR-0114)
+
+pkt-147 found two gaps the manual sequence above could not prevent: the standing emitter had **no ingest key**
+(the <=1s path could not run), and `provision_authorized_live_copier_bridge` arms OPEN without proving the
+**MODIFY/FULL_CLOSE execution flags** are on — a copied OPEN could strand a real #48 position. ADR-0114 adds a
+single fail-closed path; prefer it over hand-sequencing the steps above.
+
+1. **[HUMAN over RDP]** Provision the standing emitter key (hidden input; does not enable/trigger the task):
+   `Provision-GuvfxCopierEmitterKey.ps1` then `-Verify` (value-blind: path/ACL/tenant-read-only/task-DISABLED,
+   never reads the value). Account-46-pinned; refuses #48/Customer Zero/arbitrary. `run_emitter.py` auto-loads
+   `C:\GuvFX\copier-emitter\46\ingest.key` process-local at startup.
+2. **[READ-ONLY]** `copier_live_demo_preflight` — confirm the new `arm_readiness` section's blockers and
+   `arm_ready` (fail-closed: `EMITTER_KEY_ABSENT`, `FOLLOWER_FLAT_HUMAN_CONFIRM_REQUIRED`, `HOST_ADMISSION_NOT_OFF`,
+   `EMITTER_TASK_NOT_DISABLED`, `OPEN_WITHOUT_CLOSE_REFUSED`, `MODIFY/FULL_CLOSE_EXECUTION_NOT_ARMABLE`,
+   `LIFECYCLE_AUTHORITY_FLAG_MISMATCH`, `TEARDOWN_NOT_PROVEN`).
+3. **[HUMAN]** Visually confirm #46 and #48 flat.
+4. **[STAFF]** Dry-run the atomic arm (no mutation):
+   `arm_copier_live_lifecycle --master-account-id 46 --follower-account-id 48 --source-symbol XAUUSD
+   --follower-symbol XAUUSD.std --authorization-id <N> --by <STAFF> --reason "demo"
+   --follower-flat-confirmed --emitter-key-ready --host-admission-off --emitter-task-disabled`. It refuses unless
+   the complete OPEN+MODIFY+FULL_CLOSE authority AND execution flags agree, partial-close is excluded, caps hold,
+   #46 is clean, and every host/human gate is attested. Then `--commit` performs, atomically:
+   provision admission -> enable emitter -> create the arm (arm LAST), each read-back-verified, with **full
+   rollback to DARK on any failure** (no partial arm, no stranded position).
+5. **[STAFF]** Teardown (idempotent, any state): `teardown_copier_live_dark --master-account-id 46
+   --follower-account-id 48 --authorization-id <N> --by <STAFF> --commit` — disarm, revoke, signed host-admission
+   OFF; disable the emitter task + `Provision-GuvfxCopierEmitterKey.ps1 -Remove` are the host steps. Reports a
+   machine-readable DARK verdict; host steps without a signed actuator are UNPROVEN, never "done".
+
+**Still DARK / repository-only:** no agent arms, enables, provisions, or trades. A real run wires signed-host
+actuators and is separately Sponsor-gated.
