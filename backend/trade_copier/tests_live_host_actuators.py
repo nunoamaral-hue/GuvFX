@@ -202,6 +202,16 @@ class AdapterTests(SimpleTestCase):
 # ───────────────────────────── the dead end is GONE: arm reaches the real emitter step ─────────────────────────────
 @override_settings(**FULL_FLAGS)
 class ArmWiringTests(_Base):
+    def setUp(self):
+        super().setUp()
+        # These tests prove the emitter_enabler=None dead end is gone (the arm reaches the REAL emitter/admission
+        # step). The ADR-0101 verifier-window gate is a separate precondition tested by VerifierWindowGateTests, so
+        # stub it ready here.
+        _p = mock.patch("trade_copier.verifier_window.covers_live_authorization",
+                        return_value={"ready": True, "reason": "ok"})
+        _p.start()
+        self.addCleanup(_p.stop)
+
     def _probes(self):
         return (lambda: {"ready": True, "identity_ok": True},
                 lambda: {"off": True},
@@ -240,3 +250,76 @@ class ArmWiringTests(_Base):
         msg = str(cm.exception)
         self.assertNotIn("emitter_enabler_unavailable", msg)
         self.assertIn("arm refused", msg)
+
+
+# ───────────────────────────── Phase 3: ADR-0101 verifier-window arm gate ─────────────────────────────
+@override_settings(**FULL_FLAGS)
+class VerifierWindowGateTests(_Base):
+    def setUp(self):
+        super().setUp()
+        from trade_copier.verifier_window import close_all
+        self.addCleanup(close_all)   # never leak an OPEN window into a sibling test (single-flight)
+
+    def _short_authz(self, minutes=5):
+        from datetime import timedelta
+        from django.utils import timezone
+        return self._authz(expires_at=timezone.now() + timedelta(minutes=minutes))
+
+    def _dry_arm(self, authz):
+        return arm_live_lifecycle(
+            master_account_id=self.macct.id, follower_account_id=self.facct.id,
+            source_symbol="XAUUSD", follower_symbol="XAUUSD.std", authorization_id=authz.id,
+            follower_flat_confirmed=True,
+            emitter_key_probe=lambda: {"ready": True, "identity_ok": True},
+            host_admission_probe=lambda: {"off": True},
+            emitter_task_probe=lambda: {"disabled": True},
+            commit=False, by_email=self.staff.email, reason="t")
+
+    def test_covers_requires_open_ingest_window(self):
+        from trade_copier.verifier_window import covers_live_authorization
+        self.assertEqual(covers_live_authorization(self._short_authz())["reason"], "no_open_window")
+
+    def test_covers_rejects_wrong_purpose_and_short_window(self):
+        from trade_copier.verifier_window import covers_live_authorization, verification_window
+        authz = self._short_authz(minutes=10)
+        with verification_window("x" * 40, purpose="ATTEST", ttl_seconds=800):
+            self.assertEqual(covers_live_authorization(authz)["reason"], "purpose_not_ingest")
+        with verification_window("x" * 40, purpose="INGEST", ttl_seconds=60):
+            self.assertEqual(covers_live_authorization(authz)["reason"],
+                             "window_expires_before_authorization")
+
+    def test_covers_ok_with_covering_ingest_window(self):
+        from trade_copier.verifier_window import covers_live_authorization, verification_window
+        authz = self._short_authz(minutes=5)
+        with verification_window("x" * 40, purpose="INGEST", ttl_seconds=600):
+            self.assertTrue(covers_live_authorization(authz)["ready"])
+
+    def test_arm_refuses_without_window(self):
+        res = self._dry_arm(self._short_authz())
+        self.assertFalse(res["ok"])
+        self.assertIn("VERIFIER_WINDOW_NOT_READY", res["detail"]["blockers"])
+
+    def test_arm_validates_with_covering_window(self):
+        from trade_copier.verifier_window import verification_window
+        authz = self._short_authz(minutes=5)
+        with verification_window("x" * 40, purpose="INGEST", ttl_seconds=600):
+            res = self._dry_arm(authz)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res.get("dry_run"))
+        self.assertNotIn("VERIFIER_WINDOW_NOT_READY", res["detail"]["blockers"])
+
+    def test_teardown_closes_and_shreds_window(self):
+        import os
+        import tempfile
+        from trade_copier.lifecycle_teardown import teardown_live_dark
+        from trade_copier.verifier_window import open_window, window_status, write_key_file
+        fd, path = tempfile.mkstemp(prefix="guvfx_test_", suffix=".key")
+        os.close(fd)
+        write_key_file(path, "x" * 40)
+        open_window(purpose="INGEST", ttl_seconds=600, key_path=path)
+        self.assertTrue(window_status()["open"])
+        res = teardown_live_dark(master_account_id=self.macct.id, follower_account_id=self.facct.id,
+                                 authorization_id=None, revoke_authorization=False)
+        self.assertTrue(res["steps"]["verifier_window_closed"]["ok"])
+        self.assertFalse(window_status()["open"])
+        self.assertFalse(os.path.exists(path))   # ephemeral key shredded

@@ -53,6 +53,7 @@ EMITTER_TASK_NOT_DISABLED = "EMITTER_TASK_NOT_DISABLED"
 HOST_ADMISSION_NOT_OFF = "HOST_ADMISSION_NOT_OFF"
 FOLLOWER_FLAT_HUMAN_CONFIRM_REQUIRED = "FOLLOWER_FLAT_HUMAN_CONFIRM_REQUIRED"
 TEARDOWN_NOT_PROVEN = "TEARDOWN_NOT_PROVEN"
+VERIFIER_WINDOW_NOT_READY = "VERIFIER_WINDOW_NOT_READY"   # ADR-0117: no OPEN ADR-0101 window covering INGEST for the whole authz window
 AUTHZ_NONE = "AUTHZ_NONE"
 
 # The bounded live-demo caps (preserved invariants — never widened by this packet).
@@ -161,7 +162,7 @@ def teardown_available() -> bool:
 
 def evaluate_arm_readiness(authz, *, emitter_key_ready, follower_flat_confirmed,
                            host_admission_off, emitter_task_disabled,
-                           require_flag_coherence: bool,
+                           require_flag_coherence: bool, verifier_window_ready=None,
                            source_symbol: str | None = None, follower_symbol: str | None = None,
                            master_account_id: int | None = None,
                            follower_account_id: int | None = None) -> dict:
@@ -180,6 +181,10 @@ def evaluate_arm_readiness(authz, *, emitter_key_ready, follower_flat_confirmed,
         master_account_id=master_account_id, follower_account_id=follower_account_id)
     if require_flag_coherence and authz is not None:
         blockers += execution_flag_blockers(authz)
+        # ADR-0117: at ARM time the signed emitter's events are verifiable only inside an OPEN ADR-0101 window
+        # covering INGEST that outlives the authorization. A tri-state (True clears; False/None keep it blocked).
+        if verifier_window_ready is not True:
+            blockers.append(VERIFIER_WINDOW_NOT_READY)
     if emitter_key_ready is not True:
         blockers.append(EMITTER_KEY_ABSENT if emitter_key_ready is None or emitter_key_ready is False
                         else EMITTER_KEY_IDENTITY_INVALID)
@@ -198,4 +203,5 @@ def evaluate_arm_readiness(authz, *, emitter_key_ready, follower_flat_confirmed,
                           "follower_flat_confirmed": follower_flat_confirmed,
                           "host_admission_off": host_admission_off,
                           "emitter_task_disabled": emitter_task_disabled,
+                          "verifier_window_ready": verifier_window_ready,
                           "teardown_available": teardown_available()}}

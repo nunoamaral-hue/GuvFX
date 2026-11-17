@@ -285,6 +285,29 @@ def window_status(*, now=None) -> dict:
     }
 
 
+def covers_live_authorization(authz, *, now=None) -> dict:
+    """ADR-0117 arm-time gate: is there an OPEN window that covers INGEST, whose ephemeral key file is present, and
+    whose expiry is >= the authorization's expiry (so the emitter's signed events can be verified for the WHOLE
+    live window — the window must never lapse mid-demo and 503 an in-flight close)? Returns a non-secret verdict
+    ``{"ready": bool, "reason": str, "window": {...}?}``. NEVER reads the key VALUE (presence/metadata only)."""
+    from trade_copier.models import CopierVerifierWindow, CopierVerifierWindowState as S
+    now = _now(now)
+    w = CopierVerifierWindow.objects.filter(state=S.OPEN, expires_at__gt=now).order_by("id").first()
+    if w is None:
+        return {"ready": False, "reason": "no_open_window"}
+    if not _purpose_covers(w.purpose, "INGEST"):
+        return {"ready": False, "reason": "purpose_not_ingest", "window": {"purpose": w.purpose}}
+    authz_exp = getattr(authz, "expires_at", None)
+    if authz_exp is not None and w.expires_at < authz_exp:
+        return {"ready": False, "reason": "window_expires_before_authorization",
+                "window": {"purpose": w.purpose, "expires_at": w.expires_at.isoformat(),
+                           "authorization_expires_at": authz_exp.isoformat()}}
+    if not os.path.exists(w.key_path):   # metadata only — the key VALUE is never read here
+        return {"ready": False, "reason": "key_file_absent", "window": {"purpose": w.purpose}}
+    return {"ready": True, "reason": "ok",
+            "window": {"purpose": w.purpose, "expires_at": w.expires_at.isoformat()}}
+
+
 @contextmanager
 def verification_window(secret: str, *, purpose: str = "BOTH", ttl_seconds: int = 300,
                         max_uses: int | None = None, key_path: str | None = None, opened_by=None):

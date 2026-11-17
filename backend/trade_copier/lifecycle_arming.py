@@ -152,9 +152,15 @@ def _validate(*, master_account_id, follower_account_id, source_symbol, follower
         host_admission_off = True
         emitter_task_disabled = True
 
+    # ADR-0117: the signed emitter's events are verified ONLY inside an OPEN ADR-0101 verifier window; require one
+    # that covers INGEST and outlives the authorization, else the <=1s path would 503 mid-demo. Non-secret
+    # (presence/metadata only). Re-evaluated on the post-arm re-verification too (the window must still cover).
+    from trade_copier.verifier_window import covers_live_authorization
+    window_ready = bool(covers_live_authorization(authz, now=now).get("ready"))
     readiness = contract.evaluate_arm_readiness(
         authz, emitter_key_ready=emitter_key_ready, follower_flat_confirmed=bool(follower_flat_confirmed) or None,
         host_admission_off=host_admission_off, emitter_task_disabled=emitter_task_disabled,
+        verifier_window_ready=window_ready,
         require_flag_coherence=True, source_symbol=source_symbol, follower_symbol=follower_symbol,
         master_account_id=master_account_id, follower_account_id=follower_account_id)
     blockers += readiness["blockers"]

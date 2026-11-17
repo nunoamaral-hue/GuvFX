@@ -136,6 +136,17 @@ class ContractUnitTests(_Base):
 # ───────────────────────────── atomic arming orchestration + rollback ─────────────────────────────
 @override_settings(**FULL_FLAGS)
 class ArmOrchestrationTests(_Base):
+    def setUp(self):
+        super().setUp()
+        # ADR-0117: the arm now also requires an OPEN ADR-0101 verifier window covering INGEST that outlives the
+        # authorization. These tests exercise the arm STEP SEQUENCING (admission -> emitter -> arm-create ->
+        # rollback), not the window gate itself (that is covered by tests_live_host_actuators), so the window
+        # readiness is stubbed ready here. The window-refusal path is asserted directly in the window-gate suite.
+        _p = mock.patch("trade_copier.verifier_window.covers_live_authorization",
+                        return_value={"ready": True, "reason": "ok"})
+        _p.start()
+        self.addCleanup(_p.stop)
+
     def _arm(self, *, commit, authz=None, admission=_ok_admission, emitter=_ok_emitter,
              key_probe=None, admission_probe=None, task_probe=None, flat=True, teardown=None):
         authz = authz or self._authz()
