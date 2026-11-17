@@ -21,6 +21,7 @@ const PERMISSION_MAP: Record<AdminRole, AdminPermissions> = {
     entitlements: "full",
     execution_jobs: "full",
     mailbox_health: "read",
+    wayond_metrics: "read",
   },
   finance_admin: {
     reconciliation: "full",
@@ -29,6 +30,7 @@ const PERMISSION_MAP: Record<AdminRole, AdminPermissions> = {
     entitlements: "none",
     execution_jobs: "read",
     mailbox_health: "read",
+    wayond_metrics: "read",
   },
   ops_admin: {
     reconciliation: "acknowledge",
@@ -37,6 +39,7 @@ const PERMISSION_MAP: Record<AdminRole, AdminPermissions> = {
     entitlements: "none",
     execution_jobs: "full",
     mailbox_health: "read",
+    wayond_metrics: "read",
   },
 };
 

@@ -1,0 +1,68 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-WAYOND-TRUTHFUL-METRICS-FOUNDATION-151",
+ "packet_id": "GFX-WAYOND-TRUTHFUL-METRICS-FOUNDATION-151",
+ "created_at_utc": "2026-11-17T08:30:00Z",
+ "branch": "feat/wayond-truthful-metrics",
+ "base_commit": "830214d70338ddae7959710ed85f1cc4bd641e76",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Additive, value-blind, DARK Wayond truthful-metrics foundation (ADR-0116). A pure aggregate-only metrics service (reliability/services/wayond_metrics.py), a staff-only DARK endpoint (IsAdminUser + WAYOND_METRICS_OPERATOR_ENABLED -> 404), a read-only management command, and a DARK operator UI page. No migration, no model change, no schedule/timer, no endpoint/flag enablement, no execution/broker/MT5/Copy-Trading action, no public publication. Measures existing persisted evidence and returns explicit N/A / UNMEASURABLE for every stage whose timestamp or reason is genuinely absent; broker-fill latency is kept structurally separate from internal submission latency."
+ },
+ "ci": {
+  "status": "to-run-at-exact-head",
+  "note": "Local: reliability + signal_intake = 424 passed (incl. 18 new reliability.tests_wayond_metrics); manage.py check clean; makemigrations --check introduces NO migration for the changed apps (reliability/signal_intake/execution) beyond a pre-existing, unrelated soaksnapshot/providercommand index-rename auto-naming drift that this packet does not touch. GitHub exact-head CI (backend / frontend / governance / market-data-foundation / research-foundation) to be driven 5/5 before PR-ready. HARD STOP before merge; auto-merge OFF."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test reliability signal_intake --parallel 4",
+  "cd backend && .venv/bin/python manage.py test reliability.tests_wayond_metrics",
+  "cd backend && .venv/bin/python manage.py check",
+  "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run reliability signal_intake execution",
+  "python3 scripts/check_no_secrets.py",
+  "python3 scripts/check_evidence_manifests.py",
+  "cd frontend && npm run build && npx eslint <changed files>"
+ ],
+ "expected_results": [
+  "A pure, value-blind Wayond metrics aggregation service with a truthful state vocabulary (OK/PARTIAL/UNAVAILABLE/EMPTY for counts; MEASURED/PARTIAL/N/A/UNMEASURABLE/UNKNOWN_FAIL_CLOSED for latency). A latency stage yields p50/p95/p99 only with >= MIN_SAMPLE (20) valid same-or-declared-clock-domain samples; negative/forward-skew deltas are excluded fail-closed (never clamped to 0); absent evidence is N/A/UNMEASURABLE (never 0, success, or an invented duration).",
+  "Measurable latency stages: source_to_acquisition (cross-domain provider->platform), acquisition_to_approval_created (platform, via the approval FK), approval_decision_time (platform, server-commit). Explicit UNMEASURABLE: parse_start_to_complete, approval_to_submission, submission_to_broker_ack, broker_ack_to_fill, end_to_end_source_to_submission. Broker-fill latency is NEVER combined with internal submission latency (boundaries.broker_fill_separate_from_submission asserted true).",
+  "Quality/reliability counts from durable ledgers (outcome breakdown + rates, dead-letter, approval rate/time, plan held/voided + hold reasons + missing-SL, correlation completeness) and explicit N/A for duplicate rate, submission success, fill/requotes/slippage, listener liveness and flood-wait/retry. Synthetic/non-genuine excluded from the genuine cohort. Aggregate-only, value-blind (no body/handle/chat/account/email/token). Staff-only, DARK (404 until flag). Migration-free."
+ ],
+ "actual_results": [
+  "Backend reliability + signal_intake: Ran 424 tests, OK. New reliability.tests_wayond_metrics (18): percentile nearest-rank correctness; _rate None-on-zero-denominator (no false 0.0); latency MEASURED/PARTIAL/N-A transitions with excluded_skew + excluded_missing; absent_stage -> UNMEASURABLE; empty-estate no-false-zero (submission/broker_fill/slippage/duplicate/listener all N/A); source_to_acquisition MEASURED cross-domain p50; acquisition_to_approval via FK; approval_decision_time; negative-skew rows excluded not clamped; outcome/stale/dead-letter; synthetic non_genuine excluded; approval_rate; broker-fill separation; value-blindness (seeded secret-shaped body/handle/account NOT present in output); endpoint unauth 401/403, non-staff 403, staff DARK 404, staff 200 when flagged. manage.py check clean.",
+  "Migration: makemigrations --check for reliability/signal_intake/execution introduces NO migration for this change (no model touched). The only drift reported is a pre-existing Django index-rename auto-naming diff on reliability.SoakSnapshot and signal_intake.ProviderCommand (neither touched by this packet) -- same class of pre-existing drift documented for the strategies app in pkt-150; deploy-neutral and out of scope.",
+  "Governance (local): check_no_secrets.py = no findings; check_evidence_manifests.py = PASS; no secret VALUE and no PII in any tracked file (tests use synthetic, secret-shaped data to PROVE value-blindness, asserting those strings are absent from the output). Frontend: next build + ESLint clean on the changed files; the new route is registered canonically in frontend/parity/routes.json."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only and DARK. The operator endpoint (WAYOND_METRICS_OPERATOR_ENABLED) is NOT enabled; no production deploy, no schedule/timer, no flag enablement. The DARK UI page does not ship with a backend-only deploy.",
+  "The foundation MEASURES existing persisted evidence only. Parse latency, broker submission ACK/FILL latency at the submission boundary, slippage, the real-path order_send round-trip, duplicate rate, DB listener liveness and flood-wait/retry are GENUINELY ABSENT and reported N/A/UNMEASURABLE -- not instrumented by this packet. Each would require additive instrumentation (a future migration + ADR) and is explicitly deferred.",
+  "Wayond is un-armed in production by policy, so execution-side plan/job/trade metrics read EMPTY (truthfully). The rich measured data is at the signal-intake layer; the end-to-end source->submission stage is UNMEASURABLE because correlation_id is absent on ExecutionJob/Trade.",
+  "Intake rows carry NO per-row synthetic discriminator; the genuine cohort is non_genuine=False with that caveat (fixture-vs-live origin is set by the invoking command, not stored). Downstream synthetic/shadow exclusion is documented for when execution is armed.",
+  "Broker-clock values (Trade.open_time/close_time) use an UNVERIFIED offset; they are a separate domain and are never combined with internal latency here. No public Wayond/broker page is activated; the publication boundary is documented only."
+ ],
+ "artefact_locations": [
+  "backend/reliability/services/wayond_metrics.py",
+  "backend/reliability/flags.py",
+  "backend/reliability/views.py",
+  "backend/reliability/urls.py",
+  "backend/reliability/management/commands/wayond_metrics.py",
+  "backend/reliability/tests_wayond_metrics.py",
+  "frontend/src/app/(app)/admin/operations/wayond-metrics/page.tsx",
+  "frontend/src/app/(app)/admin/operations/page.tsx",
+  "frontend/src/components/admin/useAdminRole.ts",
+  "frontend/src/types/admin.ts",
+  "frontend/parity/routes.json",
+  "docs/architecture/ADR-0116-wayond-truthful-metrics.md",
+  "docs/WAYOND_TRUTHFUL_METRICS.md"
+ ],
+ "checksums": {
+  "backend/reliability/services/wayond_metrics.py": "sha256:ae8db5f28c97ffe728bc93cd9267ddbf8b0fafdc1c0ace3728c5dee5d5802c27",
+  "backend/reliability/tests_wayond_metrics.py": "sha256:073fc58eed3ab4b08a52b5aea3376fbd40a478932804c717b622eacb44bfcd33",
+  "docs/architecture/ADR-0116-wayond-truthful-metrics.md": "sha256:8bf5f8b7ddc70a6c5b82f5a9c592ab9a8a8422c227a240ee96827a360a14f424"
+ },
+ "reviewer": "Author self-review + Phase-1 five-lens repo trace (intake/decision/submission/observability/synthetic) that established, per stage, measured-vs-absent timestamps, clock domains, reason codes and correlation gaps. Adversarial review (pkt-151 Phase 6) to follow at the fabricated-speed / clock-skew / broker-fill-conflation / synthetic-contamination / small-cohort / false-zero / cross-tenant vectors; CRITICAL/HIGH fixed with regression tests before PR-ready."
+}
