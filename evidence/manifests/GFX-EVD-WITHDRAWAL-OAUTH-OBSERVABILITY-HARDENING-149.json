@@ -1,0 +1,80 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-WITHDRAWAL-OAUTH-OBSERVABILITY-HARDENING-149",
+ "packet_id": "GFX-WITHDRAWAL-OAUTH-OBSERVABILITY-HARDENING-149",
+ "created_at_utc": "2026-11-16T18:40:00Z",
+ "branch": "feat/wi-oauth-observability-hardening",
+ "base_commit": "600d7f3d318d54c4e1bd342d82ae79a99c3abf76",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Additive, value-blind observability + alerting for Withdrawal Intelligence Gmail OAuth health (ADR-0113). No production deploy, no Google Cloud Console change, no mailbox reconnect, no token/credential rotation or inspection, no cursor mutation, no withdrawal creation/correlation/status change, no scope change, no Copy-Trading/MT5/broker action. Operator endpoint + alert signals ship DARK (IsAdminUser + BROKER_MAILBOX_OPERATOR_HEALTH_ENABLED 404; the DARK ops/monitoring timer is NOT enabled). Correlation scheduling is assessed only and explicitly deferred to a separate reviewed follow-up (ADR-0090/0092 preserved; no schedule added)."
+ },
+ "ci": {
+  "status": "to-run-at-exact-head",
+  "note": "Local: backend broker_intelligence + core.tests_operational_readiness = 1259 passed / 15 skipped; new tests_oauth_health + MailboxIngestProbeTests + command-flag tests green; secret-scan + test_no_secrets + test_data_root pass; frontend ESLint clean on changed files, next build (type-check + ADR-0031 parity) passes with the new route/component registered, new vitest MailboxIngestionNotice green. GitHub exact-head CI (backend / frontend / governance / research-foundation / market-data-foundation) to be driven 5/5 before PR-ready. HARD STOP before merge; auto-merge OFF."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test broker_intelligence core.tests_operational_readiness --parallel 4",
+  "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_oauth_health core.tests_operational_readiness.MailboxIngestProbeTests broker_intelligence.tests_ops_commands.MailboxHealthExitCode",
+  "python3 scripts/check_no_secrets.py",
+  "cd backend && .venv/bin/python -m unittest discover -s ../tests -p 'test_no_secrets.py'",
+  "cd backend && .venv/bin/python -m unittest discover -s ../tests -p 'test_data_root.py'",
+  "python3 scripts/check_evidence_manifests.py",
+  "cd frontend && npx vitest run src/components/accounts/MailboxIngestionNotice.test.tsx",
+  "cd frontend && npx eslint <changed files> && npm run build"
+ ],
+ "expected_results": [
+  "A value-blind 7-status mailbox OAuth health model (HEALTHY / TRANSIENT_FAILURE / DEGRADED / RECONSENT_REQUIRED / SECURITY_CONFIGURATION_ERROR / SYNCHRONIZER_STALLED / UNKNOWN_FAIL_CLOSED) derived purely from the secret-free health.mailbox_health dicts, with alert severity against the Phase-3 thresholds (3 consecutive -> WARNING; 15m -> DEGRADED; 60m -> CRITICAL; invalid_grant/401/403 -> RECONSENT_REQUIRED/CRITICAL immediately; stall -> CRITICAL; no-new-mail -> no alert) and a pure decide_alert with dedup/cooldown/exactly-once-recovery.",
+  "An operator surface: a staff-only, DARK-gated endpoint (operator/mailbox-health/), an ADR-0035 operational-health probe (mailbox_ingest), a DARK-timer alert signal via broker_mailbox_health --oauth-health/--exit-nonzero-on-reconsent/--exit-nonzero-on-synchronizer-stalled, and an Operations-console page; plus a truthful, additive owner banner derived from the existing owner-scoped /mailboxes/status/ payload that never zeroes the withdrawal cards.",
+  "Strictly additive + migration-free + value-blind: no token/credential/cursor/email-body/full-address in any output; no model write, no cursor mutation, no withdrawal create/correlate, no reconnect; DARK by default; ADR-0090 (ref-less Vantage manual-review) and ADR-0092 (staff-gated correlation) preserved; correlation scheduling assessed and deferred (no schedule added)."
+ ],
+ "actual_results": [
+  "Backend broker_intelligence + core.tests_operational_readiness: Ran 1259 tests, OK (15 skipped). New broker_intelligence.tests_oauth_health (classifier matrix across all 7 statuses + severity thresholds; synchronizer-stall detector incl. the unmigrated-schema false-positive regression; decide_alert dedup/cooldown/recovery incl. unusable-timestamp -> SUPPRESS and naive/aware normalisation; no-new-mail non-alert; value-blindness; operator endpoint staff-gating + DARK 404 + cross-owner) = green; core MailboxIngestProbeTests (dark / armed-no-mailbox / reconsent->MISCONFIGURED / stalled->OFFLINE) green; tests_ops_commands command-flag tests (additive oauth block, reconsent exit signal) green.",
+  "Governance (local): check_no_secrets.py = no findings; test_no_secrets (18) + test_data_root (7) OK; no secret VALUE in any tracked file (tests use synthetic data only).",
+  "Frontend: ESLint clean on all changed files; next build passes (type-check + ADR-0031 frontend-parity after registering the new route src/app/(app)/admin/operations/mailbox-health/page.tsx and component src/components/accounts/MailboxIngestionNotice.tsx); new vitest MailboxIngestionNotice.test.tsx (6) green.",
+  "Adversarial review (6 lenses: leakage / authz / false-state / alerting / mutation-race / claims-docs): leakage, authz and mutation-race found NO defects (value-blind by construction; gates correctly ordered IsAdminUser-then-404; strictly read-only, ADR-0090/0092 preserved). Three findings fixed: (MEDIUM) _detect_synchronizer_stalled false SYNCHRONIZER_STALLED on the unmigrated schema -> thread r1_columns_present and never assert a stall when the column is absent; (LOW) decide_alert cooldown mapped an un-computable elapsed to REMIND (tz-naive/aware mismatch spam vector) -> normalise awareness and SUPPRESS a present-but-unusable timestamp; (MEDIUM) the module docstring + ADR-0113 stated the Google 'Testing' publishing status as established fact -> hedged to HIGH-CONFIDENCE INFERENCE per checklist §1. Also renamed the fleet summary field owner_notice -> operator_notice to remove a future cross-owner misuse vector."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only and DARK. The operator endpoint (BROKER_MAILBOX_OPERATOR_HEALTH_ENABLED) and the alert-delivery timer (ops/monitoring/guvfx-broker-mailbox-health.*) are NOT enabled; alert DELIVERY (OnFailure notifier / a durable alert store) is NOT wired by this packet. decide_alert is a pure function; persisting the prev-alert snapshot is the (deferred) delivery layer's job.",
+  "No production run, no live mailbox, no Google Cloud Console read/verification, no publishing-status change. The 7-day Testing-mode mechanism is labelled VERIFIED (Google's documented behaviour) vs HIGH-CONFIDENCE INFERENCE (that THIS project is in Testing) per the checklist; it is NOT confirmed from the console by this packet.",
+  "Correlation scheduling (Phase 7) is assessed code-only and explicitly DEFERRED to a separate, independently-reviewed follow-up; no production schedule is added and ADR-0090/0092 are unchanged.",
+  "The unmigrated-schema (migration 0011 absent) stall-detection path is exercised via a pure unit test of _detect_synchronizer_stalled (r1_columns_present=False), not via a live physical schema-0010 DB; the migrated paths are exercised end-to-end.",
+  "Frontend vitest has 3 PRE-EXISTING failing files (dashboard/localization.test.tsx, 'window.localStorage.clear is not a function') that fail identically on clean origin/main under local node v25.2.1 (a jsdom/localStorage incompatibility) — unrelated to this packet and not introduced by it; CI's pinned node runs them. The pkt-149 tests pass."
+ ],
+ "artefact_locations": [
+  "backend/broker_intelligence/oauth_health.py",
+  "backend/broker_intelligence/tests_oauth_health.py",
+  "backend/broker_intelligence/views.py",
+  "backend/broker_intelligence/urls.py",
+  "backend/broker_intelligence/flags.py",
+  "backend/broker_intelligence/management/commands/broker_mailbox_health.py",
+  "backend/broker_intelligence/tests_ops_commands.py",
+  "backend/core/operational_health.py",
+  "backend/core/tests_operational_readiness.py",
+  "frontend/src/components/accounts/MailboxIngestionNotice.tsx",
+  "frontend/src/components/accounts/MailboxIngestionNotice.test.tsx",
+  "frontend/src/app/(app)/withdrawal-intelligence/page.tsx",
+  "frontend/src/app/(app)/admin/operations/mailbox-health/page.tsx",
+  "frontend/src/app/(app)/admin/operations/page.tsx",
+  "frontend/src/components/admin/useAdminRole.ts",
+  "frontend/src/types/admin.ts",
+  "frontend/parity/routes.json",
+  "frontend/parity/components.json",
+  "docs/architecture/ADR-0113-mailbox-oauth-observability.md",
+  "docs/WITHDRAWAL_V1_MAILBOX_OAUTH_OBSERVABILITY.md",
+  "docs/WITHDRAWAL_V1_OAUTH_PRODUCTION_READINESS_CHECKLIST.md"
+ ],
+ "checksums": {
+  "backend/broker_intelligence/oauth_health.py": "sha256:fd6bbc8d6dce69a74b946296d1762c04cb234ccb6538532a7d623c21b8b46d90",
+  "backend/broker_intelligence/tests_oauth_health.py": "sha256:af37c3cc1a79edc20f78fbe36a757946a15e9ed536e4a496f8b21bbe5e836808",
+  "backend/core/operational_health.py": "sha256:f27c708fc82056817fae7f43eb3782163e5587c643a031bc086cdcfb1c9b5b40",
+  "docs/architecture/ADR-0113-mailbox-oauth-observability.md": "sha256:e770bb71ca90d8d0934fa4ae22c29cd8360d5268f20611503859b5b142bda8bd",
+  "docs/WITHDRAWAL_V1_MAILBOX_OAUTH_OBSERVABILITY.md": "sha256:5cf0e4523435af848f1eaa06b3b0fa0a08efa0022db677336ed94319cf75d066"
+ },
+ "reviewer": "Author self-review + 6-lens adversarial review (leakage / authz / false-state / alerting / mutation-race / claims-docs). Leakage, authz and mutation-race: NO findings (value-blind by construction; IsAdminUser-then-404 gate order verified; strictly read-only; ADR-0090/0092 preserved). Fixed all 3 findings: MEDIUM false SYNCHRONIZER_STALLED on the unmigrated schema (threaded r1_columns_present; stall never asserted when the attempt column is absent; +5 regression tests); LOW cooldown spam on a tz naive/aware mismatch (normalise awareness; SUPPRESS a present-but-unusable timestamp; +3 tests); MEDIUM governance claim (hedged 'app is in Testing' to HIGH-CONFIDENCE INFERENCE in the module docstring + ADR-0113 to match checklist §1). Also renamed owner_notice -> operator_notice (fleet summary is staff-only) to close a future cross-owner misuse vector. All 49 oauth/probe/command tests green post-fix; full broker_intelligence + core suites 1259/15-skip green."
+}

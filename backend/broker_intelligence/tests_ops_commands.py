@@ -86,6 +86,26 @@ class MailboxHealthExitCode(TestCase):
         _mailbox(last_successful_sync=timezone.now())                         # fresh -> SUCCESSFUL
         call_command("broker_mailbox_health", "--exit-nonzero-on-recovery", stdout=StringIO())  # no raise
 
+    def test_oauth_health_block_is_additive_only(self):
+        # pkt-149: without --oauth-health the output is byte-identical (no oauth block); with it, the block appears.
+        _mailbox(last_successful_sync=timezone.now())
+        plain = StringIO(); call_command("broker_mailbox_health", "--json", stdout=plain)
+        self.assertNotIn("oauth_health", plain.getvalue())
+        rich = StringIO(); call_command("broker_mailbox_health", "--json", "--oauth-health", stdout=rich)
+        self.assertIn("oauth_health", rich.getvalue())
+
+    def test_exit_nonzero_on_reconsent_raises_for_expired_grant(self):
+        # The early-warning signal the DARK alert timer uses: an expired/withdrawn Google grant needs re-consent.
+        _mailbox(last_error_code="OAUTH_PERMISSION_DENIED", consecutive_failures=5,
+                 last_successful_sync=timezone.now() - timedelta(hours=3),
+                 last_attempted_sync=timezone.now() - timedelta(minutes=1))
+        with self.assertRaises(CommandError):
+            call_command("broker_mailbox_health", "--exit-nonzero-on-reconsent", stdout=StringIO())
+
+    def test_exit_nonzero_on_reconsent_quiet_when_healthy(self):
+        _mailbox(last_successful_sync=timezone.now(), last_attempted_sync=timezone.now())
+        call_command("broker_mailbox_health", "--exit-nonzero-on-reconsent", stdout=StringIO())  # no raise
+
 
 _RAW_IDENTIFIERS = ("John", "Smith", "54548", "647390", "4113188", "noreply@tradersway.com", "https://")
 

@@ -59,6 +59,16 @@ def broker_mailbox_status_enabled() -> bool:
     return _flag("BROKER_MAILBOX_STATUS_ENABLED")
 
 
+def broker_mailbox_operator_health_enabled() -> bool:
+    """OPERATOR-facing gate for the value-blind mailbox OAuth health projection API (pkt-149, ADR-0113). DEFAULT OFF →
+    the ``operator/mailbox-health/`` endpoint 404s until the Sponsor arms it. The endpoint is additionally restricted
+    to staff (``IsAdminUser``); this flag keeps the whole operator surface DARK independently of that. Read-only,
+    secret-free (masked identity + stable diagnostic code + counts + ages only — never a token/credential/cursor/email
+    body/full address); it reads the health read-model and the OAuth health classifier and MUTATES NOTHING, contacts
+    no Gmail/broker, and grants NO execution/strategy/credential authority."""
+    return _flag("BROKER_MAILBOX_OPERATOR_HEALTH_ENABLED")
+
+
 def broker_withdrawal_ux_enabled() -> bool:
     """Member-facing gate for the Withdrawals UX + its metrics API. DEFAULT OFF. While OFF the metrics endpoint
     responds 404 (feature absent) so the half-built member feature never surfaces; the projection
