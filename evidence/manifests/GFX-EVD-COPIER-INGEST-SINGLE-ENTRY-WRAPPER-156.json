@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-INGEST-SINGLE-ENTRY-WRAPPER-156",
+  "packet_id": "GFX-COPIER-INGEST-SINGLE-ENTRY-WRAPPER-156",
+  "created_at_utc": "2026-11-17T18:40:00Z",
+  "branch": "feat/copier-ingest-single-entry",
+  "base_commit": "9ce6ceab3d73153298d08fb620c2b5e0f8137a2f",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only operator tooling. Implements the smallest correction pkt-155 identified: a dedicated single-entry wrapper that takes the account-46 ingest key ONCE via hidden input and delivers the IDENTICAL bytes to (a) the host standing-emitter key provisioner (Provision-GuvfxCopierEmitterKey.ps1 -KeyFromStdin) and (b) one bounded backend INGEST verifier window (copier_verifier_window --open --purpose ingest --max-uses 0 --ttl <=900, uncapped). The ADR-0117 section-3 single-entry INGEST contract already existed but had no concrete wrapper for the standing/uncapped case (provision_and_open_oneshot.py is ATTEST + max_uses 1; Open-GuvfxCopierVerifierWindow.ps1 is backend-only, caps 1-50, auto-closes). On success the wrapper leaves BOTH the host key and the OPEN window in place for the later, separately-gated arm; on ANY partial failure it closes the window + shreds the host key and INDEPENDENTLY verifies a DARK result, else reports CLEANUP_INCOMPLETE. No production/host/flag/key/window/authorization/arm/task/#48/broker mutation; the real key is never requested, displayed, generated, hashed or handled (tests use a SYNTHETIC key only).",
+    "adr": "docs/architecture/ADR-0117-copier-production-arming-pipeline.md (section 3 already defines this single-entry INGEST contract; no new ADR added)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "workflow_changed": "One CI governance-job step added (.github/workflows/ci.yml) to run the new test, mirroring the existing one-shot wrapper step; no other workflow/runner/secret change.",
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance-check + secret/PII scan + evidence lint + frontend. No Windows PS 5.1 gate applicable: this packet adds NO PowerShell artefact (one new Python operator script + one new Python test + a Markdown runbook edit); the host provisioner Provision-GuvfxCopierEmitterKey.ps1 is UNCHANGED."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_provision_and_open_ingest.py'   (Ran 40 OK)",
+    "python3 -m unittest discover -s tests -p 'test_provision_and_open_oneshot.py'   (Ran 40 OK - sibling ATTEST wrapper UNCHANGED, regression green)",
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_verifier_window trade_copier.emitter.tests_bundle   (Ran 89 OK)",
+    "cd backend && .venv/bin/python manage.py test trade_copier   (Ran, exit 0)",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance   (Ran 3 OK)",
+    "python3 scripts/check_no_secrets.py   (no findings)",
+    "python3 scripts/check_evidence_manifests.py   (EVIDENCE-LINT: PASS)",
+    "ASCII/no-BOM/LF check on provision_and_open_ingest.py + test (0 non-ASCII bytes, no BOM, 0 CRLF)"
+  ],
+  "expected_results": [
+    "One hidden key entry (getpass, re-entered to confirm) is delivered BYTE-IDENTICALLY to Provision-GuvfxCopierEmitterKey.ps1 -KeyFromStdin (as '<phrase>\\n<key>') and to copier_verifier_window --open (as '<key>') over ssh STDIN only; the key is never in argv/env/temp-file/log/exception/JSON output.",
+    "The window opened is purpose=INGEST, --max-uses 0 (uncapped / max_uses None), TTL 30..900; exactly one; and the success gate re-asserts purpose==INGEST and max_uses is None before leaving it open.",
+    "Fail-closed preflight (before the prompt): refuse if a window is already open, if a present-and-valid or present-but-invalid/ambiguous standing key exists, or if either state is unreadable.",
+    "On any partial failure / exception / interrupt: close the window (unless it is a concurrent operator's) + shred the host key, then INDEPENDENTLY verify DARK (host-key absence from the task-contract-independent -Remove result; window closed from --status); report CLEANUP_INCOMPLETE with remediation if it cannot prove a clean state - never a false rollback.",
+    "The wrapper enables/triggers NO task, NO flag, NO authorization, NO arm, NO worker, and references NO account 48 or broker."
+  ],
+  "actual_results": [
+    "tests/test_provision_and_open_ingest.py: Ran 40 OK - byte-identical delivery + never-argv; purpose ingest + max-uses 0 asserted; preflight refusals (window open / standing key present-valid / present-but-invalid-ambiguous / status unreadable / ttl out of bounds); mismatch / short / non-ASCII / space-padded key refused before any delivery; provision fail; verify fail shreds; window-open fail cleans both; ssh error / KeyboardInterrupt fail closed; CLEANUP_INCOMPLETE on close-fail and on remove-fail; foreign concurrent window NOT clobbered; capped-window shape refused; the cleanup absence signal is the -Remove result not -Verify; no secret in stdout on any path; key only on stdin; ASCII-only + no key arg; _last_json fail-closed matrix.",
+    "Sibling tests/test_provision_and_open_oneshot.py: Ran 40 OK (the ATTEST wrapper is untouched - the two toolchains share no code; _ssh/_last_json were copied verbatim, not extracted).",
+    "Backend regression: trade_copier.tests_verifier_window + emitter.tests_bundle 89 OK; full trade_copier suite exit 0; core.tests_adr_governance 3 OK; manage.py check clean (no backend code changed - operator script + repo-root test only; migration-free).",
+    "scripts/check_no_secrets.py: no findings. scripts/check_evidence_manifests.py: PASS. check encoding: 0 non-ASCII, no BOM, LF only.",
+    "Independent adversarial review subagent (5 axes: secret exposure; partial-failure cleanup; wrong account/task/window purpose; hidden enablement/execution authority; duplicate/concurrent operator race) found 0 CRITICAL, 1 HIGH, 2 MEDIUM, 2 LOW. ALL fixed before PR: HIGH (cleanup 'verified_dark' could be reported with the key file still on disk because _verify_cleanup read absence from -Verify, which sets key_file_present only AFTER Assert-TaskContract -> task drift hid a real file) FIXED by reading absence from the task-contract-independent -Remove result (ok True / key_file_present False). MEDIUM-1 (space-padded key diverges: backend stores key.strip(), host keeps spaces) FIXED by rejecting space (ord<33). MEDIUM-2 (failure cleanup closed GLOBAL windows, could clobber a concurrent operator's window opened in the preflight->open gap) FIXED by detecting the single-flight rejection on stderr and leaving a foreign window intact. LOW-1 (present-but-invalid key silently overwritten) FIXED (preflight refuses on any non-'absent' state). LOW-2 (success did not re-assert INGEST+uncapped) FIXED (shape re-asserted). Axes 1 and 4 were clean (no secret path to argv/env/log/exception/output; no trigger/enable/flag/arm/worker command exists in the wrapper)."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed, NOT run with a real key. No production/host/flag/key/verifier-window/authorization/arm/task/#48/broker mutation. Production backend is 9ce6ceab (DARK) and untouched; the Windows host is untouched.",
+    "The wrapper assumes the documented SINGLE Sponsor-gated operator model. It hardens the concurrent case (a foreign window opened in the preflight->open TOCTOU gap is left intact, not clobbered), but it does NOT hold an exclusive lease; the backend DB partial-unique constraint on state=OPEN still guarantees at most one window. True multi-operator concurrency is out of the threat model.",
+    "No PowerShell artefact was added or changed (the host provisioner Provision-GuvfxCopierEmitterKey.ps1 is unchanged), so a Windows PS 5.1 ParseFile gate is Not Applicable to this packet.",
+    "Backend absence/validity signals come from the reviewed provisioner's own -Remove/-Verify results (value-blind, metadata only); the wrapper never reads, hashes or echoes the key. Definitive host-side ACL/identity enforcement remains in the reviewed provisioner, not the wrapper.",
+    "_ssh and _last_json are copied verbatim from provision_and_open_oneshot.py (not extracted to a shared module) to keep the standing-INGEST and one-shot-ATTEST toolchains fully isolated; the copies are pinned by their own regression tests (LastJsonParserTests)."
+  ],
+  "artefact_locations": [
+    "deploy/copier-emitter/operator/provision_and_open_ingest.py (NEW - the single-entry standing-INGEST wrapper)",
+    "tests/test_provision_and_open_ingest.py (NEW - 40 tests, SYNTHETIC key only)",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md (MODIFIED - arming step 1 now documents the single-entry wrapper flow: preflight before key entry, one hidden entry, host key + uncapped INGEST window, success leaves both staged, partial failure removes both, teardown separately governed)",
+    ".github/workflows/ci.yml (MODIFIED - one governance-job step added to run tests/test_provision_and_open_ingest.py, mirroring the one-shot wrapper step)",
+    "evidence/manifests/GFX-EVD-COPIER-INGEST-SINGLE-ENTRY-WRAPPER-156.json (NEW - this manifest)"
+  ],
+  "checksums": {
+    "deploy/copier-emitter/operator/provision_and_open_ingest.py": "sha256:4083b95b2341c7ae1a48d6bf05fbbd03c85b4ca908c4ddc5d543963538464823",
+    "tests/test_provision_and_open_ingest.py": "sha256:edc32c9f37c8c30c26ba3b00b7187e48635983610a33dc2b5e259f0d412fd47f",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md": "sha256:b17a568e038dc1cd461ef5f763c821071ecb33ec1038d5054f9f73833f8749fd",
+    ".github/workflows/ci.yml": "sha256:6ac769d0161cd209ca4671e35f7ff420c52df9ac59a87f3f7ea832ae280ef681"
+  },
+  "reviewer": "GuvFX Copy Trading coding agent (Claude Opus 4.8) self-review + INDEPENDENT adversarial review subagent (5 axes: secret exposure, partial-failure cleanup, wrong account/task/window purpose, hidden enablement/execution authority, duplicate/concurrent operator race). 0 CRITICAL, 1 HIGH, 2 MEDIUM, 2 LOW; ALL fixed with regression tests before the PR was opened. Sponsor review pending; auto-merge OFF; STOP before merge."
+}

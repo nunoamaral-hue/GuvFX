@@ -147,10 +147,26 @@ pkt-147 found two gaps the manual sequence above could not prevent: the standing
 **MODIFY/FULL_CLOSE execution flags** are on — a copied OPEN could strand a real #48 position. ADR-0114 adds a
 single fail-closed path; prefer it over hand-sequencing the steps above.
 
-1. **[HUMAN over RDP]** Provision the standing emitter key (hidden input; does not enable/trigger the task):
-   `Provision-GuvfxCopierEmitterKey.ps1` then `-Verify` (value-blind: path/ACL/tenant-read-only/task-DISABLED,
-   never reads the value). Account-46-pinned; refuses #48/Customer Zero/arbitrary. `run_emitter.py` auto-loads
-   `C:\GuvFX\copier-emitter\46\ingest.key` process-local at startup.
+1. **[HUMAN — single entry]** Provision the standing emitter key AND open the backend INGEST verifier window
+   from ONE hidden key entry (does not enable/trigger the task, a flag, an authorization or an arm). Run the
+   reviewed wrapper in the operator's own console:
+   `deploy/copier-emitter/operator/provision_and_open_ingest.py --windows-ssh <admin@host> --backend-ssh <ubuntu@vps>`.
+   It (a) **PREFLIGHTS before prompting** — refuses if a verifier window is already open, if a present-and-valid
+   standing key already exists, or if either state is unreadable (ambiguous ⇒ refuse); (b) reads the account-46
+   ingest key **ONCE, hidden (getpass), re-entered to confirm**; (c) delivers the **identical bytes over ssh STDIN**
+   to BOTH the host provisioner `Provision-GuvfxCopierEmitterKey.ps1 -KeyFromStdin` (account-46-pinned, refuses
+   #48/Customer Zero; then value-blind `-Verify` must pass — path/ACL/tenant-read-only/task-DISABLED, never reads
+   the value; writes `C:\GuvFX\copier-emitter\46\ingest.key`, which `run_emitter.py` auto-loads at startup) AND the
+   backend `copier_verifier_window --open --purpose ingest --max-uses 0 --ttl <=900` (**UNCAPPED** — the arm refuses
+   a finite cap because every ingested OPEN/MODIFY/CLOSE/heartbeat burns one use, so a capped window would lapse
+   mid-lifecycle and 503 the follower CLOSE). On **SUCCESS it deliberately LEAVES both** the standing host key and
+   the OPEN INGEST window in place for the arm (step 4). On **any partial failure / exception / interrupt** it closes
+   the window and shreds the host key (`-Remove`), then **INDEPENDENTLY verifies** zero open windows + host key absent,
+   reporting `CLEANUP_INCOMPLETE` with exact operator remediation if it cannot prove a DARK result (never a false
+   rollback). The key never reaches argv/env/logs/output. Removal at teardown remains the separately-governed step 5
+   (`Provision-GuvfxCopierEmitterKey.ps1 -Remove` + `copier_verifier_window --close`). *(Distinct from the one-shot
+   ATTEST wrapper `provision_and_open_oneshot.py`, which opens a capped ATTEST window and tears it down after one
+   verification.)*
 2. **[READ-ONLY]** `copier_live_demo_preflight` — confirm the new `arm_readiness` section's blockers and
    `arm_ready` (fail-closed: `EMITTER_KEY_ABSENT`, `FOLLOWER_FLAT_HUMAN_CONFIRM_REQUIRED`, `HOST_ADMISSION_NOT_OFF`,
    `EMITTER_TASK_NOT_DISABLED`, `OPEN_WITHOUT_CLOSE_REFUSED`, `MODIFY/FULL_CLOSE_EXECUTION_NOT_ARMABLE`,
