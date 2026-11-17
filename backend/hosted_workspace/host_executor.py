@@ -316,6 +316,49 @@ class SignedHostExecutor:
             return {"ok": False, "reason": "account_not_emitter_pinned"}
         return self._send("TRIGGER_EMITTER_ONESHOT_ATTEST")
 
+    # ADR-0117 — the STANDING immediate emitter task is pinned to account #46 (the sole master in the bounded
+    # #46->#48 demo). These four methods are the POLICY edge that pins #46 BEFORE any host contact; the signed op +
+    # host dispatcher stay account-generic (Customer-Zero-refused) and the fixed .ps1s re-pin #46. They carry NO
+    # caller params: every task name / path / principal / action is host-derived from account_id, so a caller can
+    # never name an arbitrary task, command or path.
+    STANDING_EMITTER_ACCOUNT_ID = 46
+
+    def enable_copier_emitter(self, rdp_host=None) -> dict:
+        """ADR-0117 — enable account #46's pre-installed, DISABLED standing immediate-emitter task
+        (``GuvFX_CopierEmitter_46`` -> ``run_emitter.py run --config ...\\46\\config.json``, principal
+        ``guvfx_u_46``) so it signs and pushes the sub-second event feed. #46-pinned BEFORE any host contact;
+        carries NO params — the host derives the fixed task/principal/action from ``account_id`` and refuses
+        Customer Zero + any action drift (never the one-shot attest). Enables ONLY the standing emitter: it logs
+        in nothing, places/modifies/closes NO order, contacts no follower, opens no verifier window. Idempotent."""
+        if self.account_id != self.STANDING_EMITTER_ACCOUNT_ID:
+            return {"ok": False, "reason": "account_not_emitter_pinned"}
+        return self._send("ENABLE_COPIER_EMITTER")
+
+    def disable_copier_emitter(self, rdp_host=None) -> dict:
+        """ADR-0117 teardown counterpart — re-disable ``GuvFX_CopierEmitter_46``. #46-pinned; carries NO params;
+        idempotent (already-disabled => ok). Stops the push feed; places/modifies/closes NO order."""
+        if self.account_id != self.STANDING_EMITTER_ACCOUNT_ID:
+            return {"ok": False, "reason": "account_not_emitter_pinned"}
+        return self._send("DISABLE_COPIER_EMITTER")
+
+    def remove_copier_emitter_key(self, rdp_host=None) -> dict:
+        """ADR-0117 teardown — run the reviewed ``Set-GuvfxCopierEmitter.ps1 -Mode RemoveKey`` primitive to shred +
+        delete the host-local standing ingest key (``...\\46\\ingest.key``). #46-pinned; carries NO params;
+        idempotent (already-absent => ok).
+        Reads/returns NO key material — the backend never sees the key, and nothing key-derived rides this wire."""
+        if self.account_id != self.STANDING_EMITTER_ACCOUNT_ID:
+            return {"ok": False, "reason": "account_not_emitter_pinned"}
+        return self._send("REMOVE_COPIER_EMITTER_KEY")
+
+    def read_copier_host_state(self, rdp_host=None) -> dict:
+        """ADR-0117 — VALUE-BLIND read-back of account #46's standing-emitter host posture: the emitter task's
+        enabled/disabled + triggerless state + principal, and the ``ingest.key`` presence + ACL (metadata ONLY,
+        NEVER the key or any key-derived value). #46-pinned; carries NO params; read-only on the host (launches
+        nothing, logs in nothing, mutates nothing). Returns the sanitised signed result."""
+        if self.account_id != self.STANDING_EMITTER_ACCOUNT_ID:
+            return {"ok": False, "reason": "account_not_emitter_pinned"}
+        return self._send("READ_COPIER_HOST_STATE")
+
     def probe_session(self, rdp_host=None) -> dict:
         """P4 READ-ONLY reboot-recovery probe: ask the host for THIS account's OWN Windows RDS session state via the
         PROBE_SESSION op (qwinsta). Like ``observe()``, it carries NO confinement args — the identity is host-derived

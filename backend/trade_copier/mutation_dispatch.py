@@ -212,8 +212,13 @@ def run_mutation_dispatch_pass(*, transport=_inert_transport, gate_check=_govern
         return {"enabled": False, "scanned": 0, "dispatched": 0}
 
     from execution.models import ExecutionJob
+    # ADR-0117 governed-copier ownership: this governed path owns ONLY copier-marked LIVE mutations
+    # (``payload.copier_governed=True``). The generic execution.views.next_job claim excludes exactly these, so the
+    # two paths never overlap (no double / wrong-owner dispatch). Non-copier and DEMO MODIFY/CLOSE jobs are never
+    # scanned here — they stay with the generic worker.
     job_ids = list(ExecutionJob.objects
-                   .filter(job_type__in=list(_JOBTYPE_TO_OP.keys()), status=ExecutionJob.Status.PENDING)
+                   .filter(job_type__in=list(_JOBTYPE_TO_OP.keys()), status=ExecutionJob.Status.PENDING,
+                           payload__copier_governed=True)
                    .order_by("id").values_list("id", flat=True)[:limit])
     scanned = 0
     dispatched = 0

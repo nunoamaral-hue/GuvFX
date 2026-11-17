@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153",
+  "packet_id": "GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153",
+  "created_at_utc": "2026-11-17T12:00:00Z",
+  "branch": "feat/copier-production-actuators",
+  "base_commit": "ea085ee1b16abef846746f6291b084c92cc0d02f",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only implementation (ADR-0117) of the missing governed production wiring so one atomic command can safely move the exact #46->#48 route from DARK to ARMED with no partial arm and no stranded follower position. Removes the emitter_enabler=None dead end with REAL DARK-gated signed-host emitter actuators (ENABLE/DISABLE/REMOVE_COPIER_EMITTER_KEY/READ_COPIER_HOST_STATE, #46-pinned) + production adapters (trade_copier.live_host_actuators) + their host primitive (Set-GuvfxCopierEmitter.ps1, one -Mode script); adds the ADR-0101 verifier-window arm gate (VERIFIER_WINDOW_NOT_READY) + teardown window close/shred; adds a governed single-flight bounded crash-safe execution driver (run_copier_execution_driver, new DARK flag + own lease file); closes the dispatcher-ownership gap so copier LIVE MODIFY/CLOSE are marked copier_governed, excluded from the generic next_job claim (NULL-safe), and claimed ONLY by run_copier_mutation_dispatch; and confirms the dispatch path at arm. Immediate-push authoritative + fast-poll fallback + slow reconciliation-only dedup already exist (ADR-0074/0094) and are reused. NO production/host/flag/key/verifier-window/admission/task/#48/broker mutation.",
+    "adr": "docs/architecture/ADR-0117-copier-production-arming-pipeline.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": false,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance-check + secret/PII scan + evidence lint + frontend; plus a throwaway exact-head Windows PowerShell 5.1 ParseFile gate for the new Set-GuvfxCopierEmitter.ps1 primitive."
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_live_host_actuators   (signed actuators + adapters + verifier-window gate)",
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_execution_driver execution.tests_copier_governed_claim   (driver + ownership split)",
+    "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_host_daemon_packaging hosted_workspace.tests_host_primitive_runner trade_copier.tests_copier_emitter_oneshot   (host CONTRACT/manifest/parity)",
+    "cd backend && .venv/bin/python manage.py test trade_copier execution hosted_workspace core   (full regression)",
+    "cd backend && .venv/bin/python manage.py check",
+    "cd backend && .venv/bin/python manage.py makemigrations trade_copier execution hosted_workspace --check --dry-run   (migration-free)",
+    "cd backend && .venv/bin/python manage.py test core.tests_adr_governance   (ADR-0117 unique)",
+    "make governance-check   (secret-scan + evidence-lint + governance suites)",
+    "Windows PS 5.1 ParseFile Set-GuvfxCopierEmitter.ps1 (exact-head gate)"
+  ],
+  "expected_results": [
+    "arm_copier_live_lifecycle --commit no longer passes emitter_enabler=None; it fails closed at the REAL emitter/admission step (host_executor_unavailable) and rolls the whole stack back to DARK while the signed host executor is DARK \u2014 never a partial arm, never a faked actuator.",
+    "The four emitter signed ops are registered in HOSTED_OPERATIONS + OP_PRIMITIVES + primitive_runner.CONTRACT + the stage manifest, refuse any account != 46 before host contact, and verify the signed attestation echo (account + operation).",
+    "The arm refuses unless an OPEN ADR-0101 verifier window covers INGEST, its ephemeral key file is present (metadata only), and its expiry >= the authorization expiry (VERIFIER_WINDOW_NOT_READY); teardown closes + shreds the window.",
+    "The generic next_job claim excludes copier_governed MODIFY/CLOSE (NULL-safe); run_copier_mutation_dispatch claims ONLY copier_governed jobs; copier OPEN and every non-copier/DEMO MODIFY/CLOSE are byte-identical (killswitch/bstall claim behavior unchanged).",
+    "run_copier_execution_driver is a no-op unless COPIER_EXECUTION_DRIVER_ENABLED; holds a single-flight lease on its OWN file (a second driver fails closed); each stage re-reads its own gate; --status is read-only.",
+    "Set-GuvfxCopierEmitter.ps1 is ASCII-only / no BOM (RULE 9), #46-pinned, Customer-Zero-refused, reads task state locale-independently (RULE 11), validates the task action + principal before enabling, shreds the ingest key on RemoveKey, is value-blind on Read, and is idempotent."
+  ],
+  "actual_results": [
+    "Full trade_copier+execution+hosted_workspace+core regression: Ran 4483. The ONLY 2 failures are PRE-EXISTING macOS-environmental observer_attach CIM tests (BareTerminalClassifierControlTests) \u2014 observer_attach.py is UNTOUCHED by this diff and the tests fail in isolation (the mock targets the Windows CIM path but _bare_terminal_pids reaches macOS psutil first); the Linux CI runner is authoritative. Every pkt-153 suite is green.",
+    "3 independent adversarial review lanes (financial-safety/stranding/concurrency; security/signing/secret/test-seam; Windows-primitive/ACL/rollback/teardown): NO CRITICAL. 1 HIGH (a max_uses-capped verifier window auto-closes after the first ingested event and strands the follower CLOSE) + 1 MEDIUM (_verify_host_ok defaulted an absent account/operation echo to pass) + several LOW (RULE-11 Settings/Enabled parse, empty-DACL ACL guard, RemoveKey directory guard, default-rollback emitter wiring, driver-status lease path, teardown DARK fail-closed on the load-bearing window re-count, RULE-5 doc drift) CONFIRMED + FIXED. The ownership partition, the NULL-safe next_job exclusion, revoke/expiry fail-closed, the single-flight lease, and teardown's flatness-first halt were confirmed correct.",
+    "Post-review fix pass across all touched suites: Ran 234 OK (actuators + adapters + verifier-window gate incl. use-cap refusal + truncated-attestation reject; driver pass/gating/lease + dispatch-path posture; arming/teardown; ownership; host CONTRACT/parity/packaging; verifier-window).",
+    "manage.py check clean; makemigrations --check: migration-free; ADR-0117 unique (core.tests_adr_governance); evidence lint PASS (98 manifests); Set-GuvfxCopierEmitter.ps1 ASCII-only / no BOM / LF (RULE 9), braces + parens balanced.",
+    "Phase-4 immediate-push-authoritative / fast-poll-fallback / slow-reconciliation-only dedup already exists (ADR-0074 event_projection + ADR-0094 immediate_dispatch, one shared MasterEvent sequence/baseline) and is reused + relied upon; this packet adds no new promotion code."
+  ],
+  "status": "PARTIAL",
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) self-review + 3 INDEPENDENT adversarial review lanes (1: financial safety / stranded-position / concurrency / idempotency / duplicate-order; 2: security / signing / replay / secret-exposure / test-seam leakage; 3: Windows primitive / ACL / rollback correctness + deployment / operational teardown). Confirmed findings + fixes to be recorded on finalisation. Sponsor review pending; auto-merge OFF; STOP before merge.",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production/host/flag/key/verifier-window/admission/task/#48/broker mutation. Production stays at dc1f7685; canonical main ea085ee1.",
+    "DARK: the signed host executor factory stays None until HOSTED_HOST_EXECUTOR_ENABLED + keyring/base_url are configured AND the host daemon + the new Set-GuvfxCopierEmitter.ps1 primitive are deployed + certified (a separate Sponsor-gated host step). So even with the wiring complete, a backend --commit still fails closed at the real emitter/admission step and rolls back \u2014 the arm becomes certification-ready, not live.",
+    "No real key provisioned; no real arm/teardown/driver run executed. All host effects are exercised only via injected fakes / DARK fail-closed in tests. The single human hidden-key entry (host + backend verifier window, identical bytes) and the bounded live window remain human-only, Sponsor-gated steps.",
+    "The new Windows PowerShell 5.1 ParseFile result comes from the exact-head CI Windows gate (not reproducible on macOS); ASCII/BOM pre-checked locally (0 non-ASCII bytes, no BOM).",
+    "Backend execution ENV flags remain deploy-time process env (not runtime-mutable by a command); the arm verifies coherence and teardown restores host admission OFF + closes the verifier window; reverting the env flags to DARK remains the operator deploy step."
+  ],
+  "artefact_locations": [
+    "docs/architecture/ADR-0117-copier-production-arming-pipeline.md (NEW \u2014 state machine + invariants)",
+    "backend/hosted_workspace/host_executor.py + host_protocol.py + host_agent_dispatch.py (4 new #46-pinned signed emitter ops, registered in both allow-lists)",
+    "backend/trade_copier/live_host_actuators.py (NEW \u2014 production adapters; removes emitter_enabler=None)",
+    "backend/trade_copier/management/commands/{arm_copier_live_lifecycle,teardown_copier_live_dark}.py (wired to real actuators + full rollback + dispatch-path confirm)",
+    "backend/trade_copier/verifier_window.py (covers_live_authorization) + lifecycle_arm_contract.py (VERIFIER_WINDOW_NOT_READY) + lifecycle_arming.py + lifecycle_teardown.py (window close/shred)",
+    "backend/trade_copier/execution_driver.py + management/commands/run_copier_execution_driver.py (NEW governed driver) + hosted_workspace/recovery_lease.py (KIND_COPIER_DRIVER) + flags.py (COPIER_EMITTER_STANDING_ENABLED, COPIER_EXECUTION_DRIVER_ENABLED)",
+    "backend/trade_copier/live_execution.py (copier_governed marker) + mutation_dispatch.py (governed-only claim) + execution/views.py (NULL-safe next_job exclusion)",
+    "backend/terminal_provisioning/windows/Set-GuvfxCopierEmitter.ps1 (NEW host primitive) + deploy/hosted-executor/primitive_runner.py (CONTRACT) + stage-manifest.json",
+    "backend/trade_copier/tests_live_host_actuators.py + tests_execution_driver.py + execution/tests_copier_governed_claim.py (NEW tests)"
+  ],
+  "checksums": {
+    "docs/architecture/ADR-0117-copier-production-arming-pipeline.md": "sha256:49d0594287816c532ed3cac4ea44d9b8abffa94454b3c5707902815a9237ee52",
+    "backend/hosted_workspace/host_executor.py": "sha256:5d3e24ad46a95424e16f5c72d3d2a6e3d901551f09b8832f3704d4316901b0d8",
+    "backend/hosted_workspace/host_protocol.py": "sha256:8ac8dee137d3f39a7046395a5b4638c0199114d9bfe6d266a3fd1120b93b4cec",
+    "backend/hosted_workspace/host_agent_dispatch.py": "sha256:a2d4e97e83f8f770e12fe7d051d0f8708d4472689adc8c69ef09931b1d604693",
+    "backend/hosted_workspace/recovery_lease.py": "sha256:63dc55a0f1b7584a6a6b98a8e5181fe28349e41026e8937c49f49051a18922c0",
+    "backend/trade_copier/live_host_actuators.py": "sha256:d5e22b0676bd9449a0f031cfb07f8e70afedb503fbb2d108ba0f53ff52604982",
+    "backend/trade_copier/verifier_window.py": "sha256:a17cf6cb3b3ecbd9a677d9c34dde5c882d40bd00552ef927db09fffb7ba255c4",
+    "backend/trade_copier/lifecycle_arm_contract.py": "sha256:2145b5a288d8bd68a45ebdd015aeb03103953a009c39e4263637e3e767df8c0e",
+    "backend/trade_copier/lifecycle_arming.py": "sha256:8fb46014b7cc46c655a8ab063bc810ea4a075e9198929f479338e904cc8100c0",
+    "backend/trade_copier/lifecycle_teardown.py": "sha256:b1fd35cb4d223bdcf52b9c291af971cbaf9c6de02ef79d45b9173e7ba1f21428",
+    "backend/trade_copier/flags.py": "sha256:4499fe746a4f0339f67e5ca89246cece1af81c2f2d845ee19ac107a8c0c49d5c",
+    "backend/trade_copier/execution_driver.py": "sha256:3699de4a5af9f1000a3b4908e9974882a2f8b2871b9d82b4c78ce6120b46ba25",
+    "backend/trade_copier/live_execution.py": "sha256:81f304db6b62dd26916bc734dc8598988aea981a9e0b61ab0b364a50ad387093",
+    "backend/trade_copier/mutation_dispatch.py": "sha256:4162fb227490139cfc479f7d0a1619bf8455257b29e51384a996a2f78024ff36",
+    "backend/execution/views.py": "sha256:14c2498d3cc78f59e91390b5c6a1bbb24635a1fa93e168a78734df9e37b977f0",
+    "backend/trade_copier/management/commands/arm_copier_live_lifecycle.py": "sha256:a0361bc9da44a696ce6c425eedaf76522c88ce11294b5275f83091d044cbc926",
+    "backend/trade_copier/management/commands/teardown_copier_live_dark.py": "sha256:7cbc447b395cd6d8961a2823652035cce0ae9337030e71f2aeca1c33728729ef",
+    "backend/trade_copier/management/commands/run_copier_execution_driver.py": "sha256:a5b4b101a7d880cdc325066a9c8a6a340fe4e259f60bbb4dab7a6fefdb0e5c88",
+    "backend/terminal_provisioning/windows/Set-GuvfxCopierEmitter.ps1": "sha256:10539a5b282eb8e4472dac6534c7d181a96b7d3a0331646c808f9353ee7b1f3c",
+    "deploy/hosted-executor/primitive_runner.py": "sha256:5eb705a95d758be1eebc7c3874e1e020337979bdcc513c87009f1e6b01a9feab",
+    "deploy/hosted-executor/stage-manifest.json": "sha256:eedcefe7c0db7b0470536427d5e1d98b3889143cd0655b1292b0798fb22c812b",
+    "backend/trade_copier/tests_live_host_actuators.py": "sha256:95018ed1f2387c2060a954b23753eb650a6e0c9c87a955287a50890d87edb4df",
+    "backend/trade_copier/tests_execution_driver.py": "sha256:b989e1be0c93cbe38bee63568bbd381465cf0610bb083ef3cc5c656473fad423",
+    "backend/execution/tests_copier_governed_claim.py": "sha256:e1b227fbc4c6165cd980b0300a681e2f5790dbffe5621a507b7e1714e8212343"
+  }
+}

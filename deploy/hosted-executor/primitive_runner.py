@@ -229,6 +229,24 @@ CONTRACT = {
         script="Trigger-GuvfxCopierEmitterOneShot.ps1",
         argmap={"username": "-Username", "runtime_root": "-RuntimeRoot", "terminal_root": "-TerminalRoot"},
         inject_account_id=True),
+    # ADR-0117 governed-arm actuators for the STANDING immediate emitter (GuvFX_CopierEmitter_46). ONE reviewed
+    # .ps1 with a fixed -Mode (mirrors Set-GuvfxObserver -Mode). Server-derived -Username + injected -AccountId only
+    # (no caller params): the .ps1 re-derives the FIXED copier-emitter task + key + config paths from -AccountId,
+    # refuses Customer Zero, re-pins account 46, reads task state locale-independently (RULE 11), and is idempotent.
+    # Enable/Disable toggle the task; RemoveKey shreds the host-local ingest.key (no key ever on this wire); Read is
+    # a VALUE-BLIND read-back (task enabled/disabled + ingest.key presence/ACL metadata, never the key).
+    "enable_copier_emitter": PrimitiveSpec(
+        script="Set-GuvfxCopierEmitter.ps1",
+        argmap={"username": "-Username"}, inject_account_id=True, fixed={"-Mode": "Enable"}),
+    "disable_copier_emitter": PrimitiveSpec(
+        script="Set-GuvfxCopierEmitter.ps1",
+        argmap={"username": "-Username"}, inject_account_id=True, fixed={"-Mode": "Disable"}),
+    "remove_copier_emitter_key": PrimitiveSpec(
+        script="Set-GuvfxCopierEmitter.ps1",
+        argmap={"username": "-Username"}, inject_account_id=True, fixed={"-Mode": "RemoveKey"}),
+    "read_copier_host_state": PrimitiveSpec(
+        script="Set-GuvfxCopierEmitter.ps1",
+        argmap={"username": "-Username"}, inject_account_id=True, fixed={"-Mode": "Read"}),
 }
 
 # The PowerShell one-liner used by the default ParseFile gate. Builds the AST WITHOUT executing (RULE 9) and

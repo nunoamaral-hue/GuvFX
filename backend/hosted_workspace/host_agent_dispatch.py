@@ -140,6 +140,16 @@ OP_PRIMITIVES = {
     # the pre-installed DISABLED one-shot task for exactly one invocation, triggers it, ALWAYS re-disables it, and
     # returns a sanitised verdict. It never carries or returns a secret and can reach no order/#48/execution path.
     "TRIGGER_EMITTER_ONESHOT_ATTEST": {"primitive": "trigger_emitter_oneshot_attest", "params_allow": ()},
+    # ADR-0117 governed-arm actuators for the STANDING immediate emitter. Server-derived username/runtime_root +
+    # injected -AccountId; NO caller params. The fixed .ps1s confine to guvfx_u_46, re-assert the Customer-Zero
+    # refusal + the #46 pin + the exact emitter task action (never the one-shot attest, never an arbitrary
+    # command/task), and are idempotent. ENABLE/DISABLE toggle the standing emitter task; REMOVE_COPIER_EMITTER_KEY
+    # shreds the host-local ingest key (no key on the wire); READ_COPIER_HOST_STATE is a read-only, value-blind
+    # read-back (emitter task state + ingest.key presence/ACL metadata — never the key or any key-derived value).
+    "ENABLE_COPIER_EMITTER":     {"primitive": "enable_copier_emitter",     "params_allow": ()},
+    "DISABLE_COPIER_EMITTER":    {"primitive": "disable_copier_emitter",    "params_allow": ()},
+    "REMOVE_COPIER_EMITTER_KEY": {"primitive": "remove_copier_emitter_key", "params_allow": ()},
+    "READ_COPIER_HOST_STATE":    {"primitive": "read_copier_host_state",    "params_allow": ()},
 }
 assert set(OP_PRIMITIVES) == set(HOSTED_OPERATIONS), "OP_PRIMITIVES must cover exactly HOSTED_OPERATIONS"
 

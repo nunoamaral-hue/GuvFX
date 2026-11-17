@@ -859,6 +859,11 @@ def _live_command_envelope(replication, authz, ticket, op, *, pre_state: dict, p
         "is_demo": False,                                 # TRUTHFUL LIVE — never a disguised demo path
         "execution_mode": "LIVE",
         "signal_source": "copier",
+        # ADR-0117 governed-ownership marker: a copier LIVE lifecycle mutation (MODIFY / FULL_CLOSE / PARTIAL_CLOSE)
+        # is dispatched ONLY by the governed run_copier_mutation_dispatch (authority re-check + per-ticket revision
+        # watermark + per-tenant identity pin). The generic execution.views.next_job claim EXCLUDES jobs carrying
+        # this marker, so a generic worker can never dispatch a governed copier mutation without those guards.
+        "copier_governed": True,
         "copier_replication_id": replication.id,
         "copier_live_authorization_id": authz.id,
         "correlation_id": authz.correlation_id or "",

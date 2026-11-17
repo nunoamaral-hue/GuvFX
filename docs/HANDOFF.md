@@ -1,5 +1,59 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-17 — Copier production arming pipeline (GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153
+Packet ID: GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge). All local acceptance green; 3 independent
+  adversarial review lanes run + findings fixed; exact-head Linux CI 5/5 + the Windows PS 5.1 ParseFile gate for
+  Set-GuvfxCopierEmitter.ps1 run on the PR (not reproducible on macOS).
+
+Base commit: ea085ee1b16abef846746f6291b084c92cc0d02f (canonical main; ADR-0116 Wayond).
+Branch: feat/copier-production-actuators.
+Resulting commits (6; squash-merged as one on Sponsor GO):
+  03aa0e9e real signed-host emitter actuators + production adapters (removes emitter_enabler=None)
+  ca3d13e7 verifier-window arm gate + teardown window close/shred
+  3948a7d9 host CONTRACT + Set-GuvfxCopierEmitter primitive
+  7421d743 governed execution driver + copier mutation ownership split
+  8a56763d arm confirms the execution dispatch path
+  a470ee5b adversarial-review hardening
+  + this docs/evidence commit.
+Pushed: yes (to open the governed PR). NOT merged, NOT deployed.
+
+Scope (verified fact): removes the emitter_enabler=None dead end (4 #46-pinned signed-host emitter ops +
+  Set-GuvfxCopierEmitter.ps1 primitive + live_host_actuators adapters, DARK-gated so --commit still fails closed
+  truthfully + full rollback); ADR-0101 verifier-window arm gate (VERIFIER_WINDOW_NOT_READY, incl. the use-cap
+  refusal) + teardown shred; governed single-flight run_copier_execution_driver + the dispatcher-ownership split
+  (copier LIVE MODIFY/CLOSE are copier_governed, excluded from next_job, owned only by run_copier_mutation_dispatch);
+  arm dispatch-path confirm. Immediate-push/fallback/reconciliation dedup reused (ADR-0074/0094), no new promotion
+  code (verified fact).
+
+Assumptions (NOT verified): the signed host-executor daemon + the new primitive will behave as specified under a
+  real Windows PS 5.1 host (argued from host-gated-equivalence + ParseFile on the PR gate, not a real run); the
+  daemon passes the primitive's account_id + operation JSON fields through to the signed response (relied on by the
+  hardened _verify_host_ok echo check).
+
+Deviations: none from the packet. Phase 4 found already-implemented (reused, not rebuilt) per the architecture rule.
+
+Exact tests: full trade_copier+execution+hosted_workspace+core regression (Ran 4483; only 2 PRE-EXISTING macOS
+  observer_attach CIM failures, untouched file, Linux CI authoritative); post-review fix pass 234 OK across all
+  touched suites; manage.py check clean; makemigrations --check migration-free; core.tests_adr_governance (ADR-0117
+  unique); evidence lint PASS; Set-GuvfxCopierEmitter.ps1 ASCII/no-BOM/LF.
+
+Adversarial review: 3 lanes (safety/security/host). NO CRITICAL; 1 HIGH (max_uses-capped window strands the follower
+  CLOSE) + 1 MEDIUM (_verify_host_ok absent-echo default-pass) + several LOW CONFIRMED + FIXED. The ownership
+  partition, NULL-safe next_job exclusion, revoke/expiry fail-closed, lease single-flight, and teardown flatness-first
+  confirmed correct.
+
+One bounded next action: drive the exact-head Linux CI to 5/5 + the Windows PS5.1 ParseFile gate, then Sponsor
+  GO - merge PR. (Separate Sponsor-gated step, NOT this PR: deploy + certify the signed host-executor daemon + the
+  new primitive; the human hidden-key entry with the verifier window opened --max-uses 0; the bounded live window +
+  master trade.)
+```
+
 ## 2026-11-13 — One-shot installer principal-SID read-back fix (GFX-COPIER-ONESHOT-INSTALLER-PRINCIPAL-NORMALIZATION-FIX-108; ADR-0104 amended; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```

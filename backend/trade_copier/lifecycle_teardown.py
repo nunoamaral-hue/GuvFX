@@ -54,6 +54,18 @@ def _revoke_authorizations(master_account_id, follower_account_id, *, reason, no
         return {"ok": False, "reason": type(e).__name__}
 
 
+def _close_verifier_windows(*, reason, now) -> dict:
+    """ADR-0117 — close + shred every OPEN ADR-0101 verifier window (idempotent, backend-provable; NOT an injected
+    host actuator). The window row holds only a tmpfs PATH, never a key value; ``close_all`` shreds the ephemeral
+    key file + the default key path, so the backend ingest key is no longer resolvable after teardown. Fail-closed
+    on any error (reported, never silently 'done')."""
+    try:
+        from trade_copier.verifier_window import close_all
+        return {"ok": True, "closed": int(close_all(reason=(reason or "teardown"), now=now))}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": type(e).__name__}
+
+
 def _open_copier_positions(follower_account_id, *, now=None) -> dict:
     """Conservative backend-evidence proof of whether any copier-originated LIVE follower OPEN remains unflattened
     (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149). Fail-closed: a DB error, or any OPEN whose position state is
@@ -160,10 +172,12 @@ def _dark_verification(master_account_id, follower_account_id, *, admission, emi
     flat = _open_copier_positions(follower_account_id)
     out["open_copier_positions"] = flat
     authz_ok = (out.get("active_authorizations", 1) == 0) if require_authz_absent else True
+    # ADR-0117: the verifier window is now a load-bearing arm gate, so its re-count must FAIL CLOSED here — a DB
+    # error (None) must NOT be treated as "no open windows". Require an explicit 0.
     backend_dark = (out.get("engaged_arms") == 0 and authz_ok
                     and (out.get("copier_jobs_open") in (0, None))
                     and bool(flat.get("proven_flat"))
-                    and (out.get("verifier_windows_open") in (0, None)))
+                    and (out.get("verifier_windows_open") == 0))
     out["require_authz_absent"] = bool(require_authz_absent)
     host_dark = bool(admission.get("proven")) and bool(emitter.get("proven")) and bool(key.get("proven"))
     out["backend_dark"] = backend_dark
@@ -213,6 +227,9 @@ def teardown_live_dark(*, master_account_id: int, follower_account_id: int,
     steps["host_admission_off"] = _call_actuator(admission_restore, "admission_restore")
     steps["emitter_disabled"] = _call_actuator(emitter_disabler, "emitter_disabler")
     steps["emitter_key_shredded"] = _call_actuator(emitter_key_remover, "emitter_key_remover")
+    # ADR-0117: close + shred the backend ADR-0101 verifier window (backend-provable, idempotent) so the ingest key
+    # is no longer resolvable — _dark_verification already gates DARK on zero OPEN windows.
+    steps["verifier_window_closed"] = _close_verifier_windows(reason=reason, now=now)
     steps["execution_flags_note"] = {
         "ok": True,
         "note": "Backend execution env flags (COPIER_*_ENABLED) are deploy-time process env, not runtime-mutable "

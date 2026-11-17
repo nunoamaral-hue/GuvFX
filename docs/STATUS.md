@@ -1,5 +1,27 @@
 # GuvFX — Project Status
 
+> **2026-11-17 — Copier production arming pipeline (GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117;
+> repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
+> `ea085ee1` on `feat/copier-production-actuators`. Implements the missing governed production wiring so ONE atomic
+> command can move the exact #46→#48 route from DARK to ARMED with no partial arm and no stranded follower. (1)
+> Removes the `emitter_enabler=None` dead end that made `arm_copier_live_lifecycle --commit` always fail closed: four
+> **#46-pinned signed-host emitter ops** (ENABLE/DISABLE/REMOVE_COPIER_EMITTER_KEY/READ_COPIER_HOST_STATE) in
+> `host_executor`/`host_protocol`/`host_agent_dispatch` + their host primitive `Set-GuvfxCopierEmitter.ps1` (one
+> `-Mode` script, ASCII/RULE-9, RULE-11 state reads) + `primitive_runner.CONTRACT`/stage-manifest, and production
+> adapters `trade_copier.live_host_actuators` (DARK-gated `resolve_signed_host_executor`; a real `--commit` still
+> fails closed for the TRUTHFUL reason + full rollback). (2) **ADR-0101 verifier-window arm gate**
+> (`VERIFIER_WINDOW_NOT_READY`): the arm refuses unless an OPEN window covers INGEST, outlives the authz, has its
+> key file present, and is **not use-capped** (adversarial-review HIGH: a `max_uses`-capped window strands the
+> follower CLOSE); teardown closes + shreds it. (3) Governed single-flight, bounded, crash-safe **execution driver**
+> `run_copier_execution_driver` (new DARK flag + own lease file) + **dispatcher-ownership fix**: copier LIVE
+> MODIFY/CLOSE are marked `copier_governed`, excluded from the generic `next_job` claim (NULL-safe), and claimed ONLY
+> by `run_copier_mutation_dispatch`. (4) Immediate-push-authoritative + fast-poll fallback + slow reconciliation-only
+> dedup already exist (ADR-0074/0094) and are reused. 3 independent adversarial review lanes (safety/security/host)
+> → 1 HIGH + 1 MEDIUM + several LOW confirmed + fixed; no CRITICAL. Full `trade_copier`+`execution`+`hosted_workspace`
+> +`core` regression green except 2 PRE-EXISTING macOS-environmental `observer_attach` CIM failures (untouched file;
+> Linux CI authoritative). Repository-only, DARK; NO prod/host/flag/key/window/admission/task/#48/broker mutation;
+> production stays `dc1f7685`. STOP before merge.
+
 > **2026-11-16 — Copier runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0115;
 > repository-only; migration-free; DARK; extends PR #676 before merge; auto-merge OFF; STOP before merge).**
 > Closes the residual RUNTIME gap PR #676's review found: `admit_open_live` admitted a LIVE OPEN without a durable,
