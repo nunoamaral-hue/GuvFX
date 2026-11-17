@@ -1,5 +1,5 @@
 """Adversarial regression tests for the RUNTIME close-authority guard, revocation-surviving FULL-CLOSE
-containment, and the teardown flatness proof (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0114).
+containment, and the teardown flatness proof (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0115).
 
 Three invariants, each with a distinct killing case:
 

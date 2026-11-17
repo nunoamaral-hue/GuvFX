@@ -69,7 +69,7 @@ from trade_copier.verifier_window import verification_window
 from trade_copier.tests_event_ingestion import SECRET
 from trade_copier.tests_immediate_dispatch import _LiveRT, _applied, REALTIME, REALTIME_LIFECYCLE
 
-# Authenticated-HTTP stack: ingestion ON; the full lifecycle armed (ADR-0114 requires the close path armed for a
+# Authenticated-HTTP stack: ingestion ON; the full lifecycle armed (ADR-0115 requires the close path armed for a
 # LIVE OPEN, so transport stays ON, inherited from REALTIME_LIFECYCLE). MODIFY/CLOSE jobs are still CREATED
 # (producer step) but nothing is SENT, because the synthetic follower has NO per-tenant endpoint so the real
 # mutation transport fails closed pre-send (``_blocked``, no socket) — proven by the hard ``_NoNetwork`` guard.

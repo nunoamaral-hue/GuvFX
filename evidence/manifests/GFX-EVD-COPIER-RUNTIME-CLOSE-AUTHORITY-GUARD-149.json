@@ -7,8 +7,8 @@
   "base_commit": "650d3c6645cdd2de9701793f07302072a5d5c384",
   "head_commit": null,
   "environment": {
-    "scope": "Repository-only corrective implementation (ADR-0114) extending PR #676 before merge. Closes the residual RUNTIME gap PR #676's review found: admit_open_live admitted a LIVE OPEN without a durable, armed MODIFY+FULL_CLOSE path (flag-timing stranding on the legacy arm). Delivers: (A) open_close_lifecycle_armable gating admit_open_live + under-lock create_live_open_job (no OPEN unless modify+full-close AUTHORITY, no partial-close, close_only_after_expiry, AND the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry execution arms; both arm paths fail closed; legacy OPEN-only authz now denied); (B) opt-in default-OFF auto-bounded revocation-surviving FULL_CLOSE containment (new flag COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED; copier admission via _resolve_governing_with_revocation_containment + preamble/relock, AND a FOURTH allow_live_for_account branch copier_live_revocation_containment_authorized - an Amber execution-LIVE-wall change, byte-identical with the arm OFF, FULL-CLOSE-only, exposure-reducing, auto-closing once flat); (C) teardown proves no unflattened copier position (incl. the lost-ACK EXECUTION_FAILED-but-filled case) before DARK, else halts cleanup_required with NO mutation. NO production/host/flag/key/admission/task/#48/broker mutation; execution gates OFF by default.",
-    "adr": "docs/architecture/ADR-0114-copier-runtime-close-authority-guard.md",
+    "scope": "Repository-only corrective implementation (ADR-0115) extending PR #676 before merge. Closes the residual RUNTIME gap PR #676's review found: admit_open_live admitted a LIVE OPEN without a durable, armed MODIFY+FULL_CLOSE path (flag-timing stranding on the legacy arm). Delivers: (A) open_close_lifecycle_armable gating admit_open_live + under-lock create_live_open_job (no OPEN unless modify+full-close AUTHORITY, no partial-close, close_only_after_expiry, AND the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry execution arms; both arm paths fail closed; legacy OPEN-only authz now denied); (B) opt-in default-OFF auto-bounded revocation-surviving FULL_CLOSE containment (new flag COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED; copier admission via _resolve_governing_with_revocation_containment + preamble/relock, AND a FOURTH allow_live_for_account branch copier_live_revocation_containment_authorized - an Amber execution-LIVE-wall change, byte-identical with the arm OFF, FULL-CLOSE-only, exposure-reducing, auto-closing once flat); (C) teardown proves no unflattened copier position (incl. the lost-ACK EXECUTION_FAILED-but-filled case) before DARK, else halts cleanup_required with NO mutation. NO production/host/flag/key/admission/task/#48/broker mutation; execution gates OFF by default.",
+    "adr": "docs/architecture/ADR-0115-copier-runtime-close-authority-guard.md",
     "production_or_db_mutation": false,
     "deploy_or_migration_apply": false,
     "migration_added": false,
@@ -45,7 +45,7 @@
   "status": "PARTIAL",
   "limitations": [
     "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. No production/host/flag/key/verifier-window/admission/task/#48/broker mutation. Production unchanged; canonical main 600d7f3d; PR #676 base 650d3c66.",
-    "The revocation-surviving containment (part B) is an Amber change to the shared execution LIVE wall (a FOURTH allow_live_for_account branch): with the default-OFF arm it is byte-identical to pre-ADR-0114; a Sponsor arming it deliberately keeps MT5_ALLOW_LIVE on (close-only) for a revoked pair until its position is flat. Documented in ADR-0114 and KNOWN_ISSUES.",
+    "The revocation-surviving containment (part B) is an Amber change to the shared execution LIVE wall (a FOURTH allow_live_for_account branch): with the default-OFF arm it is byte-identical to pre-ADR-0115; a Sponsor arming it deliberately keeps MT5_ALLOW_LIVE on (close-only) for a revoked pair until its position is flat. Documented in ADR-0115 and KNOWN_ISSUES.",
     "The teardown flatness proof is conservative BACKEND evidence, not a broker read. The DEFINITIVE proof of a lost-ACK (EXECUTION_FAILED-but-filled) open's absence is an identity-firewalled follower position read; teardown bounds the ambiguity by FAILED_FILLED_LOOKBACK_SECONDS (the same window execution_health uses) and surfaces such opens as cleanup_required rather than guessing.",
     "Backend execution ENV flags are deploy-time process env; the runtime guard READS them live and refuses incoherent states, but does not mutate them. The whole copier LIVE subsystem is DARK in production (all flags OFF), so there is no production behaviour change from this packet.",
     "The 2 hosted_workspace.tests_observer_attach failures are a pre-existing macOS-local environment artefact (not introduced here); they pass/skip on Linux CI."
@@ -56,20 +56,20 @@
     "backend/trade_copier/lifecycle_teardown.py (_open_copier_positions incl. failed-filled; flatness gate; _dark_verification folds proven_flat)",
     "backend/execution/live_authz.py (copier_live_revocation_containment_authorized) + backend/execution/bridge_config.py (OR into allow_live_for_account)",
     "backend/trade_copier/tests_runtime_close_authority_guard.py (NEW 50 tests)",
-    "backend/trade_copier/tests_live_copier.py + tests_immediate_dispatch.py + tests_synthetic_e2e_latency.py (fixtures: complete lifecycle-armed authorizations - the Amber change ADR-0113 deferred)",
-    "docs/architecture/ADR-0114-copier-runtime-close-authority-guard.md (NEW); docs/architecture/ADR-0113-*.md (Deferred->implemented), docs/KNOWN_ISSUES.md, docs/STATUS.md, docs/NEXT.md (MODIFIED)"
+    "backend/trade_copier/tests_live_copier.py + tests_immediate_dispatch.py + tests_synthetic_e2e_latency.py (fixtures: complete lifecycle-armed authorizations - the Amber change ADR-0114 deferred)",
+    "docs/architecture/ADR-0115-copier-runtime-close-authority-guard.md (NEW); docs/architecture/ADR-0114-*.md (Deferred->implemented), docs/KNOWN_ISSUES.md, docs/STATUS.md, docs/NEXT.md (MODIFIED)"
   ],
   "checksums": {
-    "backend/trade_copier/flags.py": "sha256:62e49dbdb2639cec6b6992fb1e0fa25f82f2a7eaa0e7f229dcd57ba65b14b94e",
-    "backend/trade_copier/live_execution.py": "sha256:8d8eb118d0b6db350348e5d52813b086ba8119c9d4aca7a7e82eb79ca84e3636",
-    "backend/trade_copier/lifecycle_teardown.py": "sha256:beb4efc78f0e82dc83e2b9538e68500f8a0a7823bfd25c07deac4a56062b7385",
-    "backend/execution/live_authz.py": "sha256:d36db9a9fc604b178e8cf06955a95a5d58fb1617caa6de218903f6ee66e59627",
-    "backend/execution/bridge_config.py": "sha256:434ba05f0f176d4a77c339d6142e26048513f261f56d8c7796d677e12872ba84",
-    "backend/trade_copier/tests_runtime_close_authority_guard.py": "sha256:450555604830c4f56eebe1f92bedf9adec86878520fdcc15f0e8000f28f9f306",
-    "backend/trade_copier/tests_live_copier.py": "sha256:284eaa8326f41511f101b28b86068e04d28588285166275be3f0239d956dc095",
-    "backend/trade_copier/tests_immediate_dispatch.py": "sha256:cf65148b001b6c7c3b130fa6d71356fb31e11d4451f645f25bafab1071d329be",
-    "backend/trade_copier/tests_synthetic_e2e_latency.py": "sha256:7258b1c1985930d94b1ae053b1668e2ced4453168239fd1ff10527bc0efb1dc5",
-    "docs/architecture/ADR-0114-copier-runtime-close-authority-guard.md": "sha256:219bc71d6bd78f2141e78e03a162006dc94f993cf08cdd22cfcea4c1af4b1da7"
+    "backend/trade_copier/flags.py": "sha256:1953f7999fb5fb682c3cbf24c6c4de78d9ff013d46e93d8dee286c7e4937fe8a",
+    "backend/trade_copier/live_execution.py": "sha256:cfe564f73baf2e63e3cb70fc31e9d3f50d9a4826b5dd1ddff62a4f9a6475ad0d",
+    "backend/trade_copier/lifecycle_teardown.py": "sha256:12e1e9b5ebf99b511e0dcfdc3d1400f873e09808156f412df3861f810aadcb9c",
+    "backend/execution/live_authz.py": "sha256:12e04e8474bd736f8c859a083ee4f85b800f0705b1b66bfdb36831e4c435e659",
+    "backend/execution/bridge_config.py": "sha256:44549fbb0fa1c83406fa963736b95de9fb969ac8d60e488a9a02807db066ddb5",
+    "backend/trade_copier/tests_runtime_close_authority_guard.py": "sha256:8167c63f7173327e2d52001a907615e1b669fa3283ce56a7580469a8c856ada1",
+    "backend/trade_copier/tests_live_copier.py": "sha256:777e6dec566c75aad000c2d66e78c5c147963436488d25d66da90c5e6f7d71bc",
+    "backend/trade_copier/tests_immediate_dispatch.py": "sha256:3f9844b01ed0c96843befdd5420ea99848333f04a9b77b58e858c61f5865b23b",
+    "backend/trade_copier/tests_synthetic_e2e_latency.py": "sha256:ebfca3995307259ca2ce124bdc0fccd5174f0e1a3242f12875d27cbfd82d5b92",
+    "docs/architecture/ADR-0115-copier-runtime-close-authority-guard.md": "sha256:d8c1fe03f26a6f950c1ad0a8be8bacd299f2bdb00c58729870e1f2a7ce71f226"
   },
   "reviewer": "GuvFX Coding Agent (Claude Opus 4.8) self-review + INDEPENDENT adversarial review subagent (money-path / MT5_ALLOW_LIVE widening, OPEN bypass across admission paths, fail-closed on error, revocation-containment correctness + resolve/lock race, teardown flatness soundness incl. lost-ACK failed-filled, fixture integrity + no-network). Parts A and B cleared; 1 HIGH + 3 LOW found, HIGH + LOW-1 + LOW-3 fixed with regression tests. Sponsor review pending; auto-merge OFF; STOP before merge."
 }

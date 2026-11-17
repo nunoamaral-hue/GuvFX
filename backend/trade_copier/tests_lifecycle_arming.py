@@ -1,4 +1,4 @@
-"""GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148 (ADR-0113) — deterministic, fail-closed tests for the
+"""GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148 (ADR-0114) — deterministic, fail-closed tests for the
 atomic OPEN+MODIFY+FULL_CLOSE lifecycle-arming contract, the arming orchestration + full rollback, the idempotent
 DARK teardown, and the hardened preflight ``arm_readiness`` section.
 
@@ -337,7 +337,7 @@ class TeardownTests(_Base):
         self.assertEqual(authz.status, CopierLiveAuthorizationStatus.ACTIVE)
 
 
-# ───────────────────────────── legacy copier_live_arm authority guard (ADR-0113) ─────────────────────────────
+# ───────────────────────────── legacy copier_live_arm authority guard (ADR-0114) ─────────────────────────────
 class LegacyArmAuthorityGuardTests(_Base):
     """The legacy control-plane arm must ALSO refuse an authorization that would permit an OPEN with no executable
     CLOSE, so the stranding guard is not bypassable by using the pre-existing command."""

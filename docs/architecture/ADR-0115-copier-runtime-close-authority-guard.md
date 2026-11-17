@@ -1,15 +1,15 @@
-# ADR-0114 — Copier runtime close-authority guard: no OPEN without a durable, armed MODIFY+FULL_CLOSE path, revocation-surviving containment, teardown flatness proof
+# ADR-0115 — Copier runtime close-authority guard: no OPEN without a durable, armed MODIFY+FULL_CLOSE path, revocation-surviving containment, teardown flatness proof
 
 - **Status:** Proposed (repository-only; DARK). PM owns lifecycle status in Notion.
 - **Packet:** GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149
 - **Date:** 2026-11-16
-- **Extends:** ADR-0113 (lifecycle-arming safety). Additive to ADR-0057 (per-pair LIVE OPEN), ADR-0083 (LIVE
+- **Extends:** ADR-0114 (lifecycle-arming safety). Additive to ADR-0057 (per-pair LIVE OPEN), ADR-0083 (LIVE
   MODIFY/PARTIAL/FULL_CLOSE + containment), ADR-0086/0087 (mutation dispatch/transport), ADR-0097 (one-action arm).
-- **Closes:** the residual risk recorded in ADR-0113 §Deferred and `docs/KNOWN_ISSUES.md`.
+- **Closes:** the residual risk recorded in ADR-0114 §Deferred and `docs/KNOWN_ISSUES.md`.
 
 ## Context
 
-PR #676 (ADR-0113) closed the stranding risk at the ARMING layer (the atomic arm + the legacy `copier_live_arm`
+PR #676 (ADR-0114) closed the stranding risk at the ARMING layer (the atomic arm + the legacy `copier_live_arm`
 authority guard), but its independent review found a residual RUNTIME gap: the single runtime LIVE-OPEN admission
 `trade_copier.live_execution.admit_open_live` still admitted a follower OPEN without verifying that the position
 had a durable, armed path to MODIFY and FULL_CLOSE. Concretely, `admit_open_live` checked the OPEN flag stack,
@@ -24,7 +24,7 @@ Three distinct lifecycle hazards had to be closed:
 2. **A revocation TRAPS an open position.** ADR-0083's deliberate default is that a REVOKED authorization governs
    nothing (`_governing_authorization` excludes revoked → the close path dies), so an operator who revokes while a
    position is open can strand it.
-3. **Teardown could declare DARK over an open position.** The ADR-0113 teardown withdrew host admission
+3. **Teardown could declare DARK over an open position.** The ADR-0114 teardown withdrew host admission
    unconditionally and never proved the follower was flat first.
 
 ## Decision
@@ -93,7 +93,7 @@ If flatness cannot be proven, teardown STOPS in an explicit `cleanup_required` (
 NOTHING — the arm stays engaged, the authorization stays active and host admission stays on — so the position can
 still be flattened (for a reconciled ticket, through the close path; for a lost-ACK order, via an
 identity-firewalled position read); the operator resolves it and re-runs teardown. The DARK verdict folds in this
-proof (replacing the ADR-0113 blunt `follower_tickets==0` check, which a cleanly-closed position's retained ticket
+proof (replacing the ADR-0114 blunt `follower_tickets==0` check, which a cleanly-closed position's retained ticket
 row could never satisfy). The runtime boundary predicate (part 2) consumes the SAME proof and fails CLOSED on a
 flatness DB error — `MT5_ALLOW_LIVE` is never authorized under uncertainty.
 
@@ -112,4 +112,4 @@ flatness DB error — `MT5_ALLOW_LIVE` is never authorized under uncertainty.
 The runtime guard applies to EVERY live-copier OPEN, so the ADR-0057/0094 OPEN test fixtures that used
 OPEN-only authorizations (no modify/full-close authority, close path not armed) now correctly fail closed and were
 updated to the complete, lifecycle-armed authorization (`tests_live_copier`, `tests_immediate_dispatch`,
-`tests_synthetic_e2e_latency`). This is the Amber fixture change ADR-0113 deferred, now authorized by packet 149.
+`tests_synthetic_e2e_latency`). This is the Amber fixture change ADR-0114 deferred, now authorized by packet 149.

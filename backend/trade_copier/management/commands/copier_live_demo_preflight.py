@@ -193,7 +193,7 @@ class Command(BaseCommand):
         secret_names = ["GUVFX_AGENT_TOKEN|WINDOWS_AGENT_TOKEN|GUVFX_WINDOWS_AGENT_TOKEN (bridge auth)",
                         "COPIER_INGEST_HMAC_KEY (event ingest)"]
 
-        # 14 — ADR-0113 lifecycle-arming safety contract (GFX-...-148). A SEPARATE, strictly fail-closed
+        # 14 — ADR-0114 lifecycle-arming safety contract (GFX-...-148). A SEPARATE, strictly fail-closed
         # ``arm_readiness`` verdict layered on top of the legacy gates (the legacy ``blockers`` list is left
         # untouched, so ``copier_live_arm``'s control-plane preflight is unaffected). This verifies the
         # AUTHORITY-layer lifecycle contract (MODIFY+FULL_CLOSE authority present, partial-close excluded, caps,

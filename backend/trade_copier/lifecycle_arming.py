@@ -1,5 +1,5 @@
 """trade_copier.lifecycle_arming — ONE governed, atomic OPEN+MODIFY+FULL_CLOSE live-demo arming operation
-(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0113). Fail-closed; atomic from the operator's view.
+(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114). Fail-closed; atomic from the operator's view.
 
 The pre-pkt-148 sequence could arm OPEN (``provision_authorized_live_copier_bridge``) without proving the
 authorized MODIFY and FULL_CLOSE lifecycle was also executable, and could enable the immediate emitter without

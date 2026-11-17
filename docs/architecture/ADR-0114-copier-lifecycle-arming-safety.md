@@ -1,4 +1,4 @@
-# ADR-0113 — Copier live-demo lifecycle-arming safety: atomic OPEN+MODIFY+FULL_CLOSE, emitter-key readiness, DARK teardown
+# ADR-0114 — Copier live-demo lifecycle-arming safety: atomic OPEN+MODIFY+FULL_CLOSE, emitter-key readiness, DARK teardown
 
 - **Status:** Proposed (repository-only; DARK). PM owns lifecycle status in Notion.
 - **Packet:** GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148
@@ -93,16 +93,16 @@ preconditions the arming deliberately flips (admission ON / emitter enabled) and
 now injects the signed `restore_off`); and DARK-verdict semantics for an authorization-preserving rollback
 (`require_authz_absent=False`).
 
-## Deferred (bounded follow-up) — NOW IMPLEMENTED in ADR-0114 (packet 149)
+## Deferred (bounded follow-up) — NOW IMPLEMENTED in ADR-0115 (packet 149)
 
 A **runtime** guard in `trade_copier.live_execution.admit_open_live` that refuses a LIVE OPEN unless the FULL_CLOSE
 execution path is armed end-to-end closes the residual *flag-timing* stranding on the LEGACY path (an operator
 arming OPEN-only flags after a legacy arm). It was deliberately **not** done in this packet because it alters an
 established execution-path pattern (the existing suite admitted OPEN under an OPEN-only authorization) — an Amber
 change requiring its own approved decision and a full live-copier regression. That approved decision was granted
-as packet **GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149** and is implemented in **ADR-0114**: the runtime
+as packet **GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149** and is implemented in **ADR-0115**: the runtime
 close-authority guard, revocation-surviving FULL_CLOSE containment, and the teardown flatness proof. In THIS
-packet the stranding is closed at the ARMING layer (atomic op + legacy authority guard); ADR-0114 adds the runtime
+packet the stranding is closed at the ARMING layer (atomic op + legacy authority guard); ADR-0115 adds the runtime
 backstop.
 
 ## Consequences

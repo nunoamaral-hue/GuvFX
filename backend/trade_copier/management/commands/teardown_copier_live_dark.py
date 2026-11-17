@@ -1,5 +1,5 @@
 """teardown_copier_live_dark — the idempotent DARK teardown command for the governed live-demo
-(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0113).
+(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114).
 
 Returns the backend control plane to DARK (disengage arms, revoke authorizations) and, via the signed host
 executor, restores host admission OFF — the final host-side execution gate — on EVERY state: success, partial
@@ -16,7 +16,7 @@ from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):
-    help = "ADR-0113: idempotent DARK teardown (disarm + revoke + signed host-admission OFF). Safe to re-run."
+    help = "ADR-0114: idempotent DARK teardown (disarm + revoke + signed host-admission OFF). Safe to re-run."
 
     def add_arguments(self, parser):
         parser.add_argument("--master-account-id", required=True, type=int)

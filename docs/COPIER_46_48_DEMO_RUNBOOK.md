@@ -140,11 +140,11 @@ The authoritative, fully-labelled ordered sequence follows below; the quick-star
 
 **No step here is armed or executed by Claude. Claude's role is read-only preflight, read-back verification, and observation only.**
 
-## Corrected atomic arming (pkt-148, ADR-0113)
+## Corrected atomic arming (pkt-148, ADR-0114)
 
 pkt-147 found two gaps the manual sequence above could not prevent: the standing emitter had **no ingest key**
 (the <=1s path could not run), and `provision_authorized_live_copier_bridge` arms OPEN without proving the
-**MODIFY/FULL_CLOSE execution flags** are on — a copied OPEN could strand a real #48 position. ADR-0113 adds a
+**MODIFY/FULL_CLOSE execution flags** are on — a copied OPEN could strand a real #48 position. ADR-0114 adds a
 single fail-closed path; prefer it over hand-sequencing the steps above.
 
 1. **[HUMAN over RDP]** Provision the standing emitter key (hidden input; does not enable/trigger the task):

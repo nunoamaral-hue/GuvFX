@@ -90,7 +90,7 @@ def allow_live_for_account(account) -> bool:
         # two copier paths are additive, DARK (the lifecycle one returns False with every per-op arm OFF) and
         # equally fail-closed. Whichever set the flag, the order-time identity pin + evaluate_binding remain the
         # final authority, and the copier itself only ever creates a LIVE job after its full per-op admission.
-        # ADR-0114: a FOURTH, default-OFF, tightly auto-bounded branch keeps the runtime LIVE to FLATTEN (full
+        # ADR-0115: a FOURTH, default-OFF, tightly auto-bounded branch keeps the runtime LIVE to FLATTEN (full
         # close only) an already-bound position whose governing authorization was revoked, so a revocation can
         # never strand an open live position; it closes the instant the position is proven flat.
         return bool(live_execution_permitted(account) or copier_live_execution_authorized(account)

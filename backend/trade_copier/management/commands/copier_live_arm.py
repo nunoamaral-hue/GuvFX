@@ -88,7 +88,7 @@ class Command(BaseCommand):
         if approver is None or not approver.is_staff:
             raise CommandError("--by must be an existing STAFF user (non-staff approver rejected)")
 
-        # 0. ADR-0113 lifecycle authority contract (flag-independent): never engage an arm whose authorization
+        # 0. ADR-0114 lifecycle authority contract (flag-independent): never engage an arm whose authorization
         #    would permit an OPEN with no executable CLOSE. Requires MODIFY+FULL_CLOSE authority, excludes
         #    partial-close, and enforces the bounded caps — so the stranding guard applies to BOTH the legacy arm
         #    and the atomic arm_copier_live_lifecycle, not only the new path.

@@ -1,6 +1,6 @@
 """trade_copier.lifecycle_arm_contract — the single, fail-closed source of truth for the governed
 OPEN+MODIFY+FULL_CLOSE live-demo arming safety contract (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148,
-ADR-0113).
+ADR-0114).
 
 pkt-147 proved two blockers for the #46->#48 live demo:
 

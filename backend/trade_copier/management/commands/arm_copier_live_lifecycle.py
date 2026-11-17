@@ -1,5 +1,5 @@
 """arm_copier_live_lifecycle — the ONE governed, atomic OPEN+MODIFY+FULL_CLOSE live-demo arming command
-(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0113). DEFAULTS TO DRY-RUN.
+(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114). DEFAULTS TO DRY-RUN.
 
 Validates the COMPLETE lifecycle-arming contract (route/symbol/caps, MODIFY+FULL_CLOSE authority AND execution
 flags, partial-close excluded, #46 clean at the watermark, #48 flatness via the human-confirm gate, host admission
@@ -19,7 +19,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
-    help = ("ADR-0113: atomic OPEN+MODIFY+FULL_CLOSE live-demo arming with full DARK rollback. Dry-run by default; "
+    help = ("ADR-0114: atomic OPEN+MODIFY+FULL_CLOSE live-demo arming with full DARK rollback. Dry-run by default; "
             "host facts are operator attestations; --commit needs signed-host actuators and fails closed without.")
 
     def add_arguments(self, parser):

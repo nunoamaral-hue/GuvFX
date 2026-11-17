@@ -1,4 +1,4 @@
-"""GuvFX Copy Trading host emitter launcher (ADR-0077; standing key loader added GFX-...-148, ADR-0113) - DARK.
+"""GuvFX Copy Trading host emitter launcher (ADR-0077; standing key loader added GFX-...-148, ADR-0114) - DARK.
 
 Thin entrypoint invoked by the (DISABLED) scheduled task or by the operator attestation script. It adds the
 vendored emitter library subset to sys.path and delegates to trade_copier.emitter.app.main. No Django, no DB,

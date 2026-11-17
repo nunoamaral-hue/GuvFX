@@ -1,6 +1,6 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ COPIER RUNTIME CLOSE-AUTHORITY GUARD (2026-11-16; GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0114; extends PR #676)
+## ★ COPIER RUNTIME CLOSE-AUTHORITY GUARD (2026-11-16; GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0115; extends PR #676)
 Closes PR #676's residual RUNTIME gap: `admit_open_live` admitted a LIVE OPEN without a durable, armed
 MODIFY+FULL_CLOSE path. Adds `open_close_lifecycle_armable` (gates `admit_open_live` + under-lock
 `create_live_open_job`: no OPEN without modify+full-close authority, no partial-close, close-survives-expiry, and
@@ -8,10 +8,10 @@ the MODIFY/FULL_CLOSE/dispatch/transport/close-after-expiry arms); opt-in defaul
 revocation-surviving FULL_CLOSE containment (copier admission + a FOURTH `allow_live_for_account` branch — **Amber**,
 execution LIVE wall); and a teardown flatness proof (halts `cleanup_required` rather than DARK over an open
 position). Repository-only, migration-free, DARK. Updated the ADR-0057/0094 OPEN fixtures (the Amber change
-ADR-0113 deferred) + new `tests_runtime_close_authority_guard` (48 OK). **One bounded next action:** governed
+ADR-0114 deferred) + new `tests_runtime_close_authority_guard` (48 OK). **One bounded next action:** governed
 adversarial review + exact-head Linux CI, then Sponsor `GO — merge PR #676`. STOP before merge.
 
-## ★ COPIER LIFECYCLE-ARMING SAFETY (2026-11-16; GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0113; repository-only PR)
+## ★ COPIER LIFECYCLE-ARMING SAFETY (2026-11-16; GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0114; repository-only PR)
 Closes the two pkt-147 #46->#48 live-demo blockers (no emitter ingest key; OPEN armable without executable MODIFY/FULL_CLOSE ->
 stranded-position risk) off main `600d7f3d` on `feat/copier-lifecycle-arming-safety`. Adds a fail-closed `lifecycle_arm_contract`
 (no-OPEN-without-executable-CLOSE; partial-close excluded), an atomic `arm_copier_live_lifecycle` (full DARK rollback), an

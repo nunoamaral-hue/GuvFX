@@ -33,7 +33,7 @@ User = get_user_model()
 
 LIVE_ARMED = dict(COPIER_ENABLED="1", COPIER_EXECUTE_ENABLED="1", COPIER_LIVE_EXECUTE_ENABLED="1",
                   HOSTED_LIVE_EXECUTION_ENABLED="1")
-# Real-time OPEN stack: the live arm + the synchronous trigger + projection + replication. ADR-0114: a LIVE OPEN
+# Real-time OPEN stack: the live arm + the synchronous trigger + projection + replication. ADR-0115: a LIVE OPEN
 # now requires the MODIFY+FULL_CLOSE lifecycle armed (no OPEN without a durable, armed close path), so the OPEN
 # stack includes the per-op MODIFY/FULL_CLOSE arms, mutation dispatch+transport and the post-expiry close-only
 # policy arm. (Partial-close stays OFF — excluded.)

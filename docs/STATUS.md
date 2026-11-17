@@ -1,6 +1,6 @@
 # GuvFX — Project Status
 
-> **2026-11-16 — Copier runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0114;
+> **2026-11-16 — Copier runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0115;
 > repository-only; migration-free; DARK; extends PR #676 before merge; auto-merge OFF; STOP before merge).**
 > Closes the residual RUNTIME gap PR #676's review found: `admit_open_live` admitted a LIVE OPEN without a durable,
 > armed MODIFY+FULL_CLOSE path (a flag-timing stranding on the legacy arm). Adds (1) `open_close_lifecycle_armable`
@@ -10,11 +10,11 @@
 > revocation-surviving FULL_CLOSE containment (`COPIER_LIVE_CONTAIN_AFTER_REVOCATION_ENABLED`; copier admission +
 > a FOURTH `allow_live_for_account` branch `copier_live_revocation_containment_authorized` — **Amber**, execution
 > LIVE wall, byte-identical with the arm OFF); (3) teardown proves no unflattened copier position before DARK, else
-> halts `cleanup_required` with no mutation. Fixtures updated (the Amber change ADR-0113 deferred): the ADR-0057/0094
+> halts `cleanup_required` with no mutation. Fixtures updated (the Amber change ADR-0114 deferred): the ADR-0057/0094
 > OPEN suites now use complete lifecycle-armed authorizations. New regression `tests_runtime_close_authority_guard`
 > **48 OK**. Repository-only, DARK; execution gates OFF by default; no prod/host/key/flag mutation. STOP before merge.
 
-> **2026-11-16 — Copier lifecycle-arming safety (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0113;
+> **2026-11-16 — Copier lifecycle-arming safety (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148; ADR-0114;
 > repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
 > `600d7f3d`, on `feat/copier-lifecycle-arming-safety`. Closes the two pkt-147 live-demo blockers: (1) the standing
 > immediate emitter had **no ingest signing key** so the <=1s path could not run; (2) `provision_authorized_live_copier_bridge`
@@ -28,7 +28,7 @@
 > account-46-pinned `Provision-GuvfxCopierEmitterKey.ps1` with value-blind `-Verify`, idempotent `-Remove`, tenant READ-ONLY
 > ACL, #48/CZ/arbitrary refusal); and a hardened `copier_live_demo_preflight` `arm_readiness` section (legacy `blockers`
 > untouched). Verified: `tests_lifecycle_arming` **42 OK**, full `trade_copier` **1086 OK**, bundle **67 OK**, check clean,
-> **migration-free**, ADR-0113 unique, governance-check + secret-scan + evidence-lint green. **Independent adversarial
+> **migration-free**, ADR-0114 unique, governance-check + secret-scan + evidence-lint green. **Independent adversarial
 > review** found 2 HIGH + 1 MEDIUM confirmed defects — all fixed: PS `tenant_read_only` Synchronize-bit false positive
 > (granular write/delete bits; the Windows gate caught it), post-arm re-verify re-requiring the flipped entry
 > preconditions (`check_host_entry=False`), and a rollback that did not restore provisioned host admission (now injects

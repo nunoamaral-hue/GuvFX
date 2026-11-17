@@ -373,7 +373,7 @@ def copier_live_contain_on_kill_switch_enabled() -> bool:
 
 def copier_live_contain_after_revocation_enabled() -> bool:
     """DARK policy arm for SAFETY-REDUCING FULL-CLOSE containment of an already-bound follower position AFTER its
-    governing authorization was REVOKED (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0114). DEFAULT OFF.
+    governing authorization was REVOKED (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0115). DEFAULT OFF.
 
     ADR-0083's default is that a REVOKED authorization governs nothing — the operator deliberately withdrew it and
     contains any open position manually. That default is PRESERVED here (this flag defaults OFF, so behaviour is

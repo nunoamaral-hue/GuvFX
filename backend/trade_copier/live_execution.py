@@ -115,7 +115,7 @@ def open_live_copier_count(follower) -> int:
 
 def open_close_lifecycle_armable(authz) -> tuple[bool, str]:
     """Fail-closed: may a LIVE OPEN be admitted for a position that MUST remain closeable for its whole life?
-    ``(ok, reason)`` — the runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0114).
+    ``(ok, reason)`` — the runtime close-authority guard (GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149, ADR-0115).
 
     THE RUNTIME INVARIANT: no follower OPEN is admitted unless that position has a durable, armed path to MODIFY
     and FULL_CLOSE throughout its lifecycle. The bounded entry allowance always grants entry, so without this a
@@ -232,7 +232,7 @@ def admit_open_live(replication, *, now=None) -> tuple[bool, str]:
     if not ok:
         return False, reason
 
-    # 8b (ADR-0114). RUNTIME CLOSE-AUTHORITY GUARD — no OPEN without a durable, armed MODIFY+FULL_CLOSE lifecycle.
+    # 8b (ADR-0115). RUNTIME CLOSE-AUTHORITY GUARD — no OPEN without a durable, armed MODIFY+FULL_CLOSE lifecycle.
     # Enforced HERE (the single runtime OPEN admission) so BOTH the atomic arm and the legacy copier_live_arm path
     # fail closed; a copied LIVE OPEN that could not be closed (missing close authority / close path not armed /
     # close not surviving the entry-window expiry) is never admitted. Never widens anything — purely additive deny.
@@ -400,7 +400,7 @@ def create_live_open_job(locked_replication) -> dict:
     if not ok:
         return {"replication_id": locked_replication.id, "produced": False, "reason": reason}
 
-    # ADR-0114: re-assert the runtime close-authority guard UNDER the authorization lock, so a close flag/authority
+    # ADR-0115: re-assert the runtime close-authority guard UNDER the authorization lock, so a close flag/authority
     # that changed between preflight and here is seen and the OPEN fails closed (never place an order we cannot
     # then close). The authority bits are immutable on the row; the execution flags are read live.
     ok, reason = open_close_lifecycle_armable(authz)
@@ -568,7 +568,7 @@ def _governing_authorization(open_repl, *, include_revoked=False):
     borrow a fresh window for an already-open position). Returns ``(authz|None, reason)``.
 
     ``include_revoked`` is False by default (ADR-0083: a REVOKED authorization governs nothing). It is set True
-    ONLY by the FULL-CLOSE revocation-containment fallback (ADR-0114), which re-resolves the SAME recorded id
+    ONLY by the FULL-CLOSE revocation-containment fallback (ADR-0115), which re-resolves the SAME recorded id
     including a revoked row so an already-open position can still be flattened — never to confer any other
     authority. The caller re-checks ``full_close_authority`` and the opt-in containment flag."""
     if open_repl is None or open_repl.execution_job_id is None:
@@ -592,7 +592,7 @@ def _governing_authorization(open_repl, *, include_revoked=False):
 
 
 def _resolve_governing_with_revocation_containment(open_repl, op):
-    """Resolve the governing authorization for a lifecycle op, applying the ADR-0114 FULL-CLOSE
+    """Resolve the governing authorization for a lifecycle op, applying the ADR-0115 FULL-CLOSE
     revocation-containment fallback. Returns ``(authz|None, reason, revocation_containment: bool)``.
 
     Normal resolution excludes a REVOKED authorization. ONLY for a FULL CLOSE, ONLY when the opt-in
@@ -663,7 +663,7 @@ def _live_lifecycle_preamble(replication, op, *, now) -> tuple[bool, object, int
         return False, None, 0, reason
 
     # 5. The GOVERNING authorization — the one THIS position was opened under (by recorded id). Normally never
-    #    REVOKED; the ADR-0114 FULL-CLOSE revocation-containment fallback (opt-in, flag-gated) resolves a revoked
+    #    REVOKED; the ADR-0115 FULL-CLOSE revocation-containment fallback (opt-in, flag-gated) resolves a revoked
     #    grant ONLY to flatten an already-open position (never for OPEN/MODIFY/PARTIAL, never to widen authority).
     authz, reason, revocation_containment = _resolve_governing_with_revocation_containment(open_repl, op)
     if authz is None:

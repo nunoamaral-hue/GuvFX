@@ -176,7 +176,7 @@ def copier_live_lifecycle_authorized(account) -> bool:
 
 
 def copier_live_revocation_containment_authorized(account) -> bool:
-    """ADR-0114 — the runtime ``MT5_ALLOW_LIVE`` boundary for FLATTENING an already-bound LIVE follower position
+    """ADR-0115 — the runtime ``MT5_ALLOW_LIVE`` boundary for FLATTENING an already-bound LIVE follower position
     whose governing authorization was REVOKED, so a revocation can never TRAP an open live position. Kept SEPARATE
     from the entry and lifecycle boundaries, DARK / default-OFF, and TIGHTLY auto-bounded. It authorizes the
     runtime for a FULL CLOSE ONLY, and ONLY when ALL of:
@@ -191,7 +191,7 @@ def copier_live_revocation_containment_authorized(account) -> bool:
     the boundary is never left open after the stranded position is closed (auto-bounded, not a standing widening).
     It authorizes NO order by itself (the per-order admission produces ONLY a FULL_CLOSE containment command and
     re-checks the full-close authority + the opt-in arm) and never widens entry / modify / partial-close authority.
-    With the arm OFF (the default) it returns ``False``, so the runtime boundary is byte-identical to pre-ADR-0114.
+    With the arm OFF (the default) it returns ``False``, so the runtime boundary is byte-identical to pre-ADR-0115.
     Fail-closed on any error."""
     try:
         from trade_copier.flags import copier_live_contain_after_revocation_enabled

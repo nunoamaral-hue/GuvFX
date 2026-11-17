@@ -1,5 +1,5 @@
 # ASCII-only (security.md RULE 9). Pester behavioural test for the host-local STANDING emitter-key PROVISIONER
-# (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0113). SYNTHETIC key only - NEVER a real secret. Run on a
+# (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114). SYNTHETIC key only - NEVER a real secret. Run on a
 # Windows PowerShell 5.1 runner with Pester 5.x:
 #   Install-Module Pester -MinimumVersion 5.0 -Force -SkipPublisherCheck ; Invoke-Pester -Path .\Test-EmitterKeyProvisioner.Tests.ps1 -Output Detailed
 # All setup lives in BeforeAll. The real scheduler, SID resolution and secret entry are replaced by injected seams

@@ -1,5 +1,5 @@
 """trade_copier.lifecycle_teardown — the idempotent, machine-readable DARK teardown for the governed live-demo
-(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0113). Fail-closed.
+(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114). Fail-closed.
 
 Reliably returns the backend control plane + (via injected signed-host actuators) the host to DARK after ANY
 state: full success, partial arming, emitter-enable failure, bridge-provision failure, arm-create failure,

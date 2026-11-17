@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 # ASCII-only (security.md RULE 9: must parse under Windows PowerShell 5.1 with no BOM). GuvFX Copy Trading -
 # secure HUMAN-OPERATED host-local STANDING immediate-emitter ingest-key PROVISIONER
-# (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0113). Repository tooling: NOT installed, NOT scheduled,
+# (GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114). Repository tooling: NOT installed, NOT scheduled,
 # NOT run by any agent. A human operator runs it locally over RDP (as an administrator) during a single
 # Sponsor-gated demo session, immediately before the atomic lifecycle arming - and -Remove at teardown.
 #
