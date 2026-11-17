@@ -2,6 +2,40 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Copier production arming pipeline — repository-only, NOT merged/deployed (GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153 / ADR-0117, 2026-11-17)
+
+- **DARK + repository-only.** Nothing is deployed or contacted. The signed host-executor factory stays `None`
+  until `HOSTED_HOST_EXECUTOR_ENABLED` + keyring/base_url are set AND the host daemon + the new
+  `Set-GuvfxCopierEmitter.ps1` primitive are deployed + certified (a separate Sponsor-gated host step). So a backend
+  `arm_copier_live_lifecycle --commit` still fails closed at the real emitter/admission step and rolls the whole
+  stack back to DARK — the arm is **certification-ready, not live**. All flags default OFF.
+- **Operator sequence requirements for a future live arm** (enforced by the gates; recorded here so they are not
+  missed):
+  - The ADR-0101 verifier window MUST be opened **uncapped** — `copier_verifier_window --open --max-uses 0` (TTL ≤
+    900 s). The arm refuses a use-capped window (`window_use_capped`): a capped window auto-closes + shreds its key
+    after the first ingested event and would 503 the follower MODIFY/CLOSE, **stranding a live position** (found by
+    adversarial review).
+  - The host key and the backend verifier-window key MUST be the **same bytes** (key-id `copier-ingest`, fixed in
+    code both sides), each entered once by a human via non-echoing stdin. The key never appears in argv/env/logs/
+    Git/Notion/chat.
+  - A **dispatch path must be live** before any MODIFY/CLOSE is produced: the ADR-0094 immediate inline path
+    (`COPIER_IMMEDIATE_DISPATCH_ENABLED`, the ≤1 s primary) and/or the governed `run_copier_execution_driver`
+    (fallback). The arm surfaces this (`dispatch_path`), and copier LIVE MODIFY/CLOSE are owned ONLY by
+    `run_copier_mutation_dispatch` (excluded from the generic `next_job` claim) — so if the governed dispatcher is
+    off while armed, a containment MODIFY/CLOSE waits PENDING (surfaced in the driver dead-letter) rather than being
+    dispatched without the governed authority re-check. This is fail-safe against unauthorized dispatch; the runbook
+    must assert a dispatch path is live.
+- **Post-expiry containment is poll/reconciliation-gated, by design (review MEDIUM).** The verifier window covers up
+  to the authorization expiry; a `close_only_after_expiry` containment CLOSE after that instant is not served by the
+  fast emitter path (the window and the host `MT5_LIVE_EXPIRY` both lapse at authz expiry). It is handled by the
+  slow observer/reconciliation path (which reads the master directly and needs no window) and by teardown's
+  flatness-first halt (`cleanup_required`, mutating nothing) — never silently stranded.
+- **2 pre-existing macOS-environmental test failures (NOT this diff).**
+  `hosted_workspace.tests_observer_attach.BareTerminalClassifierControlTests.{test_cim_positive_and_negative_controls,
+  test_all_enumerators_unavailable_returns_none_fail_closed}` fail on macOS because the test mocks the Windows CIM
+  enumerator path but `_bare_terminal_pids` reaches macOS `psutil` first. `observer_attach.py` is untouched by this
+  packet (empty diff) and the tests fail in isolation; the Linux CI runner is authoritative.
+
 ## ✅ RESOLVED — Copier runtime OPEN gate now enforces no-OPEN-without-executable-CLOSE (ADR-0115 / pkt-149; 2026-11-16)
 
 - pkt-148 (ADR-0114) closed the stranding at the ARMING layer. The residual RUNTIME flag-timing gap —

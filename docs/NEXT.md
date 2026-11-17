@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ COPIER PRODUCTION ARMING PIPELINE (2026-11-17; GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117; repository-only PR)
+Wires the missing governed production actuators + driver so the atomic arm can move #46→#48 from DARK to ARMED with
+no partial arm and no stranded follower, off main `ea085ee1` on `feat/copier-production-actuators`. Removes the
+`emitter_enabler=None` dead end (4 #46-pinned signed-host emitter ops + `Set-GuvfxCopierEmitter.ps1` host primitive +
+`live_host_actuators` adapters, DARK-gated → `--commit` still fails closed truthfully + full rollback); adds the
+ADR-0101 verifier-window arm gate (`VERIFIER_WINDOW_NOT_READY`, incl. the use-cap refusal) + teardown shred; adds the
+governed single-flight `run_copier_execution_driver` + the dispatcher-ownership split (copier LIVE MODIFY/CLOSE are
+`copier_governed`, excluded from `next_job`, owned only by `run_copier_mutation_dispatch`). Immediate-push/fallback/
+reconciliation dedup reused (ADR-0074/0094). 3 adversarial lanes → 1 HIGH + 1 MEDIUM + LOWs fixed. Migration-free,
+DARK, execution gates OFF by default. **One bounded next action:** exact-head Linux CI 5/5 + the Windows PS5.1
+ParseFile gate for `Set-GuvfxCopierEmitter.ps1`, then Sponsor `GO — merge PR`. **Separate Sponsor-gated step (NOT this
+PR):** deploy + certify the signed host-executor daemon + the new primitive; the single human hidden-key entry (host
+key + backend verifier window opened `--max-uses 0`); the bounded live window + master trade. STOP before merge.
+
 ## ★ COPIER RUNTIME CLOSE-AUTHORITY GUARD (2026-11-16; GFX-COPIER-RUNTIME-CLOSE-AUTHORITY-GUARD-149; ADR-0115; extends PR #676)
 Closes PR #676's residual RUNTIME gap: `admit_open_live` admitted a LIVE OPEN without a durable, armed
 MODIFY+FULL_CLOSE path. Adds `open_close_lifecycle_armable` (gates `admit_open_live` + under-lock

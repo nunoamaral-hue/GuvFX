@@ -178,6 +178,15 @@ authz/arm, close window, shred key, verify zero active jobs/tickets and the DARK
 - Repository-only + DARK: in this phase `--commit` still fails closed (executor unavailable) and rolls back —
   but for the truthful reason, with the real wiring in place and fully tested with fakes.
 - No production/Windows mutation, no real broker order, no real secret, no verifier-window opened by this packet.
+- Three independent adversarial review lanes (financial-safety/stranding/concurrency; security/signing/secret/
+  test-seam; Windows-primitive/ACL/rollback/teardown) found **no CRITICAL**, **1 HIGH** (a `max_uses`-capped verifier
+  window auto-closes after the first event and strands the follower CLOSE → the arm now refuses a use-capped window),
+  **1 MEDIUM** (`_verify_host_ok` defaulted an absent account/operation echo to pass → now required present-and-equal,
+  and the primitive emits `operation`), and several LOW (RULE-11 `Settings/Enabled` parse, empty-DACL ACL guard,
+  RemoveKey directory guard, default-rollback emitter wiring, driver-status lease path, teardown DARK fail-closed on
+  the load-bearing window re-count, RULE-5 doc drift) — all fixed. The partition against double/wrong-owner dispatch,
+  the NULL-safe `next_job` exclusion, revoke/expiry fail-closed, the single-flight lease, and teardown's flatness-first
+  halt were confirmed correct.
 
 ## Testing
 
