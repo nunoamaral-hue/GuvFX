@@ -5,13 +5,15 @@ from .views import (
     AssignmentSetActiveView,
     RecommendationListView, HeartbeatIngestView,
     RecoveryAttemptListView, RecoveryStatusView, CircuitResetView,
-    OperationsSummaryView,
+    OperationsSummaryView, WayondMetricsView,
 )
 
 urlpatterns = [
     path("trading-health/", TradingHealthView.as_view(), name="reliability-trading-health"),
     path("health/", HealthMatrixView.as_view(), name="reliability-health"),
     path("operations-summary/", OperationsSummaryView.as_view(), name="reliability-operations-summary"),
+    # DARK (404 unless WAYOND_METRICS_OPERATOR_ENABLED): staff-only truthful Wayond metrics.
+    path("wayond-metrics/", WayondMetricsView.as_view(), name="reliability-wayond-metrics"),
     path("alerts/", AlertListView.as_view(), name="reliability-alerts"),
     path("alerts/<int:pk>/acknowledge/", AlertAcknowledgeView.as_view(), name="reliability-alert-ack"),
     path("operations/assignment/<int:pk>/set-active/", AssignmentSetActiveView.as_view(),

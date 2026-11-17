@@ -257,3 +257,25 @@ class OperationsSummaryView(APIView):
     def get(self, request):
         from .services.operations_summary import build_operations_summary
         return Response(build_operations_summary())
+
+
+class WayondMetricsView(APIView):
+    """GET /api/reliability/wayond-metrics/ — staff-only, DARK (404 unless WAYOND_METRICS_OPERATOR_ENABLED).
+
+    Truthful Wayond performance & quality metrics: aggregate-only, value-blind (no message bodies,
+    handles, chat ids, account numbers, emails, credentials or tokens). Every latency stage and
+    quality figure carries provenance; a stage whose evidence is genuinely absent returns N/A /
+    UNMEASURABLE — never 0, never a fabricated speed or success. Reads only; mutates NOTHING."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from .flags import wayond_metrics_operator_enabled
+        if not wayond_metrics_operator_enabled():
+            return Response({"detail": "Not found."}, status=http.HTTP_404_NOT_FOUND)
+        from .services.wayond_metrics import build_wayond_metrics, DEFAULT_WINDOW_DAYS
+        try:
+            window = int(request.query_params.get("window_days", DEFAULT_WINDOW_DAYS))
+        except (TypeError, ValueError):
+            window = DEFAULT_WINDOW_DAYS
+        window = max(1, min(window, 365))
+        return Response(build_wayond_metrics(window_days=window))

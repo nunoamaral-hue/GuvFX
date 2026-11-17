@@ -48,6 +48,13 @@ const SECTIONS = [
     href: "/admin/operations/mailbox-health",
     permKey: "mailbox_health" as const,
   },
+  {
+    key: "wayond-metrics",
+    title: "Wayond Metrics",
+    description: "Wayond signal performance & quality — truthful latency/quality with N/A where unmeasured (read-only, DARK).",
+    href: "/admin/operations/wayond-metrics",
+    permKey: "wayond_metrics" as const,
+  },
 ];
 
 export default function AdminOperationsOverview() {
