@@ -91,6 +91,21 @@ def dead_letter_summary() -> dict:
     return out
 
 
+def default_driver_lease_path() -> str:
+    """The driver's OWN single-flight lease FILE (distinct from the deploy/recovery operational lease), resolved
+    from settings/env, else the handoff-dir default. Plain config, never a secret. Shared by the command and the
+    read-only status so both read the SAME lease."""
+    import os
+
+    from django.conf import settings
+    p = (getattr(settings, "COPIER_EXECUTION_DRIVER_LEASE_PATH", None)
+         or os.getenv("COPIER_EXECUTION_DRIVER_LEASE_PATH", "")).strip()
+    if p:
+        return p
+    from hosted_workspace.recovery_lease import default_lease_dir
+    return os.path.join(default_lease_dir(), "copier_execution_driver_lease.json")
+
+
 def dispatch_path_posture() -> dict:
     """Which copier dispatch path(s) are armed: the ADR-0094 immediate inline path (the <=1 s PRIMARY, fired from
     the signed ingestion endpoint) and/or the governed fallback driver. At least one must be active for an ARMED
@@ -113,7 +128,7 @@ def driver_status(*, lease_path=None, now=None) -> dict:
                  "execution_banner": execution_banner(), "checked_at": now.isoformat()}
     try:
         from hosted_workspace.recovery_lease import read_lease
-        status, lease = read_lease(now, lease_path)
+        status, lease = read_lease(now, lease_path or default_driver_lease_path())
         out["lease"] = {"status": getattr(status, "value", str(status)),
                         "kind": getattr(lease, "kind", None),
                         "expires_at": getattr(lease, "expires_at", None)}

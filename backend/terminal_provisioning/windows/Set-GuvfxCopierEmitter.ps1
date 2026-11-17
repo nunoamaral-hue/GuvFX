@@ -37,9 +37,19 @@ Set-StrictMode -Version 2.0
 $EMITTER_ACCOUNT = 46
 $EMITTER_BASE = "C:\GuvFX\copier-emitter"
 
+# The canonical signed-op name this mode maps to, echoed in the verdict so the backend _verify_host_ok can require
+# a PRESENT-AND-EQUAL operation echo (defence in depth over the per-request signature).
+$OP_NAME = switch ($Mode) {
+  "Enable"    { "ENABLE_COPIER_EMITTER" }
+  "Disable"   { "DISABLE_COPIER_EMITTER" }
+  "RemoveKey" { "REMOVE_COPIER_EMITTER_KEY" }
+  "Read"      { "READ_COPIER_HOST_STATE" }
+  default     { "" }
+}
+
 # The single compact-JSON verdict. Every UNPROVEN fact stays its fail-closed default; the ingest key NEVER appears.
 $v = [ordered]@{
-  ok=$false; account_id=$AccountId; mode=$Mode;
+  ok=$false; account_id=$AccountId; operation=$OP_NAME; mode=$Mode;
   emitter_task_enabled=$false; emitter_task_disabled=$false;
   ingest_key_present=$false; ingest_key_acl_ok=$false; reason=""
 }
@@ -61,6 +71,19 @@ function Read-TaskXml([string]$taskName) {
   return [string]$out
 }
 
+# RULE 11: read the task's Settings/Enabled node SPECIFICALLY via XML, never a document-wide "<Enabled>" substring
+# (Task Scheduler XML also carries <Enabled> under every <Triggers> entry, so a global match is ambiguous). Returns
+# "true" / "false" / "" (absent/unparseable).
+function Get-SettingsEnabled([string]$xml) {
+  if ([string]::IsNullOrWhiteSpace($xml)) { return "" }
+  try {
+    $doc = [xml]$xml
+    $n = $doc.SelectSingleNode("//*[local-name()='Task']/*[local-name()='Settings']/*[local-name()='Enabled']")
+    if ($null -eq $n) { return "" }
+    return ([string]$n.InnerText).Trim()
+  } catch { return "" }
+}
+
 try {
   # Identity contract - runs BEFORE any mutation, so a refusal leaves the host exactly as it was.
   if ($AccountId -le 0 -or $AccountId -eq 1) { Emit "reserved_or_invalid_account" }
@@ -75,11 +98,9 @@ try {
 
   # ----------------------------------------- READ (value-blind, read-only) -----------------------------
   if ($Mode -eq "Read") {
-    $xml = Read-TaskXml $taskName
-    if ($xml) {
-      $v.emitter_task_enabled = ($xml -match "<Enabled>true</Enabled>")
-      $v.emitter_task_disabled = ($xml -match "<Enabled>false</Enabled>")
-    }
+    $settingsEnabled = Get-SettingsEnabled (Read-TaskXml $taskName)
+    $v.emitter_task_enabled = ($settingsEnabled -eq "true")
+    $v.emitter_task_disabled = ($settingsEnabled -eq "false")
     if (Test-Path -LiteralPath $keyPath) {
       $item = Get-Item -LiteralPath $keyPath -Force
       $isReparse = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint)
@@ -90,12 +111,15 @@ try {
           $tenantSid = Resolve-SidValue $expectedUser
           $allowed = @("S-1-5-18", "S-1-5-32-544", $tenantSid)
           $aclOk = $acl.AreAccessRulesProtected -and ($null -ne $tenantSid)
+          $tenantGranted = $false
           foreach ($rule in $acl.Access) {
             if ($rule.IsInherited) { $aclOk = $false; break }
             $sid = $null; try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $aclOk = $false; break }
             if ($allowed -notcontains $sid) { $aclOk = $false; break }
+            if ($sid -eq $tenantSid) { $tenantGranted = $true }
           }
-          $v.ingest_key_acl_ok = [bool]$aclOk
+          # an empty-but-protected DACL (zero ACEs) must NOT pass: the tenant must be POSITIVELY granted.
+          $v.ingest_key_acl_ok = [bool]($aclOk -and $tenantGranted)
         } catch { $v.ingest_key_acl_ok = $false }
       }
     }
@@ -110,6 +134,7 @@ try {
       if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) {
         Emit "remove_target_reparse"
       }
+      if ($item -is [System.IO.DirectoryInfo]) { Emit "remove_target_not_a_file" }
       try {
         $size = [int]$item.Length
         $fs = [System.IO.File]::Open($keyPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
@@ -130,8 +155,7 @@ try {
     if (-not $task) { $v.emitter_task_disabled = $true; $v.ok = $true; Emit "" }   # absent => already not emitting
     try { $null = & schtasks /end /tn ("\" + $taskName) 2>$null } catch { }
     $null = & schtasks /change /tn ("\" + $taskName) /disable 2>$null
-    $xml = Read-TaskXml $taskName
-    if ($xml -and ($xml -match "<Enabled>false</Enabled>")) { $v.emitter_task_disabled = $true; $v.ok = $true; Emit "" }
+    if ((Get-SettingsEnabled (Read-TaskXml $taskName)) -eq "false") { $v.emitter_task_disabled = $true; $v.ok = $true; Emit "" }
     Emit "disable_not_verified"
   }
 
@@ -153,8 +177,7 @@ try {
     if (-not $expectedSid -or -not $actualSid -or ($expectedSid -ne $actualSid)) { Emit "emitter_task_principal_drift" }
 
     $null = & schtasks /change /tn ("\" + $taskName) /enable 2>$null
-    $xml = Read-TaskXml $taskName
-    if ($xml -and ($xml -match "<Enabled>true</Enabled>")) { $v.emitter_task_enabled = $true; $v.ok = $true; Emit "" }
+    if ((Get-SettingsEnabled (Read-TaskXml $taskName)) -eq "true") { $v.emitter_task_enabled = $true; $v.ok = $true; Emit "" }
     Emit "enable_not_verified"
   }
 

@@ -46,19 +46,26 @@ def _resolve_emitter_executor(executor_resolver: Optional[Callable]):
 
 
 def _verify_host_ok(result, *, expect_account: int, expect_op: str) -> tuple[bool, str]:
-    """Semantic echo check on a signed host-op result. The signature was already verified by
-    ``verify_hosted_response``; this confirms the host attested ``ok`` and (when present) echoed the expected
-    account id + operation, so a truncated/duplicated/wrong-op response fails closed."""
+    """Semantic echo check on a signed host-op result. The PRIMARY binding is the per-request signature over a
+    fresh nonce + correlation_id (``verify_hosted_response`` inside ``SignedHostExecutor._send``), which already
+    binds the response to THIS request's account + operation. This is the defence-in-depth echo: it REQUIRES the
+    host to attest ``ok`` AND a PRESENT-AND-EQUAL ``account_id`` AND a PRESENT-AND-EQUAL ``operation``. An ABSENT
+    field is a failure — never defaulted to the expected value — so a truncated ``{"ok": true}`` fails closed and
+    this check can actually fail (it is not vacuous)."""
     if not isinstance(result, dict):
         return (False, "no_result")
     if not result.get("ok"):
         return (False, str(result.get("reason", "host_not_ok")))
+    if "account_id" not in result:
+        return (False, "account_echo_absent")
     try:
-        if int(result.get("account_id", expect_account)) != int(expect_account):
+        if int(result["account_id"]) != int(expect_account):
             return (False, "account_mismatch")
     except (TypeError, ValueError):
         return (False, "malformed_attestation")   # a non-int field from a (compromised) host -> fail closed
-    if str(result.get("operation", expect_op) or expect_op) != expect_op:
+    if "operation" not in result:
+        return (False, "operation_echo_absent")
+    if str(result.get("operation") or "") != expect_op:
         return (False, "operation_mismatch")
     return (True, "ok")
 
@@ -109,7 +116,7 @@ def make_emitter_disabler(*, executor_resolver: Optional[Callable] = None) -> Ca
 
 def make_emitter_key_remover(*, executor_resolver: Optional[Callable] = None) -> Callable[[], dict]:
     """Return the teardown's ``emitter_key_remover`` adapter (signed ``REMOVE_COPIER_EMITTER_KEY`` -> the reviewed
-    provisioner ``-Remove``: shred + delete the host-local ``...\\46\\ingest.key``). Risk-REDUCING + idempotent =>
+    ``Set-GuvfxCopierEmitter.ps1 -Mode RemoveKey``: shred + delete the host-local ``...\\46\\ingest.key``). Risk-REDUCING + idempotent =>
     NOT flag-gated. No key material rides this path. Returns ``{"ok", "removed", ...}``."""
     def _remove() -> dict:
         executor = _resolve_emitter_executor(executor_resolver)

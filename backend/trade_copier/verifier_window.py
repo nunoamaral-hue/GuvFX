@@ -297,6 +297,13 @@ def covers_live_authorization(authz, *, now=None) -> dict:
         return {"ready": False, "reason": "no_open_window"}
     if not _purpose_covers(w.purpose, "INGEST"):
         return {"ready": False, "reason": "purpose_not_ingest", "window": {"purpose": w.purpose}}
+    # A USE-CAPPED window auto-closes + shreds its key after ``max_uses`` verifications; since each ingested event
+    # (OPEN, every MODIFY, the CLOSE, heartbeats) burns one use, a capped window would lapse mid-lifecycle and 503
+    # the follower CLOSE, stranding a live position. The live window must be bounded ONLY by its TTL (``max_uses``
+    # None — open it with ``copier_verifier_window --open --max-uses 0``). Refuse any finite cap at arm time.
+    if getattr(w, "max_uses", None) is not None:
+        return {"ready": False, "reason": "window_use_capped",
+                "window": {"purpose": w.purpose, "max_uses": w.max_uses}}
     authz_exp = getattr(authz, "expires_at", None)
     if authz_exp is not None and w.expires_at < authz_exp:
         return {"ready": False, "reason": "window_expires_before_authorization",

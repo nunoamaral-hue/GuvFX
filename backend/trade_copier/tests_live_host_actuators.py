@@ -148,6 +148,23 @@ class AdapterTests(SimpleTestCase):
         self.assertFalse(r["ok"])
         self.assertIn("account_mismatch", r["reason"])
 
+    @override_settings(**_STANDING_ON)
+    def test_enabler_rejects_truncated_attestation(self):
+        # a truncated {"ok": true} with NO account/operation echo must fail closed (not default to the expected).
+        class _Bare:
+            account_id = 46
+
+            def enable_copier_emitter(self):
+                return {"ok": True}   # no account_id, no operation
+
+            def disable_copier_emitter(self):
+                return {"ok": True}
+
+        r = lha.make_emitter_enabler(executor_resolver=lambda _a=None: _Bare())()
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["reason"].startswith("enable_unverified:"))
+        self.assertIn("echo_absent", r["reason"])
+
     @override_settings(COPIER_ENABLED="1")   # standing flag OFF — the disabler must STILL work (risk-reducing)
     def test_disabler_is_not_flag_gated(self):
         fake = _FakeExecutor(result={"ok": True})
@@ -293,6 +310,13 @@ class VerifierWindowGateTests(_Base):
         authz = self._short_authz(minutes=5)
         with verification_window("x" * 40, purpose="INGEST", ttl_seconds=600):
             self.assertTrue(covers_live_authorization(authz)["ready"])
+
+    def test_covers_refuses_use_capped_window(self):
+        # a max_uses-capped window auto-closes after the first ingested event -> would strand the follower CLOSE.
+        from trade_copier.verifier_window import covers_live_authorization, verification_window
+        authz = self._short_authz(minutes=5)
+        with verification_window("x" * 40, purpose="INGEST", ttl_seconds=600, max_uses=1):
+            self.assertEqual(covers_live_authorization(authz)["reason"], "window_use_capped")
 
     def test_arm_refuses_without_window(self):
         res = self._dry_arm(self._short_authz())

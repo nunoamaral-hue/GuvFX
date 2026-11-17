@@ -172,10 +172,12 @@ def _dark_verification(master_account_id, follower_account_id, *, admission, emi
     flat = _open_copier_positions(follower_account_id)
     out["open_copier_positions"] = flat
     authz_ok = (out.get("active_authorizations", 1) == 0) if require_authz_absent else True
+    # ADR-0117: the verifier window is now a load-bearing arm gate, so its re-count must FAIL CLOSED here — a DB
+    # error (None) must NOT be treated as "no open windows". Require an explicit 0.
     backend_dark = (out.get("engaged_arms") == 0 and authz_ok
                     and (out.get("copier_jobs_open") in (0, None))
                     and bool(flat.get("proven_flat"))
-                    and (out.get("verifier_windows_open") in (0, None)))
+                    and (out.get("verifier_windows_open") == 0))
     out["require_authz_absent"] = bool(require_authz_absent)
     host_dark = bool(admission.get("proven")) and bool(emitter.get("proven")) and bool(key.get("proven"))
     out["backend_dark"] = backend_dark

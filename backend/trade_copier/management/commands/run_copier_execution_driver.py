@@ -41,15 +41,8 @@ class Command(BaseCommand):
     def _lease_path(self, override):
         if override:
             return override
-        import os
-
-        from django.conf import settings
-        p = (getattr(settings, "COPIER_EXECUTION_DRIVER_LEASE_PATH", None)
-             or os.getenv("COPIER_EXECUTION_DRIVER_LEASE_PATH", "")).strip()
-        if p:
-            return p
-        from hosted_workspace.recovery_lease import default_lease_dir
-        return os.path.join(default_lease_dir(), "copier_execution_driver_lease.json")
+        from trade_copier.execution_driver import default_driver_lease_path
+        return default_driver_lease_path()
 
     def handle(self, *args, **o):
         from django.utils import timezone

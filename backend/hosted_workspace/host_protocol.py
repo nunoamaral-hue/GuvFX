@@ -84,13 +84,13 @@ HOSTED_OPERATIONS = (
     # ENABLE/DISABLE toggle the pre-installed, DISABLED GuvFX_CopierEmitter_46 task (run_emitter.py run --config
     # ...\46\config.json, principal guvfx_u_46): the host derives the fixed task/principal/action from account_id,
     # re-asserts the exact action contract (never the one-shot attest, never an arbitrary command/task), carries NO
-    # params, and is idempotent. REMOVE_COPIER_EMITTER_KEY runs the reviewed provisioner -Remove (shred+delete
-    # ...\46\ingest.key) — it carries and returns NO key material. READ_COPIER_HOST_STATE is a READ-ONLY,
+    # params, and is idempotent. REMOVE_COPIER_EMITTER_KEY runs the reviewed Set-GuvfxCopierEmitter.ps1 -Mode
+    # RemoveKey primitive (shred+delete ...\46\ingest.key) — it carries and returns NO key material. READ_COPIER_HOST_STATE is a READ-ONLY,
     # VALUE-BLIND read-back of the emitter task posture + ingest.key presence/ACL (metadata only, never the key).
     # None of them place/modify/close an order, contact follower #48, or open a verifier window.
     "ENABLE_COPIER_EMITTER",     # enable the pre-installed DISABLED standing emitter task (#46-pinned policy edge)
     "DISABLE_COPIER_EMITTER",    # re-disable the standing emitter task (idempotent)
-    "REMOVE_COPIER_EMITTER_KEY", # provisioner -Remove: shred+delete the host-local standing ingest key (no key on the wire)
+    "REMOVE_COPIER_EMITTER_KEY", # Set-GuvfxCopierEmitter.ps1 -Mode RemoveKey: shred+delete the host-local standing ingest key (no key on the wire)
     "READ_COPIER_HOST_STATE",    # read-only value-blind read-back: emitter task state + ingest.key presence/ACL (metadata only)
 )
 # Operations that carry a sealed credential payload (the Windows account password). Additive.

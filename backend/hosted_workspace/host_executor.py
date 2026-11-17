@@ -342,8 +342,9 @@ class SignedHostExecutor:
         return self._send("DISABLE_COPIER_EMITTER")
 
     def remove_copier_emitter_key(self, rdp_host=None) -> dict:
-        """ADR-0117 teardown — run the reviewed provisioner ``-Remove`` to shred + delete the host-local standing
-        ingest key (``...\\46\\ingest.key``). #46-pinned; carries NO params; idempotent (already-absent => ok).
+        """ADR-0117 teardown — run the reviewed ``Set-GuvfxCopierEmitter.ps1 -Mode RemoveKey`` primitive to shred +
+        delete the host-local standing ingest key (``...\\46\\ingest.key``). #46-pinned; carries NO params;
+        idempotent (already-absent => ok).
         Reads/returns NO key material — the backend never sees the key, and nothing key-derived rides this wire."""
         if self.account_id != self.STANDING_EMITTER_ACCOUNT_ID:
             return {"ok": False, "reason": "account_not_emitter_pinned"}

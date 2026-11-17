@@ -206,6 +206,8 @@ def arm_live_lifecycle(*, master_account_id: int, follower_account_id: int, sour
                        emitter_task_probe: Optional[Callable] = None,
                        admission_provisioner: Optional[Callable] = None,
                        emitter_enabler: Optional[Callable] = None,
+                       emitter_disabler: Optional[Callable] = None,
+                       emitter_key_remover: Optional[Callable] = None,
                        teardown: Optional[Callable] = None,
                        commit: bool = False, by_email: Optional[str] = None, reason: str = "",
                        now=None) -> dict:
@@ -238,8 +240,8 @@ def arm_live_lifecycle(*, master_account_id: int, follower_account_id: int, sour
                 td = teardown_live_dark(
                     master_account_id=master_account_id, follower_account_id=follower_account_id,
                     authorization_id=authorization_id, admission_restore=_default_admission_restore,
-                    emitter_disabler=None, emitter_key_remover=None, now=timezone.now(),
-                    revoke_authorization=False)
+                    emitter_disabler=emitter_disabler, emitter_key_remover=emitter_key_remover,
+                    now=timezone.now(), revoke_authorization=False)
         except Exception as e:  # noqa: BLE001 — teardown must never raise past the caller
             td = {"ok": False, "reason": f"teardown_error:{type(e).__name__}"}
         return {"ok": False, "armed": False, "reason": reason_code, "rolled_back": td, "detail": v}
