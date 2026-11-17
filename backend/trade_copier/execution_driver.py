@@ -91,6 +91,18 @@ def dead_letter_summary() -> dict:
     return out
 
 
+def dispatch_path_posture() -> dict:
+    """Which copier dispatch path(s) are armed: the ADR-0094 immediate inline path (the <=1 s PRIMARY, fired from
+    the signed ingestion endpoint) and/or the governed fallback driver. At least one must be active for an ARMED
+    route to actually execute a follower order; neither active means an armed-but-inert stack (surfaced, never
+    silently). Non-secret."""
+    from trade_copier.flags import copier_execution_driver_enabled, copier_immediate_dispatch_enabled
+    immediate = copier_immediate_dispatch_enabled()
+    driver = copier_execution_driver_enabled()
+    return {"immediate_dispatch_enabled": immediate, "execution_driver_enabled": driver,
+            "any_dispatch_path_active": bool(immediate or driver)}
+
+
 def driver_status(*, lease_path=None, now=None) -> dict:
     """READ-ONLY readiness/status projection (no secret, no mutation): the driver gate, the lease holder, the live
     authorization/arm counts and the dead-letter counts. Safe to call any time."""

@@ -100,9 +100,21 @@ class Command(BaseCommand):
             commit=bool(o["commit"]), by_email=o["by"], reason=o["reason"])
 
         self.stdout.write(json.dumps(res, indent=1, default=str))
+
+        # ADR-0117 Phase-6: confirm the execution DISPATCH PATH. The ADR-0094 immediate inline path is the <=1 s
+        # primary; the governed driver (run_copier_execution_driver) is the fallback. An armed route with NEITHER
+        # active is inert (no follower order would execute) — surfaced here, never silent.
+        from trade_copier.execution_driver import dispatch_path_posture
+        posture = dispatch_path_posture()
+        self.stdout.write(json.dumps({"dispatch_path": posture}, indent=1))
+
         if not res.get("ok"):
             raise CommandError(f"arm refused: {res.get('reason')} blockers={res.get('blockers')}")
         if res.get("armed"):
             self.stdout.write(self.style.SUCCESS("Lifecycle ARMED atomically (OPEN+MODIFY+FULL_CLOSE)."))
+            if not posture["any_dispatch_path_active"]:
+                self.stdout.write(self.style.WARNING(
+                    "ARMED but NO dispatch path active: enable COPIER_IMMEDIATE_DISPATCH_ENABLED (the <=1 s "
+                    "primary) and/or run run_copier_execution_driver (fallback), else no follower order executes."))
         else:
             self.stdout.write(self.style.WARNING("DRY-RUN only — contract satisfied. Re-run with --commit to arm."))

@@ -50,6 +50,16 @@ class DriverPassTests(SimpleTestCase):
         self.assertEqual(names, ["replicate", "execute_open", "reconcile", "execute_modify",
                                  "execute_close", "mutation_dispatch", "lifecycle_dispatch"])
 
+    def test_dispatch_path_posture_dark_by_default(self):
+        self.assertFalse(ed.dispatch_path_posture()["any_dispatch_path_active"])
+
+    @override_settings(COPIER_ENABLED="1", COPIER_IMMEDIATE_DISPATCH_ENABLED="1")
+    def test_dispatch_path_posture_reports_immediate_primary(self):
+        p = ed.dispatch_path_posture()
+        self.assertTrue(p["immediate_dispatch_enabled"])
+        self.assertFalse(p["execution_driver_enabled"])
+        self.assertTrue(p["any_dispatch_path_active"])
+
 
 # ───────────────────────────── driver command: gate + single-flight lease ─────────────────────────────
 class DriverCommandTests(TestCase):
