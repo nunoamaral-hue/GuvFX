@@ -306,6 +306,20 @@ def copier_emitter_oneshot_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_EMITTER_ONESHOT_ENABLED")
 
 
+def copier_emitter_standing_enabled() -> bool:
+    """DARK arm for ENABLING the STANDING immediate-emitter task (``GuvFX_CopierEmitter_46``) via the signed host
+    executor during a governed live arm (ADR-0117). DEFAULT OFF, ANDed with the master gate.
+
+    This governs ONLY the risk-INCREASING ``ENABLE_COPIER_EMITTER`` actuator the atomic arm invokes once the full
+    contract has passed — so enabling the sub-second push feed needs BOTH this flag AND the separately-gated signed
+    host executor (``HOSTED_HOST_EXECUTOR_ENABLED`` + keyring/base_url). With either absent the arm's emitter step
+    fails closed and the whole stack rolls back to DARK (never a partial arm). It is deliberately NOT consulted by
+    the teardown DISABLE / key-remove actuators: those are risk-REDUCING and must stay runnable any time (mirrors
+    ``restore_off``). It arms NO replication/execution and contacts neither follower #48 nor any broker — it only
+    toggles the account-#46 emitter task, whose pushed events every downstream gate still governs independently."""
+    return copier_enabled() and _flag("COPIER_EMITTER_STANDING_ENABLED")
+
+
 # ───────────────────── LIVE lifecycle completion (ADR-0083) — per-operation DARK arms ─────────────────────
 # ADR-0057 implemented the LIVE follower OPEN only; LIVE modify / partial-close / full-close stayed fail-closed.
 # ADR-0083 completes them behind THESE additional, independent, default-OFF arms. Each is ANDed with the whole

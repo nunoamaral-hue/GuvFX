@@ -1,5 +1,6 @@
 """arm_copier_live_lifecycle — the ONE governed, atomic OPEN+MODIFY+FULL_CLOSE live-demo arming command
-(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114). DEFAULTS TO DRY-RUN.
+(GFX-COPIER-LIFECYCLE-ARMING-SAFETY-CORRECTION-148, ADR-0114; REAL signed-host actuators wired in ADR-0117).
+DEFAULTS TO DRY-RUN.
 
 Validates the COMPLETE lifecycle-arming contract (route/symbol/caps, MODIFY+FULL_CLOSE authority AND execution
 flags, partial-close excluded, #46 clean at the watermark, #48 flatness via the human-confirm gate, host admission
@@ -58,23 +59,45 @@ class Command(BaseCommand):
         def emitter_task_probe():
             return {"disabled": task_disabled}
 
+        master_id = int(o["master_account_id"])
+        follower_id = int(o["follower_account_id"])
         admission_provisioner = None
         emitter_enabler = None
+        rollback_teardown = None
         if o["commit"]:
-            # Real arm: provision host admission via the signed executor (fail-closed if unavailable). The standing
-            # emitter enable + key are reviewed HOST steps; no backend signed-executor op enables a scheduled task,
-            # so emitter_enabler stays None and --commit fails closed (teardown) rather than a partial arm.
-            def admission_provisioner(authz):  # noqa: E301
-                from trade_copier.live_bridge_provision import provision_live
-                return provision_live(int(o["follower_account_id"]), int(authz.id), commit=True)
+            # ADR-0117: REAL signed-host actuators (DARK-gated). admission_provisioner provisions follower #48
+            # MT5_ALLOW_LIVE; emitter_enabler enables GuvFX_CopierEmitter_46. When the signed host executor is
+            # unavailable (the repository-only / DARK phase) these fail closed and the arm rolls the WHOLE stack
+            # back to DARK — never a partial arm, and never the old emitter_enabler=None dead end.
+            from trade_copier.live_host_actuators import (
+                make_admission_provisioner, make_admission_revoker, make_emitter_disabler,
+                make_emitter_enabler, make_emitter_key_remover)
+            admission_provisioner = make_admission_provisioner(follower_id)
+            emitter_enabler = make_emitter_enabler()
+
+            # Full reverse-order rollback to DARK on ANY post-validation failure: disable the emitter + shred its
+            # key + restore host admission OFF with the real signed actuators (the pure arm's default teardown
+            # leaves the emitter disabler/key-remover unset). The arm-internal rollback PRESERVES the still-valid
+            # authorization (revoke_authorization=False) so a transient host failure never discards a valid grant.
+            def rollback_teardown():  # noqa: E301
+                from django.utils import timezone as _tz
+                from trade_copier.lifecycle_teardown import teardown_live_dark
+                return teardown_live_dark(
+                    master_account_id=master_id, follower_account_id=follower_id,
+                    authorization_id=int(o["authorization_id"]),
+                    admission_restore=make_admission_revoker(follower_id),
+                    emitter_disabler=make_emitter_disabler(),
+                    emitter_key_remover=make_emitter_key_remover(),
+                    revoke_authorization=False, now=_tz.now())
 
         res = arm_live_lifecycle(
-            master_account_id=int(o["master_account_id"]), follower_account_id=int(o["follower_account_id"]),
+            master_account_id=master_id, follower_account_id=follower_id,
             source_symbol=o["source_symbol"], follower_symbol=o["follower_symbol"],
             authorization_id=int(o["authorization_id"]), follower_flat_confirmed=bool(o["follower_flat_confirmed"]),
             emitter_key_probe=emitter_key_probe, host_admission_probe=host_admission_probe,
             emitter_task_probe=emitter_task_probe, admission_provisioner=admission_provisioner,
-            emitter_enabler=emitter_enabler, commit=bool(o["commit"]), by_email=o["by"], reason=o["reason"])
+            emitter_enabler=emitter_enabler, teardown=rollback_teardown,
+            commit=bool(o["commit"]), by_email=o["by"], reason=o["reason"])
 
         self.stdout.write(json.dumps(res, indent=1, default=str))
         if not res.get("ok"):
