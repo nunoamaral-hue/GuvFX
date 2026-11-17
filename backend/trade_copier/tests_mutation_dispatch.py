@@ -46,6 +46,7 @@ class MutationDispatchTests(ProducerFixture):
         job = ExecutionJob.objects.create(
             account=f.follower_account, job_type=job_type, status=status,
             payload={"copier_operation": op, "ticket": ticket, "symbol": "XAUUSD", "require_identity_pin": True,
+                     "copier_governed": True,   # ADR-0117: LIVE copier mutations are governed-owned (see mutation_dispatch)
                      "expected_login": "9001", "expected_server": "Broker-Demo",
                      "requested_post_state": {"closed": True}},
             hosted_idempotency_key=f"copier-md-test:{rep.pk}")

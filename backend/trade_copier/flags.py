@@ -320,6 +320,22 @@ def copier_emitter_standing_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_EMITTER_STANDING_ENABLED")
 
 
+def copier_execution_driver_enabled() -> bool:
+    """DARK gate for the governed, supervised copier EXECUTION DRIVER (ADR-0117). DEFAULT OFF, ANDed with the
+    master gate.
+
+    The driver is a single-flight, bounded, crash-safe worker that drives the EXISTING, individually-gated stages
+    (replicate -> execute OPEN/MODIFY/FULL_CLOSE -> mutation-dispatch -> reconcile -> lifecycle) for the fast-poll
+    FALLBACK + reconciliation; the ADR-0094 immediate-dispatch inline path remains the <=1s primary. This flag only
+    governs whether the driver's loop RUNS; it adds NO authority and ORs past NOTHING — every stage it invokes still
+    re-reads its OWN gate (``copier_replication_enabled`` / ``copier_execute_enabled`` / the per-op LIVE arms /
+    ``copier_mutation_dispatch_enabled`` / ``copier_reconcile_enabled`` / ``copier_lifecycle_enabled``) and the full
+    per-pair live admission + arm, so with the execution flags / authorization / arm OFF the driver does nothing.
+    With this OFF the driver is a no-op (it acquires no lease and runs no stage), so the fallback path is inert
+    until a Sponsor arms it."""
+    return copier_enabled() and _flag("COPIER_EXECUTION_DRIVER_ENABLED")
+
+
 # ───────────────────── LIVE lifecycle completion (ADR-0083) — per-operation DARK arms ─────────────────────
 # ADR-0057 implemented the LIVE follower OPEN only; LIVE modify / partial-close / full-close stayed fail-closed.
 # ADR-0083 completes them behind THESE additional, independent, default-OFF arms. Each is ANDed with the whole

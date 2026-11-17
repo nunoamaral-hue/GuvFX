@@ -288,6 +288,24 @@ class ExecutionJobViewSet(viewsets.ModelViewSet):
         # DARK; it still requires a separate Sponsor grant + arming before any job reaches a broker.)
         base_qs = base_qs.exclude(job_type=ExecutionJob.JobType.PARTIAL_CLOSE_TRADE)
 
+        # ADR-0117 governed-copier ownership: a copier LIVE MODIFY/CLOSE job (payload ``copier_governed=True``) is
+        # dispatched ONLY by the governed ``run_copier_mutation_dispatch`` (authority re-check + per-ticket revision
+        # watermark + per-tenant identity pin), NEVER this generic endpoint — which lacks those guards. Exclude them
+        # UNCONDITIONALLY from the generic claim so "no generic worker dispatches a governed copier mutation" is an
+        # ENFORCED endpoint property (mirrors the PARTIAL_CLOSE guard above). Only copier-governed jobs carry the
+        # marker (they exist only when the LIVE copier is armed = DARK), so this is byte-identical for every other
+        # MODIFY/CLOSE job. Copier OPEN / PLACE_ORDER carries no marker and stays on this endpoint, with its
+        # identity pin, as today.
+        # NULL-safe: a compound ``.exclude(job_type=X, payload__copier_governed=True)`` would also drop a MODIFY/
+        # CLOSE job that LACKS the key (JSONField missing-key -> SQL NULL -> ``NOT (true AND NULL)`` -> NULL ->
+        # excluded). A ``.filter(payload__copier_governed=True)`` instead treats a missing key as a non-match (NULL
+        # is not TRUE), so it collects ONLY genuinely-governed jobs; excluding those pks never touches an ordinary
+        # MODIFY/CLOSE.
+        _governed_copier_mutations = ExecutionJob.objects.filter(
+            job_type__in=[ExecutionJob.JobType.MODIFY_POSITION, ExecutionJob.JobType.CLOSE_TRADE],
+            payload__copier_governed=True).values("pk")
+        base_qs = base_qs.exclude(pk__in=_governed_copier_mutations)
+
         # Determine routing mode for audit trail
         routing_mode = "node_aware" if authorized_nodes else "legacy_null_node"
 

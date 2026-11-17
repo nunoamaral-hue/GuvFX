@@ -39,7 +39,11 @@ from enum import Enum
 # ── lease kinds (mutually exclusive) ──────────────────────────────────────────────────────────────────────────
 KIND_RECOVERY = "recovery_acceptance"
 KIND_DEPLOY = "deploy"
-_VALID_KINDS = (KIND_RECOVERY, KIND_DEPLOY)
+# ADR-0117: the governed copier execution driver's single-flight lease. It uses its OWN lease FILE (a distinct
+# path passed to acquire/release), so it is independent of — never mutually exclusive with — the deploy/recovery
+# operational lease; the kind is validated here for audit + fail-closed symmetry.
+KIND_COPIER_DRIVER = "copier_execution_driver"
+_VALID_KINDS = (KIND_RECOVERY, KIND_DEPLOY, KIND_COPIER_DRIVER)
 
 # ── bounded TTL (seconds) — a lease can never be unbounded; it always self-expires ──────────────────────────────
 TTL_MIN_S = 60

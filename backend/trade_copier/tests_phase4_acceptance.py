@@ -59,6 +59,7 @@ class Phase4AcceptanceTests(ProducerFixture):
         job = ExecutionJob.objects.create(
             account=acct, job_type=job_type, status=ExecutionJob.Status.PENDING,
             payload={"copier_operation": op, "ticket": ticket, "symbol": symbol, "copier_replication_id": rep.id,
+                     "copier_governed": True,   # ADR-0117: LIVE copier mutations are governed-owned (mutation_dispatch)
                      "require_identity_pin": True, "expected_login": str(acct.account_number),
                      "expected_server": acct.broker_server.server_name,
                      "authorization_expires_at": __import__("time").time() + 1800},
