@@ -75,7 +75,7 @@
     "backend/trade_copier/management/commands/copier_live_arm.py": "sha256:d7cdb51343e89bb3ded29f86352bf476b502d474cbeb4990d2ac8d2683165904",
     "backend/trade_copier/tests_lifecycle_arming.py": "sha256:7cd4b404f68a1fd0ed6f30b0e561be1c8a2023737e5d727d60c8b309f5bf1fb9",
     "deploy/copier-emitter/run_emitter.py": "sha256:44ae48e10123ea3d81264c139a60ebd805471dfc229dd2e2f6224187bbae2f6b",
-    "deploy/copier-emitter/MANIFEST.json": "sha256:bd04aa587549b3f43b63a8f935e39dcb06dbf7ec86a6a719bd6ed12ccc6eec4b",
+    "deploy/copier-emitter/MANIFEST.json": "sha256:e6059c5eee9d3ac4540b29f9ee6f1295531c40d5af90f7c6bdf4a18b0bfdf38f",
     "deploy/copier-emitter/operator/Provision-GuvfxCopierEmitterKey.ps1": "sha256:b27aef111ebcad0e9bc2ab5b96f4d50bb19d68effb5c80ef84c87838aa52b5a1",
     "deploy/copier-emitter/operator/tests/Test-EmitterKeyProvisioner.Tests.ps1": "sha256:90ce7deaedbd97537302c3dd1031045405eef98e9850d72641456b515e827181",
     "docs/architecture/ADR-0114-copier-lifecycle-arming-safety.md": "sha256:676b8b75b28fc0d077edbda30c0d7a1435bd413f5e521e331c38eb14906df53e"
