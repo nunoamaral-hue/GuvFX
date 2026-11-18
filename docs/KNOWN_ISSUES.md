@@ -2,6 +2,35 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Mailbox OAuth-health: member disconnect vs reconsent — repository-only, NOT merged/deployed (GFX-DEADLINE-PRIORITY-REENTRY-158 / ADR-0118, 2026-11-18)
+
+- **What it fixes.** The ADR-0113 operator classifier mapped `ConnectedMailbox.status=REVOKED` to `RECONSENT_REQUIRED`
+  (CRITICAL alert + `MISCONFIGURED` subsystem fault). But `REVOKED` is written by exactly one caller — the member's own
+  `MailboxRevokeView` (a deliberate disconnect) — so a routine member action fired a false CRITICAL "owner must
+  re-authorize" operator alert. The fix adds an eighth status `OWNER_DISCONNECTED` (benign; no alert; non-fault);
+  `ERROR` + the REAUTH codes stay `RECONSENT_REQUIRED` (the genuine 7-day-expiry case). Owner-facing banner unchanged.
+- **DARK / latent.** The operator probe (`BROKER_INTELLIGENCE_INGEST_ENABLED`) and endpoint
+  (`BROKER_MAILBOX_OPERATOR_HEALTH_ENABLED`) are OFF in production, so the false alert was never actually delivered;
+  this corrects the deployed code before the operator-health path is armed. Migration-free; no prod/flag/mailbox change.
+- **Local test-env quirks (PRE-EXISTING, not this change).** (1) 140 gitignored `* [0-9].{py,json,md}` copy-leaf
+  duplicates in the working tree create duplicate migration leaves + duplicate ADR numbers that break local test-DB
+  creation and `core.tests_adr_governance`; they are absent from Git/CI. Quarantine them (e.g. move the `* [0-9].*`
+  files aside) for a representative local run, then restore. (2) `npm run lint` has a `prelint: vitest run` hook; 17
+  vitest tests in 3 untouched files (`support`, `login`, `dashboard/localization`) fail locally on
+  `localStorage.setItem/clear is not a function` (node `--localstorage-file` jsdom quirk) — PRE-EXISTING on clean main,
+  CI authoritative. ESLint on the changed file and `next build` are clean.
+
+## 🟡 Dashboard daily-realized currency contamination on simultaneous stale-snapshot + live-read failure — diagnosed, NOT fixed (GFX-158 backlog, 2026-11-18)
+
+- **Symptom.** In `analytics/portfolio.py` `build_summary`/`daily_realized_pnl_detail`, when an account's live balance
+  read fails AND its latest durable snapshot is stale, `observed_ccy` falls back blank→USD (`normalise_currency`), so a
+  non-USD (e.g. GBP) account's same-day realized P&L can be summed as USD via `NullFxRateSource` — a false figure for a
+  real GBP account (#4) during an outage. The balance/equity path already fails closed with `UNKNOWN_CURRENCY`
+  (`_equity_snapshot_fallback`), and `observed_currency_map` (open-position labelling) reads the snapshot currency with
+  no freshness filter — the daily-realized path should do likewise / fail closed rather than default to USD.
+- **Status.** Diagnosed by the pkt-158 dashboard defect-hunt; a priority-2 repository-only fix, filed as the next
+  dashboard item. Not addressed in the pkt-158 PR (one bounded correction per packet).
+
 ## 🟡 Copier production arming pipeline — repository-only, NOT merged/deployed (GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153 / ADR-0117, 2026-11-17)
 
 - **DARK + repository-only.** Nothing is deployed or contacted. The signed host-executor factory stays `None`

@@ -1,5 +1,18 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ MAILBOX OAUTH-HEALTH: OWNER_DISCONNECTED ≠ RECONSENT (2026-11-18; GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only PR)
+Re-entry packet selected the highest-priority unblocked repo-only item: a member's deliberate mailbox disconnect
+(`status=REVOKED`, written only by `MailboxRevokeView`) was classified `RECONSENT_REQUIRED` → a false CRITICAL operator
+alert + `MISCONFIGURED` subsystem fault (latent/DARK, but in deployed code). Adds an eighth truthful status
+`OWNER_DISCONNECTED` (benign, no alert, non-fault); `ERROR`+REAUTH codes stay `RECONSENT_REQUIRED`. Off main `3cd71e70`
+on `fix/oauth-owner-disconnect-classification`; migration-free, DARK; `broker_intelligence`+`core` 1304 OK; governance +
+frontend build clean. **One bounded next action:** adversarial review + exact-head CI 5/5, then Sponsor `GO — merge PR`.
+STOP before merge. **Backlog (filed, NOT in this PR):** (a) dashboard daily-realized currency contamination on a stale
+snapshot + live-read failure (`analytics/portfolio.py` blank→USD) — priority-2 repo fix; (b) `monitoring_reconcile`
+rollback-accounting reports `rollback_failed` when the apply was never dispatched (host-gated dormant path); (c)
+account-less withdrawal completion can advance the wrong same-owner withdrawal on a reference collision
+(`correlation.py`, LOW). The six LIVE-position accounts + OAuth app publish remain host/human-gated (unchanged).
+
 ## ★ COPIER PRODUCTION ARMING PIPELINE (2026-11-17; GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117; repository-only PR)
 Wires the missing governed production actuators + driver so the atomic arm can move #46→#48 from DARK to ARMED with
 no partial arm and no stranded follower, off main `ea085ee1` on `feat/copier-production-actuators`. Removes the

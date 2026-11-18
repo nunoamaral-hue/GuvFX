@@ -362,11 +362,13 @@ def probe_operational_events() -> SubsystemHealth:
     return _ok("operational_events", "enabled; no open events", "operational_events")
 
 
-# The seven-status mailbox OAuth health model (broker_intelligence.oauth_health, ADR-0113) mapped into the operator
-# health vocabulary. RECONSENT_REQUIRED / SECURITY_CONFIGURATION_ERROR are a missing/expired credential posture
-# (MISCONFIGURED); SYNCHRONIZER_STALLED is the worker being down (OFFLINE); transient/degraded are DEGRADED.
+# The mailbox OAuth health model (broker_intelligence.oauth_health, ADR-0113; OWNER_DISCONNECTED added by ADR-0118)
+# mapped into the operator health vocabulary. RECONSENT_REQUIRED / SECURITY_CONFIGURATION_ERROR are a missing/expired
+# credential posture (MISCONFIGURED); SYNCHRONIZER_STALLED is the worker being down (OFFLINE); transient/degraded are
+# DEGRADED. OWNER_DISCONNECTED is a member's deliberate disconnect — benign, NOT a fault (never defaults to DEGRADED).
 _MAILBOX_OAUTH_HEALTH_MAP = {
     "HEALTHY": HealthState.HEALTHY,
+    "OWNER_DISCONNECTED": HealthState.HEALTHY,
     "TRANSIENT_FAILURE": HealthState.DEGRADED,
     "DEGRADED": HealthState.DEGRADED,
     "RECONSENT_REQUIRED": HealthState.MISCONFIGURED,

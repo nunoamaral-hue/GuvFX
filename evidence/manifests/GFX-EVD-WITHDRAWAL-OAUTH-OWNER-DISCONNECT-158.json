@@ -1,0 +1,64 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-WITHDRAWAL-OAUTH-OWNER-DISCONNECT-158",
+ "packet_id": "GFX-DEADLINE-PRIORITY-REENTRY-158",
+ "created_at_utc": "2026-11-18T00:00:00Z",
+ "branch": "fix/oauth-owner-disconnect-classification",
+ "base_commit": "3cd71e70ecc3cb94bc95ef09a64d82006b2000ad",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Additive, value-blind, DARK correction to the ADR-0113 operator OAuth-health classifier (ADR-0118). A member who deliberately disconnects a Gmail mailbox (ConnectedMailbox.status=REVOKED, written ONLY by the owner's own MailboxRevokeView, which also deletes the credential) was classified RECONSENT_REQUIRED -> CRITICAL operator alert + MISCONFIGURED subsystem fault, inverting the module's purpose. The fix adds an eighth truthful status OWNER_DISCONNECTED (SEV_OK, recovery_required=False, no alert), keeps ERROR + REAUTH_CODES as RECONSENT_REQUIRED (the genuine 7-day-expiry case), maps OWNER_DISCONNECTED -> HealthState.HEALTHY in probe_mailbox_ingest (never a fault), adds owner_disconnected_count to the aggregate, surfaces it in the broker_mailbox_health CLI summary (so the summary reconciles) and renders the status distinctly (non-alert colour) on the DARK operator page. A migration-free defensive comment at the ConnectedMailbox.Status.REVOKED enum records the load-bearing invariant (REVOKED is member-initiated only; a future grant-death-as-REVOKED writer must revisit the classification). No migration, no model field change, no schedule, no flag enablement, no owner-facing banner change, no production/host/mailbox/withdrawal mutation. Latent in production today (operator probe + endpoint flags OFF); fixed before the operator-health path is armed. The owner-facing read-model (health.mailbox_health / customer_mailbox_status) and the pre-pkt-149 R1 CLI exit gates (--exit-nonzero-on-recovery/-degraded, which read it) are intentionally unchanged (a disconnected mailbox is truthfully 'not syncing' there; the false INCIDENT escalation was confined to the OAuth classifier)."
+ },
+ "ci": {
+  "status": "to-run-at-exact-head",
+  "note": "Local (isolated test DB; 147 gitignored copy-leaf duplicates '* [0-9].{py,json,md,ts,tsx}' quarantined so the migration graph + ADR-uniqueness + frontend tooling match a clean CI checkout, then restored): broker_intelligence + core = OK / 15 skipped (incl. the updated/added OWNER_DISCONNECTED + CLI reconciliation cases; broker_intelligence.tests_oauth_health alone = 86 OK / 1 skip). makemigrations --check broker_intelligence core = NO migration (incl. the models.py comment). GitHub exact-head CI (backend / frontend / governance / market-data-foundation / research-foundation) to be driven 5/5 before PR-ready. HARD STOP before merge; auto-merge OFF."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_oauth_health core.tests_operational_readiness --noinput",
+  "cd backend && .venv/bin/python manage.py test broker_intelligence core --noinput --parallel 4",
+  "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_intelligence core",
+  "python3 scripts/check_no_secrets.py",
+  "python3 scripts/check_evidence_manifests.py",
+  "cd frontend && npm run lint && npm run build"
+ ],
+ "expected_results": [
+  "classify_mailbox_oauth_health maps conn_status=='REVOKED' to a new OWNER_DISCONNECTED status (SEV_OK, recovery_required=False, reconsent_required=False, 'No action' recommended action); conn_status=='ERROR' and the REAUTH_CODES remain RECONSENT_REQUIRED (the genuine owner-reconsent / 7-day-expiry case is preserved). A member's deliberate disconnect wins even over a leftover re-auth code and never escalates by age.",
+  "decide_alert treats OWNER_DISCONNECTED exactly like HEALTHY: never OPEN; RECOVER-once-then-clear if the mailbox was previously alerting. aggregate_oauth_health emits owner_disconnected_count and excludes member-revoked mailboxes from reconsent_required_count / any_recovery_required / worst_alert_severity / the operator_notice, while keeping them visible in counts_by_status and the per-mailbox list. The broker_mailbox_health CLI --oauth-health summary surfaces owner_disconnected (reconciling) and --exit-nonzero-on-reconsent no longer trips on a member disconnect.",
+  "core.operational_health.probe_mailbox_ingest never reports a FAULT (MISCONFIGURED/OFFLINE/BLOCKED/DEGRADED) for a benign member-revoked mailbox (OWNER_DISCONNECTED -> HealthState.HEALTHY). Value-blindness and every other ADR-0113 contract (owner-facing banner, dedup/cooldown/recovery, thresholds) are unchanged. Migration-free."
+ ],
+ "actual_results": [
+  "broker_intelligence.tests_oauth_health + core.tests_operational_readiness: 86 tests OK (skipped=1). New/updated cases: test_reconsent_from_status_error (ERROR -> RECONSENT_REQUIRED); test_revoked_is_owner_disconnected_not_reconsent (REVOKED -> OWNER_DISCONNECTED, SEV_OK, recovery/reconsent False, 'No action'); test_revoked_with_leftover_reauth_code_still_owner_disconnected; test_owner_disconnect_never_opens_an_alert (ALERT_NONE); test_owner_disconnect_after_alert_recovers_once (ALERT_RECOVER/SEV_OK); test_member_revoked_mailbox_is_benign_not_a_fault (aggregate: monitored 2, healthy 1, owner_disconnected_count 1, reconsent 0, any_recovery False, worst_sev SEV_OK, operator_notice None); test_member_revoked_mailbox_does_not_fault_the_subsystem (probe state NOT in FAULTS); test_oauth_summary_surfaces_owner_disconnected_and_reconciles (CLI prints owner_disconnected=1, reconsent_required=0); test_member_disconnect_does_not_trip_reconsent_exit_gate (--exit-nonzero-on-reconsent does not raise).",
+  "Full broker_intelligence + core: OK, 15 skipped, 0 failures (after quarantining the gitignored copy-leaf duplicates; the only failure pre-quarantine was core.tests_adr_governance tripping on '* [0-9].md' ADR copy-leaves - an environment artifact absent from CI, not this change). makemigrations --check broker_intelligence core = 'No changes detected' (migration-free, including the models.py REVOKED-invariant comment).",
+  "Governance: check_no_secrets.py = no findings; check_evidence_manifests.py = PASS (146 manifests); core.tests_adr_governance OK (ADR-0118 unique). Frontend: next build EXIT 0 (typecheck + parity + build); eslint on the changed page EXIT 0; the 17 local vitest failures are the PRE-EXISTING jsdom localStorage env issue in 3 untouched files (support/login/dashboard-localization), CI authoritative.",
+  "5-lens adversarial review (Workflow, 5 agents): correctness + security/value-blind CLEAN. Three LOW findings addressed: (downstream, CONFIRMED) the broker_mailbox_health CLI summary omitted owner_disconnected_count -> added + regression test; (scope/governance) ADR-0118 overclaimed 'the rest of the system treats REVOKED as benign' -> wording corrected (owner read-model deliberately differs; pre-existing R1 exit gates documented, not changed); (safety/false-negative, latent) the benign-disconnect invariant was only in ADR prose -> added a defensive comment at the ConnectedMailbox.Status.REVOKED enum. The review's alternative 'require no live REAUTH code' corroboration was considered and rejected because it regresses the realistic 'member disconnects a FAILING mailbox' case (MailboxRevokeView does not clear last_error_code); member intent remains authoritative, with the future-writer risk defended by the enum comment + ADR Consequences note."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only and DARK. The operator mailbox-health endpoint (BROKER_MAILBOX_OPERATOR_HEALTH_ENABLED) and the ingest/probe path (BROKER_INTELLIGENCE_INGEST_ENABLED) are the production arming gates; this change alters classification only and enables nothing. No production deploy, no flag enablement, no schedule.",
+  "The owner-facing banner (health.customer_mailbox_status / MailboxIngestionNotice) and the pre-pkt-149 R1 CLI exit gates (--exit-nonzero-on-recovery/-degraded, which read health.service_health where REVOKED maps to RECOVERY_REQUIRED) are intentionally NOT changed: an owner seeing 'reconnect to resume', and a monitor seeing 'a mailbox is not syncing', are both truthful. Only the OAuth operator-health INCIDENT escalation (reconsent/CRITICAL/MISCONFIGURED, and --exit-nonzero-on-reconsent) is corrected.",
+  "The benign classification rests on the VERIFIED invariant that status=REVOKED is member-initiated only (grepped: sole writer MailboxRevokeView; no code writes status=ERROR). This is defended by a code comment at the enum + an ADR Consequences note, not by a runtime guard (the value-blind classifier cannot see credential_ref, the only field that distinguishes a member disconnect from a hypothetical future grant-death-as-REVOKED).",
+  "Local governance/ADR-uniqueness, migration-graph, and frontend tooling checks required quarantining 147 gitignored '* [0-9].{py,json,md,ts,tsx}' copy-leaf duplicates present in the working tree; these are absent from Git and from CI, and were restored after the run. CI at the exact head is the authoritative gate; head_commit is null until PR-ready."
+ ],
+ "artefact_locations": [
+  "backend/broker_intelligence/oauth_health.py",
+  "backend/core/operational_health.py",
+  "backend/broker_intelligence/models.py",
+  "backend/broker_intelligence/management/commands/broker_mailbox_health.py",
+  "backend/broker_intelligence/tests_oauth_health.py",
+  "frontend/src/app/(app)/admin/operations/mailbox-health/page.tsx",
+  "docs/architecture/ADR-0118-owner-disconnected-not-reconsent.md"
+ ],
+ "checksums": {
+  "backend/broker_intelligence/oauth_health.py": "sha256:00887dc7b81123b8d9f1e70d1ed18c64b92a468b3ff444a87d9a153b1b93cdd8",
+  "backend/core/operational_health.py": "sha256:d493b89d3be285ac8c8e5cf26158029e125bbf0d4ec2f87db62994bf442a5445",
+  "backend/broker_intelligence/models.py": "sha256:5c7bdc230ad2805401e8282cb2e54a0ee7be8fda2512ccca1d568c1481d4a4a5",
+  "backend/broker_intelligence/management/commands/broker_mailbox_health.py": "sha256:f4b077a8a4268ad2c0bc4ce4a7dfcf7dc1b0cf50040f1e3ce69542c5404baf57",
+  "backend/broker_intelligence/tests_oauth_health.py": "sha256:d1cffc123290ba541c3b0a83cd3adc00c57d8f95195cf5ecd5b370d7007e9ab4",
+  "docs/architecture/ADR-0118-owner-disconnected-not-reconsent.md": "sha256:11db95182db69b9e456e83ac58dee13da62b5cc0e62b42c4f6a3a34a3288aa53"
+ },
+ "reviewer": "Author self-review + three parallel read-only defect-hunt agents (withdrawal / dashboard / Wayond-regression) that selected this as the highest-priority unblocked repository-only item; direct code verification that status=REVOKED has exactly one writer (member MailboxRevokeView) and no automated/error writer; a 5-lens adversarial review Workflow (correctness / safety-false-negative / security-value-blind / downstream-completeness / scope-test-governance) whose three LOW findings were addressed (CLI summary count + regression test, ADR wording correction, enum invariant comment) with the corroboration alternative explicitly rejected and recorded. No CRITICAL/HIGH findings."
+}

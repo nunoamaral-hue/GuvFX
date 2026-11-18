@@ -47,6 +47,7 @@ type Aggregate = {
   generated_at: string;
   monitored_mailbox_count: number;
   healthy_count: number;
+  owner_disconnected_count: number;
   degraded_count: number;
   reconsent_required_count: number;
   synchronizer_stalled: boolean;
@@ -58,6 +59,7 @@ type Aggregate = {
 
 const STATUS_COLOR: Record<string, string> = {
   HEALTHY: "#5ad19a",
+  OWNER_DISCONNECTED: "#9fb0c9", // benign: the member disconnected it — muted, deliberately not an alert colour
   TRANSIENT_FAILURE: "#e7c77a",
   DEGRADED: "#e7c77a",
   UNKNOWN_FAIL_CLOSED: "#e7c77a",
@@ -163,6 +165,7 @@ export default function MailboxHealthConsole() {
           <div style={{ display: "flex", flexWrap: "wrap", gap: "0.6rem", margin: "0.6rem 0 1rem" }}>
             {summaryCell("Monitored", agg.monitored_mailbox_count)}
             {summaryCell("Healthy", agg.healthy_count, "#5ad19a")}
+            {summaryCell("Owner-disconnected", agg.owner_disconnected_count, agg.owner_disconnected_count ? "#9fb0c9" : "#e5f4ff")}
             {summaryCell("Degraded", agg.degraded_count, agg.degraded_count ? "#e7c77a" : "#e5f4ff")}
             {summaryCell("Reconnect needed", agg.reconsent_required_count, agg.reconsent_required_count ? "#e8a0a0" : "#e5f4ff")}
             {summaryCell("Worst severity", agg.worst_alert_severity, agg.worst_alert_severity === "OK" ? "#5ad19a" : "#e7c77a")}

@@ -480,6 +480,13 @@ class ConnectedMailbox(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Awaiting OAuth consent"
         CONNECTED = "CONNECTED", "Connected (read-only)"
+        # INVARIANT (ADR-0118): REVOKED is written ONLY by the member's own MailboxRevokeView (a deliberate
+        # disconnect that also deletes the credential) — never by an automated/error/grant-death path. The genuine
+        # ~weekly grant expiry keeps status=CONNECTED and surfaces as a REAUTH code. The operator OAuth-health
+        # classifier (oauth_health.classify_mailbox_oauth_health) relies on this to treat REVOKED as the benign
+        # OWNER_DISCONNECTED (not a reconsent fault). If a FUTURE path ever sets REVOKED to mean a Google-side grant
+        # revocation, that classification MUST be revisited (route it to RECONSENT_REQUIRED) or a real reconsent need
+        # would be silently suppressed. (Label kept verbatim to stay migration-free.)
         REVOKED = "REVOKED", "Disconnected / consent revoked"
         ERROR = "ERROR", "Needs re-auth"
 
