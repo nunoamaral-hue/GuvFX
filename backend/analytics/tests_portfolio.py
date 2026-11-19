@@ -321,6 +321,148 @@ class ObservedCurrencyTests(TestCase):
         self.assertEqual(m["net_pnl_total"], 9.65)
 
 
+# ── Daily-realized currency integrity (ADR-0120): blank/unknown currency is NEVER summed as USD ────────────────
+class UnknownCurrencyRealizedIntegrityTests(TestCase):
+    """GFX-161: the Daily Realized P&L aggregate must resolve each account's denomination ONLY from an authoritative
+    tenant-local source (verified model currency, a fresh identity-matched live read, or a fresh tenant-local
+    snapshot). When none establishes the currency, the account is EXCLUDED (``unknown_currency``) and the aggregate is
+    PARTIAL/UNAVAILABLE — its native same-day realized is NEVER silently denominated as USD, never a false $0.00, and
+    never borrowed from another account. The known-currency and governed-FX behaviour is preserved unchanged."""
+
+    def _gbp_src(self, rate=1.25):
+        return FX.MappingFxRateSource({("GBP", "USD"): rate}, as_of="2026-10-28", source="BOE:XUDLUSS rev1")
+
+    def _summary(self, user, *, balances, snapshots=None, rate_source=None):
+        """Run ``build_summary`` (ALL) with injected fakes. ``balances`` maps id -> dict|None (None = live-read
+        failure). ``snapshots`` optionally pre-creates fresh/stale ``AccountEquitySnapshot`` rows."""
+        for aid, kw in (snapshots or {}).items():
+            from analytics.models import AccountEquitySnapshot
+            AccountEquitySnapshot.objects.create(trading_account_id=aid,
+                                                 observed_at=timezone.now() - timedelta(seconds=kw["age_s"]),
+                                                 account_currency=kw.get("currency"),
+                                                 balance=kw.get("balance", 1000), equity=kw.get("equity", 1000))
+        payload, _ = PF.build_summary(
+            user, "ALL", fetch_balance=lambda a, timeout=None: balances.get(a.id),
+            fetch_positions=_fake_positions({aid: [] for aid in balances}),
+            rate_source=rate_source or FX.NullFxRateSource())
+        return payload["aggregate"]
+
+    # — the defect, proven: blank currency + live-read failure + no fresh snapshot must NOT sum native as USD —
+    def test_blank_currency_live_fail_is_unknown_not_usd(self):
+        u = _user("uc1"); a = _acct(u)                      # account_currency unpopulated (prod reality)
+        _closed_trade(a, 38.04)                             # a real same-day native figure of an UNKNOWN currency
+        agg = self._summary(u, balances={a.id: None})       # live read fails; no snapshot exists
+        self.assertIsNone(agg["daily_realized_pnl_usd"])    # UNAVAILABLE — never a measured 38.04 "USD"
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_UNAVAILABLE)
+        self.assertEqual(agg["daily_realized_pnl_basis"], "PARTIAL")
+        self.assertEqual(agg["daily_realized_pnl_excluded_accounts"], [a.id])
+        d = agg["daily_realized_pnl_excluded_detail"][0]
+        self.assertEqual(d["reason"], "unknown_currency")
+        self.assertEqual(d["native_currency"], FX.UNKNOWN_CURRENCY)
+        self.assertEqual(d["native"], 38.04)                # surfaced (labelled UNKNOWN), never folded into USD
+
+    def test_detail_unit_unknown_currency_unavailable(self):
+        u = _user("uc2"); a = _acct(u); _closed_trade(a, 10)
+        agg, _ = PF.daily_realized_pnl_detail([a], observed_ccy={}, rate_source=FX.NullFxRateSource())
+        d = agg.as_dict()
+        self.assertEqual(d["state"], FX.STATE_UNAVAILABLE); self.assertIsNone(d["total_usd"])
+        self.assertEqual(d["unconverted"][0]["reason"], "unknown_currency")
+
+    # — preserved behaviour: a known/established currency still works exactly as before —
+    def test_usd_account_known_currency_included(self):
+        u = _user("uc3"); a = _acct(u, currency="USD"); _closed_trade(a, 5)
+        agg, _ = PF.daily_realized_pnl_detail([a], observed_ccy={}, rate_source=FX.NullFxRateSource())
+        self.assertEqual(agg.as_dict()["total_usd"], 5.0); self.assertEqual(agg.as_dict()["state"], FX.STATE_OK)
+
+    def test_gbp_valid_fx_conversion_included(self):
+        u = _user("uc4"); g = _acct(u); _closed_trade(g, 16)
+        agg = self._summary(u, balances={g.id: {"balance": 1, "equity": 1, "currency": "GBP"}},
+                            rate_source=self._gbp_src(1.25))
+        self.assertEqual(agg["daily_realized_pnl_usd"], 20.0)        # 16 GBP * 1.25 — governed FX preserved
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_OK)
+
+    def test_gbp_missing_rate_is_rate_unavailable_not_unknown(self):
+        u = _user("uc5"); g = _acct(u); _closed_trade(g, 16)
+        agg = self._summary(u, balances={g.id: {"balance": 1, "equity": 1, "currency": "GBP"}})  # Null rate source
+        self.assertIsNone(agg["daily_realized_pnl_usd"])             # UNAVAILABLE (no vetted GBP rate)
+        self.assertEqual(agg["daily_realized_pnl_excluded_detail"][0]["reason"], "rate_unavailable")  # NOT unknown
+
+    # — snapshot provenance: a FRESH tenant-local snapshot establishes currency; a STALE one does not —
+    def test_fresh_snapshot_establishes_currency_included(self):
+        u = _user("uc6"); g = _acct(u); _closed_trade(g, 16)
+        agg = self._summary(u, balances={g.id: None},               # live fails -> fresh snapshot fallback supplies GBP
+                            snapshots={g.id: {"currency": "GBP", "age_s": 30}}, rate_source=self._gbp_src(1.25))
+        self.assertEqual(agg["daily_realized_pnl_usd"], 20.0)        # established via fresh snapshot, converted
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_OK)
+
+    def test_stale_snapshot_cannot_establish_currency_excluded(self):
+        u = _user("uc7"); g = _acct(u); _closed_trade(g, 16)
+        agg = self._summary(u, balances={g.id: None},               # live fails; snapshot too old to be used
+                            snapshots={g.id: {"currency": "GBP", "age_s": PF._SUMMARY_SNAPSHOT_FRESHNESS_S + 120}},
+                            rate_source=self._gbp_src(1.25))
+        self.assertIsNone(agg["daily_realized_pnl_usd"])            # UNAVAILABLE — stale snapshot is not authoritative
+        self.assertEqual(agg["daily_realized_pnl_excluded_detail"][0]["reason"], "unknown_currency")
+
+    # — tenant isolation: an unknown account never borrows a sibling's currency/rate —
+    def test_no_cross_tenant_currency_substitution(self):
+        u = _user("uc8"); known = _acct(u); unknown = _acct(u)
+        _closed_trade(known, 8); _closed_trade(unknown, 100)
+        agg = self._summary(u, balances={known.id: {"balance": 1, "equity": 1, "currency": "USD"},
+                                         unknown.id: None})         # unknown: live fails, no snapshot
+        self.assertEqual(agg["daily_realized_pnl_usd"], 8.0)        # ONLY the USD account; 100 never summed as USD
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_PARTIAL)
+        self.assertEqual(agg["daily_realized_pnl_excluded_accounts"], [unknown.id])
+        self.assertEqual(agg["daily_realized_pnl_excluded_detail"][0]["reason"], "unknown_currency")
+
+    def test_mixed_portfolio_known_included_unknown_excluded_partial(self):
+        u = _user("uc9"); usd = _acct(u); gbp = _acct(u); unk = _acct(u)
+        _closed_trade(usd, 10); _closed_trade(gbp, 16); _closed_trade(unk, 500)
+        agg = self._summary(u, balances={usd.id: {"balance": 1, "equity": 1, "currency": "USD"},
+                                         gbp.id: {"balance": 1, "equity": 1, "currency": "GBP"},
+                                         unk.id: None}, rate_source=self._gbp_src(1.25))
+        self.assertEqual(agg["daily_realized_pnl_usd"], 30.0)       # 10 USD + 16 GBP*1.25; unknown 500 excluded
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_PARTIAL)
+        self.assertIn(unk.id, agg["daily_realized_pnl_excluded_accounts"])
+        self.assertEqual(agg["daily_realized_pnl_included_count"], 2)
+
+    def test_all_unknown_is_unavailable_null_total(self):
+        u = _user("uc10"); a = _acct(u); b = _acct(u)
+        _closed_trade(a, 12); _closed_trade(b, 34)
+        agg = self._summary(u, balances={a.id: None, b.id: None})
+        self.assertIsNone(agg["daily_realized_pnl_usd"])           # no false $0.00 across an all-unknown portfolio
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_UNAVAILABLE)
+        self.assertEqual(agg["daily_realized_pnl_included_count"], 0)
+
+    def test_single_account_view_follows_same_contract(self):
+        u = _user("uc11"); a = _acct(u); _closed_trade(a, 77)
+        agg, _ = PF.daily_realized_pnl_detail([a], observed_ccy={}, rate_source=FX.NullFxRateSource())
+        d = agg.as_dict()
+        self.assertIsNone(d["total_usd"]); self.assertEqual(d["state"], FX.STATE_UNAVAILABLE)
+        self.assertEqual(d["unconverted"][0]["reason"], "unknown_currency")
+
+    def test_unknown_account_mixed_trade_legs_withholds_native_fold(self):
+        # Adversarial review (fx-provenance MEDIUM): an UNKNOWN-denomination account whose same-day trade legs span
+        # MORE THAN ONE currency has a native sum that is a cross-currency fold — it must be WITHHELD (None), never
+        # surfaced as a single number (the H1 invariant), even though the exclusion reason is unknown_currency.
+        u = _user("uc13"); a = _acct(u)
+        _closed_trade(a, 70, profit_currency="GBP", swap_currency="JPY")   # legs span GBP + JPY
+        agg, _ = PF.daily_realized_pnl_detail([a], observed_ccy={}, rate_source=FX.NullFxRateSource())
+        d = agg.as_dict()
+        self.assertEqual(d["state"], FX.STATE_UNAVAILABLE)
+        exc = d["unconverted"][0]
+        self.assertEqual(exc["reason"], "unknown_currency")
+        self.assertIsNone(exc["native"])          # cross-currency fold withheld, NOT shown as 70.00
+
+    def test_api_summary_never_false_zero_for_unknown(self):
+        u = _user("uc12"); a = _acct(u); _closed_trade(a, 25)
+        with mock.patch("analytics.views_portfolio._balance_fetcher", lambda account, timeout=10.0: None), \
+             mock.patch("analytics.views_portfolio._positions_fetcher", lambda account, timeout=10.0: []):
+            c = APIClient(); c.force_authenticate(u)
+            agg = c.get("/api/analytics/portfolio/summary/").json()["aggregate"]
+        self.assertIsNone(agg["daily_realized_pnl_usd"])           # endpoint withholds the figure, never a false 0
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_UNAVAILABLE)
+
+
 class MaxDrawdownDeterminismTests(TestCase):
     def test_same_second_cluster_is_deterministic(self):
         u = _user("dd1"); a = _acct(u)

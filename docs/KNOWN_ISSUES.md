@@ -2,6 +2,22 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Daily Realized P&L — unknown currency summed as USD — repository-only, NOT merged/deployed (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161 / ADR-0120, 2026-11-19)
+
+- **What it fixes.** `analytics/portfolio.py`'s Daily Realized P&L USD aggregate defaulted a blank/unestablished
+  account currency to USD (`normalise_currency(None)==USD`). When a live balance read failed AND no fresh tenant-local
+  snapshot existed AND `account_currency` was blank (the production norm), a non-USD account's same-day native realized
+  was summed into the USD total with `basis="USD"` — false completeness (the open-position path already guarded this
+  via `resolve_position_currency`; the realized path did not). Fix: resolve the realized denomination only from an
+  authoritative tenant-local source (→ `UNKNOWN_CURRENCY`), exclude as `unknown_currency` → PARTIAL/UNAVAILABLE, native
+  surfaced labelled UNKNOWN, never summed as USD, never a false `$0.00`, never cross-tenant. Migration-free, DARK.
+- **Scope boundary (follow-up, NOT fixed here).** The LIFETIME `account_net_pnl` and `portfolio_metrics` paths share
+  the same blank→USD root pattern via `observed_ccy`/`observed_usd` and are intentionally left for a follow-up packet
+  (keep-narrow). The single-account dashboard Daily PnL card uses the `DailyPnlView` NATIVE figure (no USD conversion),
+  structurally immune to the sum-as-USD aggregate defect; the summary endpoint's single-account scope inherits the fix.
+- **Status.** Repository-only PR on `fix/daily-realized-unknown-currency` off current main `9b14d957`; NOT merged, NOT
+  deployed. No flag, no schema/DB change, no snapshot fabrication, no broker/host contact.
+
 ## 🟡 Mailbox OAuth-health: member disconnect vs reconsent — repository-only, NOT merged/deployed (GFX-DEADLINE-PRIORITY-REENTRY-158 / ADR-0118, 2026-11-18)
 
 - **What it fixes.** The ADR-0113 operator classifier mapped `ConnectedMailbox.status=REVOKED` to `RECONSENT_REQUIRED`

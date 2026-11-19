@@ -1,5 +1,21 @@
 # GuvFX — Project Status
 
+> **2026-11-19 — Daily Realized P&L never denominates an unknown currency as USD
+> (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only; migration-free; DARK; governed PR;
+> auto-merge OFF; STOP before merge).** Off current main `9b14d957` (= packet-expected `6184a859` + disjoint TIM #683)
+> on `fix/daily-realized-unknown-currency`. **Defect (proven):** the Daily Realized P&L USD aggregate defaulted a
+> blank/unestablished account currency to USD (`normalise_currency(None)==USD`), so when a live balance read failed AND
+> no fresh tenant-local snapshot existed AND `account_currency` was blank (the prod norm), a non-USD account's same-day
+> native realized was summed as USD with `basis="USD"` — false completeness. The open-position path already guarded
+> this via `resolve_position_currency` (blank→UNKNOWN); the realized path did not. **Fix:** `_account_realized_currency`
+> resolves via `resolve_position_currency` (blank→`UNKNOWN_CURRENCY`); `build_summary` passes the realized call a
+> separate unknown-PRESERVING `realized_ccy` map (balance/equity/metrics keep `observed_ccy` — byte-identical); the
+> daily path excludes `UNKNOWN_CURRENCY` with reason `unknown_currency` → aggregate PARTIAL/UNAVAILABLE, native surfaced
+> labelled UNKNOWN, never summed as USD, never a false `$0.00`, never cross-tenant. Known-USD + governed FX (ADR-0066)
+> preserved; `rate_unavailable` stays distinct. `analytics` 310 OK (+12 new); migration-free; frontend daily-pnl card 6
+> OK. Narrow: lifetime `account_net_pnl`/`portfolio_metrics` share the root pattern and are a documented follow-up.
+> **One bounded next action:** exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge.
+
 > **2026-11-18 — Member-disconnected mailbox is OWNER_DISCONNECTED, not a reconsent fault
 > (GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only; migration-free; DARK; governed PR; auto-merge OFF;
 > STOP before merge).** Off canonical main `3cd71e70` on `fix/oauth-owner-disconnect-classification`. Re-entry packet

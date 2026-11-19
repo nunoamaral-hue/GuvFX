@@ -141,4 +141,34 @@ describe("Daily PnL card — pkt-131 per-account coverage", () => {
     await waitFor(() => expect(dailyCellText()).toContain("+$50.36"));   // measured figure shown despite no lifetime history
     expect(dailyCellText()).toContain("Partial · 1 excluded");
   });
+
+  // ADR-0120 (GFX-161): an account whose currency could not be ESTABLISHED (unknown_currency) is excluded exactly
+  // like a non-convertible one — its native figure surfaces labelled UNKNOWN, and the card never reads as a false $0.
+  it("PARTIAL with an unknown-currency account: excluded (labelled UNKNOWN), measured figure over the rest", async () => {
+    apiFetch.mockImplementation(async (p: string) => apiFor(summaryAll({
+      daily_realized_pnl_usd: 8.0, daily_realized_pnl_state: "PARTIAL",
+      daily_realized_pnl_excluded_detail: [{ account_id: 71, native: 100.0, native_currency: "UNKNOWN", reason: "unknown_currency" }],
+    }))(p));
+    const { container } = render(<DashboardPage />);
+    await waitFor(() => expect(dailyCellText()).toContain("+$8.00"));
+    expect(dailyCellText()).toContain("Partial · 1 excluded");
+    expect((container.innerHTML || "")).toContain("#71 +100.00 UNKNOWN");   // native surfaced, never summed as USD
+    expect(dailyCellText()).not.toContain("$108.00");                        // the unknown 100 is NEVER folded in
+  });
+
+  it("UNAVAILABLE when every account's currency is unknown: '—', never a false $0.00", async () => {
+    apiFetch.mockImplementation(async (p: string) => apiFor(summaryAll({
+      daily_realized_pnl_usd: null, daily_realized_pnl_state: "UNAVAILABLE",
+      daily_realized_pnl_excluded_detail: [
+        { account_id: 71, native: 100.0, native_currency: "UNKNOWN", reason: "unknown_currency" },
+        { account_id: 72, native: 34.0, native_currency: "UNKNOWN", reason: "unknown_currency" },
+      ],
+    }))(p));
+    render(<DashboardPage />);
+    await waitFor(() => expect(screen.getByTestId("account-summary")).toBeTruthy());
+    const txt = dailyCellText();
+    expect(txt).toContain("—");
+    expect(txt).not.toContain("$0.00");
+    expect(txt).not.toContain("+$0.00");
+  });
 });

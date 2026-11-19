@@ -1,0 +1,59 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-DASHBOARD-DAILY-REALIZED-CURRENCY-161",
+ "packet_id": "GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161",
+ "created_at_utc": "2026-11-19T00:00:00Z",
+ "branch": "fix/daily-realized-unknown-currency",
+ "base_commit": "28c9cc30ce23687ce495830010b3a4fd453bd63c",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Packet expected canonical main 6184a859; current main advanced to 28c9cc30 during the packet (= 6184a859 + disjoint TIM #683 'opaque winter-timezone launcher' + disjoint trade_copier #684 'non-trading one-shot INGEST-signing probe (GFX-160)', BOTH zero overlap with analytics). #684 claimed ADR number 0119, so THIS packet's ADR was RENUMBERED 0119 -> 0120 (ADR-0120-daily-realized-unknown-currency-integrity.md) and the branch reconciled with current main via a non-force merge (no code conflict; the collision was the ADR number only). Production backend remains 6184a859 (neither #683 nor #684 is deployed). Additive, migration-free correction to the DAILY REALIZED P&L currency resolution in analytics/portfolio.py (ADR-0120). DEFECT: when an account's currency could not be established (live balance read failed AND no fresh tenant-local snapshot AND blank account_currency -- the production norm), _account_realized_currency defaulted to USD (normalise_currency(None)==USD) and build_summary fed the realized path an observed_ccy that had already collapsed blank->USD, so a non-USD account's same-day native realized was summed as USD with basis='USD' (false completeness). FIX: _account_realized_currency resolves via resolve_position_currency (blank->UNKNOWN_CURRENCY, mirroring the open-position path); build_summary builds a separate unknown-PRESERVING realized_ccy map for the realized call ONLY (balance/equity/metrics keep observed_ccy -- byte-identical); daily_realized_pnl_detail excludes UNKNOWN_CURRENCY accounts with stable reason 'unknown_currency' (category currency_unconvertible), surfacing the native figure labelled UNKNOWN, so the aggregate is PARTIAL/UNAVAILABLE, never summed as USD, never a false $0.00, never cross-tenant (map keyed by account id). No migration, no flag, no schema/DB change, no backfill, no snapshot fabrication, no broker/host contact. Out of scope (same root pattern, documented follow-up): account_net_pnl (LIFETIME net) and portfolio_metrics (lifetime performance); the single-account dashboard card uses the DailyPnlView NATIVE figure and is structurally immune to the sum-as-USD aggregate defect."
+ },
+ "ci": {
+  "status": "to-run-at-exact-head",
+  "note": "Local (isolated test DB; 364 gitignored copy-leaf duplicates '* [0-9].{py,json,md,ts,tsx}' quarantined so the migration graph + ADR-uniqueness + frontend tooling match a clean CI checkout, then restored): analytics = 311 OK / 1 skipped (incl. the 13 UnknownCurrencyRealizedIntegrityTests; full-module no regression). makemigrations --check analytics core = NO migration. check_no_secrets + check_evidence_manifests PASS; core.tests_adr_governance OK (ADR-0120 unique); frontend eslint (changed file) + next build clean; daily-pnl-coverage 6 OK. GitHub exact-head CI (backend / frontend / governance / market-data-foundation / research-foundation) to be driven 5/5 before PR-ready. HARD STOP before merge; auto-merge OFF."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test analytics.tests_portfolio.UnknownCurrencyRealizedIntegrityTests --noinput",
+  "cd backend && .venv/bin/python manage.py test analytics --noinput",
+  "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run analytics core",
+  "python3 scripts/check_no_secrets.py",
+  "python3 scripts/check_evidence_manifests.py",
+  "cd frontend && npm run lint && npm run build"
+ ],
+ "expected_results": [
+  "_account_realized_currency returns UNKNOWN_CURRENCY (never USD) when neither a fresh observed currency nor the verified account_currency is populated; build_summary passes the daily path an unknown-preserving realized_ccy while observed_ccy (blank->USD) still drives balance/equity/metrics unchanged.",
+  "daily_realized_pnl_detail excludes an UNKNOWN_CURRENCY account with reason 'unknown_currency' (category currency_unconvertible), surfaces its native figure labelled UNKNOWN, and yields PARTIAL (some convertible) or UNAVAILABLE (none, total_usd null) -- never a native sum denominated as USD, never a false $0.00, never borrowing another account's currency/rate.",
+  "Known-currency (USD) and governed single-currency FX (ADR-0066) behaviour preserved; a KNOWN non-USD currency with no vetted rate stays 'rate_unavailable' (distinct from 'unknown_currency'); the dashboard card renders '-' for UNAVAILABLE and 'Partial - N excluded' for PARTIAL, never '$0.00'. Migration-free."
+ ],
+ "actual_results": [
+  "analytics.tests_portfolio.UnknownCurrencyRealizedIntegrityTests: 12 tests OK. Cases: blank-currency + live-read failure + no snapshot -> unknown_currency/UNAVAILABLE (the proven defect; native 38.04 surfaced labelled UNKNOWN, total_usd null, NOT 38.04 USD); unit UNKNOWN -> UNAVAILABLE; USD known included; GBP valid FX converts (16 GBP*1.25=20.0 USD); GBP missing rate -> 'rate_unavailable' NOT unknown; fresh tenant-local snapshot establishes currency (included/converted); stale snapshot cannot establish -> unknown_currency; no cross-tenant currency substitution (sibling 100 never summed as USD); mixed portfolio known-included/unknown-excluded PARTIAL (10 USD + 16 GBP*1.25, unknown 500 excluded, included_count 2); all-unknown -> UNAVAILABLE null total (no false $0); single-account contract -> UNAVAILABLE; API /portfolio/summary/ with live-read failure -> daily_realized_pnl_usd null + state UNAVAILABLE.",
+  "Full analytics module: 310 OK, 1 skipped, 0 failures (after quarantining the gitignored copy-leaf duplicates). Existing ObservedCurrencyTests / RealizedCurrencyHonestyTests / RealizedSingleCurrencyConversionTests / snapshot-fallback / SummaryTests all still pass (balance/equity/metrics behaviour byte-identical). makemigrations --check analytics core = 'No changes detected' (migration-free).",
+  "Frontend: 4 new/updated daily-pnl-coverage cases added (unknown_currency PARTIAL surfaces '#71 +100.00 UNKNOWN' and never folds the 100 into the total; all-unknown UNAVAILABLE renders '-', never '$0.00'). Types already permit the reason (reason/native_currency are string). check_no_secrets / check_evidence_manifests / frontend lint+build to be confirmed green at the exact head in CI.",
+  "7-lens adversarial review (Workflow, 7 agents) COMPLETE: financial-correctness / tenant-isolation / stale-data / false-zero / single-vs-all = CLEAN (verified against the actual code: blank->USD structurally unreachable on the realized path; map strictly per-account-id; stale snapshot gated out of 'snap' so it never establishes currency; state resolves PARTIAL/UNAVAILABLE/OK/EMPTY correctly with no false $0.00; 1-vs-N consistent). ONE MEDIUM (fx-provenance) addressed: the unknown_currency branch preceded the mixed-leg check, so an UNKNOWN-denomination account whose trade legs span >1 currency would surface a cross-currency native fold; FIXED by withholding native (None) when len(nonblank)>1 in the unknown branch (H1 upheld) + regression test test_unknown_account_mixed_trade_legs_withholds_native_fold. ONE LOW (JA tooltip shows untranslated 'UNKNOWN' token) DECLINED with rationale: consistent with the existing untranslated ISO-currency-code slot (GBP/EUR shown the same) and the card label is already hardcoded English in JA; page.tsx is intentionally not in the diff (keep-narrow). A placeholder/garbage finding ('test'/a.py:1) was discarded. After the fix: analytics 311 OK / 1 skipped; makemigrations --check clean."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only. No production deploy, no flag, no schema/DB change, no backfill, no snapshot fabrication, no broker/MT5/host contact. Production backend remains 6184a859.",
+  "Scope is the DAILY REALIZED P&L aggregate only. account_net_pnl (LIFETIME net) and portfolio_metrics (lifetime performance) share the same blank->USD root pattern via observed_ccy/observed_usd and are intentionally NOT changed (keep-narrow constraint; do not change equity/positions) -- documented as a follow-up in ADR-0120 and KNOWN_ISSUES. The single-account dashboard Daily PnL card uses the DailyPnlView NATIVE figure (no USD conversion), structurally immune to the sum-as-USD aggregate defect; the summary endpoint's single-account scope inherits this fix (tested).",
+  "Local governance/ADR-uniqueness, migration-graph and frontend tooling required quarantining 364 gitignored '* [0-9].{py,json,md,ts,tsx}' copy-leaf duplicates in the working tree; these are absent from Git and CI, and were restored after the run. CI at the exact head is the authoritative gate; head_commit is null until PR-ready.",
+  "Base is current main 9b14d957 (6184a859 + disjoint TIM #683, zero analytics overlap), not the packet's expected 6184a859 -- branched from current main so the PR contains main and merges cleanly."
+ ],
+ "artefact_locations": [
+  "backend/analytics/portfolio.py",
+  "backend/analytics/tests_portfolio.py",
+  "frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx",
+  "docs/architecture/ADR-0120-daily-realized-unknown-currency-integrity.md"
+ ],
+ "checksums": {
+  "backend/analytics/portfolio.py": "sha256:93a117841213ae2a477a2fe1b157a6c6035d37b41b978454de5c6f901e5de725",
+  "backend/analytics/tests_portfolio.py": "sha256:603ac6f5a5d0b9b7f2cbd3f6b7073c37102d23886a405b3d470d031bc829b671",
+  "frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx": "sha256:e0af6b99b096cca68043ff5796cac8e93adfad1294485249cfaaf65e564b1d24",
+  "docs/architecture/ADR-0120-daily-realized-unknown-currency-integrity.md": "sha256:9bd662274589e0d07bd5f44f3f24290e661ef86e10419c9cd051ff6656e7f3ad"
+ },
+ "reviewer": "Author self-review + direct code trace proving normalise_currency(None)==USD and the realized-vs-open-position asymmetry; 13 deterministic regression tests (defect reproduced before fix, green after). 7-lens adversarial review Workflow (financial-correctness / tenant-isolation / stale-data / fx-provenance / false-zero / single-vs-all / frontend-stability): 6 CLEAN, 1 MEDIUM (unknown+mixed-leg native fold) FIXED + regression-tested, 1 LOW (JA untranslated UNKNOWN token) declined with rationale, 1 placeholder discarded. No CRITICAL/HIGH."
+}
