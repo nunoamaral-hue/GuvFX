@@ -9,6 +9,7 @@ from trade_copier.consumer_api import (
 from trade_copier.attestation_api import AttestationVerifyView
 from trade_copier.config_api import CopyTradingConfigView
 from trade_copier.event_ingestion_api import SignedEventIngestView
+from trade_copier.ingest_probe_api import IngestProbeVerifyView
 from trade_copier.matrix_api import InstrumentMatrixView
 from trade_copier.operator_api import OperatorLifecycleView
 from trade_copier.views import (
@@ -32,6 +33,11 @@ urlpatterns = [
     # ADR-0077 — NON-LIFECYCLE host-emitter identity-attestation verification (emitter → backend). DARK: 503
     # unless COPIER_ATTESTATION_VERIFY_ENABLED is on. Proves identity only; no lifecycle, no order, no job.
     path("attest-verify/", AttestationVerifyView.as_view(), name="copy-trading-attest-verify"),
+    # GFX-160 / ADR-0119 — NON-TRADING one-shot ingest-signing probe (standing emitter host -> backend). DARK:
+    # 503 unless COPIER_INGEST_PROBE_ENABLED is on (which ANDs master + ingestion). Proves host-key signing +
+    # transport + HMAC auth + nonce/replay against the bounded INGEST window; no order, job, lifecycle or arm,
+    # and structurally incapable of an OPEN/MODIFY/CLOSE.
+    path("ingest-probe/", IngestProbeVerifyView.as_view(), name="copy-trading-ingest-probe"),
     # ADR-0056 — dedicated DEMO partial-close consumer (modern worker auth only; DARK, no worker granted
     # the permission outside tests; serves ONLY PARTIAL_CLOSE_TRADE).
     path("partial-close/claim/", PartialCloseClaimView.as_view(), name="copy-trading-pclose-claim"),

@@ -149,6 +149,20 @@ def copier_event_ingestion_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_EVENT_INGESTION_ENABLED")
 
 
+def copier_ingest_probe_enabled() -> bool:
+    """Gate for the NON-TRADING one-shot INGEST-signing probe endpoint (GFX-160, ADR-0119). DEFAULT OFF, ANDed
+    with BOTH the master gate AND the ingestion gate (``copier_event_ingestion_enabled`` already ANDs
+    ``copier_enabled``), so the probe can run only under the same master/ingestion verification gates as real
+    ingestion — never on its own.
+
+    The probe verifies a signed, structurally non-trading envelope (host-key signing + transport + HMAC
+    authentication + timestamp/skew + single-use nonce/replay) resolved from the bounded INGEST verifier window.
+    It creates NO ``MasterEvent``, lifecycle, dispatch, ``ExecutionJob``, follower ticket, authorization, arm or
+    ``LiveExecutionAuthorization``, and cannot become an OPEN/MODIFY/CLOSE. With this OFF the probe endpoint
+    returns 503 and verifies nothing (fail closed)."""
+    return copier_event_ingestion_enabled() and _flag("COPIER_INGEST_PROBE_ENABLED")
+
+
 def copier_lifecycle_dispatch_enabled() -> bool:
     """Gate for the DARK lifecycle→producer-boundary SHADOW dispatch pass (ADR-0074). DEFAULT OFF, ANDed with
     the master gate.

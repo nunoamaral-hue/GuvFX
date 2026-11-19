@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-INGEST-ONESHOT-PROBE-160",
+  "packet_id": "GFX-COPIER-INGEST-ONESHOT-PROBE-160",
+  "created_at_utc": "2026-11-19T08:05:00Z",
+  "branch": "feat/copier-ingest-oneshot-probe",
+  "base_commit": "9b14d95733b370b7321d580720b3574c8b8625d5",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only, DARK, migration-free. Adds the smallest durable NON-TRADING one-shot INGEST-signing probe (GFX-160, ADR-0119) that proves the live ingest-authentication chain -- standing account-46 host-key signing + transport + backend HMAC authentication + bounded ADR-0101 INGEST-window key resolution + single-use nonce/replay protection + teardown -- with ZERO trading or execution semantics. Pure envelope (trade_copier.emitter.ingest_probe) signs a fixed protocol/operation + key_id + account_id + nonce + timestamps and NOTHING else (no symbol/side/volume/price/ticket/order/lifecycle field), so it is structurally incapable of becoming an OPEN/MODIFY/CLOSE. Backend verify (ingest_probe_verify + ingest_probe_api, POST /api/copy-trading/ingest-probe/) is triple-gated (copier_ingest_probe_enabled, default OFF, which ANDs the master + ingestion gates) AND resolves the key only from exactly one OPEN INGEST window AND pins account 46; it creates NO MasterEvent/lifecycle/dispatch/ExecutionJob/follower-ticket/authorization/arm/LiveExecutionAuthorization, invokes no execution code, references #48 nowhere, contacts no broker, burns the nonce via the shared CopierIngestNonce store (durable metadata-safe evidence, no migration) and returns a value-blind verdict. Host signer (deploy/copier-emitter/run_ingest_probe.py) runs once by hand, reads the standing key locally (never argv/env/stdin/chat, never printed/hashed/measured), signs ONE envelope, posts once (optional one replay of the same envelope), emits sanitised JSON, and RETAINS the standing key. The probe does NOT and cannot substitute for the real OPEN/MODIFY/CLOSE E2E demo (it exercises no MT5 state, master action, projection, replication, dispatch, admission, arm, follower or order).",
+    "adr": "docs/architecture/ADR-0119-copier-ingest-oneshot-probe.md (new; additive to ADR-0074/0077/0101/0104/0112/0114/0117)",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "workflow_changed": "None (no .github/workflows change by this packet; the ci.yml delta present on the branch is inherited from the merged pkt-156 history, not introduced here).",
+    "cursor_or_ingestion_or_mailbox_or_broker_or_financial_action": false,
+    "copy_trading_tim_mt5_nas_touched": true,
+    "publication_or_public_statistics_touched": false,
+    "raw_email_or_pii_read_into_output": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + governance-check + secret/PII scan + evidence lint + frontend. No Windows PS 5.1 gate applicable: this packet adds NO PowerShell artefact (one new Python pure module, one new Python backend verify + one new Python backend view, one new Python host operator script, one new Python test; plus edits to flags.py/urls.py/settings.py, the copier-emitter MANIFEST.json and the runbook). The existing emitter *.ps1 are UNCHANGED."
+  },
+  "commands": [
+    "cd backend && python manage.py test trade_copier.tests_ingest_probe   (42 tests)",
+    "cd backend && python manage.py test trade_copier.emitter.tests_bundle   (bundle integrity: manifest hashes, ASCII/no-BOM, lib_subset)",
+    "cd backend && python manage.py test trade_copier   (full app suite regression)",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "ASCII/no-BOM check on deploy/copier-emitter/run_ingest_probe.py (top-level bundle artefact)"
+  ],
+  "expected_results": [
+    "Pure signer/verifier: a valid probe verifies once; every negative control (bad signature, unknown key id, tamper, wrong account, wrong/unsupported operation or protocol, stale/future/expired timestamp, expiry-too-far, replay, oversize nonce, missing field, malformed envelope) raises a stable sanitised IngestProbeError; a bad signature never burns a nonce.",
+    "Backend endpoint: 503 when any of the master/ingestion/probe gates is off; 503 (value-blind) when there is no single OPEN INGEST window or the window is ATTEST-only; 200 'verified' with a value-blind body on a valid probe; 409 'replayed' on the same nonce; 401 on wrong account (account_not_probe_pinned) / wrong key (bad_signature) / stale timestamp; 400 on wrong operation / malformed JSON. A verify creates NO MasterEvent/lifecycle/dispatch/ExecutionJob/authorization/arm/LiveExecutionAuthorization and never emits '48'.",
+    "Static capability scan: the probe code (strings/comments stripped) contains no broker/order/MT5/dispatch/execution primitive and no '48'; no secret-looking literal.",
+    "Existing attest-verify and event-ingest endpoints still fail closed (503) by default -- unchanged wiring.",
+    "Host signer: account-46 pinned; SECRET_UNAVAILABLE when the standing key is absent/short; signs ONE non-trading envelope and posts once to the fixed ingest-probe route derived from the config origin; --replay posts the SAME envelope once; an ambiguous transport does NOT trigger a replay; the key value never appears in output and the standing key file is RETAINED."
+  ],
+  "actual_results": [
+    "trade_copier.tests_ingest_probe: Ran 43 OK -- IngestProbePureTests (17: happy + no-trade-fields + all negative controls + bad-sig-no-nonce-burn), IngestProbeBackendTests (13: gate-off x3, no-window, wrong-purpose-window, positive+value-blind, no-side-effects-on-every-path [verified/bad-sig/wrong-account/wrong-op/replay all asserted zero execution/lifecycle delta], replay 409, wrong account 401, wrong key 401, wrong op 400, malformed json 400, stale 401, no-48-in-output), IngestProbeCapabilityScanTests (4: no execution/broker token, no 48, no secret literal, AST import-allowlist has no execution/dispatch/order/mt5 module), ExistingPathsUnchangedTests (1), IngestProbeHostSignerTests (7: happy single probe + retained key, replay, SECRET_UNAVAILABLE absent/short, account pin, non-trading envelope, ambiguous-skips-replay).",
+    "trade_copier.emitter.tests_bundle: Ran 67 OK (combined run with tests_ingest_probe = 109 OK) -- manifest hashes match (run_ingest_probe.py added), ASCII/no-BOM across the bundle, lib_subset (incl. the new emitter/ingest_probe.py) exists.",
+    "Full trade_copier suite: exit 0 (all pass; local run). manage.py check: no issues. core.tests_adr_governance: 3 OK (ADR-0119 well-formed).",
+    "scripts/check_no_secrets.py: no findings. scripts/check_evidence_manifests.py: PASS (100 manifests). Repo-root governance unit tests: test_no_secrets 18 OK, test_evidence_manifests 6 OK, test_safe_container_env 5 OK.",
+    "Independent adversarial review subagent (6 axes: authentication, replay, execution isolation, tenant isolation, secret handling, teardown): 0 CRITICAL, 0 HIGH, 0 MEDIUM; every axis verdict CLEAN. LOW findings (test-hardening/governance) applied anyway: LOW-1 no-side-effects now asserted across verified/reject/replay/malformed paths; LOW-2 added an AST import-allowlist assertion; LOW-4 runbook+ADR now mandate an uncapped (TTL-bounded) INGEST window and explain claim-before-verify; INFO arm-coupling (probe ANDs real ingestion, shared window+nonce) documented in the ADR + runbook. LOW-3 (pure verifier's expected_account_id defaults None) left as the audited attestation-baseline pattern; the sole backend caller double-pins account 46 before the key is claimed."
+  ],
+  "status": "PARTIAL",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed, NOT run against the live window/key. No production/host/flag/verifier-window/authorization/arm/task/worker/#48/broker mutation. The probe is inert until COPIER_INGEST_PROBE_ENABLED is armed AND an operator opens a bounded INGEST window.",
+    "No PowerShell artefact was added or changed, so a Windows PS 5.1 ParseFile gate is Not Applicable to this packet.",
+    "The probe proves the ingest-authentication plane ONLY (signing/transport/HMAC/window/nonce/replay). It exercises no MT5 state, master action, projection, replication, dispatch, admission, arm, follower (#48) or OPEN/MODIFY/CLOSE lifecycle, and must NOT be treated as a substitute for the separately-governed real E2E copy-execution demo.",
+    "Durable proof reuses the existing CopierIngestNonce store (the burned nonce row) rather than a new audit model, so no migration is added; the evidence is 'a probe nonce was consumed', correlated by the operator-supplied correlation id and the backend log_stage line.",
+    "The branch is cut fresh from current canonical main (9b14d957, which already includes the merged pkt-156 and pkt-158 history); this packet's diff is additive, cherry-picked clean, and touches no file changed by those merges."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/emitter/ingest_probe.py (NEW -- pure, Django-free signer/verifier; vendored into the emitter bundle lib_subset)",
+    "backend/trade_copier/ingest_probe_verify.py (NEW -- gated backend verification)",
+    "backend/trade_copier/ingest_probe_api.py (NEW -- POST /api/copy-trading/ingest-probe/ view)",
+    "backend/trade_copier/tests_ingest_probe.py (NEW -- 42 tests, synthetic keys only)",
+    "deploy/copier-emitter/run_ingest_probe.py (NEW -- host-side one-shot operator signer; ASCII/no-BOM)",
+    "deploy/copier-emitter/MANIFEST.json (MODIFIED -- adds run_ingest_probe.py hash + emitter/ingest_probe.py to lib_subset)",
+    "backend/trade_copier/flags.py (MODIFIED -- adds copier_ingest_probe_enabled(), default OFF, ANDs master+ingestion)",
+    "backend/trade_copier/urls.py (MODIFIED -- adds the ingest-probe route)",
+    "backend/guvfx_backend/settings.py (MODIFIED -- adds the copier_ingest_probe throttle rate)",
+    "docs/architecture/ADR-0119-copier-ingest-oneshot-probe.md (NEW)",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md (MODIFIED -- adds the optional non-trading probe pre-flight section)",
+    "evidence/manifests/GFX-EVD-COPIER-INGEST-ONESHOT-PROBE-160.json (NEW -- this manifest)"
+  ],
+  "checksums": {
+    "backend/trade_copier/emitter/ingest_probe.py": "sha256:43150ac61fd70f677a735fb48cf408426689480563c817dc374b2a7200918fc4",
+    "backend/trade_copier/ingest_probe_verify.py": "sha256:76d6c0f79fca8c4114bb1098aae621221136ba68948c00cd4fb6e79994709feb",
+    "backend/trade_copier/ingest_probe_api.py": "sha256:b150f024575e2800b1241bee94de1be02f33bbfcf14eb6df93e32e01a386e1be",
+    "backend/trade_copier/tests_ingest_probe.py": "sha256:a4936563ca8ba5fb2d10488bbd8f83099f005bcb0824e71b8adbb51d86ac755c",
+    "deploy/copier-emitter/run_ingest_probe.py": "sha256:268f3d0e4f57c8257bb688ac2ce831d14217e5474696193f05c597d43c9214e0",
+    "deploy/copier-emitter/MANIFEST.json": "sha256:80c10733201ff63809fd1e8f48f7be8c05351d40a7faf2ca858fbd8a8da281c8",
+    "backend/trade_copier/flags.py": "sha256:b7b2cfb89c44bf32482d68bbf7b33f277108c56cf05df9e01484ff4d8cb6ec94",
+    "backend/trade_copier/urls.py": "sha256:e7137bfe8ae36f01d19e4bd60ca44c17d67c044b3ef8be38533671a2795dc6a2",
+    "backend/guvfx_backend/settings.py": "sha256:b9127356158de6b8d28880c98c91797beedac7c1c9018d4c9b0baaf48099d4ef",
+    "docs/architecture/ADR-0119-copier-ingest-oneshot-probe.md": "sha256:b250a5a323fa3928667fc9d313a83b575b00a63c5f386ec847b1ff87034cc75b",
+    "docs/COPIER_46_48_DEMO_RUNBOOK.md": "sha256:1e85b67ad89cde63e1d57cd4a4c7337ee9ae7d02571efe185cbb147f81f22649"
+  },
+  "reviewer": "GuvFX Copy Trading coding agent (Claude Opus 4.8) self-review + INDEPENDENT adversarial review subagent (6 axes: authentication, replay, execution isolation, tenant isolation, secret handling, teardown). Sponsor review pending; auto-merge OFF; STOP before merge."
+}
