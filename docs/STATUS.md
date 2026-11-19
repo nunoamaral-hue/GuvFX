@@ -1,7 +1,7 @@
 # GuvFX — Project Status
 
 > **2026-11-19 — Daily Realized P&L never denominates an unknown currency as USD
-> (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0119; repository-only; migration-free; DARK; governed PR;
+> (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only; migration-free; DARK; governed PR;
 > auto-merge OFF; STOP before merge).** Off current main `9b14d957` (= packet-expected `6184a859` + disjoint TIM #683)
 > on `fix/daily-realized-unknown-currency`. **Defect (proven):** the Daily Realized P&L USD aggregate defaulted a
 > blank/unestablished account currency to USD (`normalise_currency(None)==USD`), so when a live balance read failed AND

@@ -360,7 +360,7 @@ def _account_realized_currency(account, observed_ccy) -> str:
     (fresh live / fresh tenant-local snapshot) currency, else the verified model ``account_currency`` — and NEVER
     defaulted to USD when neither is populated. ``resolve_position_currency`` returns ``UNKNOWN_CURRENCY`` in that case
     (exactly as the OPEN-POSITION path already does), so the realized aggregate EXCLUDES the account instead of
-    silently summing its native figure as dollars (the blank/unknown-currency -> USD contamination; ADR-0119). The
+    silently summing its native figure as dollars (the blank/unknown-currency -> USD contamination; ADR-0120). The
     caller must pass an unknown-PRESERVING observed map (``build_summary`` builds ``realized_ccy`` the same way); a map
     that has already collapsed blank -> USD upstream would defeat this guard."""
     observed_ccy = observed_ccy or {}
@@ -405,7 +405,7 @@ def daily_realized_pnl_detail(accounts, *, stage: str = STAGE_ALL, observed_ccy=
         if acct_cur == FX.UNKNOWN_CURRENCY:
             # The account's denomination could not be established from any AUTHORITATIVE tenant-local source (no fresh
             # identity-matched live read, no fresh tenant-local snapshot, no verified model currency). Its same-day
-            # realized must NEVER be summed as USD (the silent blank->USD contamination this guard removes; ADR-0119).
+            # realized must NEVER be summed as USD (the silent blank->USD contamination this guard removes; ADR-0120).
             # Exclude the account (``unknown_currency``) so the aggregate is PARTIAL (some others convertible) or
             # UNAVAILABLE (none) — never a fabricated $0.00 and never borrowed from another account's currency/rate
             # (the map is per-account id, so no cross-tenant substitution is possible). The native figure is surfaced
@@ -763,7 +763,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     observed_ccy = {}   # {account_id: observed currency} — feeds the single-currency realized conversion (ADR-0066)
     observed_nonusd_ids = set()   # accounts whose OBSERVED (snapshot) currency is not USD — drives the realized
     #                               path's currency exclusion so metrics.basis agrees with balance_usd.basis (H1).
-    # UNKNOWN-PRESERVING per-account realized currency (ADR-0119): resolved the SAME way as the open-position path
+    # UNKNOWN-PRESERVING per-account realized currency (ADR-0120): resolved the SAME way as the open-position path
     # (``resolve_position_currency`` -> UNKNOWN_CURRENCY when no authoritative tenant-local source), so the DAILY
     # REALIZED aggregate EXCLUDES an unestablished-currency account instead of inheriting ``observed_ccy``'s
     # documented blank->USD balance/equity default. Kept SEPARATE so balance/equity/metrics behaviour is byte-identical.
@@ -793,7 +793,7 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         observed_ccy[a.id] = cur
         # Unknown-safe realized denomination from the SAME resolved ``snap`` (fresh live read or fresh tenant-local
         # snapshot) and the verified model currency — NEVER the blank->USD default, so the realized aggregate fails
-        # closed to UNKNOWN_CURRENCY instead of summing an unestablished-currency account as dollars (ADR-0119).
+        # closed to UNKNOWN_CURRENCY instead of summing an unestablished-currency account as dollars (ADR-0120).
         realized_ccy[a.id] = FX.resolve_position_currency((snap or {}).get("currency"), getattr(a, "account_currency", None))
         if cur != FX.USD:
             observed_nonusd_ids.add(a.id)

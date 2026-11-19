@@ -1,6 +1,6 @@
 # NEXT — Priorities (keep this list short)
 
-## ★ DAILY REALIZED P&L: UNKNOWN CURRENCY NEVER USD (2026-11-19; GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0119; repository-only PR)
+## ★ DAILY REALIZED P&L: UNKNOWN CURRENCY NEVER USD (2026-11-19; GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only PR)
 The Daily Realized P&L USD aggregate defaulted a blank/unestablished account currency to USD, so a non-USD account
 whose live read failed with no fresh tenant-local snapshot had its native same-day realized summed as USD with
 `basis="USD"` (false completeness). Fix resolves the realized denomination only from an authoritative tenant-local

@@ -1,6 +1,6 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
-## 2026-11-19 — Daily Realized P&L: unknown currency is never summed as USD (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0119; repository-only; migration-free; DARK; PR; NOT merged)
+## 2026-11-19 — Daily Realized P&L: unknown currency is never summed as USD (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```
 PM HANDOFF
@@ -26,7 +26,7 @@ Tests (exact): cd backend && .venv/bin/python manage.py test analytics  -> 310 O
 Scope boundary: lifetime account_net_pnl + portfolio_metrics share the root pattern and are a documented follow-up;
   the single-account dashboard card uses the DailyPnlView NATIVE figure (structurally immune to the sum-as-USD defect).
 Inventory (exactly 5 tracked files): backend/analytics/portfolio.py; backend/analytics/tests_portfolio.py;
-  frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx; docs/architecture/ADR-0119-...md; evidence manifest.
+  frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx; docs/architecture/ADR-0120-...md; evidence manifest.
   No migration, no flag, no prod/host/broker/MT5/snapshot change.
 One bounded next action: drive exact-head CI to 5/5, then await Sponsor `GO — merge PR`. STOP before merge.
 ```

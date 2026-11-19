@@ -2,7 +2,7 @@
 
 List active problems with reproduction steps and workarounds.
 
-## 🟡 Daily Realized P&L — unknown currency summed as USD — repository-only, NOT merged/deployed (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161 / ADR-0119, 2026-11-19)
+## 🟡 Daily Realized P&L — unknown currency summed as USD — repository-only, NOT merged/deployed (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161 / ADR-0120, 2026-11-19)
 
 - **What it fixes.** `analytics/portfolio.py`'s Daily Realized P&L USD aggregate defaulted a blank/unestablished
   account currency to USD (`normalise_currency(None)==USD`). When a live balance read failed AND no fresh tenant-local

@@ -1,4 +1,4 @@
-# ADR-0119 — Daily Realized P&L never denominates an unknown currency as USD
+# ADR-0120 — Daily Realized P&L never denominates an unknown currency as USD
 
 - **Status:** Accepted (repository-only; additive; migration-free; corrects a Daily Realized P&L currency-integrity
   defect in `analytics/portfolio.py`; no production deploy, no flag, no schema/DB change, no broker/MT5 contact, no

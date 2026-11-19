@@ -321,7 +321,7 @@ class ObservedCurrencyTests(TestCase):
         self.assertEqual(m["net_pnl_total"], 9.65)
 
 
-# ── Daily-realized currency integrity (ADR-0119): blank/unknown currency is NEVER summed as USD ────────────────
+# ── Daily-realized currency integrity (ADR-0120): blank/unknown currency is NEVER summed as USD ────────────────
 class UnknownCurrencyRealizedIntegrityTests(TestCase):
     """GFX-161: the Daily Realized P&L aggregate must resolve each account's denomination ONLY from an authoritative
     tenant-local source (verified model currency, a fresh identity-matched live read, or a fresh tenant-local

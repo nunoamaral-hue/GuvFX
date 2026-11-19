@@ -142,7 +142,7 @@ describe("Daily PnL card — pkt-131 per-account coverage", () => {
     expect(dailyCellText()).toContain("Partial · 1 excluded");
   });
 
-  // ADR-0119 (GFX-161): an account whose currency could not be ESTABLISHED (unknown_currency) is excluded exactly
+  // ADR-0120 (GFX-161): an account whose currency could not be ESTABLISHED (unknown_currency) is excluded exactly
   // like a non-convertible one — its native figure surfaces labelled UNKNOWN, and the card never reads as a false $0.
   it("PARTIAL with an unknown-currency account: excluded (labelled UNKNOWN), measured figure over the rest", async () => {
     apiFetch.mockImplementation(async (p: string) => apiFor(summaryAll({
