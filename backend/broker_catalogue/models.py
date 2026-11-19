@@ -138,3 +138,142 @@ class CatalogueCaptureCandidate(models.Model):
 
     def __str__(self):
         return f"CatalogueCaptureCandidate({self.broker_id}, {self.capture_status})"
+
+
+# ======================================================================================================
+# ADR-0102 (Lane C) — governed, hash-PINNED catalogue DELTA + append-only transition audit.
+#
+# A ``CatalogueDelta`` is a reviewable, approvable proposed change from the current ACTIVE catalogue version
+# (the BASE) to a proposed DRAFT version, carrying the privacy-safe server-identity diff and a deterministic
+# checksum. It adds the governance layer the base subsystem lacks: a DRAFT→REVIEWED→APPROVED→STAGED→ACTIVATED
+# (or REJECTED / ROLLED_BACK) lifecycle, separate reviewer/approver, an APPEND-ONLY transition history, and an
+# EXPECTED-base-manifest hash so activation fails closed on a stale base (optimistic concurrency / CAS). It
+# REUSES the existing version/artefact/manifest/sanitiser machinery underneath — it never re-implements it, and
+# never writes a host/servers.dat (the host seams stay fail-closed/DARK). It stores IDENTITY + SHA-256 integrity
+# hashes + enums/counts only — NEVER servers.dat bytes, NEVER a credential/account number.
+# ======================================================================================================
+
+class CatalogueDelta(models.Model):
+    class State(models.TextChoices):
+        DRAFT = "DRAFT", "Draft (proposed; not yet reviewed)"
+        REVIEWED = "REVIEWED", "Dry-run validated / reviewed"
+        APPROVED = "APPROVED", "Approved (NOT activated)"
+        STAGED = "STAGED", "Staged (deployment artifact prepared; ready to activate)"
+        ACTIVATED = "ACTIVATED", "Activated (the proposed version is now ACTIVE)"
+        REJECTED = "REJECTED", "Rejected"
+        ROLLED_BACK = "ROLLED_BACK", "Rolled back to the base version"
+
+    TERMINAL = frozenset({"ACTIVATED", "REJECTED", "ROLLED_BACK"})
+
+    # BASE = the expected current ACTIVE version at propose time; ``base_manifest_sha256`` is the hash-pin re-checked
+    # (CAS) at activation. Nullable for the first-ever delta (no prior ACTIVE version).
+    base_version = models.ForeignKey(CatalogueVersion, null=True, blank=True, on_delete=models.PROTECT,
+                                     related_name="deltas_from")
+    base_manifest_sha256 = models.CharField(max_length=64, blank=True, default="")
+    # PROPOSED = the DRAFT version this delta would make ACTIVE (built from APPROVED artefacts by the base subsystem).
+    proposed_version = models.ForeignKey(CatalogueVersion, on_delete=models.PROTECT, related_name="deltas_to")
+    proposed_manifest_sha256 = models.CharField(max_length=64, blank=True, default="")
+
+    # Privacy-safe server-identity diff. Each entry: {broker_id, display_name, servers:[...], sha256}. Server names
+    # are broker-PUBLISHED identifiers (never a credential/account); sha256 is a non-secret integrity hash.
+    added_identities = models.JSONField(default=list, blank=True)
+    removed_identities = models.JSONField(default=list, blank=True)
+    changed_identities = models.JSONField(default=list, blank=True)   # {broker_id, from_servers, to_servers, from_sha, to_sha}
+    delta_sha256 = models.CharField(max_length=64, blank=True, default="", db_index=True)
+
+    state = models.CharField(max_length=12, choices=State.choices, default=State.DRAFT, db_index=True)
+    # True while in the pre-activation workflow (DRAFT/REVIEWED/APPROVED/STAGED). A partial-unique on this enforces
+    # AT MOST ONE in-flight delta — two concurrent proposals cannot both race to activate. Set False on a terminal.
+    in_flight = models.BooleanField(default=True)
+
+    proposer = models.CharField(max_length=128, blank=True, default="")
+    reviewer = models.CharField(max_length=128, blank=True, default="")
+    approver = models.CharField(max_length=128, blank=True, default="")
+    ticket = models.CharField(max_length=64, blank=True, default="")
+    reason = models.CharField(max_length=256, blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    staged_at = models.DateTimeField(null=True, blank=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    rolled_back_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["in_flight"], condition=models.Q(in_flight=True),
+                                    name="broker_catalogue_one_in_flight_delta"),
+        ]
+        indexes = [models.Index(fields=["state"]), models.Index(fields=["proposed_version"])]
+
+    @staticmethod
+    def _canon(value):
+        """Deterministic canonicalisation: lists sorted by canonical JSON, dict keys sorted, inner server lists
+        sorted — so a content-identical diff hashes identically regardless of ordering."""
+        import json as _json
+        if isinstance(value, dict):
+            return {str(k): CatalogueDelta._canon(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+        if isinstance(value, (list, tuple)):
+            items = [CatalogueDelta._canon(v) for v in value]
+            return sorted(items, key=lambda x: _json.dumps(x, sort_keys=True, ensure_ascii=True))
+        return value
+
+    def compute_delta_sha256(self) -> str:
+        import hashlib as _hashlib
+        import json as _json
+        payload = _json.dumps({
+            "base_manifest": self.base_manifest_sha256, "proposed_manifest": self.proposed_manifest_sha256,
+            "added": self._canon(self.added_identities), "removed": self._canon(self.removed_identities),
+            "changed": self._canon(self.changed_identities),
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def is_terminal(self) -> bool:
+        return self.state in self.TERMINAL
+
+    def __str__(self):
+        return (f"CatalogueDelta(#{self.pk} {self.state}, "
+                f"{(self.base_version.label if self.base_version else '∅')}→{self.proposed_version.label})")
+
+
+class CatalogueDeltaAudit(models.Model):
+    """ADR-0102 — APPEND-ONLY transition/approval history for a ``CatalogueDelta``. Write-once; never updated or
+    deleted (model guards + a DB trigger). Records each lifecycle action, the actor, a sanitised reason/ticket,
+    the resulting state, and the base/delta integrity hashes. NO bytes/credential/PII."""
+
+    class Action(models.TextChoices):
+        PROPOSE = "PROPOSE", "Proposed"
+        REVIEW = "REVIEW", "Reviewed / dry-run validated"
+        APPROVE = "APPROVE", "Approved"
+        STAGE = "STAGE", "Staged"
+        ACTIVATE = "ACTIVATE", "Activated"
+        REJECT = "REJECT", "Rejected"
+        ROLLBACK = "ROLLBACK", "Rolled back"
+
+    delta = models.ForeignKey(CatalogueDelta, on_delete=models.PROTECT, related_name="audit")
+    action = models.CharField(max_length=10, choices=Action.choices)
+    actor = models.CharField(max_length=128)
+    reason = models.CharField(max_length=256, blank=True, default="")
+    ticket = models.CharField(max_length=64, blank=True, default="")
+    state_after = models.CharField(max_length=12, blank=True, default="")
+    base_manifest_sha256 = models.CharField(max_length=64, blank=True, default="")
+    delta_sha256 = models.CharField(max_length=64, blank=True, default="")
+    snapshot = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [models.Index(fields=["delta", "id"]), models.Index(fields=["action"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("CatalogueDeltaAudit is append-only; a correction is a new row")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("CatalogueDeltaAudit is append-only; it is never deleted")
+
+    def __str__(self):
+        return f"CatalogueDeltaAudit(delta={self.delta_id}, {self.action}, {self.actor})"
