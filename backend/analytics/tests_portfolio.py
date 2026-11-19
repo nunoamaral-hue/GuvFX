@@ -463,6 +463,197 @@ class UnknownCurrencyRealizedIntegrityTests(TestCase):
         self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_UNAVAILABLE)
 
 
+class UnknownCurrencyLifetimeIntegrityTests(TestCase):
+    """GFX-163: the LIFETIME figures — each account's net P&L (``account_net_pnl``, shown on the account card) and the
+    portfolio-wide performance metrics (``portfolio_metrics``: net_pnl_total, profit_factor, expectancy, win/loss,
+    max_drawdown) — must resolve each account's denomination ONLY from an authoritative tenant-local source, EXACTLY
+    as the GFX-161 daily path does. An account whose currency cannot be established (unpopulated model currency, a
+    failed live read, and no fresh tenant-local snapshot) is EXCLUDED from the USD lifetime aggregate and its
+    per-account net P&L is WITHHELD (``None``): its native figure is NEVER silently summed as USD, never a false
+    $0.00, never borrowed from another account. Established-currency, governed single-currency FX (ADR-0066), the
+    GFX-161 daily behaviour, and the balance/equity aggregates are preserved unchanged."""
+
+    def _gbp_src(self, rate=1.25):
+        return FX.MappingFxRateSource({("GBP", "USD"): rate}, as_of="2026-10-28", source="BOE:XUDLUSS rev1")
+
+    def _full(self, user, *, balances, snapshots=None, rate_source=None):
+        """Run ``build_summary`` (ALL) with injected fakes and return the WHOLE payload (so per-account ``net_pnl``
+        and the aggregate ``metrics`` are both inspectable). ``balances`` maps id -> dict|None (None = live-read
+        failure); ``snapshots`` optionally pre-creates fresh/stale ``AccountEquitySnapshot`` rows."""
+        for aid, kw in (snapshots or {}).items():
+            from analytics.models import AccountEquitySnapshot
+            AccountEquitySnapshot.objects.create(trading_account_id=aid,
+                                                 observed_at=timezone.now() - timedelta(seconds=kw["age_s"]),
+                                                 account_currency=kw.get("currency"),
+                                                 balance=kw.get("balance", 1000), equity=kw.get("equity", 1000))
+        payload, _ = PF.build_summary(
+            user, "ALL", fetch_balance=lambda a, timeout=None: balances.get(a.id),
+            fetch_positions=_fake_positions({aid: [] for aid in balances}),
+            rate_source=rate_source or FX.NullFxRateSource())
+        return payload
+
+    def _row(self, payload, aid):
+        return next(r for r in payload["accounts"] if r["account_id"] == aid)
+
+    # ── 1. DEFECT PROVEN — the per-account LIFETIME net P&L of an unestablished-currency account is withheld ──
+    def test_blank_currency_account_net_pnl_is_none_not_usd(self):
+        u = _user("lc1"); a = _acct(u)                      # account_currency unpopulated (prod reality)
+        _closed_trade(a, 38.04)                             # a real lifetime native figure of an UNKNOWN currency
+        payload = self._full(u, balances={a.id: None})      # live read fails; no snapshot exists
+        self.assertIsNone(self._row(payload, a.id)["net_pnl"])      # withheld — NEVER a measured 38.04 "USD"
+
+    # ── 2. DEFECT PROVEN — lifetime metrics never sum an unestablished-currency account as USD ──
+    def test_blank_currency_excluded_from_lifetime_metrics(self):
+        u = _user("lc2"); a = _acct(u)
+        _closed_trade(a, 38.04)
+        m = self._full(u, balances={a.id: None})["aggregate"]["metrics"]
+        self.assertEqual(m["state"], FX.STATE_UNAVAILABLE)
+        self.assertIsNone(m["net_pnl_total"])               # no native sum denominated as USD
+        self.assertIsNone(m["win_rate_pct"]); self.assertIsNone(m["total_trades"])   # no false 0% / 0 trades
+        self.assertIsNone(m["profit_factor"]); self.assertIsNone(m["expectancy"])
+        self.assertIn(a.id, m["excluded_accounts"]); self.assertEqual(m["included_count"], 0)
+
+    # ── 3. mixed known-USD + unknown: USD subset measured, unknown excluded, PARTIAL (never a native fold) ──
+    def test_mixed_usd_and_unknown_metrics_partial(self):
+        u = _user("lc3"); usd = _acct(u); unk = _acct(u)
+        _closed_trade(usd, 10); _closed_trade(unk, 500)
+        payload = self._full(u, balances={usd.id: {"balance": 1, "equity": 1, "currency": "USD"}, unk.id: None})
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["state"], FX.STATE_PARTIAL)
+        self.assertEqual(m["net_pnl_total"], 10.0)          # ONLY the USD account; 500 never summed as USD
+        self.assertEqual(m["included_count"], 1); self.assertIn(unk.id, m["excluded_accounts"])
+        self.assertEqual(self._row(payload, usd.id)["net_pnl"], 10.0)   # USD account's net P&L preserved
+        self.assertIsNone(self._row(payload, unk.id)["net_pnl"])        # unknown account's net P&L withheld
+
+    # ── 4. known USD account: lifetime net P&L + metrics preserved exactly ──
+    def test_known_usd_lifetime_preserved(self):
+        u = _user("lc4"); a = _acct(u, currency="USD")
+        _closed_trade(a, 30); _closed_trade(a, 30); _closed_trade(a, -20)
+        payload = self._full(u, balances={a.id: {"balance": 1, "equity": 1, "currency": "USD"}})
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["state"], FX.STATE_OK); self.assertEqual(m["net_pnl_total"], 40.0)
+        self.assertEqual(m["profit_factor"], 3.0)           # 60 / 20
+        self.assertEqual(self._row(payload, a.id)["net_pnl"], 40.0)
+
+    # ── 5. known GBP via governed FX: lifetime net P&L + metrics CONVERT (ADR-0066 preserved) ──
+    def test_known_gbp_governed_fx_converts(self):
+        u = _user("lc5"); g = _acct(u)
+        _closed_trade(g, 40); _closed_trade(g, -8)          # 32 GBP net
+        payload = self._full(u, balances={g.id: {"balance": 1, "equity": 1, "currency": "GBP"}},
+                             rate_source=self._gbp_src(1.25))
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["net_pnl_total"], 40.0)          # 32 GBP * 1.25 — governed single-currency conversion
+        self.assertEqual(m.get("fx_converted"), True); self.assertEqual(m.get("fx_currency"), "GBP")
+        self.assertEqual(self._row(payload, g.id)["net_pnl"], 40.0)    # per-account converts identically
+
+    # ── 6. known GBP with NO vetted rate: rate_unavailable (distinct from unknown_currency), not summed as USD ──
+    def test_known_gbp_missing_rate_unavailable_not_unknown(self):
+        u = _user("lc6"); g = _acct(u)
+        _closed_trade(g, 50)
+        payload = self._full(u, balances={g.id: {"balance": 1, "equity": 1, "currency": "GBP"}})  # Null rate source
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["state"], FX.STATE_UNAVAILABLE); self.assertIsNone(m["net_pnl_total"])  # not 50 "USD"
+        self.assertIsNone(self._row(payload, g.id)["net_pnl"])
+        # the KNOWN-currency figure stays a rate problem at the (per-account) daily layer, never "unknown"
+        self.assertEqual(payload["aggregate"]["daily_realized_pnl_excluded_detail"][0]["reason"], "rate_unavailable")
+
+    # ── 7. a FRESH tenant-local snapshot establishes the currency (included/converted) ──
+    def test_fresh_snapshot_establishes_currency_lifetime(self):
+        u = _user("lc7"); g = _acct(u)
+        _closed_trade(g, 16)
+        payload = self._full(u, balances={g.id: None},               # live fails -> fresh snapshot supplies GBP
+                             snapshots={g.id: {"currency": "GBP", "age_s": 30}}, rate_source=self._gbp_src(1.25))
+        self.assertEqual(payload["aggregate"]["metrics"]["net_pnl_total"], 20.0)   # 16 GBP * 1.25
+        self.assertEqual(self._row(payload, g.id)["net_pnl"], 20.0)
+
+    # ── 8. a STALE snapshot cannot establish the currency (unknown -> excluded) ──
+    def test_stale_snapshot_unknown_lifetime(self):
+        u = _user("lc8"); g = _acct(u)
+        _closed_trade(g, 16)
+        payload = self._full(u, balances={g.id: None},
+                             snapshots={g.id: {"currency": "GBP", "age_s": PF._SUMMARY_SNAPSHOT_FRESHNESS_S + 120}},
+                             rate_source=self._gbp_src(1.25))
+        self.assertEqual(payload["aggregate"]["metrics"]["state"], FX.STATE_UNAVAILABLE)
+        self.assertIsNone(payload["aggregate"]["metrics"]["net_pnl_total"])
+        self.assertIsNone(self._row(payload, g.id)["net_pnl"])
+
+    # ── 9. tenant isolation: an unknown account never borrows a sibling's currency/rate ──
+    def test_no_cross_tenant_substitution_lifetime(self):
+        u = _user("lc9"); known = _acct(u); unknown = _acct(u)
+        _closed_trade(known, 8); _closed_trade(unknown, 100)
+        payload = self._full(u, balances={known.id: {"balance": 1, "equity": 1, "currency": "USD"}, unknown.id: None})
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["net_pnl_total"], 8.0)           # ONLY the USD account; 100 never summed as USD
+        self.assertEqual(m["state"], FX.STATE_PARTIAL); self.assertIn(unknown.id, m["excluded_accounts"])
+        self.assertIsNone(self._row(payload, unknown.id)["net_pnl"])
+
+    # ── 10. all accounts unknown -> UNAVAILABLE, null total, no false $0.00 ──
+    def test_all_unknown_metrics_unavailable_null(self):
+        u = _user("lc10"); a = _acct(u); b = _acct(u)
+        _closed_trade(a, 12); _closed_trade(b, 34)
+        payload = self._full(u, balances={a.id: None, b.id: None})
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["state"], FX.STATE_UNAVAILABLE); self.assertIsNone(m["net_pnl_total"])
+        self.assertIsNone(self._row(payload, a.id)["net_pnl"]); self.assertIsNone(self._row(payload, b.id)["net_pnl"])
+
+    # ── 11. genuinely mixed-currency trade legs within one account: account_net_pnl withheld (H1 preserved) ──
+    def test_mixed_trade_legs_account_net_pnl_withheld(self):
+        u = _user("lc11"); a = _acct(u, currency="USD")
+        _closed_trade(a, 10, profit_currency="USD", commission_currency="EUR")   # legs span USD + EUR
+        payload = self._full(u, balances={a.id: {"balance": 1, "equity": 1, "currency": "USD"}})
+        self.assertIsNone(self._row(payload, a.id)["net_pnl"])      # a mixed native sum is never shown as one number
+        self.assertEqual(payload["aggregate"]["metrics"]["state"], FX.STATE_PARTIAL)   # counts-only, money withheld
+        self.assertIsNone(payload["aggregate"]["metrics"]["net_pnl_total"])
+
+    # ── 12. single-account scope follows the same contract ──
+    def test_single_account_scope_metrics_contract(self):
+        u = _user("lc12"); a = _acct(u)
+        _closed_trade(a, 77)
+        payload, err = PF.build_summary(u, str(a.id), fetch_balance=lambda x, timeout=None: None,
+                                        fetch_positions=_fake_positions({a.id: []}), rate_source=FX.NullFxRateSource())
+        self.assertIsNone(err)
+        self.assertEqual(payload["aggregate"]["metrics"]["state"], FX.STATE_UNAVAILABLE)
+        self.assertIsNone(payload["accounts"][0]["net_pnl"])
+
+    # ── 13. GFX-161 daily behaviour unchanged by the lifetime fix ──
+    def test_daily_gfx161_behaviour_unchanged(self):
+        u = _user("lc13"); usd = _acct(u); unk = _acct(u)
+        _closed_trade(usd, 10); _closed_trade(unk, 500)
+        agg = self._full(u, balances={usd.id: {"balance": 1, "equity": 1, "currency": "USD"},
+                                      unk.id: None})["aggregate"]
+        self.assertEqual(agg["daily_realized_pnl_usd"], 10.0)       # USD only — GFX-161 per-account aggregate intact
+        self.assertEqual(agg["daily_realized_pnl_state"], FX.STATE_PARTIAL)
+        self.assertEqual(agg["daily_realized_pnl_excluded_detail"][0]["reason"], "unknown_currency")
+
+    # ── 14. balance/equity aggregates unchanged (the lifetime fix never touches the balance/equity path) ──
+    def test_balance_equity_unchanged_by_lifetime_fix(self):
+        u = _user("lc14"); usd = _acct(u); unk = _acct(u)
+        _closed_trade(usd, 10); _closed_trade(unk, 500)
+        agg = self._full(u, balances={usd.id: {"balance": 1234.5, "equity": 1240.0, "currency": "USD"},
+                                      unk.id: None})["aggregate"]
+        # The USD account's balance/equity still sum exactly as before; the unknown account (no balance) is excluded
+        # from the balance total just as it always was (blank->USD balance default is the documented, unchanged path).
+        self.assertEqual(agg["balance_usd"]["total_usd"], 1234.5); self.assertEqual(agg["balance_usd"]["state"], "PARTIAL")
+        self.assertEqual(agg["equity_usd"]["total_usd"], 1240.0)
+
+    # ── 15. the UNKNOWN sentinel is never handed to the FX rate source (defense-in-depth; positive control) ──
+    def test_unknown_sentinel_never_converted_even_with_pathological_rate(self):
+        # Every account falls back to a FRESH tenant-local snapshot whose currency is blank -> _equity_snapshot_fallback
+        # sets currency='UNKNOWN' (the sentinel). Even a PATHOLOGICAL rate source that WOULD quote 'UNKNOWN'->USD must
+        # never be consulted for the realized conversion: _single_currency_rate fails closed at the sentinel, so the
+        # metrics stay UNAVAILABLE -- never the native figure * a bogus rate. The positive control (a rate source that
+        # returns a rate for the sentinel) proves the guard is real, not vacuously satisfied by the source declining.
+        u = _user("lc15"); a = _acct(u)
+        _closed_trade(a, 50)
+        bogus = FX.MappingFxRateSource({("UNKNOWN", "USD"): 2.0}, as_of="2026-10-28", source="bogus")
+        payload = self._full(u, balances={a.id: None},
+                             snapshots={a.id: {"currency": "", "age_s": 30}}, rate_source=bogus)
+        m = payload["aggregate"]["metrics"]
+        self.assertEqual(m["state"], FX.STATE_UNAVAILABLE)
+        self.assertIsNone(m["net_pnl_total"])          # never 50 * 2.0 via the UNKNOWN sentinel
+        self.assertIsNone(self._row(payload, a.id)["net_pnl"])
+
+
 class MaxDrawdownDeterminismTests(TestCase):
     def test_same_second_cluster_is_deterministic(self):
         u = _user("dd1"); a = _acct(u)

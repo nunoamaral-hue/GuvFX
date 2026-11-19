@@ -1,5 +1,60 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-19 — Lifetime net P&L & portfolio metrics: unknown currency is never summed as USD (GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163; ADR-0122; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-DASHBOARD-LIFETIME-PNL-CURRENCY-163
+Packet ID: GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge). Local acceptance green; 8-lens adversarial review +
+  exact-head CI 5/5 to be confirmed on the PR. The governed LIFETIME follow-up to GFX-161 (ADR-0120).
+
+Base commit: c649c550cda4a441430b00db0da026e33e4d2a37 (current main = GFX-161 squash 70c26724 + one disjoint TIM #686
+  / ADR-0121; zero analytics overlap). Branch: fix/lifetime-pnl-unknown-currency.
+Resulting commit(s): one (to be created after the adversarial review). Pushed: not yet. NOT merged, NOT deployed.
+
+Verified fact (defect proven): build_summary fed account_net_pnl the balance-label cur = normalise_currency(snap or
+  account_currency) (blank->USD) and fed portfolio_metrics an observed_nonusd_ids set derived from that same cur
+  (which flags only POSITIVELY-known non-USD accounts). An account whose currency could not be established (failed live
+  read + no fresh snapshot + blank account_currency, the prod norm) collapsed to USD: account_net_pnl returned its
+  native realized as a USD net_pnl, and portfolio_metrics summed its closed trades into net_pnl_total / profit_factor /
+  expectancy / win-loss with basis='USD', state='OK' (false completeness).
+Fix (narrow): account_net_pnl returns None when the caller-resolved account_ccy == UNKNOWN_CURRENCY; build_summary
+  passes each account's unknown-preserving rc = realized_ccy[id] (== cur for an established currency -> byte-identical)
+  and computes unknown_ids = {id: rc==UNKNOWN_CURRENCY}; portfolio_metrics/_partition_usd exclude unknown_ids exactly
+  like a non-USD account -> PARTIAL (USD subset measured) / UNAVAILABLE (net_pnl_total/total_trades null), never a
+  native sum as USD, never a false $0.00, never cross-tenant (map keyed by id). observed_ccy (blank->USD) is passed to
+  portfolio_metrics UNCHANGED, so the single-currency conversion (ADR-0066) + balance/equity/metrics for established
+  scopes are byte-identical.
+Tests (exact): cd backend && .venv/bin/python manage.py test analytics  -> 325 OK / 1 skipped (incl. 14 new
+  UnknownCurrencyLifetimeIntegrityTests; 7 defect-proving tests FAILED pre-fix, green after). makemigrations --check
+  analytics core -> No changes. core.tests_adr_governance -> OK (ADR-0122 unique). check_no_secrets -> no findings.
+  Frontend lifetime-metrics-coverage -> 2 OK; summary-row-stability + daily-pnl-coverage OK; eslint 0 errors; next build
+  clean. Copy-leaf quarantine (156 files, node_modules/.next/.venv/.git pruned) applied for the local run, then restored.
+  Pre-existing LOCAL jsdom failure in dashboard/localization.test.tsx (no localStorage stub) is label-independent
+  (verified by stashing page.tsx) and the same one noted for GFX-161 -- CI authoritative.
+Frontend: ONE truthfulness label change (from the review) -- the currency_unconvertible metrics context label
+  (metricsStateLabel, page.tsx) is made denomination-neutral EN+JA because an UNKNOWN-currency account can now drive
+  that state and the old copy wrongly asserted 'non-USD'; everything else renders via the existing GFX-161 machinery
+  (UNAVAILABLE -> N/A + context, PARTIAL -> measured + 'N included / M excluded', null net_pnl as '-').
+Scope boundary: per-account trade-history + /api/analytics/daily-pnl/ are single-account NATIVE figures (not
+  USD-aggregated) and are structurally immune (proven, not rewritten); the broker-server-calendar-day window remains a
+  platform-wide follow-up (KNOWN_ISSUES).
+Inventory (6 tracked files): backend/analytics/portfolio.py; backend/analytics/tests_portfolio.py;
+  frontend/src/app/(app)/dashboard/page.tsx; frontend/src/app/(app)/dashboard/lifetime-metrics-coverage.test.tsx;
+  frontend/src/app/(app)/dashboard/summary-row-stability.test.tsx; docs/architecture/ADR-0122-...md; + the evidence
+  manifest + 4 handoff docs. No migration, no flag, no prod/host/broker/MT5/snapshot change.
+Adversarial review (8 lens): 0 CRITICAL/HIGH. 2 lenses CLEAN (tenant-isolation, stale-data). FIXED (3): fx-provenance
+  LOW (_single_currency_rate fails closed on the UNKNOWN_CURRENCY sentinel at the conversion boundary + positive-control
+  test); frontend-truthfulness MEDIUM (denomination-neutral metrics label EN+JA); scope LOW (net_pnl comment precision).
+  DISPOSITIONED (3, documented in ADR-0122/KNOWN_ISSUES): backward-compat MEDIUM (zero-trade unknown -> PARTIAL/UNAVAILABLE
+  is consistent with balance/equity + N/A either way); financial-correctness MEDIUM + mixed-currency LOW (the ADR-0066
+  non-USD single-currency CONVERSION path lacks the mixed-trade-leg guard -- PRE-EXISTING, LATENT in prod, OUTSIDE the
+  unknown-currency defect -> follow-up); frontend LOW (no-history copy -> minor follow-up).
+One bounded next action: drive exact-head CI to 5/5, then await Sponsor `GO — merge PR`. STOP before merge.
+```
+
 ## 2026-11-19 — Daily Realized P&L: unknown currency is never summed as USD (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```
