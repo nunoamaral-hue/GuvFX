@@ -57,16 +57,16 @@
   "artefact_locations": [
     "docs/evidence/broker_timezone_evidence_v2_winter.md (winter verdict superseded NOT_VERIFIED -> VERIFIED; new VERIFIED observation section; mapping/status updated; history retained)",
     "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md (added 2026-11-19 VERIFIED outcome note)",
-    "tests/fixtures/market_data/tim/winter_tz_observation_2026-11-19.json (NEW canonical value-blind evidence record)",
+    "tests/fixtures/tim_winter_tz/winter_tz_observation_2026-11-19.json (NEW canonical value-blind evidence record; dedicated dir, outside the canonical market_data/tim fixtures)",
     "tests/test_tim_winter_tz_evidence.py (NEW evidence-contract test; reuses the probe contract)",
     "Makefile, .github/workflows/ci.yml (governance wiring for the new test)",
     "evidence/manifests/GFX-EVD-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013.json (this manifest)"
   ],
   "checksums": {
-    "docs/evidence/broker_timezone_evidence_v2_winter.md": "sha256:78101f99cb90b966d29262f3d4ed57841158b2ace807fea564ac986096fd6f59",
-    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md": "sha256:b326c1588f797cccb29fe77b2eb9092f1819bb9eb1072efe5ddd95921f7a0f27",
-    "tests/fixtures/market_data/tim/winter_tz_observation_2026-11-19.json": "sha256:21a129cfe40781ac00e5bb54b045ebba6dde09c38810f88725953abdc8640fe0",
-    "tests/test_tim_winter_tz_evidence.py": "sha256:50ad37ae26099f3e9856c58f7211dbc85072c4dcbaa01d280ab7c77970f7bc30"
+    "docs/evidence/broker_timezone_evidence_v2_winter.md": "sha256:a93be1af95d50a0ff759f04d51a858ce1242c450942a7bb5f7c9d66cdda89248",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md": "sha256:529aba5d12ca0e3863e4a72d4db32cdd0d579afdb5cef6de8deb2506a9227dbb",
+    "tests/fixtures/tim_winter_tz/winter_tz_observation_2026-11-19.json": "sha256:21a129cfe40781ac00e5bb54b045ebba6dde09c38810f88725953abdc8640fe0",
+    "tests/test_tim_winter_tz_evidence.py": "sha256:738db6cf2abc470eda37c83d4ae859fd252a6f08bdb5d863151931a68d0e858e"
   },
   "reviewer": "GFX-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013 author self-review + an independent 5-dimension adversarial review (evidence integrity / internal consistency; value-blind leakage; seasonal overgeneralization; provenance and supersession continuity; repository-only boundary). Verdict PR-READY, NO CRITICAL/HIGH; the reviewer independently re-ran the test, the arithmetic via the real probe anchor, the 4 manifest checksums (all match), and mutation tests (the test caught a 4th bar, non-whole-hour offset, LIVE class, residual>180, summer==winter, a forbidden key, bad cadence). 2 MEDIUM FIXED before PR-ready: (1) the residual test reconstructed the anchor from the answer rather than from the recorded bars -> now derives server_anchor = completed_bar_server_epochs[-1] + BAR_SECONDS, so a bar shift is caught (verified: shifted bars yield offset 10800 != 7200 and fail); (2) the historical 'Why the winter offset is NOT verified' heading read as a current claim -> retitled to the 2026-11-18 control-node attempt and marked historical/superseded. LOW dispositioned: 'Resolution mechanism (not yet run)' and 'Bounded next action' de-staled to COMPLETED/run-on-2026-11-19; EET/EEST phrasing softened so the year-round pair is not implied to be evidenced; protected_8788_owning_pid 10272 retained deliberately (it is in the Sponsor's canonical evidence and proves :8788 control continuity; an ephemeral PID, not a secret). Value-blind leakage, seasonal overgeneralization, and repository-only boundary all CLEAN."
 }

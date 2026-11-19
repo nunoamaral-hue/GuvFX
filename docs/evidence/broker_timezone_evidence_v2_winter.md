@@ -7,7 +7,7 @@
 
 ## VERIFIED winter observation — 2026-11-19 (isolated path; supersedes the NOT_VERIFIED attempts below)
 
-A human operator logged the dormant `account_001` TradersWay-Demo slot into a valid DEMO over RDP and ran the reviewed, merged isolated launchers (`deploy/tim-winter-tz/`, ADR-0121, main `c649c550`) in that **one interactive session**. The isolated, **loopback-only** bridge read three completed M1 bars once; the bridge was then torn down. The original `127.0.0.1:8788` terminal proved to be a **live `Taurex-LIVE` / `trade_mode=2`** guarded session, so it was **never** touched — a dedicated isolated `account_001` path was used instead. The result was validated against the probe contract and the host independently re-confirmed clean. The canonical value-blind record is `tests/fixtures/market_data/tim/winter_tz_observation_2026-11-19.json`.
+A human operator logged the dormant `account_001` TradersWay-Demo slot into a valid DEMO over RDP and ran the reviewed, merged isolated launchers (`deploy/tim-winter-tz/`, ADR-0121, main `c649c550`) in that **one interactive session**. The isolated, **loopback-only** bridge read three completed M1 bars once; the bridge was then torn down. The original `127.0.0.1:8788` terminal proved to be a **live `Taurex-LIVE` / `trade_mode=2`** guarded session, so it was **never** touched — a dedicated isolated `account_001` path was used instead. The result was validated against the probe contract and the host independently re-confirmed clean. The canonical value-blind record is `tests/fixtures/tim_winter_tz/winter_tz_observation_2026-11-19.json`.
 
 ### Value-blind evidence (observation, `tim-winter-tz-probe/1.0`)
 

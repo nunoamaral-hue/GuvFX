@@ -25,7 +25,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 import tim_winter_tz_probe as probe  # noqa: E402
 
-FIXTURE = REPO / "tests" / "fixtures" / "market_data" / "tim" / "winter_tz_observation_2026-11-19.json"
+FIXTURE = REPO / "tests" / "fixtures" / "tim_winter_tz" / "winter_tz_observation_2026-11-19.json"
 WINTER_DOC = REPO / "docs" / "evidence" / "broker_timezone_evidence_v2_winter.md"
 
 WINTER_OFFSET_S = 7200
