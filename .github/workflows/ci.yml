@@ -144,6 +144,9 @@ jobs:
       - name: TIM winter timezone host-probe tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_tim_winter_tz_probe.py' -v
 
+      - name: TIM winter timezone launcher tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_tim_winter_tz_launcher.py' -v
+
   research-foundation:
     runs-on: ubuntu-latest
     steps:

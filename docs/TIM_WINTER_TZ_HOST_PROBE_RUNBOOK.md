@@ -51,6 +51,67 @@ python scripts\tim_winter_tz_probe.py --expect-server TradersWay-Demo --execute
 
 Return **only** the printed value-blind JSON. Do not copy the token, any account number, or any balance/position/order data. The offset is then recorded as a v2 (winter) `broker_timezone_evidence` entry.
 
+## Opaque launcher (GFX-TIM-WINTER-TZ-OPAQUE-LAUNCHER-011)
+
+`deploy/tim-winter-tz/run_winter_tz_probe.bat` is the reviewed operator launcher. It
+exists because `GUVFX_AGENT_TOKEN` is not a standing environment variable — the bridge
+injects it into its own process only at launch by `call`-ing
+`C:\GuvFX\secrets\bridge.tokens.bat`, so a plain SSH/RDP session never has it (see
+`docs/evidence/broker_timezone_evidence_v2_winter.md`). The launcher reuses that **same
+governed loader** to populate its own process environment **opaquely**: it never reads or
+prints the secrets file and never types, pastes, echoes, copies, persists, or reconstructs
+the token. It accepts no arguments, uses fixed paths only, hard-codes the DEMO server, and
+fails closed. The real execution is still Sponsor-gated and run by a human on the bridge
+host — no agent handles the token.
+
+**Fixed paths the launcher uses (installed, not repo):**
+
+- secrets loader (pre-existing, governed, ACL SYSTEM+Administrators): `C:\GuvFX\secrets\bridge.tokens.bat`
+- installed probe: `C:\GuvFX\TIM\winter-tz-probe\tim_winter_tz_probe.py`
+
+### 1. Stage (one-time, Sponsor-gated; Administrator console on the bridge host)
+
+```
+mkdir C:\GuvFX\TIM\winter-tz-probe
+copy <repo>\scripts\tim_winter_tz_probe.py        C:\GuvFX\TIM\winter-tz-probe\tim_winter_tz_probe.py
+copy <repo>\deploy\tim-winter-tz\run_winter_tz_probe.bat C:\GuvFX\TIM\winter-tz-probe\run_winter_tz_probe.bat
+```
+
+### 2. Verify the staged bytes against the repository (value-blind)
+
+```
+powershell -NoProfile -Command "Get-FileHash -Algorithm SHA256 C:\GuvFX\TIM\winter-tz-probe\tim_winter_tz_probe.py, C:\GuvFX\TIM\winter-tz-probe\run_winter_tz_probe.bat | Format-List"
+```
+
+Confirm each hash equals the `sha256:` value recorded for that file in
+`evidence/manifests/GFX-EVD-TIM-WINTER-TZ-OPAQUE-LAUNCHER-011.json`. If any hash differs,
+**stop** — do not run.
+
+### 3. Execute exactly once (Administrator; the ACL on the loader requires it)
+
+```
+C:\GuvFX\TIM\winter-tz-probe\run_winter_tz_probe.bat
+```
+
+The launcher loads the token opaquely, sets the on-host confirmation internally, and runs
+the probe once. Return **only** the printed value-blind JSON (DEMO classification, approved
+server label, three completed-bar epochs, independent UTC epochs, per-sample offsets and
+residuals, consistency verdict, correlation id, observation time). Copy no token, account
+number, balance, position, or order data. Launcher exit codes: `10` argument supplied,
+`11` loader absent, `12` probe absent, `13` python unavailable, `14` token unavailable
+after the loader; otherwise the probe's own exit code.
+
+### 4. Rollback
+
+The launcher writes nothing persistent. To remove the staged tooling:
+
+```
+rmdir /s /q C:\GuvFX\TIM\winter-tz-probe
+```
+
+No task, service, registry, environment variable, or bridge state is changed by staging,
+running, or rolling back.
+
 ## What this runbook does NOT authorise
 
 No host deployment of the tool as a service; no scheduled task; no bridge restart; no order/trade; no NAS mount; no dataset publication; no signing key; no GO #2. The real read is a one-shot, operator-run, read-only observation under its own Sponsor GO.
