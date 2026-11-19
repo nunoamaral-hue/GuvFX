@@ -73,7 +73,7 @@
   ],
   "checksums": {
     "scripts/mt5_signal_bridge.py": "sha256:09d805a3c2ecf7f8ab502fe422dc52ec3f7ae510632d7ade3245424e495ec7f7",
-    "scripts/tim_isolated_bridge_ctl.py": "sha256:75e2f37724fcdd5f150edc3f09e81a66108ba1f9c7b839c0ab69868a877f131a",
+    "scripts/tim_isolated_bridge_ctl.py": "sha256:a668ce992348ce315d87e55c50937c66539eb443c480dc0ef71ece2415be69a8",
     "scripts/tim_winter_tz_probe.py": "sha256:4412b1f93d7fba9256860384eb3cac2a531059dc6509f6f9c0313e635046eee5",
     "deploy/tim-winter-tz/start_tim_isolated_bridge.bat": "sha256:1ea8f9ba3d5e4631564318da32c4d3b61c8aebb04ff13e389d8fa054750ccb59",
     "deploy/tim-winter-tz/run_winter_tz_probe_isolated.bat": "sha256:51c8ef885718d481093e342c7c0ff515cf2df0f2abf746841e12539e6ef1a19b",

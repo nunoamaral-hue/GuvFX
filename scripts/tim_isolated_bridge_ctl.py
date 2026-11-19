@@ -60,6 +60,11 @@ class CtlError(Exception):
         self.reason = reason
 
 
+def _ps_sq(s):
+    """Single-quote a value for safe embedding in a PowerShell command (doubles embedded quotes)."""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
 # --- Host operations seam (real impl; a fake is injected by the tests) ----------------------------
 class HostOps:
     """All host interaction funnels through here so the lifecycle logic is fully testable."""
@@ -88,29 +93,22 @@ class HostOps:
         return rows
 
     def process(self, pid):
-        """Return {'exe': ..., 'cmdline': ...} for a live PID, or None. Value-blind (no token)."""
+        """Return {'exe': ..., 'cmdline': ...} for a live PID, or None. Value-blind (no token).
+        Uses PowerShell Get-CimInstance (always present on Windows); wmic is deprecated/absent on
+        modern Windows (Server 2022 / Win11) and is intentionally NOT used."""
         if pid is None:
             return None
-        info = self._wmic_process(pid)
-        if info is None:
-            info = self._ps_process(pid)
-        return info
+        return self._ps_process(pid)
 
     def find_pids_by_exe(self, exe_path):
-        """PIDs whose executable path equals exe_path (exact, case-insensitive)."""
-        target = exe_path.lower()
+        """PIDs whose executable path equals exe_path (exact, case-insensitive), via Get-CimInstance."""
+        ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -ieq %s } | "
+              "ForEach-Object { $_.ProcessId }" % _ps_sq(exe_path))
         pids = []
-        out = subprocess.run(
-            ["wmic", "process", "get", "ProcessId,ExecutablePath", "/format:csv"],
-            capture_output=True, text=True,
-        )
-        for line in out.stdout.splitlines():
-            cols = line.split(",")
-            if len(cols) < 3:
-                continue
-            exe, raw_pid = cols[-1].strip(), cols[-2].strip()
-            if exe.lower() == target and raw_pid.isdigit():
-                pids.append(int(raw_pid))
+        for line in (self._ps(ps) or "").splitlines():
+            line = line.strip()
+            if line.isdigit():
+                pids.append(int(line))
         return pids
 
     def start(self, cmd, env):
@@ -130,32 +128,27 @@ class HostOps:
         """Terminate exactly ONE pid. Never a name-based broad kill."""
         subprocess.run(["taskkill", "/PID", str(int(pid)), "/F"], capture_output=True, text=True)
 
-    def _wmic_process(self, pid):
-        out = subprocess.run(
-            ["wmic", "process", "where", "processid=%d" % int(pid),
-             "get", "ExecutablePath,CommandLine", "/format:list"],
-            capture_output=True, text=True,
-        )
-        exe = cmdline = None
-        for line in out.stdout.splitlines():
-            if line.startswith("ExecutablePath="):
-                exe = line.split("=", 1)[1].strip()
-            elif line.startswith("CommandLine="):
-                cmdline = line.split("=", 1)[1].strip()
-        if exe or cmdline:
-            return {"exe": exe or "", "cmdline": cmdline or ""}
-        return None
+    def _ps(self, script):
+        """Run a PowerShell command and return stdout, or None on any failure. Never raises
+        (a transient process-query failure must fail the controller closed, not crash it)."""
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True,
+            )
+            return out.stdout
+        except Exception:  # noqa: BLE001
+            return None
 
     def _ps_process(self, pid):
         ps = ("$p=Get-CimInstance Win32_Process -Filter \"ProcessId=%d\";"
               "if($p){Write-Output ('exe=' + $p.ExecutablePath);"
               "Write-Output ('cmd=' + $p.CommandLine)}" % int(pid))
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True,
-        )
+        out = self._ps(ps)
+        if out is None:
+            return None
         exe = cmdline = None
-        for line in out.stdout.splitlines():
+        for line in out.splitlines():
             if line.startswith("exe="):
                 exe = line[4:].strip()
             elif line.startswith("cmd="):
