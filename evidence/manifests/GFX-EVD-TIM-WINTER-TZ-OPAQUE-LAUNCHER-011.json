@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-WINTER-TZ-OPAQUE-LAUNCHER-011",
+  "packet_id": "GFX-TIM-WINTER-TZ-OPAQUE-LAUNCHER-011",
+  "created_at_utc": "2026-11-19T00:00:00Z",
+  "branch": "feat/tim-winter-tz-opaque-launcher",
+  "base_commit": "6184a859373392c7ec4b9c17dd3ca046e96d17e8",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only / synthetic-only",
+    "authoritative_decision": "ADR-0070 / ADR-0076 producer boundary; no new ADR required (additive operator wrapper for the already-merged GFX-TIM-WINTER-TIMEZONE-HOST-PROBE-009 probe). Implements the smallest repository-only correction identified by GFX-TIM-WINTER-TZ-TOKEN-CONTEXT-DIAGNOSIS-010.",
+    "additive": true,
+    "migration_free": true,
+    "real_token_handled": false,
+    "real_host_or_bridge_contact": false,
+    "real_broker_read": false,
+    "nas_or_dataset_access": false,
+    "deployment_or_production_mutation": false,
+    "trading_or_execution_change": false,
+    "operational_signing_key": false,
+    "staged_to_windows": false,
+    "probe_executed": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "governance (secret scan + evidence lint + stdlib unit tests, incl. the new launcher suite)",
+    "windows_synthetic_gate": "temporary windows-latest workflow on a throwaway branch pinned to the exact PR head; neutral synthetic token + stub probe only; deleted after the run; result recorded in the TIM Notion master record and the PR."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_tim_winter_tz_launcher.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_winter_tz_probe.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v",
+    "make governance-check"
+  ],
+  "expected_results": [
+    "The new launcher static suite passes and the existing winter-timezone probe suite stays green.",
+    "Governance secret scan = no findings; evidence lint = PASS; manifest-lint unit tests = OK; make governance-check green.",
+    "The launcher is ASCII/no-BOM, accepts no arguments, uses only the fixed secrets-loader and installed-probe paths, hard-codes the DEMO server, loads the token opaquely (never read/echoed/persisted), fails closed (10-14), and propagates the probe exit code; no persistence, task/service/process control, trading/order/withdrawal, NAS, dataset or network-download capability.",
+    "No real token handled, no host/bridge/broker contact, no NAS/dataset access, no deployment or production mutation; migration-free; PR opened auto-merge OFF and NOT merged."
+  ],
+  "actual_results": [
+    "tests/test_tim_winter_tz_launcher.py: Ran 25 tests OK (encoding/structure, fixed-paths, DEMO-hardcoded, opaque token handling, allow-listed leading tokens, no persistence/task-service/process-control/trading/network primitives, fail-closed branches 10-14, exit-code propagation, no credential literal).",
+    "tests/test_tim_winter_tz_probe.py: Ran 41 tests OK (unchanged; existing probe suite stays green).",
+    "check_no_secrets = no findings; check_evidence_manifests = EVIDENCE-LINT PASS; test_evidence_manifests OK; make governance-check green (stdlib-only governance targets).",
+    "Windows synthetic gate (windows-latest, throwaway branch pinned to the exact PR head; neutral synthetic token + stub probe): scenarios = success + exit-code propagation, unexpected argument (10), missing loader (11), missing probe (12), missing token after loader (14). Result recorded in the TIM Notion master record and the PR; this manifest is authored at commit time, before the post-push gate/CI complete."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / synthetic-only: the launcher is NOT installed, NOT staged to the Windows bridge host, and NOT run; no real token was handled, no bridge/broker/MT5/NAS/dataset was contacted, no signing key, no production or deployment mutation, no trading/execution change. The PR is opened auto-merge OFF and is NOT merged without a new Sponsor authorisation.",
+    "The real winter observation remains Sponsor-gated and is performed by a human operator on the bridge host per docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md; until it returns a passing value-blind result the winter offset stays TIM_WINTER_TIMEZONE_NOT_VERIFIED (summer UTC+3 verified for its observed season only).",
+    "This manifest is a point-in-time snapshot authored at commit time. The windows-latest synthetic gate and the PR's own CI run against the pushed head AFTER authoring; their PASS/FAIL and the exact head SHA are recorded in the TIM Notion master record and on the PR, not re-stated here.",
+    "Handoff docs (STATUS/HANDOFF/NEXT/KNOWN_ISSUES) were intentionally NOT edited to avoid conflicts with concurrent sessions actively modifying them on main; the handoff is carried by this manifest, the evidence document, and the TIM Notion master record.",
+    "No ADR added: the launcher is an additive operator wrapper under the existing ADR-0070 / ADR-0076 producer boundary and the already-merged probe's governance (GFX-TIM-WINTER-TIMEZONE-HOST-PROBE-009); the winter-probe design records amended are the runbook and the winter evidence document."
+  ],
+  "artefact_locations": [
+    "deploy/tim-winter-tz/run_winter_tz_probe.bat (NEW launcher)",
+    "tests/test_tim_winter_tz_launcher.py (NEW synthetic-only tests)",
+    "Makefile (governance-check: + launcher suite)",
+    ".github/workflows/ci.yml (governance job: + launcher suite step)",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md (+ opaque launcher: staging, hash verification, one execution, value-blind JSON return, rollback)",
+    "docs/evidence/broker_timezone_evidence_v2_winter.md (+ launch-context root cause and opaque launcher resolution)",
+    "evidence/manifests/GFX-EVD-TIM-WINTER-TZ-OPAQUE-LAUNCHER-011.json (this manifest)"
+  ],
+  "checksums": {
+    "deploy/tim-winter-tz/run_winter_tz_probe.bat": "sha256:9461806f3371a7bb2f4e0a1c75ec9aa6ca59e7a24c12d064855f95def6a0e8fb",
+    "scripts/tim_winter_tz_probe.py": "sha256:4412b1f93d7fba9256860384eb3cac2a531059dc6509f6f9c0313e635046eee5",
+    "tests/test_tim_winter_tz_launcher.py": "sha256:f747ca67eea7fb936705609dbbb3e66530184c42a846e13e9d9385ca942d0952",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md": "sha256:49317f469ba1b6ae4446b82ab1a3089e7ff51ac7727b0628be933b1237ae70dd",
+    "docs/evidence/broker_timezone_evidence_v2_winter.md": "sha256:7770576ec50dc28a528623fb1020ef238cf895b1bfc3823aee8e2985cccd17cb"
+  },
+  "reviewer": "GFX-TIM-WINTER-TZ-OPAQUE-LAUNCHER-011 author self-review + an 8-dimension adversarial review before PR (credential exposure, command injection / arbitrary path execution, environment persistence, LIVE-account escape, process/service disturbance, failure-path cleanup, value-blind output, scope and governance integrity). No new real-token, host, broker, NAS or production surface introduced."
+}
