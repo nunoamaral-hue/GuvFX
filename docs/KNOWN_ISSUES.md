@@ -2,6 +2,40 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟡 Lifetime net P&L + portfolio metrics — unknown currency summed as USD — repository-only, NOT merged/deployed (GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163 / ADR-0122, 2026-11-19)
+
+- **What it fixes.** The governed LIFETIME follow-up to GFX-161 (the remaining blank→USD root pattern). In
+  `analytics/portfolio.py`, `build_summary` fed `account_net_pnl` the balance-label currency
+  `cur = normalise_currency(snap or account_currency)` (blank→USD) and fed `portfolio_metrics` an `observed_nonusd_ids`
+  set derived from that same `cur` (which flags only accounts POSITIVELY known non-USD). An account whose currency could
+  not be established (failed live read + no fresh tenant-local snapshot + blank `account_currency`, the prod norm)
+  collapsed to USD: `account_net_pnl` returned its native realized as a USD per-account `net_pnl`, and `portfolio_metrics`
+  summed its closed trades into net_pnl_total / profit_factor / expectancy / win-loss with `basis="USD"`, `state="OK"`
+  (false completeness). Fix: `account_net_pnl` returns None when the caller-resolved `account_ccy == UNKNOWN_CURRENCY`;
+  `build_summary` passes the unknown-preserving `rc = realized_ccy[id]` (== `cur` for an established currency →
+  byte-identical) and `unknown_ids`; `portfolio_metrics`/`_partition_usd` exclude `unknown_ids` like a non-USD account →
+  PARTIAL (USD subset measured) / UNAVAILABLE (net_pnl_total/total_trades null), never a native sum as USD, never a false
+  `$0.00`, never cross-tenant. Established-USD + governed FX (ADR-0066) + `rate_unavailable`/`mixed_trade_currency`
+  distinctions + the GFX-161 daily path + balance/equity are byte-identical. Frontend: NO runtime change. Migration-free,
+  DARK.
+- **Scope boundary (follow-up, NOT fixed here).** The per-account trade-history and `/api/analytics/daily-pnl/` series
+  are single-account NATIVE figures (not USD-aggregated across accounts) and are structurally immune to the sum-as-USD
+  aggregate defect — proven with tests, not rewritten. The broker-server-calendar-day window shared with the daily
+  aggregate remains a separate platform-wide follow-up. With this packet, both the DAILY (GFX-161) and LIFETIME (GFX-163)
+  USD-aggregate paths now resolve denomination only from an authoritative tenant-local source.
+- **Pre-existing follow-up surfaced by the GFX-163 review (NOT a GFX-163 regression).** The ADR-0066 single-currency
+  CONVERSION path — a KNOWN non-USD account's `account_net_pnl` non-USD branch and `portfolio_metrics`' single-currency
+  branch — lacks the mixed-trade-currency guard that the USD lifetime path (`_trade_currencies_all_usd`) and the daily
+  path (`mixed_trade_currency`) already apply. A KNOWN-currency (e.g. GBP) account whose closed-trade legs declare
+  DIFFERENT currencies would fold a cross-currency native sum and convert it under one rate (`basis="USD"`, `state="OK"`).
+  This is **pre-existing** (not introduced or worsened by GFX-163) and **latent in production** — MT5 ingest populates all
+  three per-leg currency fields from the single account deposit currency, so divergent legs do not arise from the live
+  path today, but the data model permits them. Fix (future packet): apply the `nonblank trade currencies ⊆ {account_ccy}`
+  guard before the non-USD conversion in both functions; withhold (`None` / exclude as `mixed_trade_currency`) when legs
+  span denominations.
+- **Status.** Repository-only PR on `fix/lifetime-pnl-unknown-currency` off current main `c649c550`; NOT merged, NOT
+  deployed. No flag, no schema/DB change, no snapshot fabrication, no broker/host contact.
+
 ## 🟡 Daily Realized P&L — unknown currency summed as USD — repository-only, NOT merged/deployed (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161 / ADR-0120, 2026-11-19)
 
 - **What it fixes.** `analytics/portfolio.py`'s Daily Realized P&L USD aggregate defaulted a blank/unestablished

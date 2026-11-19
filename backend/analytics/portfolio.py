@@ -99,15 +99,19 @@ def _account_is_usd(account) -> bool:
     return FX.normalise_currency(getattr(account, "account_currency", None)) == FX.USD
 
 
-def _partition_usd(accounts, observed_nonusd_ids=None):
-    """Split ``accounts`` into (USD-denominated, non-USD). The realized-P&L path can only be summed within a single
-    denomination, so non-USD accounts are EXCLUDED from the sum and surfaced (never silently added).
+def _partition_usd(accounts, observed_nonusd_ids=None, unknown_ids=None):
+    """Split ``accounts`` into (USD-denominated, non-USD/unresolved). The realized-P&L path can only be summed within
+    a single denomination, so non-USD accounts are EXCLUDED from the sum and surfaced (never silently added).
 
     ``account_currency`` is not populated in production (always NULL -> USD), so a DB-only guard is inert. When the
     caller knows each account's OBSERVED currency (from the live balance snapshot — the same source the balance
     aggregate uses), it passes ``observed_nonusd_ids`` so the realized path degrades a non-USD account to PARTIAL
-    exactly as the balance path does, instead of silently summing it as USD."""
-    nonusd = observed_nonusd_ids or set()
+    exactly as the balance path does, instead of silently summing it as USD. ``unknown_ids`` are accounts whose
+    denomination could NOT be established from any authoritative tenant-local source (``resolve_position_currency``
+    -> ``UNKNOWN_CURRENCY``); they are excluded from the USD partition for the SAME reason a non-USD account is, so an
+    unestablished-currency account's native sum is never denominated as dollars (ADR-0122, mirroring ADR-0120's daily
+    fix)."""
+    nonusd = set(observed_nonusd_ids or ()) | set(unknown_ids or ())
     def _is_usd(a):
         return _account_is_usd(a) and a.id not in nonusd
     usd = [a for a in accounts if _is_usd(a)]
@@ -226,7 +230,10 @@ def _single_currency_rate(accounts, observed_ccy, rate_source):
     if len(ccys) != 1:
         return None
     ccy = next(iter(ccys))
-    if not ccy or ccy == FX.USD:
+    # Never hand the UNKNOWN_CURRENCY sentinel to the rate source (ADR-0122): a homogeneous unestablished-currency
+    # scope (e.g. every account fell back to a fresh snapshot whose currency is blank -> "UNKNOWN") must stay
+    # UNAVAILABLE at the conversion boundary itself, not rely on the rate source declining an "UNKNOWN"->USD lookup.
+    if not ccy or ccy in (FX.USD, FX.UNKNOWN_CURRENCY):
         return None
     fx = rate_source.get_rate(ccy, FX.USD)
     if fx is None or not fx.rate or fx.rate <= 0:
@@ -235,7 +242,7 @@ def _single_currency_rate(accounts, observed_ccy, rate_source):
 
 
 def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=None,
-                      rate_source=None, observed_ccy=None) -> dict:
+                      rate_source=None, observed_ccy=None, unknown_ids=None) -> dict:
     """Portfolio performance computed from the UNDERLYING closed-trade set across ``accounts`` — NOT averaged.
 
     Definitions (single documented breakeven rule): a closed position's net = profit+commission+swap;
@@ -248,8 +255,13 @@ def portfolio_metrics(accounts, *, stage: str = STAGE_ALL, observed_nonusd_ids=N
     P&L cannot be converted — no vetted FX feed), and if any included trade carries a non-USD currency the whole
     money block degrades to ``basis="PARTIAL"`` with the monetary fields withheld rather than summed across
     denominations. ``basis`` is ``"USD"`` only when every account is USD and no trade currency deviates.
+
+    ``unknown_ids`` (ADR-0122): accounts whose denomination could not be established from any authoritative
+    tenant-local source are excluded from the USD aggregate exactly like a non-USD account — their lifetime native
+    P&L is never summed as dollars, so the money block degrades to PARTIAL/UNAVAILABLE rather than reporting a false
+    USD figure. A direct caller that passes no ``unknown_ids`` keeps the documented blank->USD estate default.
     """
-    usd_accounts, non_usd = _partition_usd(accounts, observed_nonusd_ids)
+    usd_accounts, non_usd = _partition_usd(accounts, observed_nonusd_ids, unknown_ids)
     excluded = [a.id for a in non_usd]
     ids = [a.id for a in usd_accounts]
 
@@ -456,7 +468,16 @@ def account_net_pnl(account, *, stage: str = STAGE_ALL, observed_usd=None, rate_
     (non-USD account, or a trade with a non-USD currency component) — never a mixed-denomination sum.
 
     ``observed_usd`` (from the live balance snapshot currency) overrides the never-populated ``account_currency``
-    when the caller knows it: False -> None (excluded, consistent with the balance path); True -> USD."""
+    when the caller knows it: False -> None (excluded, consistent with the balance path); True -> USD.
+
+    ``account_ccy`` is the denomination the caller resolved from an AUTHORITATIVE tenant-local source (the live /
+    fresh-snapshot currency, else the verified model currency). When it is ``UNKNOWN_CURRENCY`` the denomination
+    could NOT be established, so the figure is withheld (``None``) and the native realized is NEVER summed as dollars
+    — the blank/unknown-currency -> USD contamination this guard removes (ADR-0122, the lifetime counterpart of
+    ADR-0120's daily fix). A missing ``account_ccy`` (``None``) is unchanged: a caller that does not resolve currency
+    keeps the documented blank->USD estate default (used only by direct unit callers, never the dashboard path)."""
+    if account_ccy == FX.UNKNOWN_CURRENCY:
+        return None
     is_usd = observed_usd if observed_usd is not None else _account_is_usd(account)
     if is_usd:
         if not _trade_currencies_all_usd([account.id], stage=stage):
@@ -794,7 +815,8 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
         # Unknown-safe realized denomination from the SAME resolved ``snap`` (fresh live read or fresh tenant-local
         # snapshot) and the verified model currency — NEVER the blank->USD default, so the realized aggregate fails
         # closed to UNKNOWN_CURRENCY instead of summing an unestablished-currency account as dollars (ADR-0120).
-        realized_ccy[a.id] = FX.resolve_position_currency((snap or {}).get("currency"), getattr(a, "account_currency", None))
+        rc = FX.resolve_position_currency((snap or {}).get("currency"), getattr(a, "account_currency", None))
+        realized_ccy[a.id] = rc
         if cur != FX.USD:
             observed_nonusd_ids.add(a.id)
         balance = (snap or {}).get("balance")
@@ -819,8 +841,15 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
             # "snapshot" = durable equity-ledger fallback (``observed_as_of`` gives its instant), None = no fresh figure.
             "equity_source": equity_source,
             "observed_as_of": ((snap or {}).get("as_of") if equity_source == "snapshot" else None),
-            "net_pnl": account_net_pnl(a, stage=stage, observed_usd=(cur == FX.USD),
-                                       rate_source=rate_source, account_ccy=cur),
+            # Lifetime per-account net P&L uses the UNKNOWN-PRESERVING realized currency ``rc`` (ADR-0122): an
+            # account whose denomination could not be established (``rc == UNKNOWN_CURRENCY``) is withheld (None) by
+            # account_net_pnl, never summed as USD. For an account whose currency is established from a NON-BLANK
+            # source (the normal case) ``rc == cur``, so this is behaviour-identical to the prior ``cur`` argument.
+            # The only divergence is a whitespace-only observed currency: ``cur``'s ``snap or model`` truthiness kept
+            # the whitespace and defaulted it to USD, whereas ``rc`` falls through to the verified model currency — a
+            # strict improvement (never a non-USD account mislabelled USD), not a regression.
+            "net_pnl": account_net_pnl(a, stage=stage, observed_usd=(rc == FX.USD),
+                                       rate_source=rate_source, account_ccy=rc),
             "open_count": op.get("open_count", 0), "open_pl_usd": op.get("open_pl_usd"),
             "stale": stale or op.get("stale", False),
             # Why this account's live positions are unavailable (ADR-0100): a safe category + a structural flag so
@@ -843,8 +872,12 @@ def build_summary(user, scope: Optional[str], *, fetch_balance: Callable, fetch_
     eq_agg = FX.aggregate_usd(eq_items, rate_source)
     # Floating P/L: aggregate NATIVE items and carry through PARTIAL/STALE (M1), not a re-sum of per-account USD.
     open_pl_agg, open_stale = portfolio_open_pl(per_open, rate_source)
+    # Accounts whose realized denomination could not be established from an authoritative tenant-local source
+    # (ADR-0122): excluded from the USD LIFETIME metrics exactly as a non-USD account is, so an unestablished-currency
+    # account's lifetime native P&L is never summed as dollars (the lifetime counterpart of the GFX-161 daily fix).
+    unknown_ids = {aid for aid, rc in realized_ccy.items() if rc == FX.UNKNOWN_CURRENCY}
     metrics = portfolio_metrics(accounts, stage=stage, observed_nonusd_ids=observed_nonusd_ids,
-                                rate_source=rate_source, observed_ccy=observed_ccy)
+                                rate_source=rate_source, observed_ccy=observed_ccy, unknown_ids=unknown_ids)
     # Daily realized P&L: a per-account, currency-honest USD aggregate (the SAME machinery as the balance total) so
     # EVERY monitored account's same-day realized contributes — a non-USD account is converted via the vetted rate,
     # and only genuinely non-convertible same-day activity is excluded (surfaced with its native figure, never

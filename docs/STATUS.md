@@ -1,5 +1,31 @@
 # GuvFX — Project Status
 
+> **2026-11-19 — Lifetime net P&L and portfolio metrics never denominate an unknown currency as USD
+> (GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163; ADR-0122; repository-only; migration-free; DARK; governed PR;
+> auto-merge OFF; STOP before merge).** Governed LIFETIME follow-up to GFX-161 (ADR-0120), off current main `c649c550`
+> (= GFX-161 squash `70c26724` + one disjoint TIM #686 / ADR-0121, zero analytics overlap) on
+> `fix/lifetime-pnl-unknown-currency`. **Defect (proven; same blank→USD root pattern):** `build_summary` fed
+> `account_net_pnl` the balance-label currency `cur = normalise_currency(snap or account_currency)` (blank→USD) and fed
+> `portfolio_metrics` an `observed_nonusd_ids` set derived from that same `cur` — which flags only accounts POSITIVELY
+> known non-USD. An account whose currency could not be established (failed live read + no fresh snapshot + blank
+> `account_currency`, the prod norm) collapsed to USD: `account_net_pnl` returned its native realized as a USD `net_pnl`
+> (38.04 "USD"), and `portfolio_metrics` summed its closed trades into net_pnl_total/profit_factor/expectancy/win-loss
+> with `basis="USD"`, `state="OK"` (false completeness). **Fix:** `account_net_pnl` returns None when the caller-resolved
+> `account_ccy == UNKNOWN_CURRENCY`; `build_summary` passes each account's unknown-preserving `rc = realized_ccy[id]`
+> (`rc == cur` for an established currency → byte-identical) and computes `unknown_ids`; `portfolio_metrics` /
+> `_partition_usd` exclude `unknown_ids` exactly like a non-USD account → PARTIAL (USD subset measured) / UNAVAILABLE
+> (net_pnl_total/total_trades null), never a native sum as USD, never a false `$0.00`, never cross-tenant. Established-USD,
+> governed FX (ADR-0066), `rate_unavailable`/`mixed_trade_currency` distinctions, the GFX-161 daily path, and
+> balance/equity are byte-identical. Frontend: **one truthfulness label change** — the `currency_unconvertible` metrics
+> context label is made denomination-neutral (EN+JA) because an UNKNOWN-currency account can now drive that state and the
+> old copy wrongly asserted "non-USD"; everything else renders via the existing GFX-161 machinery (UNAVAILABLE→N/A,
+> PARTIAL→measured + "N included · M excluded", null `net_pnl`→"—"). `analytics` 326 OK (+15 new); migration-free;
+> frontend 3 label tests OK + eslint 0 errors + next build clean; ADR-0122 unique. **8-lens adversarial review: 0
+> CRITICAL/HIGH** — 2 lenses CLEAN; 3 findings FIXED (UNKNOWN-sentinel conversion guard + denomination-neutral label +
+> comment precision); 4 dispositioned with rationale in ADR-0122/KNOWN_ISSUES (zero-trade consistency; a PRE-EXISTING,
+> LATENT mixed-trade-leg fold in the ADR-0066 non-USD CONVERSION path filed as a follow-up; a minor no-history copy
+> follow-up). **One bounded next action:** exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge.
+
 > **2026-11-19 — Daily Realized P&L never denominates an unknown currency as USD
 > (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only; migration-free; DARK; governed PR;
 > auto-merge OFF; STOP before merge).** Off current main `9b14d957` (= packet-expected `6184a859` + disjoint TIM #683)

@@ -1,5 +1,20 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ LIFETIME NET P&L + PORTFOLIO METRICS: UNKNOWN CURRENCY NEVER USD (2026-11-19; GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163; ADR-0122; repository-only PR)
+The governed LIFETIME follow-up to GFX-161 (the documented remaining blank→USD root pattern). `build_summary` fed
+`account_net_pnl` the balance-label `cur` (blank→USD) and fed `portfolio_metrics` an `observed_nonusd_ids` set derived
+from that same `cur`, so an account whose currency could not be established (failed live read + no fresh snapshot +
+blank `account_currency`) collapsed to USD: its native realized was returned as a USD per-account `net_pnl` and summed
+into the lifetime metrics (net_pnl_total / profit_factor / expectancy / win-loss) with `basis="USD"`, `state="OK"`.
+Fix: `account_net_pnl` returns None for an `UNKNOWN_CURRENCY` account; `build_summary` passes the unknown-preserving
+`rc` (== `cur` for established → byte-identical) and `unknown_ids`; `portfolio_metrics`/`_partition_usd` exclude
+`unknown_ids` like a non-USD account → PARTIAL/UNAVAILABLE, never a native sum as USD, never a false `$0.00`, never
+cross-tenant; established-USD + governed FX (ADR-0066) + balance/equity byte-identical; frontend NO runtime change. Off
+current main `c649c550` on `fix/lifetime-pnl-unknown-currency`; `analytics` 325 OK (+14), migration-free, ADR-0122
+unique. **One bounded next action:** exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge. **Remaining
+root-pattern follow-up:** none in the lifetime/daily USD-aggregate paths; the per-account trade-history + daily-pnl
+series are native (immune) and the broker-server-calendar-day window is a separate platform follow-up.
+
 ## ★ DAILY REALIZED P&L: UNKNOWN CURRENCY NEVER USD (2026-11-19; GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0120; repository-only PR)
 The Daily Realized P&L USD aggregate defaulted a blank/unestablished account currency to USD, so a non-USD account
 whose live read failed with no fresh tenant-local snapshot had its native same-day realized summed as USD with
