@@ -15,11 +15,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -36,6 +38,7 @@ from trading.models import BrokerServer, TradingAccount
 
 User = get_user_model()
 SECRET = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"   # 40 hex chars, no placeholder marker
+OTHER = "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3"    # a DIFFERENT 40-hex synthetic key, no placeholder marker
 SHORT = "tooshort"                                     # < 32 chars
 PLACEHOLDER = "changeme_changeme_changeme_changeme_xx"  # contains a placeholder marker
 
@@ -285,3 +288,140 @@ class VerifierWindowCommandTests(TestCase):
         call_command("copier_verifier_window", "--close", stdout=out2)
         self.assertFalse(os.path.exists(path))            # close shreds the key file
         self.assertNotIn(SECRET, out2.getvalue())
+
+
+class VerifierWindowKeyLifecycleTests(TestCase):
+    """GFX-164 — stale-window cleanup must NEVER delete key material belonging to a newly opened window.
+
+    Defect-first: these reproduce the pkt-162 production fault. Opening a fresh window at the fixed default
+    tmpfs path reaped an EXPIRED prior window that shared that same path, and the reap shredded the
+    just-written key — leaving an OPEN but KEYLESS window. The fix (a) writes the key INSIDE ``open_window``,
+    strictly AFTER the stale reap and the single-flight check, and (b) gives each window its own unique key
+    path, so one window's cleanup can never touch another's. Synthetic keys only; no key value is asserted.
+
+    Tests redirect the DEFAULT key path into a writable temp dir (``/dev/shm`` is Linux-only; the production
+    default is ``/dev/shm`` but the behaviour under test is path-agnostic).
+    """
+
+    def setUp(self):
+        self.shmdir = tempfile.mkdtemp(prefix="guvfx_vw_shm_")
+        self.base = os.path.join(self.shmdir, "guvfx_copier_ingest_verify.key")
+        self._ov = override_settings(COPIER_VERIFIER_KEY_PATH=self.base)
+        self._ov.enable()
+
+    def tearDown(self):
+        vw.close_all(reason="teardown")
+        self._ov.disable()
+        shutil.rmtree(self.shmdir, ignore_errors=True)
+
+    # ── defect-first: the real production caller (command), default path, after an expired window ──
+    def test_reopen_at_default_path_after_expiry_keeps_fresh_key_via_command(self):
+        # window #1 at the DEFAULT path (no --key-path), then force it expired (as the pkt-159 window was).
+        with mock.patch.object(sys, "stdin", io.StringIO(SECRET)):
+            call_command("copier_verifier_window", "--open", "--purpose", "ingest",
+                         "--ttl", "60", "--max-uses", "0", stdout=io.StringIO())
+        w1 = CopierVerifierWindow.objects.get(state=CopierVerifierWindowState.OPEN)
+        CopierVerifierWindow.objects.filter(pk=w1.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1))
+        # window #2 at the DEFAULT path: opening it reaps w1; that reap must NOT delete w2's fresh key.
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdin", io.StringIO(OTHER)):
+            call_command("copier_verifier_window", "--open", "--purpose", "ingest",
+                         "--ttl", "120", "--max-uses", "0", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["status"]["open"])
+        self.assertTrue(payload["status"]["key_file_present"])   # pre-fix: False (the reap shredded it)
+        self.assertEqual(vw.claim_key("INGEST"), OTHER)          # the fresh key resolves — not a shred
+        self.assertNotIn(OTHER, out.getvalue())                  # never printed
+
+    # ── direct owned-write: per-window ownership + reap-before-write ──
+    def test_owned_write_uses_unique_path_and_survives_stale_reap(self):
+        # an EXPIRED window with its own key file (under the OLD scheme it would share the default path).
+        p_old = _write_key(SECRET)
+        self.addCleanup(lambda: os.path.exists(p_old) and os.unlink(p_old))
+        w_old = vw.open_window(purpose="INGEST", ttl_seconds=60, key_path=p_old)   # legacy pre-write
+        CopierVerifierWindow.objects.filter(pk=w_old.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1))
+        # fresh OWNED-write window (production path): its own unique path; opening it reaps w_old.
+        w_new = vw.open_window(purpose="INGEST", ttl_seconds=120, key=OTHER)
+        self.assertNotEqual(w_new.key_path, p_old)               # per-window ownership → distinct paths
+        self.assertNotEqual(w_new.key_path, self.base)           # not the shared default base either
+        self.assertTrue(os.path.exists(w_new.key_path))          # fresh key present after the reap
+        self.assertEqual(vw.claim_key("INGEST"), OTHER)
+        self.assertFalse(os.path.exists(p_old))                  # the EXPIRED window's key WAS shredded (correct)
+
+    # ── explicit close shreds only its own key ──
+    def test_close_window_shreds_only_its_own_key(self):
+        w1 = vw.open_window(purpose="INGEST", ttl_seconds=120, key=SECRET)
+        path1 = w1.key_path
+        self.assertTrue(os.path.exists(path1))
+        vw.close_window(w1, reason="closed")
+        self.assertFalse(os.path.exists(path1))
+        # a subsequent window is unaffected and gets its OWN key path + value.
+        w2 = vw.open_window(purpose="INGEST", ttl_seconds=120, key=OTHER)
+        self.assertNotEqual(w2.key_path, path1)
+        self.assertEqual(vw.claim_key("INGEST"), OTHER)
+
+    # ── expiry cleanup shreds the expired key; the next live window's key is intact ──
+    def test_reap_expired_leaves_the_live_windows_key_intact(self):
+        w_stale = vw.open_window(purpose="INGEST", ttl_seconds=60, key=SECRET)
+        stale_path = w_stale.key_path
+        CopierVerifierWindow.objects.filter(pk=w_stale.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1))
+        w_live = vw.open_window(purpose="INGEST", ttl_seconds=300, key=OTHER)   # reaps w_stale
+        live_path = w_live.key_path
+        self.assertFalse(os.path.exists(stale_path))    # expired reaped + shredded
+        self.assertTrue(os.path.exists(live_path))      # the live key survives
+        self.assertEqual(vw.reap_expired(), 0)          # an explicit reap now touches nothing
+        self.assertTrue(os.path.exists(live_path))
+        self.assertEqual(vw.claim_key("INGEST"), OTHER)
+
+    # ── a second open is rejected BEFORE it writes any key → no orphan, no deletion of the live key ──
+    def test_second_open_rejected_before_writing_any_key(self):
+        decoy = os.path.join(self.shmdir, "decoy_should_never_be_written.key")
+        self.addCleanup(lambda: os.path.exists(decoy) and os.unlink(decoy))
+        w1 = vw.open_window(purpose="INGEST", ttl_seconds=120, key=SECRET)
+        with self.assertRaises(vw.VerifierWindowError) as c:
+            vw.open_window(purpose="ATTEST", ttl_seconds=120, key_path=decoy, key=OTHER)
+        self.assertEqual(c.exception.reason, "window_already_open")
+        self.assertFalse(os.path.exists(decoy))                  # the rejected open never wrote its key
+        self.assertTrue(os.path.exists(w1.key_path))             # the live window's key is untouched
+        self.assertEqual(vw.claim_key("INGEST"), SECRET)
+
+    # ── a failed owned-write (bad key) rolls back: no window row, no orphan key ──
+    def test_failed_owned_write_leaves_no_window_and_no_orphan_key(self):
+        fd, path = tempfile.mkstemp(prefix="guvfx_vw_fail_", suffix=".key"); os.close(fd); os.unlink(path)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        with self.assertRaises(vw.VerifierWindowError) as c:
+            vw.open_window(purpose="INGEST", ttl_seconds=120, key_path=path, key=SHORT)
+        self.assertEqual(c.exception.reason, "key_too_short")
+        self.assertFalse(os.path.exists(path))                   # nothing written / nothing left behind
+        self.assertFalse(CopierVerifierWindow.objects.filter(
+            state=CopierVerifierWindowState.OPEN).exists())      # no window row created
+
+    # ── distinct purposes (sequential; single-flight forbids two OPEN) never share a key path ──
+    def test_distinct_purposes_never_share_a_key_path(self):
+        w_ing = vw.open_window(purpose="INGEST", ttl_seconds=120, key=SECRET)
+        p_ing = w_ing.key_path
+        vw.close_window(w_ing, reason="closed")
+        self.assertFalse(os.path.exists(p_ing))
+        w_att = vw.open_window(purpose="ATTEST", ttl_seconds=120, key=OTHER)
+        self.assertNotEqual(w_att.key_path, p_ing)
+        self.assertEqual(vw.claim_key("ATTEST"), OTHER)
+        with self.assertRaises(vw.VerifierWindowError) as c:
+            vw.claim_key("INGEST")                               # the ATTEST window does not serve INGEST
+        self.assertEqual(c.exception.reason, "verifier_window_purpose")
+
+    # ── container / tmpfs loss is reported TRUTHFULLY, never papered over ──
+    def test_tmpfs_key_loss_is_reported_truthfully(self):
+        w = vw.open_window(purpose="INGEST", ttl_seconds=300, key=SECRET)
+        os.unlink(w.key_path)                                    # a container recreate wipes /dev/shm; row persists
+        status = vw.window_status()
+        self.assertTrue(status["open"])                          # the row is still OPEN …
+        self.assertFalse(status["key_file_present"])            # … but the status says the key is gone
+        with self.assertRaises(vw.VerifierWindowError) as c:
+            vw.claim_key("INGEST")
+        self.assertEqual(c.exception.reason, "key_file_absent")
+        verdict = vw.covers_live_authorization(SimpleNamespace(expires_at=None))
+        self.assertFalse(verdict["ready"])                       # arm-time gate refuses truthfully too
+        self.assertEqual(verdict["reason"], "key_file_absent")

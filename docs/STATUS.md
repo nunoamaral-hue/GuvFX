@@ -1,5 +1,26 @@
 # GuvFX — Project Status
 
+> **2026-11-19 — Stale verifier-window reap must never shred a freshly opened key
+> (GFX-COPIER-VERIFIER-WINDOW-KEY-LIFECYCLE-FIX-164; ADR-0101 addendum; repository-only; migration-free; DARK;
+> governed PR; auto-merge OFF; STOP before merge).** Off current main `c649c550` on `fix/verifier-window-key-lifecycle`.
+> **Defect (confirmed in the pkt-162 production acceptance):** the operator command wrote the ingest key to a FIXED
+> default `/dev/shm` path BEFORE calling `open_window`, and `open_window` reaped expired windows as its first act —
+> so opening a fresh window reaped an expired prior window sharing that path and `_shred_file`'d the just-written key,
+> yielding an OPEN but **keyless** window (`key_file_present == false`). **Fix:** `open_window` now reaps → runs the
+> single-flight check → writes the key ITSELF (new `key=` param), all inside the atomic block, so stale cleanup runs
+> before any new key exists; with no explicit `--key-path` the key goes to a PER-WINDOW-UNIQUE tmpfs path
+> (`_unique_key_path`) so two windows never share key material; it owns cleanup of its own key and never shreds a path
+> an existing/concurrent-winner window references. The command no longer pre-writes or blindly shreds a fixed path
+> (which, on `window_already_open`, would delete the EXISTING window's live key). **Not weakened:** fail-closed
+> resolution, single-flight, TTL bounds, shred-on-close/reap/exhaustion, purpose separation, replay/`max_uses`, the
+> 0600/ownership/symlink/placeholder hardening, window-only (no-env) resolver — all intact; key still never enters DB,
+> argv, env, logs or output. **Evidence:** new `VerifierWindowKeyLifecycleTests` (8 cases) proven defect-first (the
+> command/default-path test FAILS pre-fix: `key_file_present == false`); `trade_copier` **1196 OK**, verifier module
+> 30 OK; `make governance-check` green; migration-free; secret scan clean. ADR-0101 addendum + attestation-runbook
+> arm-before-open callout document the recreate-wipes-tmpfs ordering (unchanged by this fix). **One bounded next
+> action:** exact-head CI green, then Sponsor `GO — merge PR`. STOP before merge. No deploy/host/key/window/flag/#48/
+> broker contact.
+
 > **2026-11-19 — Lifetime net P&L and portfolio metrics never denominate an unknown currency as USD
 > (GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163; ADR-0122; repository-only; migration-free; DARK; governed PR;
 > auto-merge OFF; STOP before merge).** Governed LIFETIME follow-up to GFX-161 (ADR-0120), off current main `c649c550`

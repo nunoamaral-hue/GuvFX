@@ -155,6 +155,20 @@ def _shred_file(path: str) -> None:
         logger.debug("verifier key shred best-effort failed (already gone / tmpfs)")
 
 
+def _unique_key_path(base: str | None = None) -> str:
+    """A PER-WINDOW-UNIQUE tmpfs key path derived from the configured base: same directory and extension, with
+    a random stem token (GFX-164). Two windows therefore never share a key file, so one window's cleanup (close
+    / reap / exhaustion) can never touch another window's key. The random component also defeats a pre-planted
+    symlink at a predictable name. Used when the caller hands ``open_window`` the key value to own."""
+    base = (base or verifier_key_path()).strip() or DEFAULT_KEY_PATH
+    directory = os.path.dirname(base) or "/dev/shm"
+    name = os.path.basename(base) or "guvfx_copier_ingest_verify.key"
+    stem, dot, ext = name.rpartition(".")
+    if not dot:                      # no extension on the base name
+        stem, ext = name, "key"
+    return os.path.join(directory, f"{stem}.{_secrets.token_hex(8)}.{ext}")
+
+
 # ─────────────────────────────── window lifecycle ───────────────────────────────
 
 def active_window(purpose: str, *, now=None):
@@ -169,31 +183,72 @@ def active_window(purpose: str, *, now=None):
 
 
 def open_window(*, opened_by=None, purpose: str = "BOTH", ttl_seconds: int = 300, key_path: str | None = None,
-                max_uses: int | None = None, correlation_id: str = "", note: str = "", now=None):
-    """Open exactly one bounded window (single-flight). Reaps expired windows first, caps the TTL, and lets
-    the DB partial-unique constraint reject a concurrent second open. Does NOT write the key file — the
-    operator command writes it (from stdin) before calling this with the chosen ``key_path``."""
+                max_uses: int | None = None, correlation_id: str = "", note: str = "", now=None,
+                key: str | None = None):
+    """Open exactly one bounded window (single-flight), fail-closed.
+
+    KEY-LIFECYCLE ORDERING (GFX-164). Stale cleanup happens FIRST (``reap_expired``), then the single-flight
+    check, and only THEN — when the caller hands us ``key`` — is the ephemeral key file written. Because the
+    key is written strictly AFTER the reap and AFTER confirming no window is already open, stale-window
+    cleanup can never shred a freshly opened window's key. (Previously the operator wrote the key to a fixed
+    default path BEFORE calling ``open_window``; opening a new window then reaped an expired prior window that
+    shared that same path, and the reap shredded the just-written key — an OPEN but keyless window.)
+
+    OWNERSHIP. When ``key`` is supplied and no explicit ``key_path`` is given, the key is written to a
+    PER-WINDOW-UNIQUE tmpfs path (``_unique_key_path``), so two windows never share key material and one
+    window's cleanup can never touch another's. An explicit ``key_path`` is honoured verbatim (operator intent;
+    the ordering guarantee above still holds for it under single-flight).
+
+    LEGACY MODE (``key`` omitted): the caller has already written the file at ``key_path`` — retained for the
+    ``verification_window`` test/local helper, which uses its own unique temp path. The reap-before-create
+    ordering still applies.
+
+    This function OWNS cleanup of the key file it wrote: on any failure after the write it shreds that file,
+    and it NEVER shreds a path that an already-open window (or the winner of a concurrent open) references.
+    """
     from trade_copier.models import CopierVerifierWindow, CopierVerifierWindowState as S
     now = _now(now)
-    reap_expired(now=now)
+    reap_expired(now=now)                       # (1) stale cleanup — only EXPIRED windows, before any new key exists
     ttl = max(MIN_WINDOW_TTL_SECONDS, min(int(ttl_seconds), MAX_WINDOW_TTL_SECONDS))
-    path = (key_path or verifier_key_path()).strip()
     purpose = str(purpose or "BOTH").upper()
     if purpose not in {"INGEST", "ATTEST", "BOTH"}:
         raise VerifierWindowError("bad_purpose")
+    owns_write = key is not None
+    explicit_path = (key_path or "").strip()
+    if owns_write:
+        unique_owned = not explicit_path         # we generated the path ⇒ safe to shred it on our own failure
+        path = explicit_path or _unique_key_path()
+    else:
+        unique_owned = False
+        path = explicit_path or verifier_key_path()
+    wrote_key = False
     try:
         with transaction.atomic():
             existing = (CopierVerifierWindow.objects.select_for_update()
                         .filter(state=S.OPEN, expires_at__gt=now).first())
-            if existing is not None:
+            if existing is not None:             # (2) single-flight — an unexpired window owns its key; never touch it
                 raise VerifierWindowError("window_already_open")
-            return CopierVerifierWindow.objects.create(
+            if owns_write:
+                wrote_key = True                 # (3) write the key ONLY after reap + single-flight check
+                write_key_file(path, key)
+            return CopierVerifierWindow.objects.create(   # (4) create the row referencing the just-written key
                 state=S.OPEN, purpose=purpose, key_path=path, max_uses=max_uses,
                 expires_at=now + timedelta(seconds=ttl), opened_by=opened_by,
                 correlation_id=correlation_id[:64], note=note[:256])
     except IntegrityError:
-        # The partial-unique constraint fired on a concurrent open — treat as single-flight rejection.
+        # Lost a concurrent create race (partial-unique on state=OPEN). Shred ONLY a key we wrote to a path
+        # WE generated uniquely — never a shared/explicit path the winning window now references.
+        if wrote_key and unique_owned:
+            _shred_file(path)
         raise VerifierWindowError("window_already_open")
+    except VerifierWindowError:
+        if wrote_key:
+            _shred_file(path)                    # our freshly-written key (e.g. create failed) — leave nothing behind
+        raise
+    except Exception:
+        if wrote_key:
+            _shred_file(path)
+        raise
 
 
 def claim_key(purpose: str, *, now=None) -> str:
