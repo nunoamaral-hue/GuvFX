@@ -56,22 +56,31 @@ class Command(BaseCommand):
             raise CommandError("--open requires the key on STDIN (piped); refusing an interactive TTY read.")
         key = sys.stdin.read()
         purpose = opts["purpose"].upper()
-        path = (opts["key_path"] or vw.verifier_key_path()).strip()
+        explicit_path = (opts["key_path"] or "").strip()   # honoured verbatim if set; else per-window-unique
         max_uses = None if int(opts["max_uses"]) == 0 else int(opts["max_uses"])
         opened_by = self._resolve_operator(opts["opened_by_email"])
 
-        # Any failure on the open path shreds the ephemeral file so no key is ever left behind.
+        # open_window now OWNS the key file: it writes it AFTER reaping stale windows and confirming no window
+        # is already open (GFX-164), to a per-window-unique tmpfs path when no explicit --key-path is given, and
+        # it shreds its own freshly-written key on failure. We never pre-write or blindly shred here — shredding
+        # a fixed path on ``window_already_open`` would delete the EXISTING window's live key.
         try:
-            vw.write_key_file(path, key)
-            key = None   # scrub the key reference as soon as it is on the tmpfs file
             window = vw.open_window(
-                opened_by=opened_by, purpose=purpose, ttl_seconds=int(opts["ttl"]), key_path=path,
-                max_uses=max_uses, correlation_id=opts["correlation_id"], note=opts["note"])
+                opened_by=opened_by, purpose=purpose, ttl_seconds=int(opts["ttl"]),
+                key_path=(explicit_path or None), key=key, max_uses=max_uses,
+                correlation_id=opts["correlation_id"], note=opts["note"])
+            key = None   # scrub the key reference as soon as it is on the tmpfs file (inside open_window)
         except vw.VerifierWindowError as e:
-            vw._shred_file(path)
+            key = None
+            # Only clean an orphan at an EXPLICIT path, and only when no window owns it (fail-closed, never
+            # deletes another window's key). The default/unique path is cleaned by open_window itself.
+            if explicit_path and not vw.window_status().get("open"):
+                vw._shred_file(explicit_path)
             raise CommandError(f"refused to open window: {e.reason}")
         except Exception:
-            vw._shred_file(path)
+            key = None
+            if explicit_path and not vw.window_status().get("open"):
+                vw._shred_file(explicit_path)
             raise
         finally:
             key = None   # never retain the key in this frame on any path

@@ -112,3 +112,54 @@ the prior env-only resolver (which, with no env key, simply stays fail-closed).
 Merge · DARK deploy + apply migration `0015` · the real `COPIER_INGEST_HMAC_KEY` provisioning · enabling the
 verifier gate · the real one-shot ingestion/attestation verification · the scheduled emitter remains DISABLED.
 No deploy, no migration applied, no host contact, no secret handled, no flag enablement, no broker order here.
+
+---
+
+## Addendum — key-lifecycle correction (GFX-164, 2026-11-19, repository-only, migration-free)
+
+**Status:** Accepted (repository-only correction; preserves — does not change — the ADR-0101 contract above).
+No deploy, no migration, no host contact, no secret handled, no flag enablement, no window opened, no broker
+order is part of this correction. Merge is a separate Sponsor gate.
+
+**Defect (confirmed in the pkt-162 production acceptance).** The operator command wrote the key to a **fixed
+default tmpfs path** *before* calling `open_window`, and `open_window` reaped expired windows as its first act.
+When an expired prior window (e.g. the pkt-159 window) referenced that **same** default path, reaping it ran
+`close_window → _shred_file(<default path>)` and **shredded the key that had just been written for the new
+window** — producing an OPEN but **keyless** window (`window_status.key_file_present == false`). The verifier
+then had a live window but no resolvable key. (Separately, arming a flag that needs a backend recreate wipes
+`/dev/shm`; that is a distinct operational ordering constraint, recorded below, not this defect.)
+
+**Correction (smallest fail-closed change; per-window ownership + generation-safe ordering).**
+
+1. **Ordering.** `open_window` now performs stale cleanup (`reap_expired`) and the single-flight check
+   **before** any new key material exists, and writes the key **itself**, inside the same atomic block, only
+   **after** both. Because the write happens strictly after the reap and after confirming no window is already
+   open, stale-window cleanup can never shred a freshly opened window's key.
+2. **Per-window ownership.** When the operator supplies no explicit `--key-path`, the key is written to a
+   **per-window-unique** tmpfs path (`_unique_key_path`: configured dir + a random stem token). Two windows
+   therefore never share a key file, so closing/reaping/exhausting one window can never touch another's key.
+   An explicit `--key-path` is still honoured verbatim; the ordering guarantee alone makes it safe under
+   single-flight.
+3. **Fail-closed cleanup, no cross-deletion.** `open_window` owns the key file it writes and shreds it on any
+   failure *after* the write (create error, rollback) — but it **never** shreds a path that an already-open
+   window (or the winner of a concurrent open) references. A second open is rejected **before** it writes any
+   key (`window_already_open`), so a rejected open leaves no orphan and never deletes the live window's key.
+   The operator command no longer pre-writes or blindly shreds a fixed path (which, on `window_already_open`,
+   would have deleted the *existing* window's live key).
+
+**Unchanged (not weakened).** Fail-closed resolution, single-flight (`state=OPEN` partial-unique), TTL bounds
+(30–900 s), shred-on-close/reap/exhaustion, purpose separation, nonce/`max_uses` replay protection, the 0600 /
+ownership / symlink / placeholder key-file hardening, and the window-only (no-env) resolver all stand exactly
+as above. The key still never enters the DB, argv, env, logs or output.
+
+**Operational ordering constraint (restated, not changed by this correction).** Any flag whose change requires
+a **backend container recreate** (e.g. the `COPIER_*` gates resolved via `os.getenv`) still wipes the RAM-backed
+`/dev/shm`. The tmpfs-backed verifier window must therefore be opened **after** such a recreate, never before —
+otherwise the recreate erases the window's key. This correction does not change that contract; it only ensures
+that, once opened correctly, the window's key is not destroyed by the reaping of an unrelated expired window.
+
+**Evidence.** Defect-first tests in `backend/trade_copier/tests_verifier_window.py`
+(`VerifierWindowKeyLifecycleTests`) reproduce the keyless-window fault through the real operator command on the
+default path (proven to FAIL on the pre-correction source: `key_file_present == false`) and cover: stale reap →
+fresh open, explicit close, expiry cleanup, a second open rejected before writing, failed-open rollback with no
+orphan, distinct purposes never sharing a path, and container/tmpfs loss reported truthfully. Migration-free.

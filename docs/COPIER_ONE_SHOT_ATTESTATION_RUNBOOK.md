@@ -50,6 +50,14 @@ auto-loaded** compose override (not a throwaway `-f` overlay: a backend recreate
 routine redeploy — drops an overlay, leaving the gate silently OFF when the human runs the wrapper). Verify all three
 are ON before requesting the key, and restore all three OFF at teardown.
 
+> **Order is mandatory — arm first, then open the window (GFX-164).** The `COPIER_*` gates are read from the
+> process environment, so turning them on requires a **backend container recreate**, and a recreate wipes the
+> RAM-backed tmpfs (`/dev/shm`) that holds the verifier-window key. Therefore **arm the gates and recreate the
+> backend FIRST, and only AFTER that does the wrapper open the bounded window** (Role A step 2 recreate → step 3
+> window open). Opening the window before the recreate would have the recreate erase its key, yielding an OPEN but
+> keyless window. (This ordering is unchanged by GFX-164; the code fix only guarantees that, once opened correctly,
+> the window's key is never destroyed by the reaping of an unrelated expired window.)
+
 ## Role A — Claude Copy Trading operator (non-secret only)
 
 1. Pre-checks (read-only): endpoint returns 503; `copier_verifier_window --status` reports `open:false` (backend
