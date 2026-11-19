@@ -1,5 +1,16 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ DAILY REALIZED P&L: UNKNOWN CURRENCY NEVER USD (2026-11-19; GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0119; repository-only PR)
+The Daily Realized P&L USD aggregate defaulted a blank/unestablished account currency to USD, so a non-USD account
+whose live read failed with no fresh tenant-local snapshot had its native same-day realized summed as USD with
+`basis="USD"` (false completeness). Fix resolves the realized denomination only from an authoritative tenant-local
+source (`resolve_position_currency` → `UNKNOWN_CURRENCY`), excludes it as `unknown_currency` → PARTIAL/UNAVAILABLE,
+never a false `$0.00`, never cross-tenant; balance/equity/metrics byte-identical. Off current main `9b14d957` on
+`fix/daily-realized-unknown-currency`; `analytics` 310 OK (+12), migration-free. **One bounded next action:**
+exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge. **Follow-up (NOT in this PR):** lifetime
+`account_net_pnl` + `portfolio_metrics` share the same blank→USD root pattern (narrow-scope boundary). The earlier
+backlog items (b) `monitoring_reconcile` rollback-accounting and (c) account-less withdrawal ref-collision remain.
+
 ## ★ MAILBOX OAUTH-HEALTH: OWNER_DISCONNECTED ≠ RECONSENT (2026-11-18; GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only PR)
 Re-entry packet selected the highest-priority unblocked repo-only item: a member's deliberate mailbox disconnect
 (`status=REVOKED`, written only by `MailboxRevokeView`) was classified `RECONSENT_REQUIRED` → a false CRITICAL operator

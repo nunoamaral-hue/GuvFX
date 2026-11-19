@@ -1,5 +1,36 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-19 — Daily Realized P&L: unknown currency is never summed as USD (GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161; ADR-0119; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-DASHBOARD-DAILY-REALIZED-CURRENCY-161
+Packet ID: GFX-DASHBOARD-DAILY-REALIZED-CURRENCY-INTEGRITY-161
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge). Local acceptance green; 7-lens adversarial review +
+  exact-head CI 5/5 to be confirmed on the PR.
+
+Base commit: 9b14d95733b370b7321d580720b3574c8b8625d5 (current main = packet-expected 6184a859 + disjoint TIM #683;
+  zero analytics overlap). Branch: fix/daily-realized-unknown-currency.
+
+Verified fact (defect proven): analytics/portfolio.py _account_realized_currency defaulted a blank/unestablished
+  currency to USD (normalise_currency(None)==USD) and build_summary fed the realized path an observed_ccy already
+  collapsed blank->USD; a non-USD account whose live read failed with no fresh snapshot was summed as USD (basis USD).
+Fix (narrow): _account_realized_currency -> resolve_position_currency (blank->UNKNOWN_CURRENCY); build_summary builds a
+  separate unknown-preserving realized_ccy for the daily call only (balance/equity/metrics byte-identical);
+  daily_realized_pnl_detail excludes UNKNOWN_CURRENCY with reason 'unknown_currency' -> PARTIAL/UNAVAILABLE, native
+  surfaced labelled UNKNOWN, never summed as USD, never false $0.00, never cross-tenant (map keyed by id).
+Tests (exact): cd backend && .venv/bin/python manage.py test analytics  -> 310 OK / 1 skipped (incl. 12 new
+  UnknownCurrencyRealizedIntegrityTests). makemigrations --check analytics core -> No changes. Frontend daily-pnl
+  coverage -> 6 OK. Copy-leaf quarantine (364 files) applied for the local run, then restored.
+Scope boundary: lifetime account_net_pnl + portfolio_metrics share the root pattern and are a documented follow-up;
+  the single-account dashboard card uses the DailyPnlView NATIVE figure (structurally immune to the sum-as-USD defect).
+Inventory (exactly 5 tracked files): backend/analytics/portfolio.py; backend/analytics/tests_portfolio.py;
+  frontend/src/app/(app)/dashboard/daily-pnl-coverage.test.tsx; docs/architecture/ADR-0119-...md; evidence manifest.
+  No migration, no flag, no prod/host/broker/MT5/snapshot change.
+One bounded next action: drive exact-head CI to 5/5, then await Sponsor `GO — merge PR`. STOP before merge.
+```
+
 ## 2026-11-18 — Mailbox OAuth-health: OWNER_DISCONNECTED ≠ reconsent (GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```
