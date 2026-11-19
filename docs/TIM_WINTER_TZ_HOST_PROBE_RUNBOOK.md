@@ -112,6 +112,64 @@ rmdir /s /q C:\GuvFX\TIM\winter-tz-probe
 No task, service, registry, environment variable, or bridge state is changed by staging,
 running, or rolling back.
 
+## Isolated observation path (GFX-TIM-ISOLATED-WINTER-TZ-PATH-013 / ADR-0121)
+
+Use this path when the default `:8788` bridge is bound to a **live** terminal (e.g. a
+`Taurex-LIVE` guarded session) and must not be touched. It stands up a separate, ephemeral,
+loopback-only, read-only bridge against the dormant `C:\GuvFX\terminals\account_001\instance`
+TradersWay-Demo slot on fixed port **`127.0.0.1:8977`**, and never touches `:8788`, the
+Program-Files terminal, or any live tenant.
+
+### 1. Stage (one-time, Sponsor-gated; Administrator console on the bridge host)
+
+Copy the reviewed files into the TIM staging directory (the probe may already be staged):
+
+```
+copy <repo>\scripts\mt5_signal_bridge.py                 C:\GuvFX\TIM\winter-tz-probe\mt5_signal_bridge.py
+copy <repo>\scripts\tim_isolated_bridge_ctl.py           C:\GuvFX\TIM\winter-tz-probe\tim_isolated_bridge_ctl.py
+copy <repo>\scripts\tim_winter_tz_probe.py              C:\GuvFX\TIM\winter-tz-probe\tim_winter_tz_probe.py
+copy <repo>\deploy\tim-winter-tz\start_tim_isolated_bridge.bat      C:\GuvFX\TIM\winter-tz-probe\start_tim_isolated_bridge.bat
+copy <repo>\deploy\tim-winter-tz\run_winter_tz_probe_isolated.bat   C:\GuvFX\TIM\winter-tz-probe\run_winter_tz_probe_isolated.bat
+copy <repo>\deploy\tim-winter-tz\stop_tim_isolated_bridge.bat       C:\GuvFX\TIM\winter-tz-probe\stop_tim_isolated_bridge.bat
+```
+
+Verify every staged file's SHA-256 against
+`evidence/manifests/GFX-EVD-TIM-ISOLATED-WINTER-TZ-PATH-013.json`:
+
+```
+powershell -NoProfile -Command "Get-FileHash -Algorithm SHA256 C:\GuvFX\TIM\winter-tz-probe\mt5_signal_bridge.py, C:\GuvFX\TIM\winter-tz-probe\tim_isolated_bridge_ctl.py, C:\GuvFX\TIM\winter-tz-probe\start_tim_isolated_bridge.bat, C:\GuvFX\TIM\winter-tz-probe\run_winter_tz_probe_isolated.bat, C:\GuvFX\TIM\winter-tz-probe\stop_tim_isolated_bridge.bat | Format-List"
+```
+
+If any hash differs, **stop**.
+
+### 2. Confirm the demo slot (owner)
+
+Ensure the `account_001` terminal is logged into a valid **TradersWay-Demo** DEMO account (relog /
+refresh the demo via the terminal GUI if it expired). Leaving it running logged-in is fine — the
+start launcher will attach to it without owning it.
+
+### 3. Start, observe once, stop (Administrator)
+
+```
+C:\GuvFX\TIM\winter-tz-probe\start_tim_isolated_bridge.bat
+C:\GuvFX\TIM\winter-tz-probe\run_winter_tz_probe_isolated.bat
+C:\GuvFX\TIM\winter-tz-probe\stop_tim_isolated_bridge.bat
+```
+
+The start launcher proves the isolated bridge binds **only** `127.0.0.1:8977` and that `:8788` is
+unchanged, then emits value-blind JSON. Return **only** the probe's value-blind JSON from the run
+step. The stop launcher terminates **only** the bridge/terminal PIDs it created (each after a
+live-identity re-check) and confirms `:8788` is untouched. Launcher exit codes: `10` argument /
+`11` loader absent / `12` controller or probe absent / `13` python unavailable / `14` token
+unavailable.
+
+### 4. Rollback / teardown
+
+`stop_tim_isolated_bridge.bat` is the teardown. If the start partially failed it rolls back the
+newly created resources itself. To remove the staged tooling afterwards:
+`rmdir /s /q C:\GuvFX\TIM\winter-tz-probe`. `:8788`, the Program-Files terminal, and every live
+tenant are never started, stopped, relogged, repointed, or mutated.
+
 ## What this runbook does NOT authorise
 
 No host deployment of the tool as a service; no scheduled task; no bridge restart; no order/trade; no NAS mount; no dataset publication; no signing key; no GO #2. The real read is a one-shot, operator-run, read-only observation under its own Sponsor GO.

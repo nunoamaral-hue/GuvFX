@@ -147,6 +147,15 @@ jobs:
       - name: TIM winter timezone launcher tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_tim_winter_tz_launcher.py' -v
 
+      - name: TIM bridge bind-host + HTTP-only tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_tim_bridge_bind_host.py' -v
+
+      - name: TIM isolated bridge controller tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_tim_isolated_bridge_ctl.py' -v
+
+      - name: TIM isolated launcher tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_tim_isolated_launchers.py' -v
+
   research-foundation:
     runs-on: ubuntu-latest
     steps:

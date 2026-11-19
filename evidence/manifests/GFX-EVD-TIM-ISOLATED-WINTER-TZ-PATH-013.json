@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-ISOLATED-WINTER-TZ-PATH-013",
+  "packet_id": "GFX-TIM-ISOLATED-WINTER-TZ-PATH-IMPLEMENTATION-013",
+  "created_at_utc": "2026-11-19T00:00:00Z",
+  "branch": "feat/tim-isolated-winter-tz-path",
+  "base_commit": "70c267249c5463ec015bb3f28d19be284b333cfb",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only / synthetic-only",
+    "authoritative_decision": "ADR-0121 (isolated TradersWay-Demo winter-timezone observation path), under the ADR-0070/ADR-0076 TIM producer boundary.",
+    "additive": true,
+    "migration_free": true,
+    "default_off_bridge_options": true,
+    "production_bridge_behaviour_byte_identical_when_unset": true,
+    "real_token_handled": false,
+    "real_host_or_bridge_contact": false,
+    "windows_host_staging": false,
+    "terminal_or_bridge_launch": false,
+    "probe_executed": false,
+    "real_broker_read": false,
+    "nas_or_dataset_access": false,
+    "deployment_or_production_mutation": false,
+    "trading_or_execution_change": false,
+    "port_8788_untouched": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "governance (secret scan + evidence lint + stdlib unit tests: bind-host, controller, isolated launchers)",
+    "windows_gate": "temporary windows-latest command-launcher gate on a throwaway branch pinned to the exact PR head; stub controller/probe + a loopback :8788 stand-in; proves no-arg, opaque-token, fixed-port, start->state->targeted-stop, :8788 untouched, no broad kill. Result recorded in the TIM Notion master record and the PR."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_tim_bridge_bind_host.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_isolated_bridge_ctl.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_isolated_launchers.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_winter_tz_probe.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "make governance-check"
+  ],
+  "expected_results": [
+    "resolve_bind_host default is EXACTLY 0.0.0.0 (production byte-identical); accepts only {0.0.0.0,127.0.0.1,::1}; fails closed on empty/wildcard/malformed/hostname; a loopback socket binds only 127.0.0.1.",
+    "BRIDGE_HTTP_ONLY default off; when on, main() serves HTTP only (no poller) and do_POST refuses all mutation (403).",
+    "The isolated controller treats :8788 as a protected control (unchanged), uses only loopback 127.0.0.1:8977 (proven loopback-only), refuses double-start, rolls back partial starts, terminates only its own created PIDs after a live-identity re-check (PID reuse refused), never broad-kills, and leaves an owner-started terminal alone.",
+    "The three launchers are ASCII/no-BOM, no-argument, fixed-path, opaque-token, value-blind, fail-closed, exit-code-propagating; the probe launcher hard-codes the loopback base URL http://127.0.0.1:8977 and the TradersWay-Demo server.",
+    "Governance secret scan = no findings; evidence lint = PASS; make governance-check green. Migration-free; no production/host mutation; auto-merge OFF; NOT merged."
+  ],
+  "actual_results": [
+    "tests/test_tim_bridge_bind_host.py: Ran 13 tests OK (default/loopback/::1/strip/reject; http-only truthy/falsy; loopback socket binds 127.0.0.1; bind sites use resolve_bind_host; do_POST mutation-refusal; main() http-only skips poller).",
+    "tests/test_tim_isolated_bridge_ctl.py: Ran 21 tests OK (happy path + state; protected-8788-absent / fixed-port-in-use / double-start / wildcard-bind / no-bind refusals + rollback; pre-existing-terminal attach-not-own; targeted stop; no-state / malformed / wrong-schema; PID-reuse refusal; already-dead cleanup; bridge-env read-only posture; value-blind; no broad-kill/trading; stdlib-only; _safe_terminate unit).",
+    "tests/test_tim_isolated_launchers.py: Ran 13 tests OK (common: ASCII/no-BOM, no-args, exit-code propagation, allow-listed leading tokens, no persistence/broad-kill/trading, no token echo/assignment, no credential literal; per-launcher: start opaque->controller start; stop token-free->controller stop; probe opaque + loopback base URL + DEMO server).",
+    "tests/test_tim_winter_tz_probe.py: Ran 41 tests OK (unchanged). check_no_secrets = no findings; check_evidence_manifests = EVIDENCE-LINT PASS; make governance-check green.",
+    "Windows command-launcher gate (windows-latest, throwaway branch pinned to the exact PR head, stub controller/probe + loopback :8788 stand-in): result recorded in the TIM Notion master record and the PR; this manifest is authored at commit time, before the post-push gate/CI complete."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / synthetic-only: NOTHING is deployed, staged to the Windows host, or run. No real token handled; no bridge/terminal launch; no broker/MT5/NAS/dataset contact; no production mutation. The existing :8788 Taurex-LIVE bridge/terminal and every live tenant are untouched. The PR is opened auto-merge OFF and is NOT merged without a new Sponsor authorisation.",
+    "The isolated observation (host staging, owner demo relog, start -> one probe run -> stop teardown) remains Sponsor-gated under a separate authorization; until a passing value-blind DEMO result is returned the winter offset stays TIM_WINTER_TIMEZONE_NOT_VERIFIED.",
+    "Bridge changes are additive and default-off: with BRIDGE_BIND_HOST and BRIDGE_HTTP_ONLY unset the production bridge is byte-identical (default bind host EXACTLY 0.0.0.0; poller and POST routes unchanged).",
+    "This manifest is a point-in-time snapshot authored at commit time. The windows gate and the PR's own CI run against the pushed head AFTER authoring; their PASS/FAIL and the exact head SHA are recorded in the TIM Notion master record and on the PR.",
+    "Handoff docs (STATUS/HANDOFF/NEXT/KNOWN_ISSUES) were intentionally NOT edited to avoid conflicts with concurrent sessions; the handoff is carried by this manifest, ADR-0121, the runbook, and the TIM Notion master record."
+  ],
+  "artefact_locations": [
+    "scripts/mt5_signal_bridge.py (resolve_bind_host + BRIDGE_HTTP_ONLY mode + do_POST mutation-refusal; default-off)",
+    "scripts/tim_isolated_bridge_ctl.py (NEW stdlib lifecycle controller)",
+    "deploy/tim-winter-tz/start_tim_isolated_bridge.bat, run_winter_tz_probe_isolated.bat, stop_tim_isolated_bridge.bat (NEW launchers)",
+    "tests/test_tim_bridge_bind_host.py, tests/test_tim_isolated_bridge_ctl.py, tests/test_tim_isolated_launchers.py (NEW)",
+    "Makefile, .github/workflows/ci.yml (governance wiring)",
+    "docs/architecture/ADR-0121-tim-isolated-winter-tz-observation-path.md (NEW)",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md (+ isolated observation path)",
+    "evidence/manifests/GFX-EVD-TIM-ISOLATED-WINTER-TZ-PATH-013.json (this manifest)"
+  ],
+  "checksums": {
+    "scripts/mt5_signal_bridge.py": "sha256:09d805a3c2ecf7f8ab502fe422dc52ec3f7ae510632d7ade3245424e495ec7f7",
+    "scripts/tim_isolated_bridge_ctl.py": "sha256:75e2f37724fcdd5f150edc3f09e81a66108ba1f9c7b839c0ab69868a877f131a",
+    "scripts/tim_winter_tz_probe.py": "sha256:4412b1f93d7fba9256860384eb3cac2a531059dc6509f6f9c0313e635046eee5",
+    "deploy/tim-winter-tz/start_tim_isolated_bridge.bat": "sha256:1ea8f9ba3d5e4631564318da32c4d3b61c8aebb04ff13e389d8fa054750ccb59",
+    "deploy/tim-winter-tz/run_winter_tz_probe_isolated.bat": "sha256:51c8ef885718d481093e342c7c0ff515cf2df0f2abf746841e12539e6ef1a19b",
+    "deploy/tim-winter-tz/stop_tim_isolated_bridge.bat": "sha256:e1b75bbbbc0a9ebb9b1a8cb4c63a54c6839114e3cccb77d38ea2a78b5720fce6",
+    "tests/test_tim_bridge_bind_host.py": "sha256:4684b1a2ddcff3f195d0431a646552c29bd26685dfdd0c41629c9050a24555ee",
+    "tests/test_tim_isolated_bridge_ctl.py": "sha256:dfbcaab4cddaa41dc7c9baa952d46ec89a1209f90f606252f8fbe5fe3b5244c8",
+    "tests/test_tim_isolated_launchers.py": "sha256:8fd5a46bceddf0d209809550e5f8a78001f2c34e42cd3475bf55bf0a788a97f2",
+    "docs/architecture/ADR-0121-tim-isolated-winter-tz-observation-path.md": "sha256:00327df8fd7f737a6aae43f67a20410c50bd0d4d748fef078336408344d4fe5f",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md": "sha256:c2d5e2d6e04ea07f616c4f8bfb39eb883c6958bb6d49b54a76136d3ec46db212"
+  },
+  "reviewer": "GFX-TIM-ISOLATED-WINTER-TZ-PATH-013 author self-review + an independent 8-dimension adversarial review (live-tenant isolation; port/listener isolation; PID and teardown safety; credential isolation; DEMO fail-closed; zero trading/execution; rollback/partial-start; Windows quoting/path safety). NO CRITICAL/HIGH. 2 MEDIUM FIXED before PR-ready: (1) rollback could orphan the temp bridge if identity capture was transiently empty -> bounded-retry identity capture + last-chance capture in rollback; (2) PID-reuse defence strengthened with a per-start argv nonce (unique bridge identity). 2 LOW documented+dispositioned: netstat 'LISTENING' is English-locale dependent (fails closed at start; host is English Windows); http-only main() skips validate_config (acceptable - mutation path disabled, live env stripped/MT5_ALLOW_LIVE popped, expected-server hard-coded in the launcher)."
+}

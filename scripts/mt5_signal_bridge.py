@@ -267,6 +267,37 @@ ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8788"))
+
+# --- Explicit, fail-closed HTTP bind host (GFX-TIM-ISOLATED-WINTER-TZ-PATH-013 / ADR-0121) ---------
+# The HTTP server previously hard-coded ("0.0.0.0", HTTP_SERVER_PORT). The default here is EXACTLY
+# "0.0.0.0", so production behaviour is byte-identical when BRIDGE_BIND_HOST is unset. An explicit
+# BRIDGE_BIND_HOST lets an isolated, loopback-only diagnostic bridge bind 127.0.0.1. Only an exact
+# allow-list is accepted; any other value (empty, wildcard "*", malformed, or a hostname) fails
+# CLOSED — the bridge refuses to start rather than binding a surprising interface.
+_ALLOWED_BIND_HOSTS = ("0.0.0.0", "127.0.0.1", "::1")
+
+
+def resolve_bind_host():
+    """Return the validated HTTP bind host; fail closed (SystemExit) on any non-allow-listed value.
+
+    Default (BRIDGE_BIND_HOST unset) is EXACTLY "0.0.0.0" — byte-identical to the prior hard-coded
+    bind. Nothing is logged but the chosen host (never a credential).
+    """
+    raw = os.getenv("BRIDGE_BIND_HOST", "0.0.0.0")
+    host = raw.strip()
+    if host not in _ALLOWED_BIND_HOSTS:
+        raise SystemExit(
+            "BRIDGE_BIND_HOST=%r is not an allowed bind host (allowed: %s); refusing to start."
+            % (raw, ", ".join(_ALLOWED_BIND_HOSTS))
+        )
+    return host
+
+
+def http_only_enabled() -> bool:
+    """HTTP-only diagnostic mode: serve the read-only snapshot endpoints, run NO job poller /
+    order / execution path, and refuse every mutating POST. Default OFF (unset => exact prior
+    behaviour). Used only by the isolated winter-timezone bridge (ADR-0121)."""
+    return os.getenv("BRIDGE_HTTP_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 # Close-path robustness (Phase 2, Control 2): a close is risk-reducing, so retry a BOUNDED number of
 # times with a fresh price on retryable retcodes before declaring the position still open.
 CLOSE_MAX_ATTEMPTS = max(1, int(os.getenv("CLOSE_MAX_ATTEMPTS", "3") or 3))   # never 0 (would skip closing)
@@ -3120,6 +3151,13 @@ class OHLCRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response({"ok": False, "error": "unauthorized"}, 401)
                 return
 
+            # HTTP-only diagnostic mode (ADR-0121): the isolated read-only bridge serves snapshot GETs
+            # ONLY. Every mutating POST route (order / order_check / close / modify / ...) is refused
+            # here, so the temp bridge is structurally incapable of placing or changing any trade.
+            if http_only_enabled():
+                self._send_json_response({"ok": False, "error": "http_only_mode_no_mutation"}, 403)
+                return
+
             # Serialize the MT5-touching POST routes (no-op unless MT5_BRIDGE_THREADED). These are the MUTATING /
             # order-transport routes, so they use block=True: WAIT for the lock exactly like the poll-loop order
             # path (process_job), rather than fail-fast. A live order must never be bounced with 503 by transient
@@ -3391,16 +3429,17 @@ def start_http_server():
     block /health or other requests; MT5 access is serialized by _mt5_serialized so the added concurrency is safe.
     Off => the exact prior single-threaded HTTPServer."""
     try:
+        bind_host = resolve_bind_host()  # default "0.0.0.0" (unchanged); fail-closed on invalid
         if bridge_threaded_enabled():
             # Apply the per-request socket timeout ONLY here (threaded mode). StreamRequestHandler.setup() calls
             # connection.settimeout(self.timeout), so a stalled body-read/response-write under the lock raises
             # socket.timeout and releases it, instead of parking the pipeline forever. DARK mode never sets this.
             OHLCRequestHandler.timeout = _MT5_REQUEST_TIMEOUT
-            server = ThreadingHTTPServer(("0.0.0.0", HTTP_SERVER_PORT), OHLCRequestHandler)
+            server = ThreadingHTTPServer((bind_host, HTTP_SERVER_PORT), OHLCRequestHandler)
             server.daemon_threads = True  # explicit: worker threads never block process shutdown (defensive)
             logger.info(f"HTTP server started on port {HTTP_SERVER_PORT} (threaded; MT5 access serialized)")
         else:
-            server = HTTPServer(("0.0.0.0", HTTP_SERVER_PORT), OHLCRequestHandler)
+            server = HTTPServer((bind_host, HTTP_SERVER_PORT), OHLCRequestHandler)
             logger.info(f"HTTP server started on port {HTTP_SERVER_PORT}")
         server.serve_forever()
     except Exception as e:
@@ -3449,6 +3488,18 @@ def main_loop() -> None:
 
 def main() -> int:
     """Entry point."""
+    if http_only_enabled():
+        # HTTP-only diagnostic mode (GFX-TIM-ISOLATED-WINTER-TZ-PATH-013 / ADR-0121): serve the
+        # read-only snapshot endpoints ONLY. No job poller, no fetch_next_job, no process_job, no
+        # order/execution path runs. Inbound auth (GUVFX_AGENT_TOKEN) stays mandatory; the backend
+        # poller config (API URL / worker token / account id) is NOT required in this mode.
+        if not AGENT_TOKEN:
+            logger.error("BRIDGE_HTTP_ONLY=1 requires GUVFX_AGENT_TOKEN (inbound auth). Exiting.")
+            return 1
+        logger.info("HTTP-ONLY mode: snapshot GET endpoints only; job poller / mutation path DISABLED.")
+        start_http_server()  # blocking serve_forever on this thread; main_loop() is never entered
+        return 0
+
     if not validate_config():
         logger.error("Configuration validation failed. Exiting.")
         return 1
