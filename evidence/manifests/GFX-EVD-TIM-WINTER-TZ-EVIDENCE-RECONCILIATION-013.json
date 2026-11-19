@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013",
+  "packet_id": "GFX-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013",
+  "created_at_utc": "2026-11-19T00:00:00Z",
+  "branch": "feat/tim-winter-tz-evidence-reconciliation",
+  "base_commit": "97d2176530ddd7be7f147761f3e3ee6f44c898cc",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only",
+    "authoritative_decision": "ADR-0121 (isolated TradersWay-Demo winter-timezone observation path). This packet reconciles the VERIFIED on-host observation into Git evidence; it adds no code path and no ADR.",
+    "additive": true,
+    "migration_free": true,
+    "real_token_handled": false,
+    "real_host_or_bridge_contact": false,
+    "windows_host_staging": false,
+    "terminal_or_bridge_launch": false,
+    "probe_executed": false,
+    "real_broker_read": false,
+    "nas_or_dataset_access": false,
+    "deployment_or_production_mutation": false,
+    "trading_or_execution_change": false,
+    "config_or_workflow_behaviour_change": false,
+    "port_8788_untouched": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "governance (secret scan + evidence lint + evidence-manifest schema test + the new winter-tz evidence-contract test, alongside the existing TIM stdlib tests)"
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_tim_winter_tz_evidence.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_winter_tz_probe.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v",
+    "make governance-check"
+  ],
+  "expected_results": [
+    "The recorded value-blind winter observation satisfies the evidence contract: exactly three completed M1 bars (60s cadence, forming bar excluded); a single whole-hour offset of 7200 s (UTC+2) consistent across all three samples; residuals within the probe's 0..180 s bound and reproduced through probe.compute_offset from the server anchor DERIVED from the recorded completed-bar epochs (so a bar shift fails the test); DEMO-only classification; summer (10800 s) and winter (7200 s) evidence kept separate and neither generalised year-round; no forbidden key or secret-like value in the record.",
+    "The winter evidence document carries TIM_WINTER_TIMEZONE_VERIFIED as the current verdict while retaining (not erasing) the historical TIM_WINTER_TIMEZONE_NOT_VERIFIED observations, and keeps the summer UTC+3 observation separate.",
+    "Evidence manifest lint PASS; real-manifest schema test PASS; secret scan no findings; make governance-check green. Migration-free; no production/config/workflow behaviour change."
+  ],
+  "actual_results": [
+    "tests/test_tim_winter_tz_evidence.py: Ran 10 tests OK (DEMO-only; exactly-three-completed-bars + M1 cadence; whole-hour offset via probe.consistency_verdict; bounded residuals reproduced via probe.compute_offset; summer/winter separation + no year-round generalisation; isolation + teardown + clean host post-check; probe-block value-blind contract via probe.sanitize_result; whole-record forbidden-key guard via probe._assert_no_forbidden_keys; no secret-like blob; doc supersede-without-erase + unambiguous current verdict).",
+    "python3 scripts/check_no_secrets.py: no findings. python3 scripts/check_evidence_manifests.py: EVIDENCE-LINT PASS. tests/test_evidence_manifests.py: OK (real committed manifests lint clean, this one included). make governance-check: green.",
+    "This manifest is authored at commit time; head_commit is null until the squash merge, and the exact head SHA + CI run are recorded on the PR and in the TIM Notion master record."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only: this packet edits documentation, adds one value-blind evidence fixture and one stdlib test, adds a new evidence manifest, and wires the test into the Makefile governance target and the CI governance job. NOTHING is deployed, staged, or run on any host; no real token handled; no bridge/terminal/broker/MT5/NAS/dataset contact; no production/config/workflow behaviour change. The :8788 Taurex-LIVE bridge and every live tenant are untouched.",
+    "The recorded observation is a single winter-season sample. The verdict TIM_WINTER_TIMEZONE_VERIFIED binds TradersWay-Demo = UTC+2 / 7200 s for the observed winter season only; it is not generalised across the DST boundary. Summer UTC+3 / 10800 s remains its own separate seasonal evidence.",
+    "This manifest is a point-in-time snapshot authored at commit time. The checksums are computed against the files as written in this branch; check_evidence_manifests.py validates checksum FORMAT (not content) over the whole history, and the recorded head SHA and CI result are carried on the PR and the TIM Notion master record.",
+    "Handoff docs (STATUS/HANDOFF/NEXT/KNOWN_ISSUES) were intentionally NOT edited to avoid conflicts with concurrent sessions; the handoff is carried by this manifest, the updated winter evidence document, the runbook outcome note, and the TIM Notion master record.",
+    "The PR is opened auto-merge OFF and is NOT merged without a new Sponsor authorisation."
+  ],
+  "artefact_locations": [
+    "docs/evidence/broker_timezone_evidence_v2_winter.md (winter verdict superseded NOT_VERIFIED -> VERIFIED; new VERIFIED observation section; mapping/status updated; history retained)",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md (added 2026-11-19 VERIFIED outcome note)",
+    "tests/fixtures/market_data/tim/winter_tz_observation_2026-11-19.json (NEW canonical value-blind evidence record)",
+    "tests/test_tim_winter_tz_evidence.py (NEW evidence-contract test; reuses the probe contract)",
+    "Makefile, .github/workflows/ci.yml (governance wiring for the new test)",
+    "evidence/manifests/GFX-EVD-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013.json (this manifest)"
+  ],
+  "checksums": {
+    "docs/evidence/broker_timezone_evidence_v2_winter.md": "sha256:78101f99cb90b966d29262f3d4ed57841158b2ace807fea564ac986096fd6f59",
+    "docs/TIM_WINTER_TZ_HOST_PROBE_RUNBOOK.md": "sha256:b326c1588f797cccb29fe77b2eb9092f1819bb9eb1072efe5ddd95921f7a0f27",
+    "tests/fixtures/market_data/tim/winter_tz_observation_2026-11-19.json": "sha256:21a129cfe40781ac00e5bb54b045ebba6dde09c38810f88725953abdc8640fe0",
+    "tests/test_tim_winter_tz_evidence.py": "sha256:50ad37ae26099f3e9856c58f7211dbc85072c4dcbaa01d280ab7c77970f7bc30"
+  },
+  "reviewer": "GFX-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013 author self-review + an independent 5-dimension adversarial review (evidence integrity / internal consistency; value-blind leakage; seasonal overgeneralization; provenance and supersession continuity; repository-only boundary). Verdict PR-READY, NO CRITICAL/HIGH; the reviewer independently re-ran the test, the arithmetic via the real probe anchor, the 4 manifest checksums (all match), and mutation tests (the test caught a 4th bar, non-whole-hour offset, LIVE class, residual>180, summer==winter, a forbidden key, bad cadence). 2 MEDIUM FIXED before PR-ready: (1) the residual test reconstructed the anchor from the answer rather than from the recorded bars -> now derives server_anchor = completed_bar_server_epochs[-1] + BAR_SECONDS, so a bar shift is caught (verified: shifted bars yield offset 10800 != 7200 and fail); (2) the historical 'Why the winter offset is NOT verified' heading read as a current claim -> retitled to the 2026-11-18 control-node attempt and marked historical/superseded. LOW dispositioned: 'Resolution mechanism (not yet run)' and 'Bounded next action' de-staled to COMPLETED/run-on-2026-11-19; EET/EEST phrasing softened so the year-round pair is not implied to be evidenced; protected_8788_owning_pid 10272 retained deliberately (it is in the Sponsor's canonical evidence and proves :8788 control continuity; an ephemeral PID, not a secret). Value-blind leakage, seasonal overgeneralization, and repository-only boundary all CLEAN."
+}

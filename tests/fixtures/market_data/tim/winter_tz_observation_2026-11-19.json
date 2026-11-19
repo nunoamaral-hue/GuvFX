@@ -1,0 +1,68 @@
+{
+  "record_id": "GFX-TIM-WINTER-TZ-OBSERVATION-014",
+  "reconciliation_packet_id": "GFX-TIM-WINTER-TZ-EVIDENCE-RECONCILIATION-013",
+  "path_packet_id": "GFX-TIM-ISOLATED-WINTER-TZ-PATH-IMPLEMENTATION-013",
+  "adr": "ADR-0121",
+  "verdict": "TIM_WINTER_TIMEZONE_VERIFIED",
+  "value_blind": true,
+  "mapping": {
+    "server": "TradersWay-Demo",
+    "season": "winter",
+    "offset_seconds": 7200,
+    "offset_hours": 2,
+    "season_bound": true,
+    "single_observation_bound": true,
+    "standard_time_non_dst": true
+  },
+  "probe": {
+    "schema_version": "tim-winter-tz-probe/1.0",
+    "ok": true,
+    "assessment_status": "VERIFIED",
+    "demo_classification": "DEMO",
+    "broker_server_identifier": "TradersWay-Demo",
+    "completed_bar_server_epochs": [1795103640, 1795103700, 1795103760],
+    "independent_utc_epochs": [1795096621, 1795096622, 1795096623],
+    "implied_offsets_seconds": [7200, 7200, 7200],
+    "residuals_seconds": [1, 2, 3],
+    "consistency": {"consistent": true, "offset_seconds": 7200, "samples": 3},
+    "offset_hours": 2,
+    "samples": 3,
+    "correlation_id": "tim-winter-tz-1795096623",
+    "observation_time_utc": "2026-11-19T13:57:03Z",
+    "method": "read-only loopback /mt5/snapshots/{account,rates}; three completed M1 bars (forming bar excluded); server-anchor vs independent NTP UTC; whole-hour offset",
+    "limitations": [
+      "offset is the broker server-time offset observed at this instant only",
+      "host clock must be NTP-synced; UTC is the host's independent clock",
+      "a single season's observation; cross-season mapping needs its own evidence"
+    ]
+  },
+  "isolation": {
+    "bind_host": "127.0.0.1",
+    "fixed_port": 8977,
+    "loopback_only": true,
+    "protected_port": 8788,
+    "protected_8788_unchanged": true,
+    "terminal_created_by_us": false
+  },
+  "teardown": {
+    "isolated_bridge_stopped": true,
+    "temp_listener_gone": true,
+    "protected_8788_unchanged": true
+  },
+  "host_post_check": {
+    "listen_8977_count": 0,
+    "tim_staging_proc_count": 0,
+    "state_file_exists": false,
+    "protected_8788_listener_count": 1,
+    "protected_8788_owning_pid": 10272
+  },
+  "summer_reference": {
+    "server": "TradersWay-Demo",
+    "season": "summer",
+    "offset_seconds": 10800,
+    "offset_hours": 3,
+    "verdict": "VERIFIED_SEASON_ONLY",
+    "source": "docs/evidence/broker_timezone_evidence_v1.md"
+  },
+  "seasonal_pair": "EET/EEST (winter UTC+2 standard time; summer UTC+3 DST); not generalised to a year-round rule"
+}
