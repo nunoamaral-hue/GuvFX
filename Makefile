@@ -21,6 +21,7 @@ governance-check: secret-scan
 	python3 -m unittest discover -s tests -p 'test_tim_bridge_bind_host.py'
 	python3 -m unittest discover -s tests -p 'test_tim_isolated_bridge_ctl.py'
 	python3 -m unittest discover -s tests -p 'test_tim_isolated_launchers.py'
+	python3 -m unittest discover -s tests -p 'test_tim_winter_tz_evidence.py'
 
 backend-test:
 	@if [ -f backend/manage.py ]; then \

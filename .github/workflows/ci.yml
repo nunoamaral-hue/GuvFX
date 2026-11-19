@@ -156,6 +156,9 @@ jobs:
       - name: TIM isolated launcher tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_tim_isolated_launchers.py' -v
 
+      - name: TIM winter-tz evidence-contract tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_tim_winter_tz_evidence.py' -v
+
   research-foundation:
     runs-on: ubuntu-latest
     steps:
