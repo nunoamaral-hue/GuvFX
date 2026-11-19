@@ -262,6 +262,10 @@ REST_FRAMEWORK = {
         # default (one account-scoped bridge, bursty on change). Final value is a governance/capacity decision.
         "copier_event_ingest": "240/min",
         "copier_attest_verify": "60/min",
+        # Per-identity ceiling for the NON-TRADING one-shot ingest-signing probe (GFX-160/ADR-0119). The endpoint
+        # is DARK (503) until COPIER_INGEST_PROBE_ENABLED is armed; a one-shot operator probe needs only a tiny
+        # ceiling. Final value is a governance/capacity decision.
+        "copier_ingest_probe": "30/min",
     },
 }
 

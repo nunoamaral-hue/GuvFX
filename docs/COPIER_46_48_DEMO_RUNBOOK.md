@@ -187,3 +187,54 @@ single fail-closed path; prefer it over hand-sequencing the steps above.
 
 **Still DARK / repository-only:** no agent arms, enables, provisions, or trades. A real run wires signed-host
 actuators and is separately Sponsor-gated.
+
+---
+
+## Optional pre-flight: NON-TRADING one-shot INGEST-signing probe (GFX-160, ADR-0119)
+
+A cheap, repeatable, **zero-trading** way to prove the ingest-authentication chain (standing-key signing ->
+transport -> backend HMAC auth -> bounded-window key resolution -> single-use nonce / replay) **before** the real
+OPEN/MODIFY/CLOSE demo. It exercises **no** MT5 state, master action, projection, replication, dispatch, admission,
+arm, follower (#48) or order, and it **cannot** become an OPEN/MODIFY/CLOSE — so a green probe means only "the
+key/window/transport/replay chain is sound," never "copy trading works." It is **not** a substitute for the real
+E2E demo (steps 1-5 above).
+
+Pre-req: the standing account-46 host key is present and ACL-verified (pkt-159). Default-OFF; the endpoint 503s
+until armed.
+
+1. **[HUMAN — fresh window]** Open a fresh bounded INGEST window with the standing-key bytes
+   (`deploy/copier-emitter/operator/provision_and_open_ingest.py`, one hidden entry; TTL <= 900). A probe needs an
+   OPEN INGEST window; if the pkt-159 window has expired, open a new one (the standing host key persists, so this
+   re-opens only the window).
+2. **[STAFF]** Arm the probe gate at deploy-time config: `COPIER_ENABLED`, `COPIER_EVENT_INGESTION_ENABLED` and
+   `COPIER_INGEST_PROBE_ENABLED` on (the probe flag ANDs the first two). No authorization, arm, task, worker or
+   host-admission is enabled.
+3. **[OPERATOR — one-shot, on the host]** Run the probe once (reads the standing key locally; never argv/env/stdin):
+   `python run_ingest_probe.py --config C:\GuvFX\copier-emitter\46\config.json --replay`
+   It signs ONE non-trading envelope, POSTs once (expect `verified`), then (with `--replay`) re-POSTs the SAME
+   envelope once to prove **replay rejection** (expect `replayed`). Output is sanitised JSON (verified / reason /
+   correlation id / timestamp / attempts) — never the key or envelope. The standing key file is **retained**.
+4. **[READ-ONLY]** Confirm value-blind: backend logged `copier_ingest_probe_verify verified=true`; exactly one
+   `CopierIngestNonce` burned for the probe nonce; `copier_verifier_window --status` still `open` with `uses`
+   incremented (uncapped window, not exhausted); **no** `MasterEvent` / lifecycle / `ExecutionJob` / authorization
+   / arm / `LiveExecutionAuthorization` created; #48 untouched.
+5. **[STAFF]** Close the window (`copier_verifier_window --close`) and restore the probe/ingestion flags OFF
+   (back to DARK). **Keep the verified standing host key in place** (removal is the separately-governed teardown
+   step, not part of the probe).
+
+**Notes (safety):**
+
+- **The INGEST window MUST be uncapped** (`--max-uses 0`, TTL-bounded only — exactly what `provision_and_open_ingest.py`
+  opens). The verifier resolves the key by *claiming* it before the signature is checked (you need the key to verify
+  the HMAC), so every request to the `AllowAny` endpoint — including the `--replay` attempt and any garbage — burns one
+  `uses` increment. On a **use-capped** window that would exhaust and close the window mid-probe; on the uncapped
+  window it is harmless. The endpoint is rate-limited (`copier_ingest_probe` throttle) and fails closed, but run the
+  probe only under an uncapped window.
+- **Governance coupling (PM):** `COPIER_INGEST_PROBE_ENABLED` ANDs `COPIER_EVENT_INGESTION_ENABLED`, and the probe
+  shares the one `INGEST` verifier window + the one `CopierIngestNonce` space with real ingestion. So while the probe
+  is armed, the real signed `/event-ingest/` endpoint is also live (itself persist-only / non-trading unless
+  `COPIER_IMMEDIATE_DISPATCH_ENABLED` is *separately* armed). A "non-trading probe window" is therefore simultaneously
+  a live real-ingestion window — close it (step 5) as soon as the probe is done.
+
+**Still DARK / repository-only:** no agent arms, enables, provisions, or trades; the probe is inert until a
+Sponsor arms the flag and opens a window.
