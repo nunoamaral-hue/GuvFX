@@ -100,13 +100,15 @@ function aggregateStateLabel(lang: Lang, state: AggregateState | undefined, reas
 // missing-data partial and from a true "no eligible account" unavailable).
 function metricsStateLabel(lang: Lang, state: AggregateState | undefined, reason?: string | null): string {
   if (state === "UNAVAILABLE") {
+    // Denomination-neutral (ADR-0122): the excluded accounts may be a KNOWN non-USD currency with no vetted rate OR
+    // an account whose currency could not be established at all — so the copy must not assert "non-USD".
     return reason === "currency_unconvertible"
-      ? (lang === "ja" ? "利用不可 — USD建ての対象口座がありません" : "Unavailable — no USD-denominated accounts")
+      ? (lang === "ja" ? "利用不可 — 確定実績をUSDで表示できません" : "Unavailable — realized P&L can't be shown in USD")
       : (lang === "ja" ? "利用不可" : "Unavailable");
   }
   if (state === "PARTIAL") {
     return reason === "currency_unconvertible"
-      ? (lang === "ja" ? "一部 — 非USD口座を確定実績から除外" : "Partial — non-USD accounts excluded from realized performance")
+      ? (lang === "ja" ? "一部 — 確定実績をUSDで表示できない口座を除外" : "Partial — accounts whose realized P&L can't be shown in USD are excluded")
       : (lang === "ja" ? "一部 — 口座データが古いか取得できません" : "Partial — stale or missing account data");
   }
   return "";

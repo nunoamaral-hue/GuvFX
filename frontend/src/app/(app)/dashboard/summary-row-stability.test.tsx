@@ -10,8 +10,8 @@
  *     the cell's height does not grow when values arrive (the vertical jump);
  *   - a summary payload whose scope does not match the selected scope never drives the header (stale-scope race);
  *   - single-account scope omits the ALL-scope FX slot, so that cell's geometry is unchanged there;
- *   - the realized-metrics PARTIAL state is disclosed honestly (non-USD accounts excluded from realized
- *     performance), NOT as "currency conversion unavailable" (equity IS converted via the disclosed rate).
+ *   - the realized-metrics PARTIAL state is disclosed honestly (accounts whose realized P&L can't be shown in USD
+ *     are excluded), NOT as "currency conversion unavailable" (equity IS converted via the disclosed rate).
  *
  * Fixtures mirror the live support@ portfolio (6 accounts, 0 closed trades → metrics PARTIAL with the 2 GBP
  * accounts excluded; equity reconciles 6/6 via the BoE rate).
@@ -126,7 +126,7 @@ describe("Dashboard summary row — stable geometry across states", () => {
     const { container } = render(<DashboardPage />);
     await waitFor(() => expect(screen.getByText("$2,831.07")).toBeTruthy());
     const text = container.textContent || "";
-    expect(text).toContain("Partial — non-USD accounts excluded from realized performance");
+    expect(text).toContain("Partial — accounts whose realized P&L can't be shown in USD are excluded");
     expect(text).toContain("4 included · 2 excluded");
     // The equity tile DOES convert GBP (6/6), so the performance strip must not claim conversion is unavailable.
     expect(text).not.toContain("currency conversion unavailable");
@@ -162,8 +162,8 @@ describe("Dashboard summary row — stable geometry across states", () => {
     expect(cells()).toBe(4);
     expect(screen.getByTestId("equity-fx-slot")).toBeTruthy();
     const text = container.textContent || "";
-    expect(text).toContain("一部 — 非USD口座を確定実績から除外");          // JA honest metrics disclosure
-    expect(text).not.toContain("excluded from realized performance");    // no English leak in the summary row
+    expect(text).toContain("一部 — 確定実績をUSDで表示できない口座を除外");          // JA honest metrics disclosure
+    expect(text).not.toContain("can't be shown in USD are excluded");    // no English leak in the summary row
   });
 
   it("omits the ALL-scope FX slot in single-account scope (cell geometry unchanged there)", async () => {
