@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import datetime
 import json
+from io import StringIO
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -108,11 +110,35 @@ class ClassifyMatrix(TestCase):
                 elapsed_since_sync_seconds=400))
             self.assertEqual(c["oauth_status"], OH.RECONSENT_REQUIRED, code)
 
-    def test_reconsent_from_status_error_and_revoked(self):
-        for st in ("ERROR", "REVOKED"):
-            c = OH.classify_mailbox_oauth_health(_base(status=st, state=H.RECOVERY_REQUIRED,
-                                                       elapsed_since_sync_seconds=400))
-            self.assertEqual(c["oauth_status"], OH.RECONSENT_REQUIRED, st)
+    def test_reconsent_from_status_error(self):
+        # status=ERROR ("Needs re-auth") is a genuine reconsent signal — the owner must re-authorize. (REVOKED is
+        # split off below; see ADR-0118.)
+        c = OH.classify_mailbox_oauth_health(_base(status="ERROR", state=H.RECOVERY_REQUIRED,
+                                                   elapsed_since_sync_seconds=400))
+        self.assertEqual(c["oauth_status"], OH.RECONSENT_REQUIRED)
+        self.assertTrue(c["reconsent_required"])
+
+    def test_revoked_is_owner_disconnected_not_reconsent(self):
+        # pkt-158 / ADR-0118 regression: a member who clicks "disconnect" (the ONLY writer of status=REVOKED) is a
+        # benign, intentional action. It must classify as OWNER_DISCONNECTED — NOT an incident-grade reconsent fault,
+        # NOT a CRITICAL alert, NOT a recovery-required condition.
+        c = OH.classify_mailbox_oauth_health(_base(status="REVOKED", state=H.RECOVERY_REQUIRED,
+                                                   elapsed_since_sync_seconds=400))
+        self.assertEqual(c["oauth_status"], OH.OWNER_DISCONNECTED)
+        self.assertEqual(c["alert_severity"], OH.SEV_OK)
+        self.assertFalse(c["recovery_required"])
+        self.assertFalse(c["reconsent_required"])
+        self.assertIn("No action", c["recommended_action"])
+
+    def test_revoked_with_leftover_reauth_code_still_owner_disconnected(self):
+        # Adversarial: even with a stale re-auth code on the row and a long elapsed, a member's deliberate disconnect
+        # wins — OWNER_DISCONNECTED, SEV_OK, never escalated to CRITICAL by age.
+        c = OH.classify_mailbox_oauth_health(_base(status="REVOKED", state=H.RECOVERY_REQUIRED,
+                                                   last_error_code=Code.OAUTH_PERMISSION_DENIED,
+                                                   consecutive_failures=12, elapsed_since_sync_seconds=9000))
+        self.assertEqual(c["oauth_status"], OH.OWNER_DISCONNECTED)
+        self.assertEqual(c["alert_severity"], OH.SEV_OK)
+        self.assertFalse(c["recovery_required"])
 
     def test_security_config_codes(self):
         for code in (Code.OAUTH_CLIENT_NOT_CONFIGURED, Code.CREDENTIAL_MISSING, Code.CREDENTIAL_STORE_ERROR):
@@ -184,6 +210,23 @@ class DecideAlert(TestCase):
         return OH.classify_mailbox_oauth_health(_base(
             mailbox_id=7, state=H.RECOVERY_REQUIRED, last_error_code=Code.OAUTH_PERMISSION_DENIED,
             elapsed_since_sync_seconds=400))
+
+    def _disconnected(self):
+        return OH.classify_mailbox_oauth_health(_base(
+            mailbox_id=9, status="REVOKED", state=H.RECOVERY_REQUIRED, elapsed_since_sync_seconds=400))
+
+    def test_owner_disconnect_never_opens_an_alert(self):
+        # pkt-158 regression: a benign member disconnect must NOT open an operator alert.
+        self.assertEqual(OH.decide_alert(None, self._disconnected(), now=self.now)["action"], OH.ALERT_NONE)
+
+    def test_owner_disconnect_after_alert_recovers_once(self):
+        # A member disconnecting a previously-alerting (reconsent) mailbox CLEARS the alert with one recovery event,
+        # never re-opens a new one.
+        prev = {"dedup_key": OH.dedup_key(9, OH.RECONSENT_REQUIRED), "severity": OH.SEV_CRITICAL,
+                "emitted_at": self.now - datetime.timedelta(minutes=10)}
+        d = OH.decide_alert(prev, self._disconnected(), now=self.now)
+        self.assertEqual(d["action"], OH.ALERT_RECOVER)
+        self.assertEqual(d["severity"], OH.SEV_OK)
 
     def test_healthy_no_prev_is_none(self):
         d = OH.decide_alert(None, self._healthy(), now=self.now)
@@ -300,6 +343,23 @@ class AggregateIntegration(TestCase):
         self.assertIsNone(agg["operator_notice"])
         self.assertEqual(agg["worst_alert_severity"], OH.SEV_OK)
 
+    def test_member_revoked_mailbox_is_benign_not_a_fault(self):
+        # pkt-158 / ADR-0118 regression across the aggregate: one healthy + one member-revoked mailbox. The revoked
+        # one is OWNER_DISCONNECTED, counted separately, and must NOT inflate reconsent / recovery / worst-severity
+        # or raise an operator notice.
+        _mb(self.u, status="CONNECTED", code="", sync_age_s=120, attempt_age_s=120, local="alice")
+        _mb(self.u, status="REVOKED", code="", sync_age_s=4000, attempt_age_s=None, local="dave")
+        agg = OH.aggregate_oauth_health()
+        self.assertEqual(agg["monitored_mailbox_count"], 2)
+        self.assertEqual(agg["healthy_count"], 1)
+        self.assertEqual(agg["owner_disconnected_count"], 1)
+        self.assertEqual(agg["reconsent_required_count"], 0)
+        self.assertFalse(agg["any_reconsent_required"])
+        self.assertFalse(agg["any_recovery_required"])
+        self.assertEqual(agg["worst_alert_severity"], OH.SEV_OK)
+        self.assertIsNone(agg["operator_notice"])
+        self.assertEqual(agg["counts_by_status"]["OWNER_DISCONNECTED"], 1)
+
 
 class SynchronizerStallDetector(TestCase):
     """pkt-149 adversarial-review fix: on an UNMIGRATED schema the attempt column is absent (age None for all), so a
@@ -328,6 +388,48 @@ class SynchronizerStallDetector(TestCase):
         # The column is absent → age None for every row → we CANNOT prove a stall → must return False.
         rows = [self._row(attempt_age=None), self._row(attempt_age=None)]
         self.assertFalse(OH._detect_synchronizer_stalled(rows, recovery_seconds=3600, r1_columns_present=False))
+
+
+@override_settings(BROKER_INTELLIGENCE_INGEST_ENABLED="1")
+class MailboxIngestProbeOwnerDisconnect(TestCase):
+    """pkt-158 / ADR-0118 end-to-end regression: the operational-health probe (the surface that would OPEN the
+    CRITICAL alert and degrade the whole system to MISCONFIGURED) must treat a member-revoked mailbox as benign."""
+
+    def test_member_revoked_mailbox_does_not_fault_the_subsystem(self):
+        from core.operational_health import probe_mailbox_ingest, HealthState
+        u = User.objects.create_user(username="pr%d" % _uid(), email="pr%d@x.invalid" % _uid(), password="x")
+        _mb(u, status="CONNECTED", code="", sync_age_s=120, attempt_age_s=120, local="alice")
+        _mb(u, status="REVOKED", code="", sync_age_s=4000, attempt_age_s=None, local="dave")
+        h = probe_mailbox_ingest()
+        # The whole bug: a benign disconnect used to roll RECONSENT_REQUIRED → MISCONFIGURED (a FAULT). It must not.
+        self.assertNotIn(h.state, HealthState.FAULTS)
+
+
+class MailboxHealthCommandReconciliation(TestCase):
+    """pkt-158 downstream completeness: the broker_mailbox_health CLI (a consumer of aggregate_oauth_health) must
+    surface owner_disconnected_count so its summary reconciles, and a benign member disconnect must not trip the
+    pkt-149 reconsent exit-gate."""
+
+    def setUp(self):
+        self.u = User.objects.create_user(username="cmd%d" % _uid(), email="cmd%d@x.invalid" % _uid(), password="x")
+
+    def test_oauth_summary_surfaces_owner_disconnected_and_reconciles(self):
+        _mb(self.u, status="CONNECTED", code="", sync_age_s=120, attempt_age_s=120, local="alice")
+        _mb(self.u, status="REVOKED", code="", sync_age_s=4000, attempt_age_s=None, local="dave")
+        out = StringIO()
+        call_command("broker_mailbox_health", "--oauth-health", "--all-statuses", stdout=out)
+        text = out.getvalue()
+        self.assertIn("monitored=2", text)
+        self.assertIn("owner_disconnected=1", text)        # the new count is surfaced (summary now reconciles)
+        self.assertIn("reconsent_required=0", text)        # a benign disconnect is NOT a reconsent in the summary
+        self.assertIn("oauth_status=OWNER_DISCONNECTED", text)
+
+    def test_member_disconnect_does_not_trip_reconsent_exit_gate(self):
+        _mb(self.u, status="REVOKED", code="", sync_age_s=4000, attempt_age_s=None, local="dave")
+        out = StringIO()
+        # Must NOT raise CommandError: a member disconnect is not a reconsent condition (would have before pkt-158).
+        call_command("broker_mailbox_health", "--all-statuses", "--exit-nonzero-on-reconsent", stdout=out)
+        self.assertIn("OWNER_DISCONNECTED", out.getvalue())
 
 
 @override_settings(BROKER_MAILBOX_OPERATOR_HEALTH_ENABLED="1")

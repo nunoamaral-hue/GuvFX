@@ -1,5 +1,28 @@
 # GuvFX — Project Status
 
+> **2026-11-18 — Member-disconnected mailbox is OWNER_DISCONNECTED, not a reconsent fault
+> (GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only; migration-free; DARK; governed PR; auto-merge OFF;
+> STOP before merge).** Off canonical main `3cd71e70` on `fix/oauth-owner-disconnect-classification`. Re-entry packet
+> selected the highest-priority UNBLOCKED repository-only item (withdrawal truthful-state observability) after three
+> read-only defect-hunt agents + direct verification. **Defect:** the ADR-0113 operator OAuth-health classifier mapped
+> a mailbox with `status=REVOKED` to `RECONSENT_REQUIRED` → CRITICAL "owner must re-authorize" alert + `MISCONFIGURED`
+> subsystem fault — but `status=REVOKED` is written by EXACTLY ONE caller, the member's own `MailboxRevokeView` (a
+> deliberate disconnect that also deletes the credential); no automated/error path writes it, and the genuine ~weekly
+> grant-expiry keeps `status=CONNECTED` and surfaces as a REAUTH code. So a routine member disconnect fired a CRITICAL
+> operator alert and degraded ingestion health — the inverse of the module's purpose (crying wolf). Latent today
+> (operator probe + endpoint flags OFF) but baked into deployed code; fixed before the operator-health path is armed.
+> **Fix:** an eighth truthful status `OWNER_DISCONNECTED` (SEV_OK, recovery_required=False, no alert) for `REVOKED`;
+> `ERROR` + REAUTH codes stay `RECONSENT_REQUIRED` (the genuine case preserved); `decide_alert` treats it like HEALTHY
+> (never OPEN; RECOVER-once if previously alerting); `probe_mailbox_ingest` maps it → non-fault; `aggregate_oauth_health`
+> adds `owner_disconnected_count` and keeps it visible (quarantine-don't-destroy); the DARK operator page renders it in a
+> muted non-alert colour. Owner-facing `health.customer_mailbox_status` / `MailboxIngestionNotice` deliberately
+> UNCHANGED. Verified: `broker_intelligence`+`core` **1304 OK** / 15 skip (incl. updated+new OWNER_DISCONNECTED cases),
+> migration-free, `check_no_secrets`/`check_evidence_manifests` PASS (146 manifests), ADR-0118 unique, frontend `build`
+> clean (eslint on the changed file clean; the 17 local vitest failures are the PRE-EXISTING jsdom `localStorage` env
+> issue in 3 untouched files, CI authoritative). 4 files, +124/-17. NO production/host/flag/mailbox/withdrawal mutation;
+> production stays `9ce6ceab`. **One bounded next action:** multi-lens adversarial review + exact-head CI 5/5, then
+> Sponsor `GO — merge PR`. STOP before merge.
+
 > **2026-11-17 — Copier production arming pipeline (GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117;
 > repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off canonical main
 > `ea085ee1` on `feat/copier-production-actuators`. Implements the missing governed production wiring so ONE atomic

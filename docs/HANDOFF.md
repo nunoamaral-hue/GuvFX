@@ -1,5 +1,54 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-18 — Mailbox OAuth-health: OWNER_DISCONNECTED ≠ reconsent (GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-WITHDRAWAL-OAUTH-OWNER-DISCONNECT-158
+Packet ID: GFX-DEADLINE-PRIORITY-REENTRY-158
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge). Local acceptance green; a 5-lens adversarial review
+  runs before PR-ready; exact-head CI 5/5 to be driven on the PR.
+
+Base commit: 3cd71e70ecc3cb94bc95ef09a64d82006b2000ad (canonical main; GFX-156 copier #680).
+Branch: fix/oauth-owner-disconnect-classification.
+Resulting commit(s): one (to be created after the adversarial review). Pushed: not yet. NOT merged, NOT deployed.
+Production stays 9ce6ceab.
+
+Re-entry selection (verified fact): reconciled live state (git/PRs/CI/prod) and ran three read-only defect-hunt
+  agents (withdrawal / dashboard / Wayond). Wayond ARM-157: NO regression. The surface-level withdrawal/dashboard
+  frontier (Google OAuth app publish; the six LIVE-position accounts' host read-gate; owner VISUAL) is human/host/
+  Sponsor-gated, NOT repo-only. The highest-priority UNBLOCKED repository-only item is a withdrawal truthful-state
+  observability defect (priority category 1).
+
+Scope (verified fact): oauth_health.py classified status=REVOKED as RECONSENT_REQUIRED -> CRITICAL operator alert +
+  (via core.operational_health.probe_mailbox_ingest) MISCONFIGURED subsystem fault. status=REVOKED has EXACTLY ONE
+  writer: the member's own MailboxRevokeView (deliberate disconnect; also deletes the credential). No automated/error
+  path writes REVOKED or ERROR; the genuine ~weekly grant-expiry keeps status=CONNECTED + a REAUTH code. Fix: new
+  eighth status OWNER_DISCONNECTED (SEV_OK, recovery_required=False, reconsent_required=False, no alert) for REVOKED;
+  ERROR + REAUTH_CODES stay RECONSENT_REQUIRED; decide_alert treats OWNER_DISCONNECTED like HEALTHY (never OPEN;
+  RECOVER-once if previously alerting); probe map -> HealthState.HEALTHY (non-fault); aggregate adds
+  owner_disconnected_count and keeps the mailbox visible; the DARK operator page renders it muted/non-alert. 4 files,
+  +124/-17. Migration-free, DARK.
+
+Assumptions (NOT verified): none material. The fix relies on the VERIFIED fact that REVOKED is member-only (grepped:
+  one writer, views.py MailboxRevokeView; no code writes status=ERROR). If a future path ever sets REVOKED to mean a
+  Google-side revocation, ADR-0118's mapping must be revisited (recorded in the ADR).
+
+Deviations: none from the packet. Owner-facing health.customer_mailbox_status / MailboxIngestionNotice intentionally
+  NOT changed (owner-scoped; "reconnect to resume" is correct for the owner).
+
+Exact tests: cd backend && .venv/bin/python manage.py test broker_intelligence core --noinput --parallel 4
+  = 1304 OK / 15 skip (after quarantining 140 gitignored copy-leaf duplicates; the only pre-quarantine failure was
+  core.tests_adr_governance tripping on '* [0-9].md' ADR copy-leaves - an env artifact absent from CI). makemigrations
+  --check broker_intelligence core = migration-free. check_no_secrets = no findings; check_evidence_manifests = PASS
+  (146); core.tests_adr_governance OK (ADR-0118 unique). Frontend: next build EXIT 0; eslint on the changed file EXIT 0;
+  the 17 local vitest failures are the PRE-EXISTING jsdom localStorage env issue (3 untouched files), CI authoritative.
+
+One bounded next action: complete the 5-lens adversarial review, fix any CONFIRMED finding with a regression test,
+  commit + push, open ONE governed PR (auto-merge OFF), drive exact-head CI 5/5, then STOP for Sponsor GO to merge.
+```
+
 ## 2026-11-17 — Copier production arming pipeline (GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```

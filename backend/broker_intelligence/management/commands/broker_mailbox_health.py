@@ -88,6 +88,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("  oauth health (pkt-149):"))
             self.stdout.write(
                 f"    monitored={oauth['monitored_mailbox_count']} healthy={oauth['healthy_count']} "
+                f"owner_disconnected={oauth['owner_disconnected_count']} "
                 f"reconsent_required={oauth['reconsent_required_count']} degraded={oauth['degraded_count']} "
                 f"synchronizer_stalled={oauth['synchronizer_stalled']} worst_sev={oauth['worst_alert_severity']}")
             for c in oauth["mailboxes"]:

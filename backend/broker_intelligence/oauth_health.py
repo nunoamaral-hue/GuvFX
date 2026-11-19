@@ -21,14 +21,15 @@ authorization code, client secret, credential ref, raw cursor value, email subje
 the established ``masked_email`` (first two local chars + full domain) is passed through. It mutates nothing and
 performs no I/O beyond the read-only ``service_health`` aggregate.
 
-STATUS VOCABULARY (the seven explicit operator statuses of the packet). A failure is classified from the stable
-``last_error_code`` + the mailbox connection ``status`` + staleness — never by parsing a message string:
+STATUS VOCABULARY (the seven explicit operator statuses of pkt-149, plus OWNER_DISCONNECTED added by pkt-158 /
+ADR-0118). A failure is classified from the stable ``last_error_code`` + the mailbox connection ``status`` +
+staleness — never by parsing a message string:
 
     HEALTHY                       a recent successful sync; no blocking code; counter at zero (incl. "no new mail")
     TRANSIENT_FAILURE             a retryable Google error (429 / 5xx / connect / timeout / refresh), not yet persisted
     DEGRADED                      a failure that has persisted (aged past the stale threshold or N consecutive), or a
                                   bounded/cursor/other error that blocks progress but is neither re-consent nor config
-    RECONSENT_REQUIRED            the owner must re-authorize Gmail (status ERROR/REVOKED, or a re-auth code:
+    RECONSENT_REQUIRED            the owner must re-authorize Gmail (status ERROR, or a re-auth code:
                                   invalid_grant / 401 / 403 → OAUTH_PERMISSION_DENIED). This is the 7-day-expiry case.
     SECURITY_CONFIGURATION_ERROR  a server-side OAuth client / credential posture fault (client unset, credential
                                   missing / unreadable) — an operator fix, never an owner reconnect
@@ -36,8 +37,15 @@ STATUS VOCABULARY (the seven explicit operator statuses of the packet). A failur
                                   mailboxes for longer than the stall threshold) — distinct from any one mailbox failing
     UNKNOWN_FAIL_CLOSED           an unrecognised / bare failure — fail closed (treated as needing attention, never
                                   silently HEALTHY)
+    OWNER_DISCONNECTED            the MEMBER deliberately disconnected this mailbox (status REVOKED — written only by
+                                  the owner's own revoke action, which also deletes the stored credential). A benign,
+                                  intentional action: NOT a fault, NOT an owner-reconsent demand, and NEVER an operator
+                                  alert. Ingestion is intentionally off for it until the owner reconnects. Keeping this
+                                  distinct from RECONSENT_REQUIRED stops a routine member disconnect from firing a
+                                  CRITICAL "owner must re-authorize" alert (pkt-158 / ADR-0118).
 
-The crucial distinction the incident lacked — RECONSENT_REQUIRED vs TRANSIENT_FAILURE — is drawn here, structurally.
+The crucial distinction the incident lacked — RECONSENT_REQUIRED vs TRANSIENT_FAILURE — is drawn here, structurally,
+as is the pkt-158 distinction between a member's deliberate disconnect and a grant that died on the owner (RECONSENT).
 """
 from __future__ import annotations
 
@@ -58,9 +66,11 @@ RECONSENT_REQUIRED = "RECONSENT_REQUIRED"
 SECURITY_CONFIGURATION_ERROR = "SECURITY_CONFIGURATION_ERROR"
 SYNCHRONIZER_STALLED = "SYNCHRONIZER_STALLED"
 UNKNOWN_FAIL_CLOSED = "UNKNOWN_FAIL_CLOSED"
+OWNER_DISCONNECTED = "OWNER_DISCONNECTED"   # the member deliberately disconnected this mailbox (benign; never a fault)
 
 ALL_STATUSES = (HEALTHY, TRANSIENT_FAILURE, DEGRADED, RECONSENT_REQUIRED,
-                SECURITY_CONFIGURATION_ERROR, SYNCHRONIZER_STALLED, UNKNOWN_FAIL_CLOSED)
+                SECURITY_CONFIGURATION_ERROR, SYNCHRONIZER_STALLED, UNKNOWN_FAIL_CLOSED,
+                OWNER_DISCONNECTED)
 
 # --- alert severity vocabulary (worst-first) ---------------------------------------------------------------------
 # Maps to the existing operational_events severities at the DELIVERY layer (WARNING→WARNING, DEGRADED→ERROR,
@@ -155,6 +165,10 @@ def _severity_for(status: str, *, consecutive: int, elapsed: Optional[int],
     escalates by consecutive-failure count and by age-without-success, and the WORST contribution wins."""
     if status == HEALTHY:
         return SEV_OK
+    if status == OWNER_DISCONNECTED:
+        # A member's deliberate disconnect is benign — it must never contribute an alert severity (and must never
+        # escalate by age, which it otherwise would: a disconnected mailbox stops syncing, so its elapsed grows).
+        return SEV_OK
     if status in (RECONSENT_REQUIRED, SECURITY_CONFIGURATION_ERROR, SYNCHRONIZER_STALLED):
         return SEV_CRITICAL
     # TRANSIENT_FAILURE / DEGRADED / UNKNOWN_FAIL_CLOSED escalate by count + age.
@@ -175,6 +189,8 @@ def _severity_for(status: str, *, consecutive: int, elapsed: Optional[int],
 
 _RECOMMENDED_ACTION = {
     HEALTHY: "",
+    OWNER_DISCONNECTED: "No action — the mailbox owner disconnected this mailbox; it resumes ingestion only if the "
+                        "owner reconnects it. Not a fault.",
     RECONSENT_REQUIRED: "Reconnect required — the mailbox owner must re-authorize Gmail (OAuth consent).",
     SECURITY_CONFIGURATION_ERROR: "Operator review — OAuth client / credential configuration fault; no owner action.",
     SYNCHRONIZER_STALLED: "Operator review — mailbox ingestion worker not running; restart the ingestion timer/service.",
@@ -215,7 +231,16 @@ def classify_mailbox_oauth_health(base: dict, *, synchronizer_stalled: bool = Fa
         # NEVER a fault on its own). Healthy.
         status = HEALTHY
         failure_class = FC_NONE
-    elif conn_status in ("REVOKED", "ERROR") or code in REAUTH_CODES:
+    elif conn_status == "REVOKED":
+        # The MEMBER deliberately disconnected this mailbox. The ONLY writer of status=REVOKED is the owner's own
+        # MailboxRevokeView (which also deletes the stored credential); no automated/error path ever sets it. This is
+        # an intentional, benign action — NOT a fault and NOT an owner-reconsent demand — so it must never fire a
+        # CRITICAL "owner must re-authorize" operator alert or roll the subsystem to MISCONFIGURED (pkt-158/ADR-0118).
+        # The genuine 7-day Testing-mode expiry is a DIFFERENT signature: it keeps status=CONNECTED and surfaces as a
+        # REAUTH code, caught by the next branch. A member's disconnect wins even over a leftover re-auth code.
+        status = OWNER_DISCONNECTED
+        failure_class = FC_NONE
+    elif conn_status == "ERROR" or code in REAUTH_CODES:
         # Explicit re-auth evidence: the owner must reconnect Gmail. This is the 7-day Testing-mode expiry signature.
         status = RECONSENT_REQUIRED
         failure_class = FC_REAUTH
@@ -341,6 +366,7 @@ def aggregate_oauth_health(*, now=None, include_all_statuses: bool = True) -> di
         worst_sev = _worse_sev(worst_sev, c["alert_severity"])
     reconsent_n = counts[RECONSENT_REQUIRED]
     healthy_n = counts[HEALTHY]
+    owner_disconnected_n = counts[OWNER_DISCONNECTED]   # member-revoked mailboxes — benign, counted separately
     degraded_like = (counts[DEGRADED] + counts[TRANSIENT_FAILURE] + counts[SECURITY_CONFIGURATION_ERROR]
                      + counts[SYNCHRONIZER_STALLED] + counts[UNKNOWN_FAIL_CLOSED])
 
@@ -351,6 +377,7 @@ def aggregate_oauth_health(*, now=None, include_all_statuses: bool = True) -> di
         "recovery_seconds": recovery_seconds,
         "monitored_mailbox_count": len(classified),
         "healthy_count": healthy_n,
+        "owner_disconnected_count": owner_disconnected_n,
         "degraded_count": degraded_like,
         "reconsent_required_count": reconsent_n,
         "synchronizer_stalled": synchronizer_stalled,
@@ -420,8 +447,10 @@ def decide_alert(prev: Optional[dict], current: dict, *, now, cooldown_seconds: 
             "recommended_action": current.get("recommended_action", ""),
         }
 
-    if status == HEALTHY:
-        # Healthy now. If something WAS alerting, emit exactly one recovery event; else nothing.
+    if status in (HEALTHY, OWNER_DISCONNECTED):
+        # Healthy now, OR the member deliberately disconnected the mailbox (a benign, intentional action). If something
+        # WAS alerting, emit exactly one recovery event and clear; else nothing. A disconnect must NEVER OPEN an alert
+        # (so a member resolving a reconsent condition by disconnecting clears it instead of re-raising it — pkt-158).
         return _out(ALERT_RECOVER) if prev else _out(ALERT_NONE)
 
     if not prev or prev.get("dedup_key") != key:
