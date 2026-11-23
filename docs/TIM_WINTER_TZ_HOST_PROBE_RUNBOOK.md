@@ -3,6 +3,7 @@
 **Tool:** `scripts/tim_winter_tz_probe.py`
 **Packet:** GFX-TIM-WINTER-TIMEZONE-HOST-PROBE-009
 **Status:** repository tooling only — NOT installed, NOT scheduled, NOT deployed, NOT run by any agent. A human operator runs it on the bridge host under a separate Sponsor GO.
+**Outcome (2026-11-19):** the isolated on-host observation (ADR-0121 path, via the dormant `account_001` slot — the `:8788` terminal is a protected live Taurex-LIVE session) was run by a human operator and **PASSED**. Winter is now **`TIM_WINTER_TIMEZONE_VERIFIED`** (`TradersWay-Demo = UTC+2 / 7200 s`, winter-season- and single-observation-bound). Evidence: `docs/evidence/broker_timezone_evidence_v2_winter.md`; canonical value-blind record `tests/fixtures/tim_winter_tz/winter_tz_observation_2026-11-19.json`.
 
 ## Purpose
 
