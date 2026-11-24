@@ -1,0 +1,5 @@
+{
+  "schema_version": "1.0",
+  "description": "GuvFX-TIM operational signing trust store. PUBLIC verification keys only; never any private key, seed, password or token. EMPTY by default: no operational key is pinned in the repository, so operational signature verification fails closed (unknown_signing_key) until a real producer public key is pinned out-of-band under a separate Sponsor GO (GO #2a). Rotation = add the new signing_key_id and keep the previous active during overlap; revocation = set status to 'revoked' (keep, do not delete).",
+  "keys": []
+}
