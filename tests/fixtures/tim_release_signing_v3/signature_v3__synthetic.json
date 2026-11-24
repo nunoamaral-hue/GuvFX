@@ -1,0 +1,21 @@
+{
+  "algorithm": "synthetic-placeholder-v0",
+  "contract_bundle_digest": "23f4c317457811c7e71e69ae93285f1a855a37231e468c545b7df2cf227ac199",
+  "created_at_utc": "2026-01-15T00:00:00Z",
+  "domain_separator": "GUVFX-TIM-RELEASE-SIGNATURE-v3",
+  "key_validity": null,
+  "limitations": [
+    "SYNTHETIC_TEST_ONLY_FABRICATED_NO_PRODUCTION_DATA"
+  ],
+  "manifest_digest": "9f5a026aa140ed1d517df75be51ac29847f643fb3093d790938629498df52dee",
+  "producer_identity": "guvfx_producer_op_test",
+  "public_key_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+  "release_id": "rel_op_test_eurusd_m1_7d",
+  "schema_version": "3.0",
+  "signature_scheme": "detached",
+  "signature_value": "c22d39706bc8fe3c0abe21081e1aa788550a6404e6fbbc6ac4d6c93c1fa95de6",
+  "signed_manifest_path": "rel_op_test_eurusd_m1_7d/manifest.json",
+  "signing_key_id": "synthkey1",
+  "synthetic": true,
+  "validator_bundle_digest": "428b93f36077371360d720f0342b04b8c46b46b420028a55e31f265b62b4b53d"
+}

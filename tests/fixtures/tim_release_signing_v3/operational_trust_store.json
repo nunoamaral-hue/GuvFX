@@ -1,0 +1,15 @@
+{
+  "description": "TEST trust store \u2014 ephemeral Ed25519 public key; NOT an operational key.",
+  "keys": [
+    {
+      "algorithm": "ed25519-v1",
+      "not_after_utc": "2027-01-01T00:00:00Z",
+      "not_before_utc": "2026-01-01T00:00:00Z",
+      "public_key": "2dd359b4f609cb598714ae86e4b5e933b42d93ce1c437ee0a909d3d4546c6dc3",
+      "public_key_fingerprint": "00752408f962d216daa614a21bd789abe2fa2538e5907ec3f9d98cfd89f702b2",
+      "signing_key_id": "op-test-ed25519-1",
+      "status": "active"
+    }
+  ],
+  "schema_version": "1.0"
+}

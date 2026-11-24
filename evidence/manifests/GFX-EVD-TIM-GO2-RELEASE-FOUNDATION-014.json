@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-GO2-RELEASE-FOUNDATION-014",
+  "packet_id": "GFX-TIM-GO2-RELEASE-FOUNDATION-014",
+  "created_at_utc": "2026-11-24T00:00:00Z",
+  "branch": "feat/tim-operational-release-signing",
+  "base_commit": "795aa3a237fda3c90d9406b162d3c8aca4499e75",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only",
+    "authoritative_decision": "ADR-0124 (TIM operational release-signing envelope v3). Repository half of GO #2a: the governed, algorithm-agile, backwards-compatible envelope + validator change that lets a VERIFIED non-synthetic signature be accepted, with a pure-stdlib Ed25519 verify and a pinned public-key trust store. Operational path dark by default (empty trust store).",
+    "additive": true,
+    "migration_free": true,
+    "operational_path_dark_by_default": true,
+    "key_generated_or_handled": false,
+    "private_key_in_repo_tests_fixtures": false,
+    "real_host_or_bridge_contact": false,
+    "nas_mount_or_smb_auth": false,
+    "producer_host_or_exporter_run": false,
+    "broker_or_mt5_contact": false,
+    "dataset_read_or_publication": false,
+    "release_built_signed_published_or_consumed": false,
+    "deployment_or_production_mutation": false,
+    "trading_or_execution_change": false,
+    "frozen_v0_2_trio_unchanged": true,
+    "v0_3_schema_and_fixture_counts_unchanged": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "governance (secret scan + evidence lint + evidence-manifest schema test + the new operational signing v3 test, alongside the existing TIM stdlib tests). The new test is stdlib-only and needs no research venv. The v0.2/v0.3 contract guards (frozen-hash test_20, fixture counts) continue to run in market-data-foundation, unchanged."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_tim_release_signing_v3.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v",
+    "make governance-check",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_tim_contract_v0_2.py'",
+    ".venv-research/bin/python -m unittest discover -s tests -p 'test_tim_contract_v0_3.py'"
+  ],
+  "expected_results": [
+    "The pure-stdlib Ed25519 verifier is correct (RFC 8032 vector 1 verifies; a genuine operational signature verifies) and fails closed on tamper / wrong key / wrong length / non-canonical scalar S>=L.",
+    "The v3 envelope is algorithm-agile and closed-world: unknown algorithm, a signature_value whose hex length does not match the declared algorithm, and a synthetic flag inconsistent with the algorithm are all rejected at validation.",
+    "A genuine operational Ed25519 signature verifies against a PINNED trust-store key; every adversarial variant (manifest tamper, tampered signature, unknown/revoked/fingerprint-mismatched/out-of-window key, K-7 identity mismatch, algorithm relabel, cross-version separator, operational-required-vs-synthetic) fails closed with a value-blind reason code.",
+    "The synthetic placeholder path stays valid (backwards compatible) and never consults the trust store; the committed default operational trust store is EMPTY so operational verification fails closed (unknown_signing_key).",
+    "The byte-frozen v0.2 trio and the pinned v0.3 schema/fixture counts are unchanged: test_tim_contract_v0_2 (12) and test_tim_contract_v0_3 (56, incl. the FROZEN_PY_SHA256 guard and the fixture-count tests) still pass. Secret scan no findings; evidence lint PASS; make governance-check green."
+  ],
+  "actual_results": [
+    "tests/test_tim_release_signing_v3.py: Ran 56 tests OK (Ed25519 RFC-vector + tamper/length/non-canonical-S + genuine-(R,S+L)-malleability-twin + small-order-key rejection; envelope validation incl. unknown-algorithm, per-algorithm signature_value length, synthetic-flag binding, key_validity-required, schema/domain consts, missing/extra/prohibited keys; operational verify positive + 14 adversarial reasons + the require-operational wrapper; synthetic backwards-compat + tamper; trust-store integrity incl. duplicate id / fingerprint mismatch / low-order-key pin rejection / bad fields / window order; value-blind + secret-free fixtures; module boundary: no network/execution import, no cryptography import, no operational signing primitive).",
+    "python3 scripts/check_no_secrets.py: no findings. python3 scripts/check_evidence_manifests.py: EVIDENCE-LINT PASS. tests/test_evidence_manifests.py: OK (real committed manifests lint clean, this one included). make governance-check: green (full chain incl. the 50 new tests).",
+    ".venv-research/bin/python test_tim_contract_v0_2.py: Ran 12 tests OK. test_tim_contract_v0_3.py: Ran 56 tests OK (frozen-hash guard test_20 and the fixture-count tests pass — no frozen file or pinned count was touched).",
+    "This manifest is authored at commit time; head_commit is null until the squash merge. The exact head SHA + CI run are recorded on the PR and in the TIM Notion master record."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only: this packet adds three new research modules (pure-stdlib Ed25519 verify, pinned public-key trust store, v3 signing envelope validator/verifier), an EMPTY committed operational trust store, value-blind test fixtures, one stdlib test, three governance docs (ADR-0124, migration/admission analysis, runbook) and a new evidence manifest, and wires the test into the Makefile governance target and the CI governance job. NOTHING is deployed. No key is generated, held, pinned, rotated or revoked; no private key is in the repository, tests, argv, logs, fixtures or Notion; no NAS mount / SMB auth / producer-host / broker / MT5 contact; no dataset read; no release is built, signed, published or consumed.",
+    "The operational verification path is DARK by default: the committed trust store is empty, so any ed25519-v1 envelope fails closed (unknown_signing_key) until a real producer public key is pinned out-of-band under a separate Sponsor GO (GO #2a). No real/operational key or algorithm selection is performed here.",
+    "The test fixtures were produced offline by an EPHEMERAL Ed25519 test key; the private seed was created in memory and NEVER written, printed or persisted. Only the public key, its fingerprint and the resulting (public) signatures are committed. Regeneration requires a producer-side signer (out of scope for TIM, which verifies only), mirroring production reality.",
+    "Documented limitation (RULE 5): created_at_utc is bound into the signed material (signing time is tamper-evident) but the key_validity window OBJECT is not; the authoritative validity decision is trust-store membership + active status + the pinned window checked against the signed created_at_utc. Stated in ADR-0124 and the migration doc rather than implied.",
+    "The producer GuvFXData / GUVFX_DATA_ROOT readiness (Blocker 2) is UNVERIFIABLE from this checkout and remains BLOCKED; it is NOT claimed as verified. The migration/admission doc records only the verification contract (scripts/check_data_root.py) the producer must satisfy, and the first-release admission checklist marks every item beyond the repository contract as a separate Sponsor-gated step not performed here.",
+    "Handoff docs (STATUS/HANDOFF/NEXT/KNOWN_ISSUES) were intentionally NOT edited to avoid conflicts with concurrent sessions; the handoff is carried by this manifest, ADR-0124, the migration/admission analysis, the runbook, and the TIM Notion master record.",
+    "This manifest is a point-in-time snapshot authored at commit time. check_evidence_manifests.py validates checksum FORMAT, not content; the recorded head SHA and CI result are carried on the PR and the TIM Notion master record. The PR is opened auto-merge OFF and is NOT merged without a new Sponsor authorisation (HARD STOP)."
+  ],
+  "artefact_locations": [
+    "research/market_data/tim_ed25519.py (NEW; pure-stdlib Ed25519 VERIFY only — no signing, no keygen)",
+    "research/market_data/tim_trust_store.py (NEW; pinned public-key trust store, deterministic key-id selection, fail-closed integrity)",
+    "research/market_data/tim_release_signing_v3.py (NEW; dataset_release_signature_v3 validator + verifier + controls)",
+    "research/market_data/trust_store/operational_public_keys.json (NEW; committed EMPTY operational store — operational verify fails closed by default)",
+    "tests/fixtures/tim_release_signing_v3/ (NEW; signed_manifest.json + operational trust store + operational and synthetic v3 envelopes; ephemeral-test-key public material only; dedicated dir outside the counted market_data/tim fixtures)",
+    "tests/test_tim_release_signing_v3.py (NEW; 50 stdlib tests)",
+    "docs/architecture/ADR-0124-tim-operational-release-signing-envelope.md (NEW)",
+    "docs/evidence/tim_operational_signing_v3_migration_and_admission.md (NEW; migration/compat analysis + security matrix + producer data-root evidence contract + first-release admission checklist)",
+    "docs/TIM_OPERATIONAL_SIGNING_RUNBOOK.md (NEW; trust-store pinning / rotation / revocation; no key handled)",
+    "Makefile, .github/workflows/ci.yml (governance wiring for the new test)",
+    "evidence/manifests/GFX-EVD-TIM-GO2-RELEASE-FOUNDATION-014.json (this manifest)"
+  ],
+  "checksums": {
+    "research/market_data/tim_ed25519.py": "sha256:2971a2a9ee5e6d3a5df2201bb85ee0d9f1c625650d1f8e910c4b681b53104c10",
+    "research/market_data/tim_trust_store.py": "sha256:65b12648eefa6bf453d2aa73eb92e7d1326f4f675988568bda301121a0c0caee",
+    "research/market_data/tim_release_signing_v3.py": "sha256:77947ef5089beb2b399c697db2085e4d991c23cd005a9d3fc4e0bc278c0e248d",
+    "research/market_data/trust_store/operational_public_keys.json": "sha256:cb1f88f6aeb014ac4f05e3b555a99c6fa417f18d374f125b8aec5ce101bed5fe",
+    "tests/fixtures/tim_release_signing_v3/signed_manifest.json": "sha256:9f5a026aa140ed1d517df75be51ac29847f643fb3093d790938629498df52dee",
+    "tests/fixtures/tim_release_signing_v3/operational_trust_store.json": "sha256:ecacc4f11e57417e577ea21c055a08c54e84cc121d1fc3d4351a9084f9f183be",
+    "tests/fixtures/tim_release_signing_v3/signature_v3__ed25519_operational.json": "sha256:ff7ce7a966ecd0c60f22a41dee8a768da0683b0ac3be171c466e0feebc037ad1",
+    "tests/fixtures/tim_release_signing_v3/signature_v3__synthetic.json": "sha256:051c0d7616326e2ad68785022112687d7b762e5a1a432c80c0d38a4aff1b5322",
+    "tests/test_tim_release_signing_v3.py": "sha256:db7ec1d2a9e74b603d0d25b0a36ed9f9c8053743fc346e0ca4ae0de21baae428",
+    "docs/architecture/ADR-0124-tim-operational-release-signing-envelope.md": "sha256:101077825be5a2ea6c0fd0f2e3220280f3e5aaa5f310259ae047fadda0d650d4",
+    "docs/evidence/tim_operational_signing_v3_migration_and_admission.md": "sha256:8388ec4a9719bd439a263ce79c5acd88278bd7250ddac8fee06d9dc8068244d0",
+    "docs/TIM_OPERATIONAL_SIGNING_RUNBOOK.md": "sha256:4f318cb250751e2c6d0d5bfeabb98f42f9db2743a0cf7044014161597899b772"
+  },
+  "reviewer": "Author self-review + an independent adversarial security review (differential fuzz of the Ed25519 verifier against the cryptography/OpenSSL oracle over ~90k verify comparisons + mutation testing of the 50-test suite; trace of every algorithm/flag path for downgrade/relabel/replay/trust-store-bypass; boundary + value-blindness audit). Verdict: PR-READY, NO CRITICAL and NO HIGH exploitable against a legitimately pinned full-order key; the operational path is dark (empty store). Four hardening items were FIXED before PR-ready and re-verified by a fresh differential fuzz (400 genuine signatures accepted, 0 over-acceptances across 5400 adversarial cases, small-order keys now rejected): (MEDIUM-1) the verifier was non-strict (accepted non-canonical / small-order points the oracle rejects, exploitable only if a low-order key were pinned) -> _decodepoint now rejects non-canonical y>=p and a set sign bit on x==0, and ed25519_verify rejects small-order A/R; (MEDIUM-2) the malleability-guard test passed for the wrong reason (S==L on the RFC vector is rejected by the core equation anyway) -> added a genuine-signature (R, S+L) twin test that fails if the S<L guard is removed; (MEDIUM-3) require_operational defaulted False so a forgeable synthetic envelope could be accepted by a careless operational caller -> added verify_operational_release_signature_v3 which hard-codes require_operational=True and a mandatory trust store; (LOW-6) the trust store could pin a low-order key -> _validate_entry now refuses a non-canonical/small-order Ed25519 key via is_acceptable_public_key. LOW-4 (K-7 cross-bind runs only when manifest= supplied) and LOW-5 (signed_manifest_path not bound into the signed material) are documented as deliberate defence-in-depth-only items in ADR-0124 and the migration doc rather than changed, since the manifest digest + release id are the authoritative binding. Boundary clean: only new files added; the byte-frozen contracts.py/tim_contracts.py/tim_fixtures.py and tim_contracts_v0_3.py are unchanged; no signing/keygen primitive and no network/host/NAS/broker import."
+}
