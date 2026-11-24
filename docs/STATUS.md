@@ -1,7 +1,7 @@
 # GuvFX — Project Status
 
 > **2026-11-24 — Owner-operable governed #46→#48 demonstration control (GFX-COPIER-TENANT-OWNER-DEMO-CONTROL-170;
-> ADR-0124; repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off current
+> ADR-0126; repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off current
 > main `795aa3a2` on `fix/owner-demo-control`. Lets the authenticated tenant OWNER of the governed #46→#48 route
 > check readiness, prepare, deliberately confirm, and stop a bounded live demonstration **without staff access and
 > without pasting shell commands or secrets**. **Backend:** new `trade_copier/owner_demo_control.py` (orchestration
@@ -16,7 +16,7 @@
 > receives/submits a signing secret; the signing material stays host-side (standing ingest key + file-first
 > hosted-executor keyring `hx-20261115`); in production the host actuators are UNPROVISIONED so confirm fails closed
 > (DARK). The preferred host-private/backend-public asymmetric evolution is the deferred one-time provisioning
-> decision (ADR-0124 §4). **Frontend:** new `/copy-trading/demo` page + `OwnerDemoControlContent.tsx` (four stages,
+> decision (ADR-0126 §4). **Frontend:** new `/copy-trading/demo` page + `OwnerDemoControlContent.tsx` (four stages,
 > EN/JA, responsive, re-auth password modal) + typed client. **Tests:** `tests_owner_demo_control.py` (38 cases:
 > owner allow; member/staff-other/anon denial + non-disclosure; method/recent-auth enforcement; token
 > invalid/expired/wrong-user; readiness master-open/follower-job/kill/arm; route not-sole/not-live/unconfigured;
@@ -25,7 +25,7 @@
 > clean. **DARK:** no deploy, no flag enablement, no authorization/arm/window/host/#48/broker action by this packet;
 > production unchanged. **One bounded next action:** exact-head CI green, then Sponsor `GO — merge PR`; the real
 > #46→#48 execution remains a separate, explicit, head/runtime-pinned Sponsor real-money GO. See
-> `docs/architecture/ADR-0124-owner-operable-demo-control.md`.
+> `docs/architecture/ADR-0126-owner-operable-demo-control.md`.
 
 > **2026-11-24 — Real-arm readiness closure: pin the #46→#48 real-arm prerequisites in the authoritative runbook
 > (GFX-COPIER-REAL-ARM-READINESS-167; docs-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before

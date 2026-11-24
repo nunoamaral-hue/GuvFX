@@ -1,4 +1,4 @@
-# ADR-0124 — Owner-operable governed #46→#48 demonstration control
+# ADR-0126 — Owner-operable governed #46→#48 demonstration control
 
 - **Status:** Accepted (repository-only; DARK; default-OFF). Not deployed, not armed.
 - **Packet:** GFX-COPIER-TENANT-OWNER-DEMO-CONTROL-170

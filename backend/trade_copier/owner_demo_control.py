@@ -1,5 +1,5 @@
 """trade_copier.owner_demo_control — the owner-operable control plane for the governed #46→#48 Copy Trading
-demonstration (GFX-COPIER-TENANT-OWNER-DEMO-CONTROL-170, ADR-0124).
+demonstration (GFX-COPIER-TENANT-OWNER-DEMO-CONTROL-170, ADR-0126).
 
 WHY THIS EXISTS
 ---------------
@@ -38,7 +38,7 @@ created.
 
 The preferred durable evolution (host-only PRIVATE signing key + backend-pinned PUBLIC verification key, so no
 bounded demonstration ever re-enters a shared secret) is recorded as the remaining one-time provisioning decision
-in ADR-0124; it is NOT performed here. Until then the standing host ingest key + the file-first hosted-executor
+in ADR-0126; it is NOT performed here. Until then the standing host ingest key + the file-first hosted-executor
 keyring (already provisioned, pkt-163/166C) are the signing material, delivered host-side — never via the browser.
 """
 from __future__ import annotations
@@ -382,7 +382,7 @@ def prepare(user, *, now=None, lease_path=None, correlation_id=None) -> dict:
                 valid_from=now, expires_at=expires_at,
                 watermark_at=now, watermark_event_sequence=cm_events_seq,
                 status=CopierLiveAuthorizationStatus.ACTIVE,
-                approved_by=user,   # OWNER self-approval for this one governed route (ADR-0124); recent-auth at confirm
+                approved_by=user,   # OWNER self-approval for this one governed route (ADR-0126); recent-auth at confirm
                 reason="owner_demo_control prepare (GFX-170)",
                 # The bounded lifecycle authority for a one-order OPEN→MODIFY→FULL_CLOSE demo; partial-close EXCLUDED.
                 modify_authority=True, full_close_authority=True, partial_close_authority=False,

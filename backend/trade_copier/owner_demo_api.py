@@ -1,5 +1,5 @@
 """trade_copier.owner_demo_api — owner-facing HTTP surface for the governed #46→#48 demonstration control
-(GFX-170, ADR-0124). Four stages: readiness (GET, read-only), prepare (POST), confirm (POST, fresh re-auth),
+(GFX-170, ADR-0126). Four stages: readiness (GET, read-only), prepare (POST), confirm (POST, fresh re-auth),
 stop (POST). Mounted under ``/api/copy-trading/owner-demo/``.
 
 Authorization is OWNERSHIP, not an email string: every stage resolves the governed route fail-closed and permits

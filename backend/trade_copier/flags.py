@@ -335,7 +335,7 @@ def copier_emitter_standing_enabled() -> bool:
 
 
 def copier_owner_demo_control_enabled() -> bool:
-    """DARK gate for the OWNER-OPERABLE governed demo control plane (GFX-170, ADR-0124). DEFAULT OFF, ANDed with
+    """DARK gate for the OWNER-OPERABLE governed demo control plane (GFX-170, ADR-0126). DEFAULT OFF, ANDed with
     the master gate.
 
     Governs ONLY whether the authenticated tenant OWNER of the governed #46→#48 route may drive the four-stage

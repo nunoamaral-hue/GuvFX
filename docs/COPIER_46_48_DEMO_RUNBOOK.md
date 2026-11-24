@@ -284,7 +284,7 @@ Sponsor arms the flag and opens a window.
 
 ---
 
-## Owner-operated control (GFX-170, ADR-0124) — repository-only, DARK
+## Owner-operated control (GFX-170, ADR-0126) — repository-only, DARK
 
 The authenticated tenant OWNER of the governed #46→#48 route can drive a bounded demonstration from the UI
 (`/copy-trading/demo`) — **without staff access and without pasting shell commands or secrets** — via four
@@ -313,7 +313,7 @@ Stages (POST state changes are CSRF-protected by the cookie auth; confirm needs 
 **Secrets:** the browser never receives or submits a signing secret. The signing material stays host-side (the
 standing ingest key + the file-first hosted-executor keyring `hx-20261115`, pkt-163/166C). The preferred durable
 design — host-private / backend-public asymmetric keys, so no bounded demonstration re-enters a shared secret —
-is the deferred one-time provisioning decision in ADR-0124 §4; do not invent backend secret storage.
+is the deferred one-time provisioning decision in ADR-0126 §4; do not invent backend secret storage.
 
 **Separate Sponsor real-money GO (still required):** before any real #46→#48 execution this control must be
 merged, deployed DARK, and reverified, and then a separate, explicit, head/runtime-pinned Sponsor GO must name

@@ -55,7 +55,7 @@ urlpatterns = [
     # reports enabled:false / no rows unless COPIER_OPERATOR_VIEW_ENABLED is on. No mutation surface (GET only),
     # no order, no job, no arming; non-staff requests are denied (403).
     path("operator/lifecycles/", OperatorLifecycleView.as_view(), name="copy-trading-operator-lifecycles"),
-    # GFX-170 / ADR-0124 — OWNER-operable governed #46→#48 demonstration control (four stages). DARK: every stage
+    # GFX-170 / ADR-0126 — OWNER-operable governed #46→#48 demonstration control (four stages). DARK: every stage
     # returns 503/FEATURE_DARK unless COPIER_OWNER_DEMO_CONTROL_ENABLED is on. Authorization is OWNERSHIP of the
     # governed route (not staff, not an email string); confirm requires a fresh re-auth proof + the prepare token;
     # production has NO host actuators so confirm fails closed (DARK). No browser secret, no key stored anywhere.
