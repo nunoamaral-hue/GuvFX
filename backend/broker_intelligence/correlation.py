@@ -304,7 +304,15 @@ def _find_by_reference(event: BrokerEvent):
         if event.trading_account_id is not None:
             return Withdrawal.objects.filter(owner_id=event.owner_id, trading_account__isnull=True,
                                              broker_reference_id=ref).first()
-        return Withdrawal.objects.filter(owner_id=event.owner_id, broker_reference_id=ref).first()
+        # Account-LESS bridge: advance the owner's withdrawal sharing this reference, but ONLY when it is
+        # UNambiguous. References can legitimately collide across one owner's accounts
+        # (``uniq_withdrawal_account_reference`` is per-account), and an account-less event carries no account to
+        # disambiguate — so if TWO+ of the owner's withdrawals share this reference it cannot know which real
+        # withdrawal it belongs to. Fail closed (advance NONE) rather than advance an arbitrary row: the completion/
+        # neutral-advance passes then leave the event UNRESOLVED (never fabricated), the same "ambiguous ⇒ never
+        # guess" rule the account-resolved bridge above and the heuristic adopt already apply.
+        bridged = list(Withdrawal.objects.filter(owner_id=event.owner_id, broker_reference_id=ref)[:2])
+        return bridged[0] if len(bridged) == 1 else None
     return None
 
 
@@ -322,6 +330,18 @@ def _correlate_by_reference(event: BrokerEvent, target_status: str) -> Correlati
         _apply_event(withdrawal, event, target_status, method=Withdrawal.CorrelationMethod.REFERENCE_ID,
                      created=False)
         return CorrelationResult(event.id, OUT_REFERENCE, withdrawal.id)
+
+    # An account-LESS event whose reference AMBIGUOUSLY collides with >=2 of the owner's withdrawals (no account-NULL
+    # sibling to anchor it, so ``_find_by_reference`` returned None) cannot be attributed to a single one — and this
+    # create-capable pass must NOT fabricate a phantom account-less row for it (that would inflate the withdrawal
+    # count). Mark it AMBIGUOUS and leave it re-evaluable, exactly as the ref-less heuristic path does for >=2
+    # candidates (``_correlate_by_heuristic``). The advance-only completion/neutral passes never reach here — they call
+    # ``_find_by_reference`` directly and the None simply leaves their event UNRESOLVED.
+    if (event.trading_account_id is None and event.owner_id is not None and event.broker_reference_id
+            and len(Withdrawal.objects.filter(owner_id=event.owner_id,
+                                              broker_reference_id=event.broker_reference_id)[:2]) >= 2):
+        _mark_event(event, BrokerEvent.CorrelationStatus.AMBIGUOUS)
+        return CorrelationResult(event.id, OUT_AMBIGUOUS)
 
     # No ref row yet: adopt a single ref-less heuristic candidate (amount+currency+window) rather than create a
     # duplicate. >=2 candidates is ambiguous -> never merge; create the authoritative ref row instead.
