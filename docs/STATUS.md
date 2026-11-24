@@ -1,5 +1,27 @@
 # GuvFX — Project Status
 
+> **2026-11-24 — Real-arm readiness closure: pin the #46→#48 real-arm prerequisites in the authoritative runbook
+> (GFX-COPIER-REAL-ARM-READINESS-167; docs-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before
+> merge).** Off current main `de98027f` on `fix/copier-real-arm-runbook-prereqs`. Read-only preflight removed every
+> remaining technical uncertainty before the separately-gated real arm and found **no new code defect**: production
+> is comprehensively DARK (backend `f047cf5e`; 30 copier flag accessors all OFF; 0 open verifier windows / arms /
+> active authorizations / #48 dispatch; kill switch clear; #46 clean; recovery lease ABSENT), identities route-exact
+> (#46 Tradersway-Live → #48 IS6Technologies-Live, both LIVE, owner 29), symbol map XAUUSD→XAUUSD.std, sole route;
+> the hosted-executor daemon is file-first and keyring-current (`daemon_config.py a4193d0d`, keyring file present with
+> the reviewed ACL, active id `hx-20261115` == backend `HOSTED_EXECUTOR_KEY_ID`, pkt-166C held, no overnight drift);
+> emitter tasks Disabled, standing ingest key present + ACL-correct, no #48 task; the atomic arm is fail-closed with
+> full rollback and the deployed `covers_live_authorization` gate makes even a keyless window **refuse the arm**
+> (never strand a position). **The one residual** is that the GFX-164 verifier-window key-lifecycle fix (squash
+> `97d21765`) is merged to main but prod is one commit short (`f047cf5e`) — a robustness/deploy-currency matter, plus
+> two operational hazards the runbook did not document (container-recreate tmpfs window loss; teardown not closing the
+> window / clearing base ingestion flags). **Fix (this PR):** a surgical amendment to
+> `docs/COPIER_46_48_DEMO_RUNBOOK.md` encoding the three proven prerequisites (deploy GFX-164 or clear-before-open;
+> open the window only after the final backend recreate; daemon file-first keyring currency) plus a teardown-
+> completeness note. Secret scan clean; evidence-manifest lint PASS (107); no code/migration/workflow/credential
+> change. **One bounded next action:** exact-head CI green, then a separate Sponsor decision — deploy `97d21765`
+> (preferred) or run the documented clear-before-open path — before the real arm. STOP before merge. No deploy / host
+> mutation / key handling / verifier window / flag / arm / #48 / broker contact by this packet.
+
 > **2026-11-19 — Stale verifier-window reap must never shred a freshly opened key
 > (GFX-COPIER-VERIFIER-WINDOW-KEY-LIFECYCLE-FIX-164; ADR-0101 addendum; repository-only; migration-free; DARK;
 > governed PR; auto-merge OFF; STOP before merge).** Off current main `c649c550` on `fix/verifier-window-key-lifecycle`.
