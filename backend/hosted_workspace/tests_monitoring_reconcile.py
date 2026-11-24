@@ -94,15 +94,25 @@ class ModuleOrderSurfaceHygiene(SimpleTestCase):
 
 # ───────────────────────── fake host transport ─────────────────────────
 class _FakeOps(MonitoringReconcileOps):
-    def __init__(self, *, bad_attest_for=(), bad_readback_for=()):
+    def __init__(self, *, bad_attest_for=(), bad_readback_for=(), undispatched_for=(), bad_rollback_for=()):
         self.applies = []                       # (account_id, env_sha, expect_readonly)
         self.bad_attest_for = set(bad_attest_for)
         self.bad_readback_for = set(bad_readback_for)
+        # Host-gated DORMANT path: the signed executor is unavailable, so NOTHING is dispatched to the bridge
+        # (mirrors ``_RealMonitoringOps.apply_off_env`` returning ``(False, None, "host_executor_unavailable")``).
+        self.undispatched_for = set(undispatched_for)
+        # The baseline ROLLBACK dispatch (expect_readonly=False) is sent but attests badly — a genuine rollback failure.
+        self.bad_rollback_for = set(bad_rollback_for)
 
     def apply_off_env(self, account, *, env_b64, env_sha, port, runtime_root, expect_readonly):
         self.applies.append((account.id, env_sha, expect_readonly))
-        # Only the ENABLE apply (expect_readonly=True) can be made to fail; the baseline rollback always attests OK.
-        sha = "WRONG_SHA" if (expect_readonly and account.id in self.bad_attest_for) else env_sha
+        if account.id in self.undispatched_for:
+            return (False, None, "host_executor_unavailable")     # never dispatched: bridge byte-unchanged
+        # The ENABLE apply (expect_readonly=True) fails attestation for bad_attest_for; the baseline ROLLBACK
+        # (expect_readonly=False) fails attestation for bad_rollback_for. Otherwise the apply attests OK.
+        bad = ((expect_readonly and account.id in self.bad_attest_for)
+               or ((not expect_readonly) and account.id in self.bad_rollback_for))
+        sha = "WRONG_SHA" if bad else env_sha
         return (True, {"ok": True, "account_id": account.id, "port": port, "env_sha256": sha,
                        "allow_live": False, "require_pin": True, "guarded_attach": True, "listening": True}, "dispatched")
 
@@ -342,6 +352,113 @@ class ReconcileMatrix(TestCase):
         self.assertEqual(len(enable), 1)
         self.assertEqual(len(rollback), 1)
         self.assertEqual(rollback[0][1], r["preview"]["baseline_env_sha256"])   # byte-exact baseline sha
+
+    # (8b) GFX-168 — host-gated DORMANT path: the signed env is NEVER dispatched (executor unavailable). Nothing is
+    #      mutated on the bridge, so the result must NOT fabricate a rollback failure. Reporting ``rollback_failed``
+    #      here (as the pre-fix code did) is a false operator alarm implying a dirty bridge that was never touched.
+    def test_undispatched_apply_is_not_reported_as_rollback_failure(self):
+        a, _ = self._mk(self.owner)
+        ops = _FakeOps(undispatched_for={a.id})
+        with self._allow(a):
+            r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+        self.assertFalse(r["ok"])
+        self.assertFalse(r["applied"])
+        self.assertFalse(r["rolled_back"])
+        self.assertIsNone(r["rollback_reason"])                      # nothing applied ⇒ nothing to roll back
+        self.assertEqual(r["reason"], "apply_not_dispatched:host_executor_unavailable")
+        # EXACTLY one dispatch attempt (the enable); no doomed second "rollback" dispatch against the dormant host
+        self.assertEqual([x[2] for x in ops.applies], [True])
+
+    # (8c) GFX-168 — the fix does NOT suppress a GENUINE rollback failure. The enable dispatches + verifies (the
+    #      bridge IS mutated to read-only), the read-back then fails, and the baseline ROLLBACK dispatch attests
+    #      badly: the operator MUST still see ``rollback_failed`` (the bridge may be left dirty).
+    def test_genuine_rollback_failure_still_reported(self):
+        a, _ = self._mk(self.owner)
+        ops = _FakeOps(bad_readback_for={a.id}, bad_rollback_for={a.id})
+        with self._allow(a):
+            r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+        self.assertFalse(r["ok"])
+        self.assertFalse(r["applied"])
+        self.assertFalse(r["rolled_back"])
+        self.assertEqual(r["reason"], "read_back_failed")
+        self.assertEqual(r["rollback_reason"], "rollback_failed")     # legitimate — NOT masked by the GFX-168 fix
+        self.assertEqual([x[2] for x in ops.applies], [True, False])  # enable dispatched + a real rollback attempted
+
+    # (8d) GFX-168 — a DISPATCHED-but-unverified attestation still fails closed to a rollback; if that rollback also
+    #      attests badly it is a genuine ``rollback_failed`` (distinct from the never-dispatched case in 8b).
+    def test_attestation_failure_with_failed_rollback_reported(self):
+        a, _ = self._mk(self.owner)
+        ops = _FakeOps(bad_attest_for={a.id}, bad_rollback_for={a.id})
+        with self._allow(a):
+            r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["reason"].startswith("attestation_failed"))
+        self.assertFalse(r["rolled_back"])
+        self.assertEqual(r["rollback_reason"], "rollback_failed")
+        self.assertEqual([x[2] for x in ops.applies], [True, False])  # dispatched enable + attempted rollback
+
+    # (8e) GFX-168 — a dormant-path failure leaves NO residue: a retry on a healthy host applies cleanly and
+    #      idempotently (same desired env sha), proving the failed run neither mutated nor "half-applied" anything.
+    def test_retry_after_undispatched_cleanly_applies(self):
+        a, _ = self._mk(self.owner)
+        with self._allow(a):
+            r1 = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id,
+                              ops=_FakeOps(undispatched_for={a.id}))["results"][0]
+            r2 = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=_FakeOps())["results"][0]
+        self.assertFalse(r1["ok"]); self.assertFalse(r1["applied"]); self.assertIsNone(r1["rollback_reason"])
+        self.assertTrue(r2["ok"] and r2["applied"])
+        self.assertEqual(r2["reason"], "readonly_enabled")
+        self.assertEqual(r1["preview"]["desired_env_sha256"], r2["preview"]["desired_env_sha256"])  # idempotent target
+
+    # (8f) stale/concurrent state — an active-execution authorization appears BETWEEN the initial gate eval and the
+    #      pre-dispatch TOCTOU recheck: the signed dispatch is REFUSED (gate_failed_recheck), nothing is applied.
+    def test_toctou_recheck_failure_dispatches_nothing(self):
+        a, _ = self._mk(self.owner)
+        ops = _FakeOps()
+        with self._allow(a):
+            with mock.patch.object(MR, "_account_has_active_execution", side_effect=[False, True]):
+                r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "gate_failed_recheck")
+        self.assertIn("execution_off", r["failed_gates"])
+        self.assertEqual(ops.applies, [])                             # nothing dispatched across the state change
+
+    # (8g) transaction boundary — ``applied=True`` is reported ONLY on full success (dispatch + attestation +
+    #      enable read-back). EVERY failure mode reports ``applied=False`` — there is no partial/"half" applied.
+    def test_applied_true_only_on_full_success(self):
+        a, _ = self._mk(self.owner)
+        for ops in (_FakeOps(undispatched_for={a.id}), _FakeOps(bad_attest_for={a.id}),
+                    _FakeOps(bad_readback_for={a.id})):
+            with self._allow(a):
+                r = MR.reconcile([a.id], commit=True, expected_owner_id=self.owner.id, ops=ops)["results"][0]
+            self.assertFalse(r["applied"], r["reason"])
+            self.assertFalse(r["ok"], r["reason"])
+
+    # (8h) observability/accounting consistency — a mixed batch (clean apply / dormant-never-dispatched /
+    #      dispatched-then-dirty-rollback-failed / refused) yields truthful, internally-consistent counters with
+    #      no double-count: ok+refused==total, applied counts only true applies, rolled_back counts only true rollbacks.
+    def test_accounting_consistency_mixed_batch(self):
+        good, _ = self._mk(self.owner)        # clean apply
+        dormant, _ = self._mk(self.owner)     # host-gated: never dispatched → no rollback, no fabricated failure
+        dirty, _ = self._mk(self.owner)       # dispatched+verified, read-back fails, rollback FAILS (bridge dirty)
+        refused, _ = self._mk(self.owner)     # not on allow-list → refused before any dispatch
+        ops = _FakeOps(undispatched_for={dormant.id}, bad_readback_for={dirty.id}, bad_rollback_for={dirty.id})
+        with override_settings(
+                LIVE_READONLY_POSITIONS_ACCOUNT_ALLOWLIST=" ".join(str(x.id) for x in (good, dormant, dirty))):
+            rep = MR.reconcile([good.id, dormant.id, dirty.id, refused.id], commit=True,
+                               expected_owner_id=self.owner.id, ops=ops)
+        by = {r["account_id"]: r for r in rep["results"]}
+        self.assertTrue(by[good.id]["ok"] and by[good.id]["applied"])
+        self.assertIsNone(by[dormant.id]["rollback_reason"]); self.assertFalse(by[dormant.id]["rolled_back"])
+        self.assertEqual(by[dirty.id]["rollback_reason"], "rollback_failed")
+        self.assertFalse(by[refused.id]["ok"])
+        s = rep["summary"]
+        self.assertEqual(s["total"], 4)
+        self.assertEqual(s["ok"], 1)                                 # only `good`
+        self.assertEqual(s["applied"], 1)                            # exactly the one applied
+        self.assertEqual(s["refused"], 3)                            # dormant + dirty + refused
+        self.assertEqual(s["rolled_back"], 0)                        # dormant: nothing to undo; dirty: rollback FAILED
+        self.assertEqual(s["ok"] + s["refused"], s["total"])         # internally consistent — no double-count
 
     # (9) partial failure rolls back ONLY the affected account and reports truthfully
     def test_partial_failure_isolated(self):
