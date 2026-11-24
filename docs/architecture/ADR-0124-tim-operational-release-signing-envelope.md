@@ -136,3 +136,62 @@ The producer-side signer lives in the private producer repository, **not** here;
   (and is bound into the signed material, so a mismatch cannot yield a valid signature).
 - **Hardware/KMS-backed custody (Design C) or minisign tooling (Design B).** Deferred to the Sponsor's GO
   #2a custody decision; they concern key custody off-repository and do not change this verification contract.
+
+## Addendum — operational signing custody binding (GFX-TIM-GO2A-CUSTODY-BINDING-016, 2026-11-24)
+
+**Status:** Accepted (repository-only; records the authoritative Sponsor custody decision and the read-only
+host capability findings. This addendum binds host / identity / path / ACL / provider; it does **not**
+create the service identity, directory, or key, and does **not** pin any public key. Operational
+verification remains DARK — the committed trust store stays empty. No host mutation, no key generation,
+no merge/deploy by this packet.)
+
+**Supersedes:** the deliberately-generic custody language in the ADR-0124 runbook ("on the producer host
+… host OS keychain"), which reserved host/identity/path/ACL/provider to this GO.
+
+**Sponsor custody decision (authoritative — resolves the GFX-TIM-GO2A-OPERATIONAL-SIGNING-CUSTODY-015 host
+ambiguity):**
+
+- **Canonical TIM signer host:** the Windows bridge/producer host **`WIN-RD8VDS93DK7`** (reached as
+  `guvfx-windows-mt5`).
+- **Signer:** the dedicated **GuvFX Windows History Agent** (private repo
+  `nunoamaral-hue/guvfx-windows-history-agent`). `mac-control-node` is orchestration/consumer only and
+  must never hold the private key.
+- **Dedicated service identity:** `WIN-RD8VDS93DK7\guvfx_tim_producer` (no interactive logon rights).
+- **Protected local store root:** `C:\ProgramData\GuvFX\TIM\signing\` — local NTFS only; never a repo,
+  NAS, SMB mount, user profile, temp directory, environment variable, registry value, clipboard, or
+  shared store.
+- **Private-key custody ACL:** inheritance disabled; owner `BUILTIN\Administrators`; only
+  `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators` FullControl, plus
+  `WIN-RD8VDS93DK7\guvfx_tim_producer` Read/ReadAndExecute as strictly required by the selected provider.
+  No other ACEs.
+- **Algorithm:** Ed25519. The `signing_key_id` is derived **deterministically from the public key /
+  fingerprint after generation** (no preselected, misleading ID).
+
+**Read-only host capability findings (value-blind; GFX-TIM-GO2A-CUSTODY-BINDING-016 Phase 1; no mutation,
+no key generation, no secret read):**
+
+- Host identity confirmed `WIN-RD8VDS93DK7`; `C:` is local **NTFS**, Fixed; `C:\ProgramData` present.
+- **Clean pre-state:** `C:\ProgramData\GuvFX` absent, `C:\ProgramData\GuvFX\TIM\signing` absent,
+  `guvfx_tim_producer` local user absent; no competing TIM key / signing service / provisioning process /
+  scheduled task. (Unrelated existing services `GuvFXBetaAgent` and `GuvFXHostedExecutor` are not reused
+  and not touched.)
+- Runtime: Windows Server 2025, Windows PowerShell 5.1, Python 3.11.9 at `C:\Program Files\Python311`.
+- **Provider gate:** `cryptography` is **not currently installed** on that Python (ModuleNotFoundError);
+  no OpenSSL; no WinSW/nssm on PATH. The signer therefore targets an **in-process, audited `cryptography`
+  Ed25519 provider** (stable raw/PKCS#8 key contract, no shelling, no custom signing math) behind a
+  provider abstraction with a **fail-closed preflight**; installing `cryptography` on the producer host is
+  a documented dependency gate for the later, separately-authorised provisioning step — it is **not** done
+  here, and the signer is **not** claimed operational until it is.
+
+**Cross-repo signing contract (locked):** the producer signer MUST sign exactly the byte-identical
+`signing_material_v3` that TIM's merged verifier reconstructs — the NUL-joined, domain-separated material
+`GUVFX-TIM-RELEASE-SIGNATURE-v3 \x00 algorithm \x00 release_id \x00 manifest_digest \x00
+contract_bundle_digest \x00 validator_bundle_digest \x00 producer_identity \x00 signing_key_id \x00
+public_key_fingerprint \x00 created_at_utc` — producing a 64-byte Ed25519 signature encoded as 128 lowercase
+hex in `signature_value`, with `synthetic: false` and `algorithm: ed25519-v1`. This contract is pinned by
+the cross-repo lock so the two repositories cannot drift.
+
+**Boundary unchanged (ADR-0070):** the producer signs; TIM verifies only. The private key is generated and
+held solely in the producer-host protected store under `guvfx_tim_producer`; it never enters TIM, agents,
+Git, Notion, NAS, datasets, logs, argv, fixtures, or chat. Key generation and public-key pinning remain
+separately Sponsor-gated and are not performed here.
