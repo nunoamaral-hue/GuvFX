@@ -12,6 +12,13 @@ from trade_copier.event_ingestion_api import SignedEventIngestView
 from trade_copier.ingest_probe_api import IngestProbeVerifyView
 from trade_copier.matrix_api import InstrumentMatrixView
 from trade_copier.operator_api import OperatorLifecycleView
+from trade_copier.owner_demo_api import (
+    OwnerDemoConfirmView,
+    OwnerDemoPrepareView,
+    OwnerDemoReadinessView,
+    OwnerDemoStatusView,
+    OwnerDemoStopView,
+)
 from trade_copier.views import (
     CopyTradingMastersView,
     CopyTradingOverviewView,
@@ -48,4 +55,13 @@ urlpatterns = [
     # reports enabled:false / no rows unless COPIER_OPERATOR_VIEW_ENABLED is on. No mutation surface (GET only),
     # no order, no job, no arming; non-staff requests are denied (403).
     path("operator/lifecycles/", OperatorLifecycleView.as_view(), name="copy-trading-operator-lifecycles"),
+    # GFX-170 / ADR-0124 — OWNER-operable governed #46→#48 demonstration control (four stages). DARK: every stage
+    # returns 503/FEATURE_DARK unless COPIER_OWNER_DEMO_CONTROL_ENABLED is on. Authorization is OWNERSHIP of the
+    # governed route (not staff, not an email string); confirm requires a fresh re-auth proof + the prepare token;
+    # production has NO host actuators so confirm fails closed (DARK). No browser secret, no key stored anywhere.
+    path("owner-demo/readiness/", OwnerDemoReadinessView.as_view(), name="copy-trading-owner-demo-readiness"),
+    path("owner-demo/status/", OwnerDemoStatusView.as_view(), name="copy-trading-owner-demo-status"),
+    path("owner-demo/prepare/", OwnerDemoPrepareView.as_view(), name="copy-trading-owner-demo-prepare"),
+    path("owner-demo/confirm/", OwnerDemoConfirmView.as_view(), name="copy-trading-owner-demo-confirm"),
+    path("owner-demo/stop/", OwnerDemoStopView.as_view(), name="copy-trading-owner-demo-stop"),
 ]

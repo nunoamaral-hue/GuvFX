@@ -4,6 +4,7 @@ import { apiFetch } from "@/lib/api";
 import type {
   CopyTradingConfig, CopyTradingConfigSaveResult, CopyTradingConfigWrite,
   CopyTradingOverview, CopyTradingStatus, InstrumentMatrix,
+  OwnerDemoConfirmResult, OwnerDemoPrepareResult, OwnerDemoReadiness, OwnerDemoStopResult,
 } from "@/types/copy-trading";
 
 export async function getCopyTradingOverview(accountId: number): Promise<CopyTradingOverview> {
@@ -33,4 +34,30 @@ export async function saveCopyTradingConfig(body: CopyTradingConfigWrite): Promi
 export async function getInstrumentMatrix(pair?: { master: number; follower: number }): Promise<InstrumentMatrix> {
   const q = pair ? `?master=${pair.master}&follower=${pair.follower}` : "";
   return apiFetch<InstrumentMatrix>(`/api/copy-trading/instrument-matrix/${q}`, {});
+}
+
+// GFX-170 / ADR-0124 — OWNER-operable governed #46→#48 demonstration control (four stages). Authorization is
+// OWNERSHIP of the governed route (server-side); the endpoints 503 when DARK. `confirm` carries the owner's
+// re-submitted password for a FRESH re-authentication proof (verified server-side; never stored) + the prepare
+// token. The browser never receives or submits a signing secret.
+export async function getOwnerDemoReadiness(): Promise<OwnerDemoReadiness> {
+  return apiFetch<OwnerDemoReadiness>(`/api/copy-trading/owner-demo/readiness/`, {});
+}
+
+export async function ownerDemoPrepare(): Promise<OwnerDemoPrepareResult> {
+  return apiFetch<OwnerDemoPrepareResult>(`/api/copy-trading/owner-demo/prepare/`, {
+    method: "POST", body: "{}",
+  });
+}
+
+export async function ownerDemoConfirm(body: { confirm_token: string; password: string }): Promise<OwnerDemoConfirmResult> {
+  return apiFetch<OwnerDemoConfirmResult>(`/api/copy-trading/owner-demo/confirm/`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function ownerDemoStop(): Promise<OwnerDemoStopResult> {
+  return apiFetch<OwnerDemoStopResult>(`/api/copy-trading/owner-demo/stop/`, {
+    method: "POST", body: "{}",
+  });
 }

@@ -281,3 +281,42 @@ until armed.
 
 **Still DARK / repository-only:** no agent arms, enables, provisions, or trades; the probe is inert until a
 Sponsor arms the flag and opens a window.
+
+---
+
+## Owner-operated control (GFX-170, ADR-0124) — repository-only, DARK
+
+The authenticated tenant OWNER of the governed #46→#48 route can drive a bounded demonstration from the UI
+(`/copy-trading/demo`) — **without staff access and without pasting shell commands or secrets** — via four
+endpoints under `/api/copy-trading/owner-demo/`. DARK by default: every endpoint returns 503/`FEATURE_DARK`
+unless `COPIER_OWNER_DEMO_CONTROL_ENABLED` (ANDed with `COPIER_ENABLED`) is armed, and the real execution still
+requires the separate Sponsor real-money GO below.
+
+Stages (POST state changes are CSRF-protected by the cookie auth; confirm needs a fresh re-auth proof):
+
+1. **[OWNER] Check readiness** — `GET owner-demo/readiness/`. Value-blind: route restatement, the DARK conflict
+   signals (kill switch, follower job, master-clean, existing arm/window/authorization) and concurrency (lease).
+   Authorization is OWNERSHIP of the route; a non-owner gets 403, never a leak.
+2. **[OWNER] Prepare** — `POST owner-demo/prepare/`. Creates ONE owner-self-approved `CopierLiveAuthorization`
+   (caps enforced SERVER-SIDE: 0.01 vol, 1 order, modify+full_close, partial-close EXCLUDED, 15-min) and holds
+   the acceptance lease (mutual exclusion with deploy/recovery + a second operator). Returns a signed, single-use
+   confirm token. **Preparation does NOT authorize execution.**
+3. **[OWNER] Confirm** — `POST owner-demo/confirm/` with the confirm token **and the owner's re-submitted
+   password** (verified server-side with `check_password`; never stored/logged). Re-proves the full atomic-arm
+   contract and invokes the EXISTING `arm_live_lifecycle`. In production the host actuators are **unprovisioned**,
+   so confirm **fails closed (DARK)** (`EXECUTION_ACTUATORS_UNPROVISIONED` / `READINESS_NOT_READY`); the
+   authorization stays intact and the owner can stop. Idempotent: an already-engaged arm is returned, not doubled.
+4. **[OWNER] Stop / return DARK** — `POST owner-demo/stop/`. Idempotent `teardown_copier_live_dark` (disarm +
+   revoke + signed host OFF via actuators) and releases the lease iff this owner holds it. Host steps are
+   reported UNPROVEN unless the signed actuators ran.
+
+**Secrets:** the browser never receives or submits a signing secret. The signing material stays host-side (the
+standing ingest key + the file-first hosted-executor keyring `hx-20261115`, pkt-163/166C). The preferred durable
+design — host-private / backend-public asymmetric keys, so no bounded demonstration re-enters a shared secret —
+is the deferred one-time provisioning decision in ADR-0124 §4; do not invent backend secret storage.
+
+**Separate Sponsor real-money GO (still required):** before any real #46→#48 execution this control must be
+merged, deployed DARK, and reverified, and then a separate, explicit, head/runtime-pinned Sponsor GO must name
+#46→#48, the exact allowed action/symbol, max 0.01, one-order cap, the observation window and guaranteed
+teardown. Arming the owner control never substitutes for that GO, and the host execution actuators are a separate
+provisioning step.

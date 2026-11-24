@@ -297,3 +297,75 @@ export interface CopyTradingConfigSaveResult {
   audit: { created: number[]; updated: number[]; enabled: number[]; disabled: number[] };
   config: CurrentConfig | null;
 }
+
+// GFX-170 / ADR-0124 — owner-operable governed #46→#48 demonstration control. Value-blind: no login, balance,
+// token or key ever crosses these types. The `confirm_token` is a signed OPAQUE value, never a secret.
+export interface OwnerDemoRoute {
+  master_account_id: number;
+  follower_account_id: number;
+  source_symbol: string;
+  follower_symbol: string;
+  max_volume: string;
+  max_orders: number;
+  max_concurrent: number;
+  valid_minutes: number;
+  authorities: string[];
+  partial_close: boolean;
+  expires_at: string | null;
+  teardown: string;
+}
+
+export interface OwnerDemoReadiness {
+  enabled: boolean;
+  stage: string;
+  authorized?: boolean;
+  reason?: string;
+  ready_to_prepare?: boolean;
+  blockers?: string[];
+  route?: OwnerDemoRoute;
+  authorization?: {
+    id: number; status: string; expires_at: string; orders_consumed: number; max_orders: number;
+  } | null;
+  arm_engaged?: boolean;
+  concurrency?: { lease_blocked: boolean; lease_reason: string };
+  arm_readiness?: { arm_ready: boolean; blockers: string[] };
+  note?: string;
+}
+
+export interface OwnerDemoPrepareResult {
+  enabled: boolean;
+  stage: string;
+  prepared: boolean;
+  authorized?: boolean;
+  reason?: string;
+  authorization_id?: number;
+  confirm_token?: string;
+  expires_at?: string;
+  route?: OwnerDemoRoute;
+  blockers?: string[];
+  note?: string;
+}
+
+export interface OwnerDemoConfirmResult {
+  enabled: boolean;
+  stage: string;
+  armed: boolean;
+  authorized?: boolean;
+  reason?: string | null;
+  arm_id?: number | null;
+  dry_run_ok?: boolean;
+  blockers?: string[];
+  idempotent?: boolean;
+  note?: string;
+}
+
+export interface OwnerDemoStopResult {
+  enabled: boolean;
+  stage: string;
+  authorized?: boolean;
+  reason?: string;
+  backend_dark?: boolean;
+  host_dark?: boolean;
+  lease_released?: boolean | null;
+  note?: string;
+}
