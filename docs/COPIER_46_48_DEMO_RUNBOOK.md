@@ -140,6 +140,49 @@ The authoritative, fully-labelled ordered sequence follows below; the quick-star
 
 **No step here is armed or executed by Claude. Claude's role is read-only preflight, read-back verification, and observation only.**
 
+## Real-arm prerequisites (GFX-167 — verified read-only 2026-11-24)
+
+Three preconditions, each proven value-blind in the GFX-167 real-arm readiness preflight, must hold **before**
+opening the INGEST window / arming (ADR-0114 below). None weakens any existing gate — each closes an operational
+hazard the programme already paid for (pkt-162). With all three met the backend control plane and host are
+otherwise DARK-and-ready: identities route-exact (#46 Tradersway-Live → #48 IS6Technologies-Live, both LIVE,
+same owner), symbol map XAUUSD→XAUUSD.std, sole route, every copier flag OFF, 0 authorizations/arms/windows/
+dispatch, kill switch clear, #46 clean, teardown command installed.
+
+1. **Verifier-window key lifecycle — deploy GFX-164, or clear-before-open.** The GFX-164 fix
+   (`verifier_window.open_window` writes the key ITSELF, after reap + single-flight, to a per-window-UNIQUE
+   tmpfs path) is merged to `main` (squash `97d21765`) but may be **undeployed** — production was `f047cf5e`
+   (exactly one commit short of `97d21765`) on 2026-11-24. On a **pre-GFX-164** backend the operator command
+   pre-writes the key to a FIXED default path, so opening a fresh INGEST window can reap an expired prior window
+   sharing that path and shred the just-written key → an OPEN but **keyless** window. The deployed arm gate
+   (`verifier_window.covers_live_authorization`, `key_file_present`) fails closed on this
+   (`VERIFIER_WINDOW_NOT_READY`) so a keyless window can never strand a position — but it DOES refuse the arm.
+   Therefore, before the real arm EITHER **(a)** deploy `97d21765` (migration-free, DARK) — the structural fix,
+   preferred; OR **(b)** on a pre-GFX-164 backend, run `copier_verifier_window --close` immediately before
+   opening the INGEST window (clears the default path + any stale window), then open exactly one uncapped window.
+   Confirm `copier_verifier_window --status` shows the fresh window with `key_file_present=true` before arming.
+
+2. **Open the INGEST window only AFTER the final backend container recreate.** The window's key lives on
+   `/dev/shm` (tmpfs/RAM) and is erased by any `guvfx-backend` recreate/restart. Perform ALL deployment-config
+   flag arming (which recreates the container) and any backend deploy **before** opening the window, and never
+   recreate/restart `guvfx-backend` between opening the window and teardown — a recreate silently blanks the key
+   and 503s the follower CLOSE mid-lifecycle. (The atomic arm is a DB-only management command and does not
+   recreate the container, so the arm itself is safe after the window is open.)
+
+3. **Hosted-executor keyring currency (pkt-166C).** The signed backend↔daemon channel must be current, or the
+   daemon rejects the executor signature. On `WIN-RD8VDS93DK7` confirm value-blind: `daemon_config.py` is the
+   file-first loader (SHA-256 `a4193d0d`), the keyring file `C:\GuvFX\hosted\secrets\hosted_executor_keyring.json`
+   is present with ACL {SYSTEM FullControl, Administrators FullControl, `NT SERVICE\GuvFXHostedExecutor` Read} and
+   active id `hx-20261115` == backend `HOSTED_EXECUTOR_KEY_ID`, service Running. A pre-file-first daemon, or one
+   whose env was cached at a boot predating the key rotation, would be stale (see pkt-166/166B/166C).
+
+**Teardown completeness (what `teardown_copier_live_dark` does NOT do).** The teardown command returns the
+backend (disarm + revoke) and host (admission OFF + disable `GuvFX_CopierEmitter_46` + shred the host ingest key)
+to DARK, but it does NOT close the verifier window or clear the base ingestion/immediate-dispatch deployment
+flags. Teardown therefore ALSO requires, as explicit operator steps: `copier_verifier_window --close` and
+restoring the base `COPIER_*` ingestion/immediate-dispatch flags OFF. The final OFF read-back (step 17 /
+`copier_live_demo_preflight`) must show **0 open verifier windows** and **every copier flag OFF**.
+
 ## Corrected atomic arming (pkt-148, ADR-0114)
 
 pkt-147 found two gaps the manual sequence above could not prevent: the standing emitter had **no ingest key**
