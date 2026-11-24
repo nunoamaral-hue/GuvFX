@@ -1,0 +1,58 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-MONITORING-RECONCILE-ROLLBACK-ACCOUNTING-168",
+ "packet_id": "GFX-MONITORING-RECONCILE-ROLLBACK-ACCOUNTING-168",
+ "created_at_utc": "2026-11-24T00:00:00Z",
+ "branch": "fix/monitoring-reconcile-rollback-accounting",
+ "base_commit": "795aa3a237fda3c90d9406b162d3c8aca4499e75",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Additive, migration-free correctness fix to hosted_workspace/monitoring_reconcile.py (ADR-0125), closing filed backlog item (b) in docs/NEXT.md. DEFECT: reconcile_account failed closed to a baseline rollback whenever a post-apply attestation did not verify, INCLUDING when the signed env was NEVER dispatched (apply_ok=False -- the host-gated DORMANT path where the signed executor is unavailable and the real adapter _RealMonitoringOps.apply_off_env returns (False, None, 'host_executor_unavailable') BEFORE touching the host). It then dispatched a second doomed baseline 'rollback' and reported rollback_reason='rollback_failed' -- fabricating the failure of an undo for a reconcile that mutated nothing (a false operator alarm implying a dirty tenant bridge on every dormant-host --commit), and a transient host recovery between the two doomed calls could have mis-counted rolled_back for a never-applied account. FIX: split the failure path on apply_ok (the transport's 'did I dispatch' signal). apply_ok=False => truthful ok=False, applied=False, rolled_back=False, rollback_reason=None, reason='apply_not_dispatched:<r>', NO rollback attempted. apply_ok=True + unverified attestation => the EXISTING fail-closed rollback with a genuine rollback_failed preserved. The read-back-failure rollback branch is UNCHANGED (only reached after a verified apply, so its rollback is genuine). The MonitoringReconcileOps.apply_off_env adapter contract is documented: ok=False MUST mean never-dispatched (bridge byte-unchanged); an adapter that has begun mutating must never return ok=False. Monitoring-only, execution-OFF: no execution/arm/order/MT5_ALLOW_LIVE, no gate/identity-pin/env-delta/TOCTOU change, no migration, no flag, no schema/DB change, no broker/MT5/host contact, no cross-tenant data flow. No public result key changed; the only consumer (reconcile_monitoring_readonly_positions management command) reads only summary.applied/refused/total. Base is current main 795aa3a2 (expected base de98027f advanced during the packet by the disjoint docs-only #691 GFX-167 runbook pin -- docs/STATUS.md + docs/COPIER_46_48_DEMO_RUNBOOK.md, zero overlap with the 2 changed files; rebased onto 795aa3a2)."
+ },
+ "ci": {
+  "status": "to-run-at-exact-head",
+  "note": "Local run isolated (keepdb test DB; gitignored copy-leaf duplicates '* [0-9].{py,json,md,ts,tsx}' -- an environmental sync artifact that keeps regenerating, counted 1441->2875 across the session -- quarantined so the migration graph + ADR-uniqueness glob match a clean CI checkout, then restored). hosted_workspace.tests_monitoring_reconcile = 35 OK (+7 GFX-168 cases incl. the reproduction test_undispatched_apply_is_not_reported_as_rollback_failure that FAILS before the fix: AssertionError 'rollback_failed' is not None, green after). makemigrations --check hosted_workspace execution trade_copier = NO migration. 4-lens adversarial review (Workflow, 5 agents) 0 confirmed findings. GitHub exact-head CI (backend / frontend / governance / market-data-foundation / research-foundation) to be driven 5/5 before PR-ready; CI on a clean checkout (no copy-leafs, no quarantine) is the authoritative regression gate. HARD STOP before merge; auto-merge OFF."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_monitoring_reconcile --noinput --keepdb",
+  "cd backend && .venv/bin/python manage.py test hosted_workspace.tests_monitoring_reconcile.ReconcileMatrix.test_undispatched_apply_is_not_reported_as_rollback_failure --noinput --keepdb   # (against UNMODIFIED module: FAIL -> reproduces the defect)",
+  "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run hosted_workspace execution trade_copier",
+  "python3 scripts/check_no_secrets.py",
+  "python3 scripts/check_evidence_manifests.py",
+  "cd backend && .venv/bin/python manage.py test core.tests_adr_governance --noinput --keepdb"
+ ],
+ "expected_results": [
+  "reconcile_account, on a never-dispatched apply (apply_ok=False), returns ok=False / applied=False / rolled_back=False / rollback_reason=None / reason='apply_not_dispatched:<reason>' and makes NO second (rollback) dispatch -- never 'rollback_failed', never a fabricated undo failure.",
+  "A GENUINE rollback failure is still surfaced: a dispatched-then-unverified attestation (apply_ok=True) still fails closed to a baseline rollback, and an enable-verified-then-read-back-failed account with a failed baseline rollback still reports rollback_reason='rollback_failed'. The successful path (dispatch + verified attestation + enable read-back 200 => applied=True) and teardown are byte-identical.",
+  "Batch summary is internally consistent in all mixed cases: ok+refused==total; applied counts only true applies; rolled_back counts only genuinely-restored accounts; a never-dispatched (dormant) account is counted only as refused. Migration-free; no execution/flag/order/MT5_ALLOW_LIVE; no gate/identity-pin/isolation change."
+ ],
+ "actual_results": [
+  "hosted_workspace.tests_monitoring_reconcile: 35 tests OK (28 pre-existing + 7 new GFX-168 cases 8b-8h). The reproduction test_undispatched_apply_is_not_reported_as_rollback_failure FAILS against the UNMODIFIED module (AssertionError: 'rollback_failed' is not None) and PASSES after the fix. New cases: 8b never-dispatched -> apply_not_dispatched, rollback_reason None, single dispatch; 8c enable-verified + read-back-fail + rollback-fail -> genuine rollback_failed (not masked); 8d dispatched-but-bad-attestation + rollback-fail -> genuine rollback_failed; 8e retry after a dormant failure applies cleanly + idempotent env sha; 8f TOCTOU concurrent active-execution -> gate_failed_recheck, nothing dispatched; 8g transaction boundary: applied=True only on full success across every failure mode; 8h mixed-batch accounting consistency (ok+refused==total, no double-count, rolled_back counts only true rollbacks).",
+  "makemigrations --check hosted_workspace execution trade_copier = 'No changes detected' (migration-free). git diff = exactly 2 code files (backend/hosted_workspace/monitoring_reconcile.py, backend/hosted_workspace/tests_monitoring_reconcile.py) + ADR-0125 + this manifest + docs/NEXT.md handoff. No model, schema, flag, compose, env, workflow, or frontend change.",
+  "4-lens adversarial review (Workflow, 5 agents: fabricated-failure/hidden-success, rollback-accounting-consistency, safety-isolation-invariants, test-integrity-fail-closed): 0 CONFIRMED findings. 3 lenses CLEAN; the test-integrity lens raised 1 LOW which adversarial verification rejected (stands=false, 'NOT a real defect, no concrete failure case'). The accounting lens noted an out-of-scope, pre-existing residual (max_concurrency>1 reassembly collapses duplicate account ids -- violates the documented 'EXACT account ids, never a sweep' contract; not in the GFX-168 surface, default sequential path unaffected). Key verified facts: apply_ok=False provably implies zero host contact (real adapter returns before the executor call); the read-back branch is unchanged and still surfaces genuine rollback_failed; no public result key changed; the only consumer reads summary counters only.",
+  "Full hosted_workspace app suite (belt-and-braces, under the copy-leaf quarantine harness): see limitations -- 2 failures observed are a quarantine/file-enumeration artifact, not caused by this 2-file change; classification recorded below."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only. No production deploy, no flag, no schema/DB change, no migration, no backfill, no broker/MT5/NAS/host contact, no Copy-Trading/TIM/Wayond/withdrawal/unrelated-Dashboard change. Production is untouched.",
+  "Scope is hosted_workspace/monitoring_reconcile.py (the host-gated read-only-positions reconciler, ADR-0111). The sibling execution.monitoring_reconcile (read-only route reconciliation, ADR-0075) has no apply/rollback accounting and is out of scope. The real host transport _RealMonitoringOps is operator-run and not exercised in CI; the suite drives an injected fake that faithfully models both apply_ok=False (never-dispatched) and apply_ok=True-bad-attestation; the never-dispatched => no-mutation guarantee is enforced by the documented adapter contract.",
+  "Local full-suite regression is run under a quarantine harness that temporarily moves the gitignored copy-leaf duplicates ('* [0-9].{py,json,md,ts,tsx}', an environmental sync artifact absent from Git and CI) out of the working tree; thousands of files are moved during the run, which can trip file/manifest-enumeration tests. The authoritative regression gate is the exact-head GitHub CI on a clean checkout. head_commit is null until PR-ready.",
+  "The focused suite (hosted_workspace.tests_monitoring_reconcile, 35 OK) is the authoritative local coverage for this change; no other code path exercises the changed branch (only the reconcile_monitoring_readonly_positions management command consumes reconcile(), and it reads only the summary counters)."
+ ],
+ "artefact_locations": [
+  "backend/hosted_workspace/monitoring_reconcile.py",
+  "backend/hosted_workspace/tests_monitoring_reconcile.py",
+  "docs/architecture/ADR-0125-monitoring-reconcile-rollback-accounting.md",
+  "docs/NEXT.md"
+ ],
+ "checksums": {
+  "backend/hosted_workspace/monitoring_reconcile.py": "sha256:f0759e16b5dd6257bed14fd109cdf972f919f8ba8567527af724c6b63908c789",
+  "backend/hosted_workspace/tests_monitoring_reconcile.py": "sha256:6e2fdbe2f0b0132dbd7f900ee532ceafc3eca4ed10212c456effe6bc30794815",
+  "docs/architecture/ADR-0125-monitoring-reconcile-rollback-accounting.md": "sha256:8c626d6ba530f0587629aabe133babc8c78f812a803bd881be10b0e146e49df7"
+ },
+ "reviewer": "Author self-review + direct source trace (the real adapter returns (False, None, ...) before the executor call, so apply_ok=False strictly implies a byte-unchanged bridge); deterministic reproduction (defect shown before fix, green after) + 7 adversarial regression tests; 4-lens adversarial-review Workflow (fabricated-failure/hidden-success, rollback-accounting-consistency, safety-isolation-invariants, test-integrity-fail-closed): 0 confirmed findings, 1 LOW rejected on verification, 1 out-of-scope residual recorded. No CRITICAL/HIGH."
+}

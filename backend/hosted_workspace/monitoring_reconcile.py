@@ -220,7 +220,13 @@ class MonitoringReconcileOps(abc.ABC):
     @abc.abstractmethod
     def apply_off_env(self, account, *, env_b64, env_sha, port, runtime_root, expect_readonly):
         """Dispatch the signed execution-OFF env to THIS tenant's bridge and return ``(ok, attestation, reason)``.
-        ``expect_readonly`` records whether the applied env carries the read flag (the baseline apply is False)."""
+        ``expect_readonly`` records whether the applied env carries the read flag (the baseline apply is False).
+
+        CONTRACT (GFX-168): ``ok=False`` MUST mean the env was NEVER dispatched — the bridge is byte-unchanged and
+        no mutation occurred (e.g. the signed executor is unavailable), so the caller must NOT roll back. ``ok=True``
+        means the dispatch was sent (the bridge may now be mutated); the returned attestation is then verified, and a
+        verification failure triggers a fail-closed rollback. An adapter that has begun mutating the bridge must
+        never return ``ok=False``."""
 
     @abc.abstractmethod
     def read_back_positions(self, account):
@@ -321,10 +327,23 @@ def reconcile_account(account_id, *, commit=False, expected_owner_id, expected_l
     apply_ok, attestation, apply_reason = ops.apply_off_env(
         account, env_b64=desired_b64, env_sha=desired_sha, port=port, runtime_root=runtime_root,
         expect_readonly=(not teardown))
-    att_ok, att_reason = (_verify_off_attestation(attestation, account_id=account.id, port=port,
-                                                  expect_env_sha=desired_sha) if apply_ok else (False, apply_reason))
+    if not apply_ok:
+        # GFX-168: the signed env was NEVER dispatched to the bridge. ``apply_ok`` is the transport's "did I send
+        # it" signal (False e.g. on a dormant host-gated path where the signed executor is unavailable, which
+        # returns ``(False, None, …)`` BEFORE contacting the host). Nothing was mutated, so there is nothing to
+        # roll back: attempting a baseline "rollback" here would make a second doomed host call AND report
+        # ``rollback_failed`` — fabricating the failure of an undo for a change that never happened (a false
+        # operator alarm implying a dirty bridge). Report the apply failure truthfully; a rollback was neither
+        # needed nor performed.
+        return {"ok": False, "account_id": account.id, "applied": False, "rolled_back": False,
+                "reason": f"apply_not_dispatched:{apply_reason}", "rollback_reason": None,
+                "preview": preview, "attestation": attestation}
+    att_ok, att_reason = _verify_off_attestation(attestation, account_id=account.id, port=port,
+                                                 expect_env_sha=desired_sha)
     if not att_ok:
-        # Fail closed: roll THIS account back to the captured byte-exact baseline (read-only absent).
+        # The env WAS dispatched but its signed attestation did not verify — the bridge MAY now be mutated, so
+        # fail closed and roll it back to the captured byte-exact baseline (read-only absent). A rollback that
+        # cannot be verified here is a GENUINE ``rollback_failed`` (the bridge may be left dirty).
         rb_ok, rb_att, rb_reason = ops.apply_off_env(
             account, env_b64=base_b64, env_sha=base_sha, port=port, runtime_root=runtime_root, expect_readonly=False)
         rb_att_ok, _ = (_verify_off_attestation(rb_att, account_id=account.id, port=port,

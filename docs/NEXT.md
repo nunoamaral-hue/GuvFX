@@ -1,5 +1,23 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ MONITORING_RECONCILE: NEVER FABRICATE A ROLLBACK FAILURE FOR A NEVER-DISPATCHED APPLY (2026-11-24; GFX-MONITORING-RECONCILE-ROLLBACK-ACCOUNTING-168; ADR-0125; repository-only PR)
+Closes filed backlog item (b). `hosted_workspace.monitoring_reconcile.reconcile_account` fails closed to a baseline
+rollback on an attestation failure. The pre-fix branch was entered whenever the attestation did not verify — including
+when the signed env was **never dispatched** (`apply_ok=False`, e.g. the host-gated DORMANT path where the signed
+executor is unavailable and the adapter returns `(False, None, "host_executor_unavailable")` *before* touching the
+host). It then made a second doomed baseline "rollback" dispatch and reported `rollback_reason="rollback_failed"` — a
+**fabricated failure** implying a dirty tenant bridge for a reconcile that mutated nothing (a false operator alarm on
+every dormant-host `--commit`). Fix splits the branch on `apply_ok` (the transport's "did I dispatch" signal):
+`apply_ok=False` ⇒ truthful `apply_not_dispatched:<reason>`, `applied=False`, `rolled_back=False`,
+`rollback_reason=None`, **no** rollback attempted; `apply_ok=True` + unverified attestation ⇒ the existing fail-closed
+rollback (genuine `rollback_failed` preserved). Read-back-failure rollback branch unchanged (only reached after a
+verified apply, so its rollback is genuine). Adapter contract documented: `ok=False` MUST mean never-dispatched. Off
+current main `de98027f` on `fix/monitoring-reconcile-rollback-accounting`; `hosted_workspace.tests_monitoring_reconcile`
+35 OK (+7 incl. the reproduction that fails before the fix); full `hosted_workspace` app no new regression; migration-
+free; exactly 2 files (module + test) + ADR-0125 + evidence manifest. No execution/flag/order/`MT5_ALLOW_LIVE` touched
+(monitoring-only, execution-OFF). **One bounded next action:** exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP
+before merge.
+
 ## ★ LIFETIME NET P&L + PORTFOLIO METRICS: UNKNOWN CURRENCY NEVER USD (2026-11-19; GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163; ADR-0122; repository-only PR)
 The governed LIFETIME follow-up to GFX-161 (the documented remaining blank→USD root pattern). `build_summary` fed
 `account_net_pnl` the balance-label `cur` (blank→USD) and fed `portfolio_metrics` an `observed_nonusd_ids` set derived
@@ -24,7 +42,8 @@ never a false `$0.00`, never cross-tenant; balance/equity/metrics byte-identical
 `fix/daily-realized-unknown-currency`; `analytics` 310 OK (+12), migration-free. **One bounded next action:**
 exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge. **Follow-up (NOT in this PR):** lifetime
 `account_net_pnl` + `portfolio_metrics` share the same blank→USD root pattern (narrow-scope boundary). The earlier
-backlog items (b) `monitoring_reconcile` rollback-accounting and (c) account-less withdrawal ref-collision remain.
+backlog item (b) `monitoring_reconcile` rollback-accounting is now **FIXED by GFX-168 (ADR-0125, PR open)**; (c)
+account-less withdrawal ref-collision remains.
 
 ## ★ MAILBOX OAUTH-HEALTH: OWNER_DISCONNECTED ≠ RECONSENT (2026-11-18; GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only PR)
 Re-entry packet selected the highest-priority unblocked repo-only item: a member's deliberate mailbox disconnect
@@ -35,8 +54,9 @@ on `fix/oauth-owner-disconnect-classification`; migration-free, DARK; `broker_in
 frontend build clean. **One bounded next action:** adversarial review + exact-head CI 5/5, then Sponsor `GO — merge PR`.
 STOP before merge. **Backlog (filed, NOT in this PR):** (a) dashboard daily-realized currency contamination on a stale
 snapshot + live-read failure (`analytics/portfolio.py` blank→USD) — priority-2 repo fix; (b) `monitoring_reconcile`
-rollback-accounting reports `rollback_failed` when the apply was never dispatched (host-gated dormant path); (c)
-account-less withdrawal completion can advance the wrong same-owner withdrawal on a reference collision
+rollback-accounting reports `rollback_failed` when the apply was never dispatched (host-gated dormant path) — **FIXED
+by GFX-168 (ADR-0125), PR open**; (c) account-less withdrawal completion can advance the wrong same-owner withdrawal
+on a reference collision
 (`correlation.py`, LOW). The six LIVE-position accounts + OAuth app publish remain host/human-gated (unchanged).
 
 ## ★ COPIER PRODUCTION ARMING PIPELINE (2026-11-17; GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117; repository-only PR)
