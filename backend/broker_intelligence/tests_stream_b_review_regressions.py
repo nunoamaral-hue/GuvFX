@@ -122,6 +122,99 @@ class OwnerBridgeIsolation(TestCase):
         self.assertEqual(w.status, Withdrawal.Status.PROCESSING)         # the bridge still advances the real record
         self.assertIsNotNone(w.processing_started_at)
 
+    def test_account_less_completion_fails_closed_on_same_owner_reference_collision(self):
+        # Backlog (c): one owner holds TWO external withdrawals that share a reference across DIFFERENT accounts
+        # (``uniq_withdrawal_account_reference`` is per-account, so this is legitimate). An account-LESS COMPLETION
+        # carries no account to disambiguate, so it must NOT advance an ARBITRARY one to COMPLETED — it fails closed
+        # (advances neither; left UNRESOLVED), the same "ambiguous ⇒ never guess" rule the account-resolved bridge
+        # and the heuristic adopt already apply.
+        u = self._user()
+        a1, a2 = self._acct(u), self._acct(u)
+        self._event(user=u, account=a1, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="300", minutes=0)
+        self._event(user=u, account=a2, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="300", minutes=1)
+        C.run_correlation()
+        self.assertEqual(Withdrawal.objects.filter(owner=u, broker_reference_id="300").count(), 2)  # the collision
+        # account-less payout COMPLETION (owner + ref only; genuine payout email is category UNKNOWN)
+        self._event(user=u, account=None, event_type="WITHDRAWAL_COMPLETED",
+                    category=TransactionCategory.UNKNOWN, ref="300", minutes=5)
+        C.run_correlation()
+        w1 = Withdrawal.objects.get(trading_account=a1)
+        w2 = Withdrawal.objects.get(trading_account=a2)
+        # FAIL CLOSED: the ambiguous account-less completion advanced NEITHER withdrawal to COMPLETED.
+        self.assertNotEqual(w1.status, Withdrawal.Status.COMPLETED, "ambiguous account-less completion advanced A1")
+        self.assertNotEqual(w2.status, Withdrawal.Status.COMPLETED, "ambiguous account-less completion advanced A2")
+        self.assertEqual(w1.status, Withdrawal.Status.REQUESTED)
+        self.assertEqual(w2.status, Withdrawal.Status.REQUESTED)
+        self.assertIsNone(w1.completed_at)
+        self.assertIsNone(w2.completed_at)
+
+    def test_account_less_completion_still_advances_single_owner_withdrawal(self):
+        # Regression guard: with NO collision (the owner has exactly one withdrawal for the reference) the legitimate
+        # account-less completion MUST still advance it to COMPLETED — the fail-closed fix must not break the
+        # documented ADR-0050 mixed-resolution case.
+        u = self._user()
+        a1 = self._acct(u)
+        self._event(user=u, account=a1, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="400", minutes=0)
+        C.run_correlation()
+        self._event(user=u, account=None, event_type="WITHDRAWAL_COMPLETED",
+                    category=TransactionCategory.UNKNOWN, ref="400", minutes=5)
+        C.run_correlation()
+        w = Withdrawal.objects.get(trading_account=a1)
+        self.assertEqual(w.status, Withdrawal.Status.COMPLETED)      # single match => advanced, as before
+        self.assertIsNotNone(w.completed_at)
+
+    def test_account_less_neutral_advance_fails_closed_on_reference_collision(self):
+        # The same account-less bridge serves the NEUTRAL (non-completion) advance pass (pass 2b). A collision must
+        # fail closed there too: an account-less PROCESSING event advances NEITHER of the two colliding withdrawals.
+        u = self._user()
+        a1, a2 = self._acct(u), self._acct(u)
+        self._event(user=u, account=a1, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="500", minutes=0)
+        self._event(user=u, account=a2, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="500", minutes=1)
+        C.run_correlation()
+        self._event(user=u, account=None, event_type="WITHDRAWAL_PROCESSING",
+                    category=TransactionCategory.UNKNOWN, ref="500", minutes=5)
+        C.run_correlation()
+        w1 = Withdrawal.objects.get(trading_account=a1)
+        w2 = Withdrawal.objects.get(trading_account=a2)
+        self.assertEqual(w1.status, Withdrawal.Status.REQUESTED)     # neither advanced to PROCESSING
+        self.assertEqual(w2.status, Withdrawal.Status.REQUESTED)
+        self.assertIsNone(w1.processing_started_at)
+        self.assertIsNone(w2.processing_started_at)
+
+    def test_account_less_external_request_on_collision_is_ambiguous_not_fabricated(self):
+        # Pass-1 regression guard: the create-capable pass must NOT fabricate a phantom account-less withdrawal
+        # (metric inflation) for an account-LESS EXTERNAL_WITHDRAWAL event whose reference collides with >=2 of the
+        # owner's withdrawals. It is marked AMBIGUOUS (re-evaluable), mirroring the ref-less heuristic >=2 path — the
+        # fail-closed finder must never flip into a phantom create.
+        u = self._user()
+        a1, a2 = self._acct(u), self._acct(u)
+        self._event(user=u, account=a1, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="600", minutes=0)
+        self._event(user=u, account=a2, event_type="WITHDRAWAL_REQUESTED",
+                    category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="600", minutes=1)
+        C.run_correlation()
+        self.assertEqual(Withdrawal.objects.filter(owner=u, broker_reference_id="600").count(), 2)
+        ev = self._event(user=u, account=None, event_type="WITHDRAWAL_REQUESTED",
+                         category=TransactionCategory.EXTERNAL_WITHDRAWAL, ref="600", minutes=5)
+        C.run_correlation()
+        # NO phantom third row (no inflation) and no account-NULL row fabricated; event left AMBIGUOUS, not CORRELATED.
+        self.assertEqual(Withdrawal.objects.filter(owner=u, broker_reference_id="600").count(), 2)
+        self.assertFalse(Withdrawal.objects.filter(owner=u, trading_account__isnull=True,
+                                                   broker_reference_id="600").exists())
+        ev.refresh_from_db()
+        self.assertEqual(ev.correlation_status, BrokerEvent.CorrelationStatus.AMBIGUOUS)
+        # re-run stays idempotent: still exactly two rows, still no fabrication
+        C.run_correlation()
+        self.assertEqual(Withdrawal.objects.filter(owner=u, broker_reference_id="600").count(), 2)
+        # the two genuine account-resolved withdrawals are untouched
+        self.assertEqual(Withdrawal.objects.get(trading_account=a1).status, Withdrawal.Status.REQUESTED)
+        self.assertEqual(Withdrawal.objects.get(trading_account=a2).status, Withdrawal.Status.REQUESTED)
+
 
 class MigrationReverseGuard(TestCase):
     """Migration 0026 reverse must refuse to destroy an activated / edited profile and its append-only audit history,

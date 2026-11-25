@@ -1,0 +1,55 @@
+{
+ "schema_version": "1.0",
+ "handoff_id": "GFX-EVD-WITHDRAWAL-REFCOLLISION-FAIL-CLOSED-169",
+ "packet_id": "GFX-WITHDRAWAL-REFCOLLISION-FAIL-CLOSED-169",
+ "created_at_utc": "2026-11-24T00:00:00Z",
+ "branch": "fix/account-less-ref-collision-fail-closed",
+ "base_commit": "1c05b7b0d0cb34a199648e9b81d9c48aa85cf3c3",
+ "head_commit": null,
+ "environment": {
+  "scope": "repository-only",
+  "production_touched": false,
+  "host_touched": false,
+  "migration": false,
+  "note": "Additive, migration-free correctness fix to broker_intelligence/correlation.py (ADR-0126), closing filed backlog item (c) in docs/NEXT.md. DEFECT: one owner can legitimately hold two withdrawals sharing a broker_reference_id across DIFFERENT accounts (uniq_withdrawal_account_reference is per-account). _find_by_reference's account-LESS bridge did Withdrawal.objects.filter(owner_id, broker_reference_id=ref).first() and advanced an ARBITRARY match -- so an account-less COMPLETION (genuine payout email, category UNKNOWN) on such a collision advanced the WRONG withdrawal to COMPLETED. FIX (two scoped parts): (1) the account-less bridge fetches [:2] and returns the row only when exactly one matches, else None (fail closed) -- the advance-only passes (correlate_completion_event, correlate_neutral_advance_event) then return OUT_UNRESOLVED (never fabricate, never advance, event stays re-evaluable); (2) the create-capable pass 1 (_correlate_by_reference) guards the ambiguous account-less collision -> _mark_event(AMBIGUOUS) + OUT_AMBIGUOUS, so it never fabricates a phantom account-NULL row (metric inflation), mirroring _correlate_by_heuristic's len(cands)>=2 => AMBIGUOUS. Account-RESOLVED bridge, cross-owner isolation, idempotency, and zero/single-match create all unchanged. Monitoring/correlation engine remains DARK (no live caller enabled). No migration, no flag, no schema/DB change, no broker/MT5/host contact. Base is current main 1c05b7b0 (includes the merged GFX-168 #692 + the disjoint TIM #693)."
+ },
+ "ci": {
+  "status": "to-run-at-exact-head",
+  "note": "Local run isolated (keepdb test DB; a LEAN quarantine moved only the 27 untracked migration copy-leaf duplicates -- the sole migration-graph blocker -- then restored them). broker_intelligence.tests_stream_b_review_regressions.OwnerBridgeIsolation = 6 OK (the reproduction test_account_less_completion_fails_closed_on_same_owner_reference_collision FAILS before the fix: 'COMPLETED'==Withdrawal.Status.COMPLETED, green after; + test_account_less_neutral_advance_fails_closed_on_reference_collision; + test_account_less_external_request_on_collision_is_ambiguous_not_fabricated (the pass-1 regression guard: row count stays 2, event AMBIGUOUS, idempotent); + 2 preserved legitimate-case tests). Broader correlation suite 96 OK (tests_owner_attributed_withdrawal / tests_stream_b_scenario / tests_staff_correlation / tests_account_scope / tests_parsers_stream_b / OwnerBridgeIsolation / BucketCoverage). makemigrations --check broker_intelligence = No changes detected (migration-free). 3-lens adversarial review (Workflow) found 1 CONFIRMED MEDIUM (pass-1 phantom-create) -> FIXED by part 2 + regression test; re-verified. GitHub exact-head CI (backend / frontend / governance / market-data-foundation / research-foundation) to be driven 5/5 before PR-ready; the backend job on a clean checkout is the authoritative regression gate (it runs the broker-profile migration tests that the local keepdb seed can't). HARD STOP before merge; auto-merge OFF."
+ },
+ "commands": [
+  "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_stream_b_review_regressions.OwnerBridgeIsolation --noinput --keepdb",
+  "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_stream_b_review_regressions.OwnerBridgeIsolation.test_account_less_completion_fails_closed_on_same_owner_reference_collision --noinput --keepdb   # (against UNMODIFIED code: FAIL -> reproduces the defect)",
+  "cd backend && .venv/bin/python manage.py test broker_intelligence.tests_owner_attributed_withdrawal broker_intelligence.tests_stream_b_scenario broker_intelligence.tests_staff_correlation broker_intelligence.tests_account_scope broker_intelligence.tests_parsers_stream_b --noinput --keepdb",
+  "cd backend && .venv/bin/python manage.py makemigrations --check --dry-run broker_intelligence"
+ ],
+ "expected_results": [
+  "_find_by_reference's account-less bridge returns a withdrawal ONLY when exactly one (owner, ref) row matches; on a >=2 same-owner cross-account collision it returns None. The advance-only completion/neutral passes then return OUT_UNRESOLVED -- the colliding withdrawals are untouched, the event is never fabricated and stays re-evaluable (not CORRELATED).",
+  "The create-capable pass 1 (_correlate_by_reference) marks an ambiguous account-less collision AMBIGUOUS (OUT_AMBIGUOUS) and never fabricates a phantom account-NULL withdrawal; a count==0 account-less event still creates its normal account-UNRESOLVED withdrawal (ADR-0050) and a count==1 single match is advanced as before.",
+  "Account-RESOLVED bridge, cross-owner isolation (owner_id scoping), and idempotency unchanged. Migration-free; no flag/schema/DB/host change."
+ ],
+ "actual_results": [
+  "OwnerBridgeIsolation: 6 tests OK. The reproduction FAILS against the unmodified module ('COMPLETED' == Withdrawal.Status.COMPLETED: ambiguous account-less completion advanced A2) and PASSES after the fix. test_account_less_neutral_advance_fails_closed_on_reference_collision: neither of the two colliding withdrawals advances. test_account_less_external_request_on_collision_is_ambiguous_not_fabricated (pass-1 guard): the row count stays 2 (no phantom), the event is AMBIGUOUS (not CORRELATED), re-run is idempotent, and the two genuine account-resolved withdrawals are untouched. The two pre-existing legitimate-case tests (single-match account-less bridge; account-resolved cannot advance a sibling) still pass.",
+  "Broader correlation suite: 96 tests OK (no regression). makemigrations --check broker_intelligence = 'No changes detected' (migration-free). git diff = exactly 2 code files (backend/broker_intelligence/correlation.py, backend/broker_intelligence/tests_stream_b_review_regressions.py). No model, schema, flag, workflow, compose, env, or frontend change.",
+  "3-lens adversarial review (Workflow, 4 agents: fail-closed-correctness, pass1-create-regression, downstream-advance-only-safety): 2 lenses CLEAN; the pass1-create-regression lens surfaced 1 CONFIRMED MEDIUM -- the shared fail-closed finder made pass 1 fabricate a phantom account-NULL withdrawal for an account-less EXTERNAL_WITHDRAWAL collision (empirically reproduced post-fix rows=3/created=1 vs pre-fix rows=2). FIXED by the pass-1 AMBIGUOUS guard (part 2) + the test_account_less_external_request_on_collision_is_ambiguous_not_fabricated regression test; independently re-verified. No CRITICAL/HIGH."
+ ],
+ "status": "PARTIAL",
+ "limitations": [
+  "Repository-only. No production deploy, no flag, no schema/DB change, no migration, no backfill, no broker/MT5/NAS/host contact. The correlation engine remains DARK (operator/flag-gated; no live caller enabled by this packet).",
+  "Scope is the account-less bridge of broker_intelligence/correlation.py (the owner-attributed, account-optional correlation of ADR-0050/0079). The account-RESOLVED bridge and all other correlation paths are unchanged.",
+  "Local full-suite runs quarantine the 27 untracked migration copy-leaf duplicates (an environmental sync artifact absent from Git/CI) to make the migration graph valid, then restore them. Three broker-profile MIGRATION tests (VantageActivationMigration, MigrationReverseGuard x2) error under local keepdb with BrokerProfile.DoesNotExist -- PROVEN pre-existing/environmental: they error identically on clean main (changes stashed), are unrelated to this correlation-logic change (migration-free, no BrokerProfile access), and pass on a clean CI checkout where the broker-profile data migrations seed. head_commit is null until PR-ready; exact-head CI is the authoritative gate.",
+  "A probe inadvertently created inert SYNTHETIC-tagged rows (1 user, 2 accounts, 2 events) in the local DEV database (not the test DB, not production); the append-only BrokerEvent rows could not be deleted (immutable-evidence trigger) and were neutralized to CORRELATED (quarantine, not destroy). No production, test-DB, CI, or PR impact."
+ ],
+ "artefact_locations": [
+  "backend/broker_intelligence/correlation.py",
+  "backend/broker_intelligence/tests_stream_b_review_regressions.py",
+  "docs/architecture/ADR-0126-account-less-reference-collision-fail-closed.md",
+  "docs/NEXT.md"
+ ],
+ "checksums": {
+  "backend/broker_intelligence/correlation.py": "sha256:0ab0bda19b2011c5220108f2e4f82872796ec2522af544f23200035b7972fabd",
+  "backend/broker_intelligence/tests_stream_b_review_regressions.py": "sha256:0317e4bc9baf90eac9afb986d6ab9c9c78335957ad3f860afa34b505c97d697b",
+  "docs/architecture/ADR-0126-account-less-reference-collision-fail-closed.md": "sha256:3e7e2332af8792de9234923abe26ec3e7963027234cc7ce172c4b950faa2f2ac"
+ },
+ "reviewer": "Author self-review + direct source trace (per-account uniq_withdrawal_account_reference vs per-owner-NULL uniq_withdrawal_owner_reference; the account-less strict key makes the bridge see only account-resolved rows so >=2 is a genuine collision); deterministic reproduction (defect shown before fix, green after) + 6 OwnerBridgeIsolation tests; 3-lens adversarial-review Workflow: 2 CLEAN, 1 MEDIUM (pass-1 phantom-create) FIXED + regression-tested + independently re-verified. No CRITICAL/HIGH."
+}

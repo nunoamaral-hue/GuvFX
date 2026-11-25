@@ -1,5 +1,21 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ WITHDRAWAL CORRELATION: ACCOUNT-LESS REFERENCE COLLISION FAILS CLOSED (2026-11-24; GFX-WITHDRAWAL-REFCOLLISION-FAIL-CLOSED-169; ADR-0126; repository-only PR)
+Closes filed backlog item (c). One owner can legitimately hold two withdrawals sharing a `broker_reference_id` across
+different accounts (`uniq_withdrawal_account_reference` is per-account). `correlation._find_by_reference`'s account-LESS
+bridge did `filter(owner, ref).first()` and advanced an ARBITRARY one — so an account-less COMPLETION (genuine payout
+email, category UNKNOWN) on a collision advanced the WRONG withdrawal to COMPLETED. Fix part 1: the account-less bridge
+fetches `[:2]` and returns the row only when exactly one matches, else None (fail closed) — the advance-only completion/
+neutral passes then leave the event UNRESOLVED (never fabricated, re-evaluable), the module's own "ambiguous ⇒ never
+guess" rule. Fix part 2 (from the adversarial-review MEDIUM): the create-capable pass 1 (`_correlate_by_reference`)
+guards the ambiguous account-less collision → marks AMBIGUOUS + `OUT_AMBIGUOUS`, never fabricating a phantom
+account-NULL row (mirrors `_correlate_by_heuristic`'s `len(cands)>=2 ⇒ AMBIGUOUS`). Account-resolved bridge, cross-owner
+isolation, idempotency, and zero/single-match create all unchanged. Off current main `1c05b7b0` on
+`fix/account-less-ref-collision-fail-closed`; `broker_intelligence` `OwnerBridgeIsolation` 6 OK (+4 incl. a reproduction
+that fails pre-fix) + 96-test correlation suite green; migration-free; exactly 2 files + ADR-0126 + evidence manifest.
+**One bounded next action:** exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge. **Backlog after this:**
+none of the three filed items (a/b/c) remain — (a) GFX-161, (b) GFX-168, (c) GFX-169.
+
 ## ★ MONITORING_RECONCILE: NEVER FABRICATE A ROLLBACK FAILURE FOR A NEVER-DISPATCHED APPLY (2026-11-24; GFX-MONITORING-RECONCILE-ROLLBACK-ACCOUNTING-168; ADR-0125; repository-only PR)
 Closes filed backlog item (b). `hosted_workspace.monitoring_reconcile.reconcile_account` fails closed to a baseline
 rollback on an attestation failure. The pre-fix branch was entered whenever the attestation did not verify — including
@@ -42,8 +58,8 @@ never a false `$0.00`, never cross-tenant; balance/equity/metrics byte-identical
 `fix/daily-realized-unknown-currency`; `analytics` 310 OK (+12), migration-free. **One bounded next action:**
 exact-head CI 5/5, then Sponsor `GO — merge PR`. STOP before merge. **Follow-up (NOT in this PR):** lifetime
 `account_net_pnl` + `portfolio_metrics` share the same blank→USD root pattern (narrow-scope boundary). The earlier
-backlog item (b) `monitoring_reconcile` rollback-accounting is now **FIXED by GFX-168 (ADR-0125, PR open)**; (c)
-account-less withdrawal ref-collision remains.
+backlog item (b) `monitoring_reconcile` rollback-accounting is **FIXED by GFX-168 (ADR-0125, MERGED → main 1c05b7b0)**;
+(c) account-less withdrawal ref-collision is **FIXED by GFX-169 (ADR-0126, PR open)**.
 
 ## ★ MAILBOX OAUTH-HEALTH: OWNER_DISCONNECTED ≠ RECONSENT (2026-11-18; GFX-DEADLINE-PRIORITY-REENTRY-158; ADR-0118; repository-only PR)
 Re-entry packet selected the highest-priority unblocked repo-only item: a member's deliberate mailbox disconnect
@@ -55,8 +71,8 @@ frontend build clean. **One bounded next action:** adversarial review + exact-he
 STOP before merge. **Backlog (filed, NOT in this PR):** (a) dashboard daily-realized currency contamination on a stale
 snapshot + live-read failure (`analytics/portfolio.py` blank→USD) — priority-2 repo fix; (b) `monitoring_reconcile`
 rollback-accounting reports `rollback_failed` when the apply was never dispatched (host-gated dormant path) — **FIXED
-by GFX-168 (ADR-0125), PR open**; (c) account-less withdrawal completion can advance the wrong same-owner withdrawal
-on a reference collision
+by GFX-168 (ADR-0125), MERGED**; (c) account-less withdrawal completion advancing the wrong same-owner withdrawal on a
+reference collision is **FIXED by GFX-169 (ADR-0126, PR open)**
 (`correlation.py`, LOW). The six LIVE-position accounts + OAuth app publish remain host/human-gated (unchanged).
 
 ## ★ COPIER PRODUCTION ARMING PIPELINE (2026-11-17; GFX-COPIER-PRODUCTION-ACTUATORS-PIPELINE-153; ADR-0117; repository-only PR)
