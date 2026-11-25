@@ -1,5 +1,25 @@
 # GuvFX — Project Status
 
+> **2026-11-25 — Owner-demo asymmetric window-open authorization + #48 admission probe
+> (GFX-COPIER-OWNER-DEMO-ASYM-VERIFIER-172; ADR-0129; repository-only; migration-free; DARK/contract-only; governed
+> PR; auto-merge OFF; STOP before merge).** Off main `834eb540` on `feat/owner-demo-asym-verifier`. Closes ADR-0128's
+> two remaining gaps as tested CONTRACTS. **(1)** `verifier_window_authorization.py` — the host-private /
+> backend-public window-open authorization: the host signs a bounded Ed25519 attestation; the backend verifies it
+> against a PINNED Copy-Trading public key (`COPIER_WINDOW_OPEN_TRUST`, strictly separate from the TIM
+> release-signing trust) and binds it to the owner, the #46→#48 route, the `INGEST` purpose, and a bounded window
+> that outlives the authorization — with expiry, single-use nonce replay protection, revocation (un-pin) and
+> teardown (window close spends it). No symmetric secret crosses the boundary. **(2)** `follower_admission_probe.py`
+> — the fail-closed #48 admission/identity/flatness probe: passes only on fresh, authoritative, identity-matched,
+> flat, admission-off evidence from an injected read-only reader; fails closed on unavailable/stale/ambiguous/
+> mismatched/non-flat/admission-not-off; wired as `host_admission_probe`. **DARK:** `COPIER_WINDOW_OPEN_TRUST` is
+> empty, the production admission reader is UNAVAILABLE, and the verifier-window opener stays unprovisioned
+> (`verifier_window_opener=None`), so confirm remains fail-closed. **Tests:** 87 (16 synthetic-key authorization
+> cases + 14 admission-probe cases + 44 + 13 owner-demo green) + full `trade_copier` suite; check/secret/evidence
+> clean. **Integration gap (ADR-0129):** wire a host opener to the contract + migrate INGEST event verification
+> HMAC→Ed25519 for the full no-symmetric end state; a durable nonce store; the signed #48 admission reader; trust
+> provisioning + flag/host enablement; the live #46→#48 Sponsor real-money GO. No host/key/window/broker contact.
+> **Migration-free.**
+
 > **2026-11-25 — Owner-demo EXECUTION wiring (GFX-COPIER-OWNER-DEMO-EXECUTION-WIRING-171; ADR-0128; repository-only;
 > migration-free; DARK; default-OFF; governed PR; auto-merge OFF; STOP before merge).** Off current main
 > `9f8b0a58` on `feat/owner-demo-execution-wiring`. Wires the owner-demo `confirm`/`stop` to the EXISTING signed

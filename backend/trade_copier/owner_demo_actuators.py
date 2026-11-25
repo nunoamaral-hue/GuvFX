@@ -53,12 +53,21 @@ def build_demo_actuators(rc, *, commit: bool) -> DemoActuators:
     signed host executor is available, AND the host-side verifier-window opener is provisioned — the last of which
     this repository-only wiring never provisions, so in every current environment ``provisioned()`` is False and
     confirm fails closed (DARK)."""
+    import time
+
     from trade_copier import flags as cf
+    from trade_copier import follower_admission_probe as fap
     from trade_copier import live_host_actuators as lha
 
     fid = int(rc.follower.id)
     exec_on = bool(cf.copier_owner_demo_execution_enabled())
     host_live = _signed_host_executor_available()
+    # The intended follower identity the admission probe must match EXACTLY (value-blind; it is compared, never
+    # echoed in the verdict).
+    expected_follower_identity = "%s@%s" % (
+        str(getattr(rc.follower, "account_number", "") or "").strip(),
+        str(getattr(getattr(rc.follower, "broker_server", None), "server_name", "") or "").strip())
+    _admission_reader = fap.production_follower_reader(fid)
 
     def _emitter_key_probe() -> dict:
         try:
@@ -78,13 +87,23 @@ def build_demo_actuators(rc, *, commit: bool) -> DemoActuators:
             return {"disabled": False, "reason": st.get("reason")}
         return {"disabled": bool(st.get("emitter_task_disabled"))}
 
+    def _host_admission_probe() -> dict:
+        # GFX-172: fresh, authoritative #48 admission/identity/flatness via the fail-closed probe (ADR-0129). The
+        # production reader is UNAVAILABLE until a separately-reviewed signed host read is rolled out, so this fails
+        # closed (off=False) in production; the arm consumes only {off}.
+        verdict = fap.evaluate_follower_admission(
+            _admission_reader, expected_follower_account_id=fid,
+            expected_identity=expected_follower_identity, now_epoch=int(time.time()))
+        return {"off": bool(verdict.get("off"))}
+
     return DemoActuators(
         # Value-blind read-back probes (no key or key-derived value; fail-closed when the executor is DARK).
         emitter_key_probe=_emitter_key_probe,
         emitter_task_probe=_emitter_task_probe,
-        # REMAINING integration: no value-blind #48 MT5_ALLOW_LIVE read-back exists yet (ADR-0128) ⇒ left None, which
-        # also keeps provisioned() False.
-        host_admission_probe=None,
+        # GFX-172: fresh authoritative #48 admission/identity/flatness probe (ADR-0129); wired when the host read
+        # channel is available, fail-closed otherwise. The production reader is still unprovisioned, so it returns
+        # {off: False} and never makes provisioned() true on its own.
+        host_admission_probe=(_host_admission_probe if host_live else None),
         # Risk-INCREASING: only with the execution flag ON and a live signed executor (off by default ⇒ None ⇒ DARK).
         admission_provisioner=(lha.make_admission_provisioner(fid) if (exec_on and host_live) else None),
         emitter_enabler=(lha.make_emitter_enabler() if (exec_on and host_live) else None),

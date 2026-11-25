@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-OWNER-DEMO-ASYM-VERIFIER-172",
+  "packet_id": "GFX-COPIER-OWNER-DEMO-ASYM-VERIFIER-172",
+  "created_at_utc": "2026-11-25T09:15:00Z",
+  "branch": "feat/owner-demo-asym-verifier",
+  "base_commit": "834eb5406adb425987e19e38916073e7ba212ee6",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only contracts (ADR-0129): the host-private/backend-public verifier-window-open authorization + the fail-closed #48 admission probe for the owner-demo arm. DARK/contract-only; the production opener and the #48 admission reader stay UNPROVISIONED; no host/MT5/broker contact, no real key/window.",
+    "adr": "docs/architecture/ADR-0129-owner-demo-asymmetric-verifier-and-admission.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "copy_trading_tim_mt5_nas_touched": "copy_trading backend only (two new contract modules + the admission-probe wiring into the provider); TIM/Dashboard/Withdrawal/Wayond NOT touched; Copy-Trading window-open trust is strictly separate from the TIM release-signing trust (no cross-import)"
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + frontend (lint+build) + governance-check (secret scan + evidence lint)"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_verifier_window_authorization trade_copier.tests_follower_admission_probe trade_copier.tests_owner_demo_control trade_copier.tests_owner_demo_actuators --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier --keepdb",
+    "cd backend && .venv/bin/python manage.py check",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "verifier_window_authorization.verify_window_open_authorization accepts ONLY a synthetic-key Ed25519 attestation signed by a PINNED Copy-Trading public key that binds exactly to owner/#46->#48/INGEST/bounded-window; fails closed on malformed, unpinned/revoked key_id (INVALID_IDENTITY), wrong-key or tampered signature (BAD_SIGNATURE), purpose/route/tenant mismatch, stale/future attestation, a window that does not outlive the authorization, and replay; rotation accepts a new key_id and the old one fails closed; the default COPIER_WINDOW_OPEN_TRUST registry is EMPTY (DARK).",
+    "follower_admission_probe.evaluate_follower_admission passes ONLY on fresh, authoritative, identity-matched, flat, admission-off evidence and fails closed on unavailable/stale/ambiguous/mismatched/non-flat/admission-not-off; the verdict is value-blind (no login/server/secret echoed); the production reader reports EVIDENCE_UNAVAILABLE (DARK).",
+    "owner_demo_actuators wires host_admission_probe to the fail-closed probe (production reader unavailable ⇒ off=False) and keeps verifier_window_opener=None, so provisioned() stays False and confirm remains DARK (EXECUTION_ACTUATORS_UNPROVISIONED); the GFX-171 confirm window-teardown-on-non-armed and stop exclusion-retention-on-unverified-teardown behaviours are unchanged-green.",
+    "Prepare performs no host call; the admission probe is consulted only at the confirm/arm boundary; no secret, no symmetric-key transfer channel is added; Copy-Trading signing identities are separate from TIM release-signing identities."
+  ],
+  "actual_results": [
+    "trade_copier.tests_verifier_window_authorization + tests_follower_admission_probe + tests_owner_demo_control + tests_owner_demo_actuators: Ran 87 tests, OK (16 verifier-authorization synthetic-key cases + 14 admission-probe cases + 44 + 13 owner-demo orchestration/provider green under the wiring change).",
+    "manage.py check: System check identified no issues (0 silenced).",
+    "Full trade_copier suite: see CI (run at the reviewed head).",
+    "scripts/check_no_secrets.py: no findings. scripts/check_evidence_manifests.py: PASS."
+  ],
+  "status": "PARTIAL",
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Repository-only; auto-merge OFF; NOT merged, NOT deployed; contract-only — opener + #48 admission reader unprovisioned; COPIER_WINDOW_OPEN_TRUST empty.",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. The verifier-window-open authorization CONTRACT is built and tested but NOT wired to the real verifier window / INGEST event path: the current INGEST feed is still authenticated by a symmetric HMAC window key, so the full no-symmetric-secret end state additionally needs an INGEST event-signing asymmetric migration (host-private signs events / backend-public verifies). Until then the production opener stays unprovisioned (verifier_window_opener=None).",
+    "The replay nonce store default is in-memory (single process); a production opener needs a DURABLE single-use store (DB/cache).",
+    "The #48 admission reader (a reviewed signed read-only host interface returning identity/flatness/admission-off + observed_at) is NOT built here; production_follower_reader returns EVIDENCE_UNAVAILABLE (fail closed).",
+    "Pinning a real COPIER_WINDOW_OPEN_TRUST public key, enabling the execution flag + host executor, and the live #46->#48 demonstration each remain separate, Sponsor-gated steps.",
+    "Ed25519 verification uses the backend `cryptography` library (importable in the backend lane); the TIM stdlib verify-only module is untouched and un-imported, preserving identity separation."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/verifier_window_authorization.py (NEW - host-private/backend-public window-open authorization contract)",
+    "backend/trade_copier/follower_admission_probe.py (NEW - fail-closed #48 admission/identity/flatness probe)",
+    "backend/trade_copier/owner_demo_actuators.py (MODIFIED - wires the admission probe as host_admission_probe; opener still None)",
+    "backend/trade_copier/tests_verifier_window_authorization.py (NEW - 16 synthetic-key cases) + backend/trade_copier/tests_follower_admission_probe.py (NEW - 14 cases) + tests_owner_demo_actuators.py (MODIFIED - host_admission_probe wiring assertion)",
+    "docs/architecture/ADR-0129-owner-demo-asymmetric-verifier-and-admission.md (NEW - contracts + exact integration gap + identity separation)"
+  ],
+  "checksums": {
+    "backend/trade_copier/verifier_window_authorization.py": "sha256:b048530125ac4b3c85cc4b88d30395224730edcc0d9f8725de5b0c11864536f3",
+    "backend/trade_copier/follower_admission_probe.py": "sha256:55ba3f3830396f19d5e64d73ec0a527627682b5c9ec8738251098145d6c2bb69",
+    "backend/trade_copier/tests_verifier_window_authorization.py": "sha256:227a473613dbfe8770b6bc0f875c704f64c293f6daa15a7fa8c0a610948e2d98",
+    "backend/trade_copier/tests_follower_admission_probe.py": "sha256:112b31d87cfca3e4429baa78bf45761f8e999d8db086c7f3cf4ffd6f70a5a129",
+    "backend/trade_copier/owner_demo_actuators.py": "sha256:01b2abd0638214dd46240fb91a040a771e3ca0f498559132cc6a5d575e9eead7",
+    "docs/architecture/ADR-0129-owner-demo-asymmetric-verifier-and-admission.md": "sha256:7d8e0d805df7d3f5855763b204182a97a0fcee23292183360d48b53bbd63e297"
+  }
+}
