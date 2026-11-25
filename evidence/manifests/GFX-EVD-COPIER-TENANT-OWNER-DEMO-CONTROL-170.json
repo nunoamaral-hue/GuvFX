@@ -7,8 +7,8 @@
   "base_commit": "795aa3a237fda3c90d9406b162d3c8aca4499e75",
   "head_commit": null,
   "environment": {
-    "scope": "Repository-only implementation (ADR-0126). Owner-operable governed #46->#48 demonstration control. DARK/default-OFF.",
-    "adr": "docs/architecture/ADR-0126-owner-operable-demo-control.md",
+    "scope": "Repository-only implementation (ADR-0127). Owner-operable governed #46->#48 demonstration control. DARK/default-OFF.",
+    "adr": "docs/architecture/ADR-0127-owner-operable-demo-control.md",
     "production_or_db_mutation": false,
     "deploy_or_migration_apply": false,
     "migration_added": false,
@@ -49,7 +49,7 @@
     "Repository-only. Auto-merge OFF; NOT merged, NOT deployed; the feature flag is OFF so production is unchanged and every endpoint 503s.",
     "The real #46->#48 execution is NOT exercised: production has no host actuators, and the real atomic-arm internals are covered by trade_copier.tests_lifecycle_arming (the arm boundary is mocked here to test orchestration deterministically).",
     "CSRF on the POST endpoints is enforced by CookieJWTAuthentication (framework-level); the HTTP tests use force_authenticate and assert method enforcement + authz + recent-auth + status codes rather than the full cookie/CSRF handshake.",
-    "The preferred host-private/backend-public asymmetric signing-key migration is the deferred one-time provisioning decision (ADR-0126 section 4); the interim design keeps the signing material host-side with no browser secret.",
+    "The preferred host-private/backend-public asymmetric signing-key migration is the deferred one-time provisioning decision (ADR-0127 section 4); the interim design keeps the signing material host-side with no browser secret.",
     "The real demonstration still requires a separate, explicit, head/runtime-pinned Sponsor real-money GO after merge + DARK deploy + reverification."
   ],
   "artefact_locations": [
@@ -60,12 +60,12 @@
     "backend/trade_copier/tests_owner_demo_control.py (NEW — 38 cases)",
     "frontend/src/app/(app)/copy-trading/demo/page.tsx + frontend/src/components/broker/OwnerDemoControlContent.tsx (NEW — 4-stage UI, EN/JA, responsive, re-auth modal)",
     "frontend/src/lib/copy-trading-api.ts + frontend/src/types/copy-trading.ts (MODIFIED — typed client + DTOs)",
-    "docs/architecture/ADR-0126-owner-operable-demo-control.md (NEW), docs/COPIER_46_48_DEMO_RUNBOOK.md (MODIFIED — owner-operated section), docs/STATUS.md (MODIFIED)"
+    "docs/architecture/ADR-0127-owner-operable-demo-control.md (NEW), docs/COPIER_46_48_DEMO_RUNBOOK.md (MODIFIED — owner-operated section), docs/STATUS.md (MODIFIED)"
   ],
   "checksums": {
-    "backend/trade_copier/owner_demo_control.py": "sha256:35a66836ae89507c303825b87fb96da9b4d1322d6c1884d9517c6c191f44a881",
-    "backend/trade_copier/owner_demo_api.py": "sha256:219191d219cb6f9902bb17f1312b24b45688df90c68fe812b35af8e2a0b394e4",
-    "backend/trade_copier/tests_owner_demo_control.py": "sha256:a84be0df16359d2dd9454bbe5a23875c8425fa13ba2998fcc560bd7655f4212e",
-    "docs/architecture/ADR-0126-owner-operable-demo-control.md": "sha256:a1aaab0ae03f74fbbae435d1fcd77b1fe2bea26cd2ef77848c6245d0d1437617"
+    "backend/trade_copier/owner_demo_control.py": "sha256:dce8bab4e39d37a780baf6b5d6e2ad4b52bcadfed443eca591810b8618c87ae2",
+    "backend/trade_copier/owner_demo_api.py": "sha256:9bc2e5377ef5cea40dc64071c753055de01f66fb720609666bbbc36b8ab357c1",
+    "backend/trade_copier/tests_owner_demo_control.py": "sha256:32a553d0c6e7762e2238b233540d84172d27e59909d85bc88482301bd6baf5e6",
+    "docs/architecture/ADR-0127-owner-operable-demo-control.md": "sha256:58004ded481dc0de8b5e56d68817eb78283420904b90a73e6cd945adde207fbd"
   }
 }

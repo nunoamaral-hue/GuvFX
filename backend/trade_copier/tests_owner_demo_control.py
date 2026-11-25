@@ -1,4 +1,4 @@
-"""Certification tests for the owner-operable governed #46→#48 demonstration control (GFX-170, ADR-0126).
+"""Certification tests for the owner-operable governed #46→#48 demonstration control (GFX-170, ADR-0127).
 
 Covers: tenant-owner allow; member / staff-other-tenant / anonymous denial + cross-tenant non-disclosure;
 method enforcement; recent-auth (re-submitted password) requirement; confirm-token invalid/expired/wrong-user;
