@@ -57,7 +57,8 @@ class BuildDemoActuatorsTests(_Base):
         self.assertIsNotNone(a.admission_provisioner)   # risk-increasing wired
         self.assertIsNotNone(a.emitter_enabler)
         self.assertIsNotNone(a.emitter_disabler)        # teardown wired
-        self.assertIsNone(a.host_admission_probe)       # remaining integration (documented)
+        self.assertIsNotNone(a.host_admission_probe)    # GFX-172: #48 admission probe now wired (fail-closed)
+        self.assertEqual(a.host_admission_probe().get("off"), False)   # production reader UNAVAILABLE ⇒ fail closed
         self.assertIsNone(a.verifier_window_opener)     # DELIBERATELY unprovisioned (no key-transfer channel)
         self.assertFalse(a.provisioned())               # ⇒ confirm DARK
 
