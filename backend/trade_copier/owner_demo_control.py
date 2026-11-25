@@ -90,6 +90,7 @@ R_CONFIRM_TOKEN_EXPIRED = "CONFIRM_TOKEN_EXPIRED"
 R_NO_PREPARED_DEMO = "NO_PREPARED_DEMO"
 R_READINESS_NOT_READY = "READINESS_NOT_READY"
 R_EXECUTION_ACTUATORS_UNPROVISIONED = "EXECUTION_ACTUATORS_UNPROVISIONED"
+R_VERIFIER_WINDOW_OPEN_FAILED = "VERIFIER_WINDOW_OPEN_FAILED"
 
 
 def governed_master_id() -> int:
@@ -134,10 +135,18 @@ class DemoActuators:
     emitter_disabler: Optional[Callable] = None
     emitter_key_remover: Optional[Callable] = None
     admission_restore: Optional[Callable] = None
+    # GFX-171: opens the INGEST verifier window HOST-SIDE so the owner never pastes the window key. Called with the
+    # prepared authorization; must open a window that ``covers_live_authorization`` (OPEN INGEST, uncapped, expiry ≥
+    # authz) and return ``{"ok", "opened", "window_id"?}``. DELIBERATELY left None by the production provider in this
+    # repository-only wiring (no standing-key transfer channel is added here) ⇒ ``provisioned()`` is False ⇒ confirm
+    # fails closed. Tests inject a fake that opens a synthetic window.
+    verifier_window_opener: Optional[Callable] = None
 
     def provisioned(self) -> bool:
-        """True only when the risk-INCREASING actuators needed to actually arm are present."""
-        return bool(self.admission_provisioner and self.emitter_enabler
+        """True only when EVERY risk-INCREASING actuator needed to actually arm is present — including the host-side
+        verifier-window opener. Missing any one ⇒ confirm fails closed (DARK). The production provider leaves the
+        opener unprovisioned, so this is False in production even with the execution flag on."""
+        return bool(self.admission_provisioner and self.emitter_enabler and self.verifier_window_opener
                     and self.emitter_key_probe and self.host_admission_probe and self.emitter_task_probe)
 
 
@@ -469,47 +478,89 @@ def confirm(user, *, confirm_token: str, recent_auth_ok: bool, now=None,
         return {"enabled": True, "stage": "confirm", "armed": True, "authorized": True,
                 "reason": "ALREADY_ARMED", "arm_id": existing_arm.id, "idempotent": True}
 
-    acts = actuators or DemoActuators()
-    # 1) Dry-run the full atomic contract (no mutation) so the owner sees a precise verdict.
+    # The narrow production provider (owner_demo_actuators) is used when the caller injects nothing; tests inject a
+    # fake actuator set directly. A lazy import keeps the provider (which imports this module's DemoActuators) free
+    # of a circular import.
+    if actuators is not None:
+        acts = actuators
+    else:
+        from trade_copier.owner_demo_actuators import build_demo_actuators
+        acts = build_demo_actuators(rc, commit=True)
+
     from trade_copier import lifecycle_arming as arming
-    dry = arming.arm_live_lifecycle(
-        master_account_id=rc.master.id, follower_account_id=rc.follower.id,
-        source_symbol=rc.source_symbol, follower_symbol=rc.follower_symbol,
-        authorization_id=authz.id, follower_flat_confirmed=True,
-        emitter_key_probe=acts.emitter_key_probe, host_admission_probe=acts.host_admission_probe,
-        emitter_task_probe=acts.emitter_task_probe, commit=False, by_email=getattr(user, "email", ""),
-        reason="owner_demo_control confirm dry-run", now=now)
-    if not dry.get("ok"):
-        _audit("confirm_refused", user=user, rc=rc, correlation_id=corr, state="refused",
-               reason=R_READINESS_NOT_READY)
-        return {"enabled": True, "stage": "confirm", "armed": False, "authorized": True,
-                "reason": R_READINESS_NOT_READY, "blockers": dry.get("blockers", [])}
+    from trade_copier import verifier_window as vw
 
-    # 2) Execution requires the risk-INCREASING host actuators. Unprovisioned ⇒ fail closed (DARK), authz intact.
-    if not acts.provisioned():
-        _audit("confirm_dark", user=user, rc=rc, correlation_id=corr, state="confirmed_dark",
-               reason=R_EXECUTION_ACTUATORS_UNPROVISIONED)
-        return {"enabled": True, "stage": "confirm", "armed": False, "authorized": True,
-                "reason": R_EXECUTION_ACTUATORS_UNPROVISIONED, "dry_run_ok": True,
-                "note": "Contract valid. Real execution requires the separately-provisioned signed-host actuators "
-                        "and a head/runtime-pinned Sponsor real-money GO; the backend stays DARK."}
+    window_opened_here = False
+    armed_ok = False
+    try:
+        # 0) SHELL-FREE host-side verifier window: when a provisioned opener is present, open the INGEST window
+        #    host-side (the standing key is delivered host↔backend, NEVER through the browser) BEFORE the contract
+        #    dry-run so ``covers_live_authorization`` can be satisfied. In production the provider leaves the opener
+        #    UNPROVISIONED, so this block is skipped and the real dry-run then fails closed (no window) — DARK.
+        if acts.verifier_window_opener is not None:
+            try:
+                wres = acts.verifier_window_opener(authz)
+            except Exception:  # noqa: BLE001 — a failing opener is fail-closed, never a partial window
+                wres = None
+            window_opened_here = bool(wres and wres.get("ok") and wres.get("opened"))
+            if not window_opened_here:
+                _audit("confirm_refused", user=user, rc=rc, correlation_id=corr, state="refused",
+                       reason=R_VERIFIER_WINDOW_OPEN_FAILED)
+                return {"enabled": True, "stage": "confirm", "armed": False, "authorized": True,
+                        "reason": R_VERIFIER_WINDOW_OPEN_FAILED}
 
-    # 3) Commit the atomic arm (tests inject real fakes; production never reaches here without provisioning).
-    res = arming.arm_live_lifecycle(
-        master_account_id=rc.master.id, follower_account_id=rc.follower.id,
-        source_symbol=rc.source_symbol, follower_symbol=rc.follower_symbol,
-        authorization_id=authz.id, follower_flat_confirmed=True,
-        emitter_key_probe=acts.emitter_key_probe, host_admission_probe=acts.host_admission_probe,
-        emitter_task_probe=acts.emitter_task_probe, admission_provisioner=acts.admission_provisioner,
-        emitter_enabler=acts.emitter_enabler, emitter_disabler=acts.emitter_disabler,
-        emitter_key_remover=acts.emitter_key_remover, commit=True, by_email=getattr(user, "email", ""),
-        reason="owner_demo_control confirm", now=now)
-    armed = bool(res.get("armed"))
-    _audit("confirm", user=user, rc=rc, correlation_id=corr, state="armed" if armed else "arm_failed",
-           armed=armed, arm_id=int(res.get("arm_id") or 0))
-    return {"enabled": True, "stage": "confirm", "armed": armed, "authorized": True,
-            "reason": res.get("reason"), "arm_id": res.get("arm_id"),
-            "rolled_back": res.get("rolled_back")}
+        # 1) Dry-run the full atomic contract (no mutation) so the owner sees a precise verdict.
+        dry = arming.arm_live_lifecycle(
+            master_account_id=rc.master.id, follower_account_id=rc.follower.id,
+            source_symbol=rc.source_symbol, follower_symbol=rc.follower_symbol,
+            authorization_id=authz.id, follower_flat_confirmed=True,
+            emitter_key_probe=acts.emitter_key_probe, host_admission_probe=acts.host_admission_probe,
+            emitter_task_probe=acts.emitter_task_probe, commit=False, by_email=getattr(user, "email", ""),
+            reason="owner_demo_control confirm dry-run", now=now)
+        if not dry.get("ok"):
+            _audit("confirm_refused", user=user, rc=rc, correlation_id=corr, state="refused",
+                   reason=R_READINESS_NOT_READY)
+            return {"enabled": True, "stage": "confirm", "armed": False, "authorized": True,
+                    "reason": R_READINESS_NOT_READY, "blockers": dry.get("blockers", [])}
+
+        # 2) Execution requires the risk-INCREASING host actuators (incl. the verifier-window opener). Unprovisioned
+        #    ⇒ fail closed (DARK), authorization intact, nothing armed.
+        if not acts.provisioned():
+            _audit("confirm_dark", user=user, rc=rc, correlation_id=corr, state="confirmed_dark",
+                   reason=R_EXECUTION_ACTUATORS_UNPROVISIONED)
+            return {"enabled": True, "stage": "confirm", "armed": False, "authorized": True,
+                    "reason": R_EXECUTION_ACTUATORS_UNPROVISIONED, "dry_run_ok": True,
+                    "note": "Contract valid. Real execution requires the separately-provisioned signed-host actuators "
+                            "(incl. the host-side verifier-window opener) and a head/runtime-pinned Sponsor "
+                            "real-money GO; the backend stays DARK."}
+
+        # 3) Commit the atomic arm. On any failure the arm rolls the whole stack back to DARK (its own teardown
+        #    closes the verifier window); the finally below additionally returns a just-opened window to DARK on any
+        #    non-armed outcome. On armed SUCCESS the window MUST stay open for the live arm.
+        res = arming.arm_live_lifecycle(
+            master_account_id=rc.master.id, follower_account_id=rc.follower.id,
+            source_symbol=rc.source_symbol, follower_symbol=rc.follower_symbol,
+            authorization_id=authz.id, follower_flat_confirmed=True,
+            emitter_key_probe=acts.emitter_key_probe, host_admission_probe=acts.host_admission_probe,
+            emitter_task_probe=acts.emitter_task_probe, admission_provisioner=acts.admission_provisioner,
+            emitter_enabler=acts.emitter_enabler, emitter_disabler=acts.emitter_disabler,
+            emitter_key_remover=acts.emitter_key_remover, commit=True, by_email=getattr(user, "email", ""),
+            reason="owner_demo_control confirm", now=now)
+        armed_ok = bool(res.get("armed"))
+        _audit("confirm", user=user, rc=rc, correlation_id=corr, state="armed" if armed_ok else "arm_failed",
+               armed=armed_ok, arm_id=int(res.get("arm_id") or 0))
+        return {"enabled": True, "stage": "confirm", "armed": armed_ok, "authorized": True,
+                "reason": res.get("reason"), "arm_id": res.get("arm_id"),
+                "rolled_back": res.get("rolled_back")}
+    finally:
+        # Guaranteed teardown of a window WE opened, on ANY non-armed outcome (readiness fail, unprovisioned, arm
+        # failure/exception) ⇒ return to DARK. ``close_all`` is idempotent and mirrors the teardown path; never close
+        # on an armed success (the live arm needs the window), and never raise out of the finally.
+        if window_opened_here and not armed_ok:
+            try:
+                vw.close_all(now=now)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ─────────────────────────────── stage 4: stop / return DARK ───────────────────────────────
@@ -531,7 +582,17 @@ def stop(user, *, now=None, actuators: Optional[DemoActuators] = None, lease_pat
     from trade_copier.lifecycle_teardown import teardown_live_dark
 
     authz = _active_authorization(rc)
-    acts = actuators or DemoActuators()
+    # An arm engaged before teardown means host admission/emitter were turned ON, so the SIGNED host teardown must
+    # be PROVEN before we may drop the concurrency guard. Capture it BEFORE teardown_live_dark disarms.
+    had_host_arm = _engaged_arm(rc) is not None
+    # Teardown actuators come from the production provider when the caller injects nothing; the provider supplies the
+    # risk-REDUCING actuators independent of the execution flag, so a stop still disarms the host after the flag is
+    # toggled off mid-session. Tests inject a fake set directly.
+    if actuators is not None:
+        acts = actuators
+    else:
+        from trade_copier.owner_demo_actuators import build_demo_actuators
+        acts = build_demo_actuators(rc, commit=False)
     td = teardown_live_dark(
         master_account_id=rc.master.id, follower_account_id=rc.follower.id,
         authorization_id=(authz.id if authz else None),
@@ -539,12 +600,14 @@ def stop(user, *, now=None, actuators: Optional[DemoActuators] = None, lease_pat
         emitter_key_remover=acts.emitter_key_remover, revoke_authorization=True,
         revoked_by_email=getattr(user, "email", ""), reason=reason, now=now)
 
-    # Release the acceptance lease IFF this owner holds it AND teardown PROVED the route DARK. If teardown
-    # could not prove DARK (e.g. a still-unflat follower position ⇒ teardown_live_dark aborts without mutation,
-    # cleanup_required=True), KEEP the lease so the deploy/recovery mutual-exclusion guard holds until a re-run
-    # proves DARK — never drop the guard over a still-live route. Never release another holder's lease, and never
-    # reclaim a MALFORMED lease (it is left fail-closed for operator review).
-    proved_dark = bool(td.get("backend_dark")) and not td.get("cleanup_required")
+    # Release the acceptance lease IFF this owner holds it AND teardown PROVED the route DARK. "Proved DARK" means:
+    # the backend is dark AND teardown did not abort (``cleanup_required``) AND — when an arm had engaged the host —
+    # the signed host teardown is PROVEN (``host_dark``). A failed OR UNVERIFIED teardown (host steps UNPROVEN after
+    # an arm) KEEPS the lease so the deploy/recovery mutual-exclusion guard holds over a possibly-still-live route
+    # until a re-run proves DARK — never drop the guard prematurely. A pure-DARK stop (no arm ever engaged) needs no
+    # host proof. Never release another holder's lease, and never reclaim a MALFORMED lease (left fail-closed).
+    proved_dark = (bool(td.get("backend_dark")) and not td.get("cleanup_required")
+                   and (bool(td.get("host_dark")) or not had_host_arm))
     lease_released = None
     meta = RL.status_metadata(now, lease_path)
     owns = (meta.get("owner") == _owner_tag(user))

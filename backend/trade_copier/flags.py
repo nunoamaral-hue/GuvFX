@@ -350,6 +350,25 @@ def copier_owner_demo_control_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_OWNER_DEMO_CONTROL_ENABLED")
 
 
+def copier_owner_demo_execution_enabled() -> bool:
+    """DARK gate for ACTUALLY EXECUTING (arming) the owner-operable governed #46→#48 demonstration
+    (GFX-COPIER-OWNER-DEMO-EXECUTION-WIRING-171, ADR-0128). DEFAULT OFF, ANDed with the master gate AND the
+    owner-demo control gate.
+
+    ``copier_owner_demo_control_enabled`` governs whether the owner may DRIVE the four-stage control plane (read /
+    prepare / confirm / stop); THIS flag governs whether confirm's provider wires the risk-INCREASING signed-host
+    arm actuators at all. With it OFF (the default) the provider returns NO risk-increasing actuators and NO
+    verifier-window opener, so confirm fails closed (``EXECUTION_ACTUATORS_UNPROVISIONED``) and the backend stays
+    DARK. Even with it ON, the arm still needs the separately-gated signed host executor
+    (``HOSTED_HOST_EXECUTOR_ENABLED`` + ``COPIER_EMITTER_STANDING_ENABLED``) AND the production verifier-window
+    opener, which this repository-only wiring deliberately leaves UNPROVISIONED (no standing-key transfer channel is
+    added here) — so confirm remains fail-closed in production until a separate, Sponsor-gated host rollout. The
+    risk-REDUCING teardown actuators are NOT gated by this flag (they must stay runnable to return to DARK after a
+    flag toggles mid-session). The real #46→#48 execution still requires a separate, explicit, head/runtime-pinned
+    Sponsor real-money GO."""
+    return copier_owner_demo_control_enabled() and _flag("COPIER_OWNER_DEMO_EXECUTION_ENABLED")
+
+
 def copier_execution_driver_enabled() -> bool:
     """DARK gate for the governed, supervised copier EXECUTION DRIVER (ADR-0117). DEFAULT OFF, ANDed with the
     master gate.

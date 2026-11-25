@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-OWNER-DEMO-EXECUTION-WIRING-171",
+  "packet_id": "GFX-COPIER-OWNER-DEMO-EXECUTION-WIRING-171",
+  "created_at_utc": "2026-11-25T08:15:00Z",
+  "branch": "feat/owner-demo-execution-wiring",
+  "base_commit": "9f8b0a58642f0546eaf311f7a7eb9cb5adb97a8b",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only actuator wiring (ADR-0128) for the owner-operable governed #46->#48 demonstration. DARK/default-OFF. The production verifier-window opener is DELIBERATELY left unprovisioned (no standing-key transfer channel added); no host/MT5/broker contact.",
+    "adr": "docs/architecture/ADR-0128-owner-demo-execution-wiring.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "copy_trading_tim_mt5_nas_touched": "copy_trading backend only (owner-demo execution provider + confirm/stop wiring + new default-OFF execution flag); TIM/Dashboard/Withdrawal/Wayond NOT touched; no host/MT5/broker contact, no real key or window"
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + frontend (lint+build) + governance-check (secret scan + evidence lint)"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_owner_demo_control trade_copier.tests_owner_demo_actuators --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier --keepdb",
+    "cd backend && .venv/bin/python manage.py check",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "build_demo_actuators is fail-closed: risk-increasing arm actuators are wired only with the execution flag ON and a live signed host executor; the verifier-window opener and the #48 admission read-back are left unprovisioned, so provisioned() is False and confirm fails closed (EXECUTION_ACTUATORS_UNPROVISIONED) in every current environment even with the flag on.",
+    "Teardown-side actuators (disable/key-remove/admission-restore) are wired INDEPENDENT of the execution flag whenever the signed executor is available, so a stop can still disarm the host after the flag toggles off mid-session.",
+    "confirm opens the host-side INGEST verifier window via the injected opener (when provisioned) BEFORE the atomic arm, keeps it open ONLY on an armed success, and tears it down (close_all) on ANY non-armed outcome (readiness fail, unprovisioned, open-failed, arm failure/exception); a failing opener fails closed (VERIFIER_WINDOW_OPEN_FAILED) and the arm is never invoked.",
+    "Prepare performs no host call; confirm is the sole authorize-to-execute point (fresh re-auth + single-use token + provisioned actuators); server-side caps/expiry unchanged; duplicate-request protection via the one-engaged-arm invariant (ALREADY_ARMED, idempotent).",
+    "stop releases the acceptance lease only when teardown PROVED DARK: backend_dark AND not cleanup_required AND (host_dark OR no arm ever engaged). A failed or UNVERIFIED host teardown after an arm RETAINS the exclusion lease; a pure-DARK stop releases without host proof; another holder's lease and a MALFORMED lease are never touched.",
+    "No secret is read, held, printed or transferred by the provider or the orchestration; no symmetric key is added to any transfer channel (the opener stays unprovisioned)."
+  ],
+  "actual_results": [
+    "trade_copier.tests_owner_demo_control + trade_copier.tests_owner_demo_actuators: Ran 57 tests, OK (44 existing orchestration tests unchanged-green under the rework + 13 new GFX-171 synthetic tests: provider flag-on/off and executor-absent structure; confirm window open/keep/close lifecycle; opener-failure fail-closed; partial-failure rollback + guaranteed window teardown + value-blindness; expired-authorization confirm; interrupted-session lease TTL self-expiry + reclaim; retry idempotency; unverified-host-teardown-after-arm retains the exclusion; pure-DARK stop releases).",
+    "manage.py check: System check identified no issues (0 silenced).",
+    "Full trade_copier suite: see CI (run at the reviewed head).",
+    "scripts/check_no_secrets.py: no findings. scripts/check_evidence_manifests.py: PASS."
+  ],
+  "status": "PARTIAL",
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Repository-only; auto-merge OFF; NOT merged, NOT deployed; execution flag default-OFF; verifier-window opener unprovisioned.",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. The execution flag COPIER_OWNER_DEMO_EXECUTION_ENABLED is OFF by default and the production verifier-window opener is deliberately unprovisioned, so production confirm stays fail-closed (EXECUTION_ACTUATORS_UNPROVISIONED).",
+    "The arm_live_lifecycle and verifier_window.close_all boundaries are mocked in these orchestration tests; the real atomic-arm rollback and the real verifier-window open/close/covers are covered by tests_lifecycle_arming / tests_verifier_window. No real host, network, key or window is exercised.",
+    "host_admission_probe has no value-blind #48 MT5_ALLOW_LIVE read-back source yet; it is left None (documented remaining integration, ADR-0128).",
+    "The production verifier-window opener (a signed host op that delivers the window key host-side; preferred asymmetric host-private/backend-public variant per ADR-0128) is NOT built here and requires a separate, Sponsor-gated host rollout.",
+    "The real #46->#48 execution still requires a separate, explicit, head/runtime-pinned Sponsor real-money GO after merge + DARK deploy + reverification."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/owner_demo_actuators.py (NEW - fail-closed provider build_demo_actuators)",
+    "backend/trade_copier/owner_demo_control.py (MODIFIED - DemoActuators.verifier_window_opener + provisioned(); confirm host-side window open + guaranteed teardown; stop teardown-provider + exclusion-retention on unverified host teardown)",
+    "backend/trade_copier/flags.py (MODIFIED - copier_owner_demo_execution_enabled, DARK default-OFF)",
+    "backend/trade_copier/tests_owner_demo_actuators.py (NEW - 13 synthetic tests) + backend/trade_copier/tests_owner_demo_control.py (MODIFIED - _fake_actuators window opener)",
+    "docs/architecture/ADR-0128-owner-demo-execution-wiring.md (NEW - interim-symmetric vs asymmetric addendum + remaining production integration)"
+  ],
+  "checksums": {
+    "backend/trade_copier/owner_demo_actuators.py": "sha256:a18841bef273f0cf93d2f6dc285601c658c6bf92bc9ebbde111521f9628ee01a",
+    "backend/trade_copier/owner_demo_control.py": "sha256:4f679f234dd6dc98caf8f133c3147b045ddcde3fe44791d3ac41da8576894414",
+    "backend/trade_copier/tests_owner_demo_actuators.py": "sha256:a3c580e0badf4ef858e155f1bca4a3ac464668ddfee38119355877adc33f2043",
+    "backend/trade_copier/flags.py": "sha256:148e24a6146feedd9a5975f9ec8b417b8ca54e529ed4b7e6e986e15977de3206",
+    "docs/architecture/ADR-0128-owner-demo-execution-wiring.md": "sha256:95cde6cc8144fb3335edcb599f6add0f158e09a89d5402cb1655eaa4c765e89f"
+  }
+}

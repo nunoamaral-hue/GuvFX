@@ -1,5 +1,24 @@
 # GuvFX — Project Status
 
+> **2026-11-25 — Owner-demo EXECUTION wiring (GFX-COPIER-OWNER-DEMO-EXECUTION-WIRING-171; ADR-0128; repository-only;
+> migration-free; DARK; default-OFF; governed PR; auto-merge OFF; STOP before merge).** Off current main
+> `9f8b0a58` on `feat/owner-demo-execution-wiring`. Wires the owner-demo `confirm`/`stop` to the EXISTING signed
+> host-actuator factories through a narrow fail-closed provider (`trade_copier/owner_demo_actuators.py`,
+> `build_demo_actuators`), reusing the `DemoActuators`/arm/teardown interfaces unchanged. A NEW default-OFF flag
+> `copier_owner_demo_execution_enabled()` (ANDs the master + owner-demo-control gates) gates the risk-INCREASING arm
+> actuators; the risk-REDUCING teardown actuators stay flag-independent so a `stop` disarms the host after a
+> mid-session flag toggle. `DemoActuators` gains a `verifier_window_opener` that `provisioned()` requires; the
+> production provider DELIBERATELY leaves it UNPROVISIONED (this PR adds **no standing-key transfer channel**), so
+> `confirm` fails closed (`EXECUTION_ACTUATORS_UNPROVISIONED`) in every environment even with the flag on — DARK.
+> At confirm the opener (when a future rollout provisions it) opens the INGEST window host-side before the atomic
+> arm and is torn down on any non-armed outcome; `stop` retains the acceptance lease on failed OR unverified host
+> teardown after an arm (`host_dark` required once an arm engaged the host). **Tests:** 57 (44 existing green +
+> 13 new synthetic — provider structure, window lifecycle, partial-failure rollback + value-blindness, expiry,
+> interruption/TTL, idempotent retry, unverified-teardown exclusion retention). ADR-0128 includes the
+> interim-symmetric vs asymmetric host-private/backend-public addendum (key-byte locations, access, expiry,
+> revocation) and the remaining production integration (the opener, the #48 admission read-back, flags/host
+> rollout, the Sponsor real-money GO). No production/host/key/window/broker contact. **Migration-free.**
+
 > **2026-11-24 — Owner-operable governed #46→#48 demonstration control (GFX-COPIER-TENANT-OWNER-DEMO-CONTROL-170;
 > ADR-0127; repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off current
 > main `795aa3a2` on `fix/owner-demo-control`. Lets the authenticated tenant OWNER of the governed #46→#48 route

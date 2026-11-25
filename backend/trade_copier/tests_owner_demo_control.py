@@ -73,7 +73,7 @@ class _Fixture:
         return override_settings(**s)
 
 
-def _fake_actuators(*, provisioned=True):
+def _fake_actuators(*, provisioned=True, window_opener=True):
     a = odc.DemoActuators(
         emitter_key_probe=lambda: {"ready": True, "identity_ok": True},
         host_admission_probe=lambda: {"off": True},
@@ -84,6 +84,10 @@ def _fake_actuators(*, provisioned=True):
         a.emitter_disabler = lambda: {"ok": True, "disabled": True}
         a.emitter_key_remover = lambda: {"ok": True, "removed": True}
         a.admission_restore = lambda: {"ok": True, "armed": True}
+        if window_opener:
+            # GFX-171: a no-op host-side opener (the arm boundary is mocked in these orchestration tests, so no real
+            # verifier window is needed); the window-lifecycle tests below inject an opener that opens a REAL window.
+            a.verifier_window_opener = lambda authz: {"ok": True, "opened": True, "window_id": 1}
     return a
 
 
