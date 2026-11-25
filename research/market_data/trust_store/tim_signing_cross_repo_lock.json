@@ -1,0 +1,56 @@
+{
+  "lock_format_version": "1.0",
+  "purpose": "Cross-repo lock for the TIM operational signing contract (ADR-0124 + custody-binding addendum, GFX-TIM-GO2A-CUSTODY-BINDING-016). It pins the byte-exact signing-material contract so the GuvFX verifier and the producer-repo signer cannot drift. Both repositories independently assert that signing_material_v3 over shared_test_vector has shared_material_sha256; a change in either side breaks its own test against this shared pin.",
+  "algorithm": "ed25519-v1",
+  "domain_separator": "GUVFX-TIM-RELEASE-SIGNATURE-v3",
+  "material_join": "nul_byte",
+  "material_field_order": [
+    "domain_separator", "algorithm", "release_id", "manifest_digest", "contract_bundle_digest",
+    "validator_bundle_digest", "producer_identity", "signing_key_id", "public_key_fingerprint",
+    "created_at_utc"
+  ],
+  "signature_encoding": "lowercase_hex",
+  "signature_bytes": 64,
+  "signature_hex_length": 128,
+  "key_id_derivation": "concat('ed25519-', first_32_hex_chars(public_key_fingerprint))",
+  "envelope_fields": [
+    "schema_version", "domain_separator", "release_id", "signed_manifest_path", "manifest_digest",
+    "contract_bundle_digest", "validator_bundle_digest", "producer_identity", "signing_key_id",
+    "public_key_fingerprint", "algorithm", "signature_scheme", "signature_value", "synthetic",
+    "created_at_utc", "key_validity", "limitations"
+  ],
+  "public_metadata_fields": ["algorithm", "public_key", "public_key_fingerprint", "signing_key_id"],
+  "shared_test_vector": {
+    "algorithm": "ed25519-v1",
+    "release_id": "rel_fixture_m1",
+    "manifest_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "contract_bundle_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "validator_bundle_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+    "producer_identity": "guvfx_tim_producer",
+    "signing_key_id": "ed25519-44444444444444444444444444444444",
+    "public_key_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444",
+    "created_at_utc": "2026-02-01T00:00:00Z"
+  },
+  "shared_material_sha256": "a883dc87ec289dd61e575f95b33934e29d0b228aeaffb84ecfc5051bb5416f8a",
+  "verifier": {
+    "repository": "nunoamaral-hue/GuvFX",
+    "module": "research/market_data/tim_release_signing_v3.py",
+    "builder": "signing_material_v3",
+    "role": "TIM read-only consumer; verify only (ADR-0070)"
+  },
+  "producer_signer": {
+    "repository": "nunoamaral-hue/guvfx-windows-history-agent",
+    "branch": "feat/tim-operational-signer-custody",
+    "module": "src/guvfx_windows_history_agent/tim_signing.py",
+    "builder": "build_signing_material_v3",
+    "role": "GuvFX producer; signs releases on the producer host under guvfx_tim_producer"
+  },
+  "custody_binding": {
+    "signer_host": "WIN-RD8VDS93DK7",
+    "service_identity": "guvfx_tim_producer",
+    "protected_store_root": "C:\\ProgramData\\GuvFX\\TIM\\signing",
+    "private_key_in_this_repository": false,
+    "operational_trust_store_pinned_keys": 0,
+    "operational_path_dark": true
+  }
+}

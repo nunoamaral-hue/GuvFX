@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-GO2A-CUSTODY-BINDING-016",
+  "packet_id": "GFX-TIM-GO2A-CUSTODY-BINDING-016",
+  "created_at_utc": "2026-11-24T00:00:00Z",
+  "branch": "feat/tim-signing-custody-binding",
+  "base_commit": "1c05b7b0d0cb34a199648e9b81d9c48aa85cf3c3",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only",
+    "scope": "GuvFX canonical governance half of GFX-TIM-GO2A-CUSTODY-BINDING-016",
+    "additive": true,
+    "migration_free": true,
+    "operational_path_dark_empty_trust_store": true,
+    "frozen_v0_2_v0_3_untouched": true,
+    "release_schema_or_data_root_touched": false,
+    "key_generated_or_pinned": false,
+    "host_or_nas_contact": false,
+    "deployment": false
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "governance (secret scan + evidence lint + evidence-manifest schema test + the new cross-repo lock test, alongside the existing TIM stdlib tests)"
+  },
+  "paired_pr": {
+    "producer_repository": "nunoamaral-hue/guvfx-windows-history-agent",
+    "producer_branch": "feat/tim-operational-signer-custody",
+    "dependency": "This GuvFX PR records the custody binding + cross-repo lock; the producer PR adds the signer/installer. Both are DARK, auto-merge OFF; neither is operational until a real public key is pinned under a later Sponsor GO. Merge order is not constrained (the lock pins the same material digest both sides)."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_tim_signing_cross_repo_lock.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "python3 -m unittest discover -s tests -p 'test_evidence_manifests.py' -v",
+    "make governance-check"
+  ],
+  "expected_results": [
+    "The GuvFX verifier's signing_material_v3 over the shared test vector hashes to the pinned shared_material_sha256 (a883dc87...), which the producer repo independently pins for the same vector, so the two repositories cannot drift. The merged verifier constants (domain separator, algorithm, envelope field set, ed25519 signature hex length) match the cross-repo lock.",
+    "The operational trust store remains EMPTY (operational verification dark); the lock records 0 pinned keys, operational_path_dark true, and private_key_in_this_repository false. The ADR-0124 custody-binding addendum records the Sponsor host/identity/path/ACL/provider decision and the read-only host probe findings without creating anything.",
+    "No frozen v0.2/v0.3 file, release schema, GUVFX_DATA_ROOT behaviour, production config, or unrelated workstream is modified. Secret scan no findings; evidence lint PASS; make governance-check green."
+  ],
+  "actual_results": [
+    "tests/test_tim_signing_cross_repo_lock.py: Ran 8 tests OK (shared material digest matches the verifier; verifier constants match the lock; material field order + nul join; deterministic key-id derivation matches the vector; operational trust store empty/dark; public-metadata fields; both repositories named; lock carries no private/secret material).",
+    "Separately proven against the producer signer: build_signing_material_v3 (producer) == signing_material_v3 (GuvFX) byte-for-byte; a real producer Ed25519 signature is accepted by verify_release_signature_v3 / the operational wrapper (reason 'ok'); tamper rejected.",
+    "python3 scripts/check_no_secrets.py: no findings. check_evidence_manifests.py: EVIDENCE-LINT PASS. tests/test_evidence_manifests.py OK. make governance-check: green (incl. the 8 new tests). Operational trust store keys == 0 on this branch."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository-only / DARK: this GuvFX half adds the ADR-0124 custody-binding addendum, the cross-repo signing-contract lock + its stdlib test (wired into governance-check and the CI governance job), and the operator runbook steps. The producer signer/installer live in the paired producer-repo PR. No key is generated or pinned; the operational trust store stays empty (operational verification fails closed); no host/NAS contact; no deployment; no release.",
+    "Frozen v0.2/v0.3 contracts, release schemas, GUVFX_DATA_ROOT behaviour, and all unrelated workstreams are untouched. The cross-repo lock pins the byte-exact signing material via a shared test vector + digest asserted in BOTH repositories; it stores no private or secret material (public contract only).",
+    "This manifest is authored at commit time; head_commit is null until merge. The exact head SHA + CI run are carried on the PR and the TIM Notion master record. The PR is opened auto-merge OFF and is NOT merged without a new Sponsor authorisation (HARD STOP)."
+  ],
+  "artefact_locations": [
+    "docs/architecture/ADR-0124-tim-operational-release-signing-envelope.md (ADR custody-binding addendum appended)",
+    "research/market_data/trust_store/tim_signing_cross_repo_lock.json (NEW; cross-repo signing-contract lock)",
+    "tests/test_tim_signing_cross_repo_lock.py (NEW; stdlib lock test; wired into governance)",
+    "docs/TIM_OPERATIONAL_SIGNING_RUNBOOK.md (custody-binding operator steps appended)",
+    "Makefile, .github/workflows/ci.yml (governance wiring for the new test)",
+    "evidence/manifests/GFX-EVD-TIM-GO2A-CUSTODY-BINDING-016.json (this manifest)"
+  ],
+  "checksums": {
+    "research/market_data/trust_store/tim_signing_cross_repo_lock.json": "sha256:77bf8180b4b5d1ebdf28fe504b5275d7e4898ffa5438de9eb745c4746297a45a",
+    "tests/test_tim_signing_cross_repo_lock.py": "sha256:2bdf9ad1e1dece8617dac1a088c247fb4f44a5b1b3955ef63ed06fd4ba002758",
+    "docs/architecture/ADR-0124-tim-operational-release-signing-envelope.md": "sha256:5519701070681b45ae801fc0152227fe951e7f1038c2f3ddbeb3b87807ae6c2c",
+    "docs/TIM_OPERATIONAL_SIGNING_RUNBOOK.md": "sha256:a49ad3b109b2742e23597d3718353156487aa5e34f48b29ef1327c2e5567546b"
+  },
+  "reviewer": "Covered by the two-round cross-repo adversarial review (full record in the paired producer-repo evidence GFX-EVD-GO2A-CUSTODY-BINDING-016). The GuvFX half (ADR-0124 custody-binding addendum, cross-repo signing-contract lock, stdlib lock test, runbook steps) is additive-only and clean: the verifier's signing_material_v3 over the shared test vector matches the pinned digest a883dc87...6f8a (reproduced by the producer repo independently); frozen v0.2/v0.3 contracts and release schemas untouched; the operational trust store is asserted empty/DARK; the lock carries only the public contract (no private/secret material). No findings on the GuvFX additions. Producer-side MEDIUM M1 (deny-logon enforcement) and M2 (ACL Synchronize bit) were fixed in the producer repo; neither touches this repository."
+}

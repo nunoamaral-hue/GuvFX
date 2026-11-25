@@ -81,3 +81,24 @@ build, sign, publish, mount or consume; no deployment; no production-database, C
 Withdrawal or Wayond change. Pinning/rotating/revoking a key is a reviewed Git change to the public trust
 store, under its own Sponsor authorisation; the private key stays off-repository in the producer host's
 custody at all times.
+
+## Custody binding + producer signer (GFX-TIM-GO2A-CUSTODY-BINDING-016)
+
+The operational signer is the dedicated **GuvFX Windows History Agent** (private repo
+`nunoamaral-hue/guvfx-windows-history-agent`, branch `feat/tim-operational-signer-custody`), running on
+`WIN-RD8VDS93DK7` under `guvfx_tim_producer`, with the private key held only in
+`C:\ProgramData\GuvFX\TIM\signing` under the ACL in the ADR-0124 custody-binding addendum. The signing
+contract is pinned cross-repo in `research/market_data/trust_store/tim_signing_cross_repo_lock.json` and
+asserted by `tests/test_tim_signing_cross_repo_lock.py` (the producer repo pins the same material digest).
+
+Ordered next steps (each separately Sponsor-gated; NONE performed by this packet):
+
+1. **Producer host:** install the pinned `cryptography` dependency; run the DARK installer
+   (`Install-TimSigner.ps1 -Action Install`); then the HUMAN-ONLY provision
+   (`tim_signing_provider.py provision`) to generate the key into the protected store and return ONLY the
+   public key, SHA-256 fingerprint, deterministic key id and validity window.
+2. **This repo (governed PR):** pin that returned public material into `operational_public_keys.json` using
+   §1 of this runbook. Until then the store stays empty and operational verification fails closed.
+3. **Verify end-to-end** (synthetic release only) once pinned, per the first-release admission checklist.
+
+No key is generated or pinned here; the operational trust store stays empty and DARK.
