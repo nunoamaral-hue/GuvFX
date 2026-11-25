@@ -1,5 +1,32 @@
 # GuvFX — Project Status
 
+> **2026-11-24 — Owner-operable governed #46→#48 demonstration control (GFX-COPIER-TENANT-OWNER-DEMO-CONTROL-170;
+> ADR-0127; repository-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before merge).** Off current
+> main `795aa3a2` on `fix/owner-demo-control`. Lets the authenticated tenant OWNER of the governed #46→#48 route
+> check readiness, prepare, deliberately confirm, and stop a bounded live demonstration **without staff access and
+> without pasting shell commands or secrets**. **Backend:** new `trade_copier/owner_demo_control.py` (orchestration
+> + fail-closed route-OWNERSHIP authz — not an email string; staff is not privileged) + `owner_demo_api.py` (four
+> endpoints under `/api/copy-trading/owner-demo/`) + flag `copier_owner_demo_control_enabled()` (ANDs the master
+> gate, DEFAULT OFF ⇒ every endpoint 503s). It reuses the EXISTING primitives unchanged (bounded
+> `CopierLiveAuthorization` with server-side caps 0.01/1-order/modify+full_close/**partial-close excluded**/15-min;
+> the KIND_RECOVERY acceptance lease for deploy/recovery + second-operator mutual exclusion; the atomic
+> `lifecycle_arming.arm_live_lifecycle`; idempotent `teardown_copier_live_dark`) — **no new model, no migration**.
+> **Confirm requires a FRESH re-authentication proof** (owner re-submits their password, verified server-side with
+> `check_password`; never stored/logged) + a signed single-use confirm token. **Secrets:** the browser never
+> receives/submits a signing secret; the signing material stays host-side (standing ingest key + file-first
+> hosted-executor keyring `hx-20261115`); in production the host actuators are UNPROVISIONED so confirm fails closed
+> (DARK). The preferred host-private/backend-public asymmetric evolution is the deferred one-time provisioning
+> decision (ADR-0127 §4). **Frontend:** new `/copy-trading/demo` page + `OwnerDemoControlContent.tsx` (four stages,
+> EN/JA, responsive, re-auth password modal) + typed client. **Tests:** `tests_owner_demo_control.py` (38 cases:
+> owner allow; member/staff-other/anon denial + non-disclosure; method/recent-auth enforcement; token
+> invalid/expired/wrong-user; readiness master-open/follower-job/kill/arm; route not-sole/not-live/unconfigured;
+> lease conflict; prepare caps; confirm dry-run/unprovisioned-DARK/provisioned-arm/idempotent; teardown→DARK + own-
+> lease-only release; no-secrets) — **38/38 PASS**; frontend tsc+eslint clean on the new files; `manage.py check`
+> clean. **DARK:** no deploy, no flag enablement, no authorization/arm/window/host/#48/broker action by this packet;
+> production unchanged. **One bounded next action:** exact-head CI green, then Sponsor `GO — merge PR`; the real
+> #46→#48 execution remains a separate, explicit, head/runtime-pinned Sponsor real-money GO. See
+> `docs/architecture/ADR-0127-owner-operable-demo-control.md`.
+
 > **2026-11-24 — Real-arm readiness closure: pin the #46→#48 real-arm prerequisites in the authoritative runbook
 > (GFX-COPIER-REAL-ARM-READINESS-167; docs-only; migration-free; DARK; governed PR; auto-merge OFF; STOP before
 > merge).** Off current main `de98027f` on `fix/copier-real-arm-runbook-prereqs`. Read-only preflight removed every

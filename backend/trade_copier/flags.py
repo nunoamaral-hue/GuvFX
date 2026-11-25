@@ -334,6 +334,22 @@ def copier_emitter_standing_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_EMITTER_STANDING_ENABLED")
 
 
+def copier_owner_demo_control_enabled() -> bool:
+    """DARK gate for the OWNER-OPERABLE governed demo control plane (GFX-170, ADR-0127). DEFAULT OFF, ANDed with
+    the master gate.
+
+    Governs ONLY whether the authenticated tenant OWNER of the governed #46→#48 route may drive the four-stage
+    demonstration control (check readiness, prepare, confirm, stop) through the owner-facing API — without staff
+    access and without pasting shell commands or secrets. It adds NO authority and ORs past NOTHING: the control
+    still creates only a bounded, caps-enforced ``CopierLiveAuthorization`` (owner self-approved, ≤0.01 vol, one
+    order, partial-close excluded, ≤15 min) and, at confirm, invokes the EXISTING atomic arm
+    (``trade_copier.lifecycle_arming``) whose host actuators remain separately provisioned + Sponsor-gated. With
+    this OFF every owner-demo endpoint returns 503/`FEATURE_DARK` and nothing is created. The browser never
+    receives or submits a signing secret; no symmetric key is stored in DB/session/frontend/logs. The real
+    #46→#48 execution still requires a separate, explicit, head/runtime-pinned Sponsor real-money GO."""
+    return copier_enabled() and _flag("COPIER_OWNER_DEMO_CONTROL_ENABLED")
+
+
 def copier_execution_driver_enabled() -> bool:
     """DARK gate for the governed, supervised copier EXECUTION DRIVER (ADR-0117). DEFAULT OFF, ANDed with the
     master gate.

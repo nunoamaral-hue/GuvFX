@@ -35,6 +35,7 @@
   "src/components/broker/Dialog.tsx",
   "src/components/broker/DisconnectDialog.tsx",
   "src/components/broker/InstrumentMatrixContent.tsx",
+  "src/components/broker/OwnerDemoControlContent.tsx",
   "src/components/broker/ReplaceCredentialsDialog.tsx",
   "src/components/broker/States.tsx",
   "src/components/broker/StatusBadge.tsx",
