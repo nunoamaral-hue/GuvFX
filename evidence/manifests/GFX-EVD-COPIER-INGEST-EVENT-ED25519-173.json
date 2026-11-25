@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-COPIER-INGEST-EVENT-ED25519-173",
+  "packet_id": "GFX-COPIER-INGEST-EVENT-ED25519-173",
+  "created_at_utc": "2026-11-25T12:30:00Z",
+  "branch": "feat/ingest-event-ed25519",
+  "base_commit": "06721a9de0d9b3834a7fd33f08e8f573fcebcec9",
+  "head_commit": null,
+  "environment": {
+    "scope": "Repository-only contracts (ADR-0130): the versioned, domain-separated host-private/backend-public Ed25519 INGEST-event verification; the fail-closed algorithm dispatcher (HMAC legacy preserved, Ed25519 NEVER falls back to HMAC); and a durable single-use replay guard reusing CopierIngestNonce (no schema change). DARK/contract-only; the COPIER_INGEST_EVENT_TRUST registry stays EMPTY, no host emitter is provisioned, and the live endpoint still verifies HMAC. No host/MT5/broker contact, no real key/window, no deploy/migration.",
+    "adr": "docs/architecture/ADR-0130-ingest-event-ed25519-and-durable-replay.md",
+    "production_or_db_mutation": false,
+    "deploy_or_migration_apply": false,
+    "migration_added": false,
+    "copy_trading_tim_mt5_nas_touched": "copy_trading backend only (three new contract modules + two new flags + three new synthetic test modules). CopierIngestNonce reused as-is (no field/index/constraint change; makemigrations produces nothing). TIM/Dashboard/Withdrawal/Wayond NOT touched; the INGEST-event trust is strictly separate from the window-open trust and the TIM release-signing trust (no cross-import, disjoint signing domains)."
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "backend (manage.py test) + frontend (lint+build) + governance-check (secret scan + evidence lint)"
+  },
+  "commands": [
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_ingest_event_signing trade_copier.tests_ingest_envelope_dispatch --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier.tests_durable_nonce --keepdb",
+    "cd backend && .venv/bin/python manage.py test trade_copier --keepdb",
+    "cd backend && .venv/bin/python manage.py check",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py"
+  ],
+  "expected_results": [
+    "ingest_event_signing.verify_ingest_event accepts ONLY a synthetic-key Ed25519 event signed by a PINNED, event-only public key that binds exactly to owner/#46->#48/INGEST/authorized-window(not_after)/expiry/nonce/payload; fails closed on malformed, bad alg/protocol, unknown/revoked key_id (unknown_key_id), wrong-key or tampered signature (bad_signature), tampered payload (payload_digest_mismatch), purpose/route/tenant mismatch, no/mismatched/expired authorized window, stale/future/expired/over-TTL event, an event that would outlive its window, over-long nonce and replay; the signing input is DOMAIN-separated so a non-domain (window-open-style) signature over the same fields is rejected; the default COPIER_INGEST_EVENT_TRUST registry is EMPTY (DARK).",
+    "ingest_envelope_dispatch.verify_ingest_envelope selects the algorithm ONCE from the declared alg: an Ed25519 failure NEVER invokes the HMAC verifier; a legacy HMAC/no-alg envelope verifies byte-for-byte as a direct verify_ingest_request while copier_ingest_hmac_legacy_enabled (default ON); an unknown alg and a disabled legacy path both fail closed without calling the other verifier.",
+    "durable_nonce: DurableNonceStore / durable_ingest_event_nonce_burn are single-use across a simulated restart (fresh instance, same CopierIngestNonce rows) AND across real concurrent threads (exactly one winner on the UNIQUE insert); a persistence fault fails closed (treated as replay); the stored token is value-blind (raw nonce never stored) and fits varchar(80); domains/scopes do not collide. The ADR-0129 window-open authorization is DURABLY single-use across a restart when given durable_window_open_nonce_store().",
+    "No schema change (makemigrations produces nothing); manage.py check clean; no secret added; Copy-Trading event signing separate from window-open and TIM signing; production endpoint behaviour byte-identical to ADR-0074 (HMAC legacy preserved, Ed25519 path DARK and unwired)."
+  ],
+  "actual_results": [
+    "trade_copier.tests_ingest_event_signing + tests_ingest_envelope_dispatch: Ran 42 tests, OK (28 Ed25519 signing synthetic-key cases incl. domain-separation + DARK empty-trust + value-blind; 14 dispatcher cases incl. no-HMAC-fallback and byte-identical HMAC preservation).",
+    "trade_copier.tests_durable_nonce: Ran 12 tests, OK (restart durability, 2 real-thread concurrency races, persistence-failure fail-closed, value-blind/bounded token, domain/scope isolation, window-open durable single-use across restart).",
+    "manage.py check: System check identified no issues (0 silenced).",
+    "Full trade_copier suite: see CI (run at the reviewed head).",
+    "scripts/check_no_secrets.py: no findings. scripts/check_evidence_manifests.py: PASS."
+  ],
+  "status": "PARTIAL",
+  "reviewer": "GuvFX Coding Agent (Claude Opus 4.8). Repository-only; auto-merge OFF; NOT merged, NOT deployed; contract-only — host emitter + endpoint wiring + COPIER_INGEST_EVENT_TRUST pin all deferred; registry empty, verification flag OFF, HMAC legacy preserved.",
+  "limitations": [
+    "Repository-only. Auto-merge OFF; NOT merged, NOT deployed. The Ed25519 INGEST-event verification is a built+tested CONTRACT: no host emitter signs Ed25519 (the bridge still signs HMAC), and the live endpoint (event_ingestion_api.SignedEventIngestView) still calls verify_ingest_request directly, so the Ed25519 path is reachable only in tests until a separate endpoint-wiring step routes through verify_ingest_envelope.",
+    "The production COPIER_INGEST_EVENT_TRUST registry is EMPTY (DARK) and COPIER_INGEST_EVENT_VERIFICATION_ENABLED is OFF; pinning a real public key, enabling the flag, and disabling the HMAC legacy path are separate Sponsor-gated steps.",
+    "No schema change: the durable replay guard reuses CopierIngestNonce. A future packet wanting per-domain retention would add a dedicated table with documented migration/compatibility/rollback.",
+    "Unchanged and still UNPROVISIONED (ADR-0129 host rollout): the host verifier-window opener and the signed read-only #48 admission reader. The live #46->#48 demonstration remains a separate, head/runtime-pinned Sponsor real-money GO.",
+    "Ed25519 verification uses the backend cryptography library; the TIM stdlib verify-only module is untouched and un-imported, preserving identity/domain separation."
+  ],
+  "artefact_locations": [
+    "backend/trade_copier/ingest_event_signing.py (NEW - versioned, domain-separated Ed25519 INGEST-event construction + verifier + event-only trust registry)",
+    "backend/trade_copier/ingest_envelope_dispatch.py (NEW - fail-closed algorithm selector; Ed25519 never falls back to HMAC)",
+    "backend/trade_copier/durable_nonce.py (NEW - durable single-use replay guard reusing CopierIngestNonce; window-open store + event burn)",
+    "backend/trade_copier/flags.py (MODIFIED - copier_ingest_event_verification_enabled() default OFF; copier_ingest_hmac_legacy_enabled() default ON)",
+    "backend/trade_copier/tests_ingest_event_signing.py + tests_ingest_envelope_dispatch.py + tests_durable_nonce.py (NEW - 54 synthetic/DB tests)",
+    "docs/architecture/ADR-0130-ingest-event-ed25519-and-durable-replay.md (NEW - contracts + exact integration gap with owning components + no-migration rationale)"
+  ],
+  "checksums": {
+    "backend/trade_copier/ingest_event_signing.py": "sha256:de02964a8620a9e8a65f3c70b66eb9adff9b37c1c1180091463b37f0106a8e4f",
+    "backend/trade_copier/durable_nonce.py": "sha256:d38a9acc2799da0ae15da5938b008e89a81212fd17713e901705277a2c0a1bd1",
+    "backend/trade_copier/ingest_envelope_dispatch.py": "sha256:cb1c77c4f03acd9e39b6e7a8961d33a02269dca38cb73454bfe9f499dcad93ce",
+    "backend/trade_copier/tests_ingest_event_signing.py": "sha256:50842d293ba3d74dab4ad66969ad67e89eb8ad5add6c2c7d8e3d4568e06fbc10",
+    "backend/trade_copier/tests_ingest_envelope_dispatch.py": "sha256:59c696bdaa7476a035e9580213e5a797aa226ec8148a586ddcd167224490f56e",
+    "backend/trade_copier/tests_durable_nonce.py": "sha256:1261769032c183522994b3c8397619d19cef0c0834e0ff7e18de240f5897c866",
+    "docs/architecture/ADR-0130-ingest-event-ed25519-and-durable-replay.md": "sha256:a86a8b33bedafb1531afc5f7ce237b64d5379651a035039b4f698d23b32599ee"
+  }
+}
