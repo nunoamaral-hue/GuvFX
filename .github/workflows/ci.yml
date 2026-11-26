@@ -162,6 +162,9 @@ jobs:
       - name: TIM operational release-signing v3 tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_tim_release_signing_v3.py' -v
 
+      - name: TIM operational public-key pin tests (standard library only)
+        run: python3 -m unittest discover -s tests -p 'test_tim_operational_key_pin.py' -v
+
       - name: TIM signing cross-repo lock tests (standard library only)
         run: python3 -m unittest discover -s tests -p 'test_tim_signing_cross_repo_lock.py' -v
 

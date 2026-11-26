@@ -50,7 +50,7 @@
     "service_identity": "guvfx_tim_producer",
     "protected_store_root": "C:\\ProgramData\\GuvFX\\TIM\\signing",
     "private_key_in_this_repository": false,
-    "operational_trust_store_pinned_keys": 0,
-    "operational_path_dark": true
+    "operational_trust_store_pinned_keys": 1,
+    "operational_path_dark": false
   }
 }
