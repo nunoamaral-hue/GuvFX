@@ -2,6 +2,23 @@
 
 List active problems with reproduction steps and workarounds.
 
+## 🟢 TIM release CLI — sharp edges for operators (GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW / ADR-0127, 2026-11-26)
+
+- **DARK; it never signs.** `tools/tim_release_cli.py` adds no signing primitive (producer signs; TIM verifies —
+  ADR-0070). The signature is produced out of band on the producer host; `assemble`/`validate` default to the
+  **committed pinned** trust store and fail closed (`unknown_signing_key`) for any non-pinned key — intended, not a
+  bug. CI passes an explicit `--trust-store` isolated store for the disposable key.
+- **`build` needs DuckDB; `assemble`/`publish`/`validate` do not.** The heavy synthetic generator (DuckDB) is
+  imported lazily inside `build` only, so the consumer `validate` command is genuinely standalone (duckdb-free) —
+  run it on the Mac mini without the research extras.
+- **`build --root` must be OUTSIDE the repository** (`root_within_repo` otherwise): releases live under a configured
+  data root, never in Git.
+- **Producer-host import resolution + task argument order are proven cross-repo** (producer CI run `45836824153`,
+  not in this repo's lane). This change proves the `request.fields.json` contract + argument order from the
+  controller side; the GuvFX↔producer signing-material lock is `tests/test_tim_signing_cross_repo_lock.py`.
+- **Live run is separately Sponsor-gated.** Operational signing, live task/rights changes, NAS publication and the
+  Mac mini acceptance are the GO #2d live execution packet — see `docs/TIM_FIRST_RELEASE_CLI.md`.
+
 ## 🟡 Lifetime net P&L + portfolio metrics — unknown currency summed as USD — repository-only, NOT merged/deployed (GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163 / ADR-0122, 2026-11-19)
 
 - **What it fixes.** The governed LIFETIME follow-up to GFX-161 (the remaining blank→USD root pattern). In

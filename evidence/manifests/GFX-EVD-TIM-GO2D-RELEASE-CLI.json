@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-GO2D-RELEASE-CLI",
+  "packet_id": "GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW",
+  "created_at_utc": "2026-11-26T00:00:00Z",
+  "branch": "feat/tim-release-cli",
+  "base_commit": "1878c8818bacde3aa15574c2f886c6c127714062",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only + CI; synthetic_test_only",
+    "authoritative_decision": "GO #2d continuation (deadline mode): implement the reviewed command-line workflow for the first governed synthetic release. ADR-0127 (Notion TIM register). Four fail-closed, value-blind CLI entry points (build/assemble/publish/validate) that turn the merged in-process proof (tools/tim_release_v3_operational_proof.py @ 1878c881) into the real producer<->consumer release handoff, reusing the merged synthetic generator, signing-field builder and verifiers. The producer signs; TIM only verifies (ADR-0070) — this tool adds NO signing primitive. Interoperability pin: producer signer squash 836cfd3c.",
+    "additive": true,
+    "reuses_existing_synthetic_generator": true,
+    "signing_primitive_added_to_repository": false,
+    "real_operational_key_used": false,
+    "real_nas_or_network_or_mt5_or_broker_or_credential": false,
+    "live_task_registration_or_rights_change": false,
+    "live_publication_or_consumer_acceptance": false,
+    "private_key_in_repo_tests_fixtures": false,
+    "committed_operational_trust_store_unchanged": true,
+    "frozen_v0_2_v0_3_contracts_unchanged": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "market-data-foundation (Python 3.14 + DuckDB), alongside the existing v0.2/v0.3 smokes and the GO #2d operational-release proof. The new CLI workflow runs via `python -m unittest discover -s tests -p 'test_tim_release_cli.py'`. The governance (stdlib) and v0.3 verifier/contract lanes are unchanged."
+  },
+  "commands": [
+    "python -m unittest discover -s tests -p 'test_tim_release_cli.py' -v",
+    "python -m unittest discover -s tests -p 'test_tim_release_operational_proof.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "make governance-check"
+  ],
+  "expected_results": [
+    "The four CLI entry points are exercised end-to-end with a file handoff to the pinned producer signer contract and back (a disposable pure-python RFC-8032 test signer over the REAL signing_material_v3), an ISOLATED test trust store, and a LOCAL mount substitute: build emits request.fields.json (the exact eight producer sign-release fields) and keeps the candidate UNSEALED; assemble verifies the returned release.signature.json against the exact candidate manifest + pinned store (operational, ed25519-v1, synthetic=false) and seals (manifest.sig.json then READY last); publish verifies destination identity/scope, refuses overwrite, and writes READY last after every destination hash verifies; validate (standalone, read-only) accepts with the operational signature, all nine evidence references and every file hash.",
+    "Failure checks all REJECT with value-blind reasons: wrong key (committed store -> unknown_signing_key), expired window (key_not_valid_at_created_at), tampered signature (signature_invalid), mismatched manifest (request_manifest_mismatch), altered candidate files (altered_files), already-sealed / existing release (already_sealed / release_exists), unverifiable mount (mount_identity_unverifiable), interrupted publication (published_file_hash_mismatch -> no READY -> consumer missing_ready), tampered published file (file_hash_mismatch), missing READY (missing_ready); the consumer run is write-free (read-only tree unchanged byte-for-byte).",
+    "No real operational key, NAS, network, MT5, broker or credential; the committed operational trust store and the frozen v0.2/v0.3 contracts are unchanged; secret scan no findings; evidence linter PASS; make governance-check green.",
+    "Live staging inventory documented (producer signer files, imports, artefact hashes, interpreter, paths, ACLs, CLI argument order) with the custodian handoff and the Mac mini acceptance; CI evidence kept distinct from live NAS acceptance."
+  ],
+  "actual_results": [
+    "tests/test_tim_release_cli.py: Ran 17 tests OK (full handoff accepts: assemble algorithm=ed25519-v1 / synthetic=false / ready_written_last / 9 evidence references; publish published / ready_written_last / identity_verified / real_nas=none / local substitute; validate accepted / operational_signature_verified / 9 evidence references / 11 files / evidence identity / trust_store=pinned; plus wrong-key unknown_signing_key, expired-window key_not_valid_at_created_at, tampered-signature signature_invalid, mismatched-manifest request_manifest_mismatch, altered-files altered_files, already_sealed, release_exists overwrite refusal, mount_identity_unverifiable + opt-out, interrupted publication published_file_hash_mismatch -> missing_ready, cleanup-on-failure removes the READY-less partial, missing_ready, tampered published file file_hash_mismatch, write-free consumer unchanged, root_within_repo guard).",
+    "tests/test_tim_release_operational_proof.py: Ran 7 tests OK (unchanged; no regression).",
+    "python3 scripts/check_no_secrets.py: no findings. python3 scripts/check_evidence_manifests.py: PASS. make governance-check: green (exit 0).",
+    "This manifest is authored at commit time; head_commit is null until the squash merge. The exact head SHA + CI run are recorded on the PR and in the TIM Notion master record."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository + CI ONLY. DARK. The real operational signing run, live task registration, rights change, NAS publication, and Mac mini consumer acceptance are the separately Sponsor-gated GO #2d live execution packet, NOT this change. No merge beyond this scope without a new Sponsor authorisation (auto-merge OFF; HARD STOP at PR readiness).",
+    "The CLI adds NO signing primitive: the signature is produced out of band by the producer host (scripts/tim_signing_provider.py sign-release). In CI the signer is a DISPOSABLE ephemeral Ed25519 key signed by a TEST-ONLY pure-python RFC-8032 signer (reusing tim_ed25519's verified arithmetic) that lives only in tests/test_tim_release_cli.py; the research/tools modules stay verify-and-build only (ADR-0070). The ephemeral seed is in memory and never written. The committed operational trust store is untouched; assemble/validate against it fail closed (unknown_signing_key) for the disposable key.",
+    "build produces SYNTHETIC market data (reused v0.3 generator), clearly labelled synthetic; only the signature path is operational. The CLI is duckdb-only for build; assemble/publish/validate are duckdb-free (the consumer command is standalone).",
+    "Producer-host import resolution and the task CLI argument order are proven in the PRODUCER repo CI (run 45836824153, provisioning-runtime lane) and referenced here; this GuvFX change proves the request.fields.json contract + argument order from the controller side (the _producer_sign handoff) and relies on the cross-repo signing-material lock (tests/test_tim_signing_cross_repo_lock.py)."
+  ],
+  "artefact_locations": [
+    "tools/tim_release_cli.py (NEW; the four fail-closed, value-blind CLI entry points; reuses the proof harness build_release / sign_release_fields and the S/TS/V verifiers; no signing primitive)",
+    "tests/test_tim_release_cli.py (NEW; end-to-end CLI handoff + all failure checks; test-only pure-python RFC-8032 signer)",
+    ".github/workflows/ci.yml (CHANGED; market-data-foundation lane: run the new CLI workflow test)",
+    "docs/TIM_FIRST_RELEASE_CLI.md (NEW; the four-command workflow, live staging inventory, custodian handoff, Mac mini acceptance)",
+    "evidence/manifests/GFX-EVD-TIM-GO2D-RELEASE-CLI.json (this manifest)"
+  ],
+  "checksums": {
+    "tools/tim_release_cli.py": "sha256:41b9f73da45bfdc4e8f2c682b949f14e9435ab24b6d8c03ecebd5663530a313e",
+    "tests/test_tim_release_cli.py": "sha256:7448116a79f24d7e8c3f0ed1b32a2fecbd374b91fdd6591c576fb088d465c6a3",
+    ".github/workflows/ci.yml": "sha256:2a37753e2fb78b02175be1833d04fc22d175d334f614437cfc300f260a508038",
+    "docs/TIM_FIRST_RELEASE_CLI.md": "sha256:5a26b43041de14cbd104060b0bc4eaff8d05e018867aaf4d95d26b9b98216547"
+  },
+  "reviewer": "Author self-review. The four CLI entry points reuse the merged, proven synthetic v0.3 generator and the v3 verifier/trust-store; they add NO signing primitive (the producer signs; TIM verifies — ADR-0070). The operational path is exercised end-to-end with a disposable ephemeral key, an isolated test trust store and a local mount substitute, with a real file handoff to the pinned producer sign-release fields contract and back. Every packet-named failure check rejects with a distinct value-blind reason (interrupted publication, missing READY, tampering, wrong key, expired window, altered files, overwrite/existing id, mount identity) and the consumer run is write-free. The committed operational trust store and the frozen v0.2/v0.3 contracts are unchanged; make governance-check green; secret scan + evidence linter clean. Live staging (producer bundle inventory, custodian handoff, Mac mini acceptance) is documented; no real key, NAS, network or data; auto-merge OFF; HARD STOP at PR readiness."
+}
