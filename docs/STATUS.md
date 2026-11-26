@@ -1,5 +1,28 @@
 # GuvFX — Project Status
 
+> **2026-11-25 — Ed25519 INGEST event verification + durable replay protection
+> (GFX-COPIER-INGEST-EVENT-ED25519-173; ADR-0130; repository-only; migration-free; DARK/contract-only; governed PR;
+> auto-merge OFF; STOP before merge).** Off main `06721a9d` on `feat/ingest-event-ed25519`. Closes ADR-0129's INGEST
+> HMAC→Ed25519 and durable-nonce gaps as tested CONTRACTS. **(1)** `ingest_event_signing.py` — a versioned,
+> DOMAIN-separated (`guvfx.copier.ingest-event.v1`) host-private/backend-public Ed25519 event construction: the
+> backend verifies each event against a PINNED, event-only public key (`COPIER_INGEST_EVENT_TRUST`, strictly separate
+> from `COPIER_WINDOW_OPEN_TRUST` and the TIM release-signing trust) and binds signer/owner/#46→#48 route/`INGEST`
+> purpose/authorized-window(`not_after`)/expiry/single-use nonce/payload; fail-closed and value-blind; no symmetric
+> secret crosses the boundary. The live INGEST window is uncapped, so the event binds the window read-only (metadata
+> only, burns no use) and may not outlive it. **(2)** `ingest_envelope_dispatch.py` — selects the algorithm ONCE from
+> the declared `alg`: an invalid/unknown Ed25519 event fails closed and NEVER falls back to HMAC; the legacy HMAC path
+> is preserved byte-for-byte while explicitly configured (`copier_ingest_hmac_legacy_enabled`, default ON). **(3)**
+> `durable_nonce.py` — a DURABLE single-use replay guard reusing `CopierIngestNonce` (**no schema change**): single-use
+> across concurrent requests AND restarts, fail-closed on persistence fault, value-blind namespaced token; closes the
+> ADR-0129 in-memory window-open nonce gap. **DARK:** `COPIER_INGEST_EVENT_TRUST` empty, `COPIER_INGEST_EVENT_VERIFICATION_ENABLED`
+> OFF, no emitter signs Ed25519, and the live endpoint still verifies HMAC (byte-identical to ADR-0074). **Tests:** 54
+> (28 Ed25519 signing + 14 dispatcher incl. no-HMAC-fallback + byte-identical HMAC preservation + 12 durable-nonce incl.
+> 2 real-thread concurrency races + restart durability + persistence-failure fail-closed) + full `trade_copier` suite;
+> check/secret/evidence clean; `makemigrations --check` → no changes. **Integration gap (ADR-0130, each Sponsor-gated
+> with owning component):** host emitter migration; endpoint wiring through the dispatcher; production trust pin + flag;
+> the ADR-0129 host opener + signed #48 admission reader (still unprovisioned); the live #46→#48 Sponsor real-money GO.
+> No host/key/window/broker contact. **Migration-free.**
+
 > **2026-11-25 — Owner-demo asymmetric window-open authorization + #48 admission probe
 > (GFX-COPIER-OWNER-DEMO-ASYM-VERIFIER-172; ADR-0129; repository-only; migration-free; DARK/contract-only; governed
 > PR; auto-merge OFF; STOP before merge).** Off main `834eb540` on `feat/owner-demo-asym-verifier`. Closes ADR-0128's

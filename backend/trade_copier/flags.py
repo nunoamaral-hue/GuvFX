@@ -149,6 +149,32 @@ def copier_event_ingestion_enabled() -> bool:
     return copier_enabled() and _flag("COPIER_EVENT_INGESTION_ENABLED")
 
 
+def copier_ingest_event_verification_enabled() -> bool:
+    """Gate for the ASYMMETRIC Ed25519 INGEST-EVENT verification path (GFX-173, ADR-0130). DEFAULT OFF, ANDed
+    with the ingestion gate (``copier_event_ingestion_enabled`` already ANDs ``copier_enabled``).
+
+    Governs whether a signed envelope that DECLARES ``alg:"ed25519"`` is verified against the pinned, event-only
+    Copy-Trading public trust (``COPIER_INGEST_EVENT_TRUST``) instead of the legacy symmetric HMAC. It adds NO
+    authority and ORs past NOTHING: the Ed25519 verifier still binds owner/#46→#48 route/INGEST purpose/authorized
+    window/expiry/durable nonce/payload and is fail-closed. DARK by default: the event trust registry is EMPTY, so
+    even with this ON an Ed25519 event fails closed (``unknown_key_id``) until a real key is separately,
+    Sponsor-gated, pinned. An invalid/unknown Ed25519 event NEVER falls back to HMAC."""
+    return copier_event_ingestion_enabled() and _flag("COPIER_INGEST_EVENT_VERIFICATION_ENABLED")
+
+
+def copier_ingest_hmac_legacy_enabled() -> bool:
+    """The explicitly-configured LEGACY symmetric HMAC ingest path (ADR-0074). DEFAULT ON (preserve existing
+    behaviour) — GFX-173, ADR-0130.
+
+    The envelope dispatcher verifies an ``alg:"hmac"`` / no-``alg`` envelope via HMAC ONLY while this is on, so
+    today's emitters keep working unchanged. An operator may set ``COPIER_INGEST_HMAC_LEGACY_ENABLED=0`` to REFUSE
+    the symmetric path once emitters have migrated to Ed25519 — after which an HMAC envelope fails closed
+    (``hmac_legacy_disabled``) rather than falling through to any other algorithm. It is a sub-selector within the
+    already-gated ingestion endpoint (it grants no authority on its own) and is independent of the master gate so
+    it can preserve HMAC exactly as-is; the endpoint itself remains gated by ``copier_event_ingestion_enabled``."""
+    return _flag("COPIER_INGEST_HMAC_LEGACY_ENABLED", default="1")
+
+
 def copier_ingest_probe_enabled() -> bool:
     """Gate for the NON-TRADING one-shot INGEST-signing probe endpoint (GFX-160, ADR-0119). DEFAULT OFF, ANDed
     with BOTH the master gate AND the ingestion gate (``copier_event_ingestion_enabled`` already ANDs
