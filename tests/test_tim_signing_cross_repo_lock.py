@@ -3,8 +3,9 @@
 Stdlib-only. Pins the byte-exact TIM v3 signing-material contract so the GuvFX verifier and the producer
 repo (nunoamaral-hue/guvfx-windows-history-agent) signer cannot drift: the GuvFX verifier's
 ``signing_material_v3`` over the shared test vector must hash to the same value the producer repo
-independently pins, and the merged verifier constants must match the lock file. Also asserts the operational
-trust store stays EMPTY (operational verification dark) in this packet.
+independently pins, and the merged verifier constants must match the lock file. Also asserts the committed
+operational trust store agrees with the lock's recorded custody-binding state (pinned-key count; by ADR-0124
+operational verification is dark iff the store is empty).
 """
 import hashlib
 import json
@@ -70,12 +71,16 @@ class TestCrossRepoLock(unittest.TestCase):
         self.assertRegex(derived, r"^[a-z0-9][a-z0-9_-]*$")
         self.assertLessEqual(len(derived), 64)
 
-    def test_operational_trust_store_is_empty_dark(self):
+    def test_operational_trust_store_matches_cross_repo_lock(self):
         store = TS.load_pinned_operational_trust_store()
-        self.assertEqual(len(store), 0)
-        self.assertEqual(self.lock["custody_binding"]["operational_trust_store_pinned_keys"], 0)
-        self.assertIs(self.lock["custody_binding"]["operational_path_dark"], True)
-        self.assertIs(self.lock["custody_binding"]["private_key_in_this_repository"], False)
+        cb = self.lock["custody_binding"]
+        # The lock's recorded pinned-key count tracks the live committed store.
+        self.assertEqual(len(store), cb["operational_trust_store_pinned_keys"])
+        # ADR-0124: the operational verification path is dark iff the trust store is empty. Pinning the
+        # reviewed public key arms operational VERIFICATION; it starts no signing, release or consumption.
+        self.assertIs(cb["operational_path_dark"], len(store) == 0)
+        # No private key is ever in this repository (verify-only; the producer holds the private key off-repo).
+        self.assertIs(cb["private_key_in_this_repository"], False)
 
     def test_public_metadata_fields_cover_envelope_identity(self):
         pm = set(self.lock["public_metadata_fields"])

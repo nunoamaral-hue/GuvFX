@@ -14,7 +14,8 @@ FOUNDATION-014 / ADR-0124:
     with a value-blind reason;
   * the synthetic placeholder path stays valid (backwards compatible) and never consults the trust store;
   * the trust store is deterministic and fail-closed (duplicate id, fingerprint mismatch, bad fields),
-    and the committed default operational store is EMPTY so operational verification fails closed;
+    and operational verification fails closed against an isolated empty store (the committed store now
+    pins exactly the reviewed operational identity, GFX-TIM-GO2A-PUBLIC-KEY-PIN-040);
   * TIM holds no signing authority: the modules import no network/MT5/execution symbol and expose no
     Ed25519 signing / key-generation primitive (producer-signs / TIM-verifies-only, ADR-0070).
 
@@ -229,9 +230,13 @@ class TestOperationalVerify(unittest.TestCase):
         r = S.verify_release_signature_v3_detailed(_op(), MANIFEST_BYTES, trust_store=TS.empty())
         self.assertEqual(r.reason, S.R_UNKNOWN_KEY)
 
-    def test_default_committed_store_is_empty_and_fails_closed(self):
+    def test_committed_store_pins_reviewed_identity_and_is_unknown_for_other_keys(self):
+        # The committed operational store now pins exactly the reviewed operational identity
+        # (GFX-TIM-GO2A-PUBLIC-KEY-PIN-040). The fixture's SYNTHETIC key id is NOT that identity, so an
+        # operational verify against the committed store still fails closed. Empty-store rejection is
+        # retained in an isolated fixture by test_unknown_key_when_store_lacks_it (TS.empty()).
         pinned = TS.load_pinned_operational_trust_store()
-        self.assertEqual(len(pinned), 0)
+        self.assertEqual(len(pinned), 1)
         r = S.verify_release_signature_v3_detailed(_op(), MANIFEST_BYTES, trust_store=pinned)
         self.assertEqual(r.reason, S.R_UNKNOWN_KEY)
 

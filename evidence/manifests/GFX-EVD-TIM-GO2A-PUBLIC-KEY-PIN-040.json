@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-GO2A-PUBLIC-KEY-PIN-040",
+  "packet_id": "GFX-TIM-GO2A-PUBLIC-KEY-PIN-040",
+  "created_at_utc": "2026-11-26T00:00:00Z",
+  "branch": "feat/tim-operational-key-pin-040",
+  "base_commit": "06721a9de0d9b3834a7fd33f08e8f573fcebcec9",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only",
+    "authoritative_decision": "ADR-0124 (TIM operational release-signing envelope v3) + TIM_OPERATIONAL_SIGNING_RUNBOOK.md section 1. Pins the single operational producer PUBLIC Ed25519 key provisioned + custody-verified under GFX-TIM-GO2A-ED25519-KEY-PROVISION-039 into the operational trust store, with the Sponsor-approved validity window. Repository + CI through PR readiness only; auto-merge OFF; not merged.",
+    "sponsor_approved_validity_window": {"not_before_utc": "2026-11-26T01:06:48Z", "not_after_utc": "2027-11-26T01:06:48Z"},
+    "additive": true,
+    "migration_free": true,
+    "operational_verification_armed_for_pinned_key": true,
+    "operational_signing_or_release_performed": false,
+    "signer_service_started": false,
+    "key_generated_or_handled": false,
+    "private_key_opened_read_or_in_repo_tests_fixtures": false,
+    "real_host_or_bridge_contact": false,
+    "nas_mount_or_smb_auth": false,
+    "producer_host_or_exporter_run": false,
+    "broker_or_mt5_contact": false,
+    "dataset_read_or_publication": false,
+    "release_built_signed_published_or_consumed": false,
+    "deployment_or_production_mutation": false,
+    "trading_or_execution_change": false,
+    "cross_repo_signing_material_digest_unchanged": true,
+    "frozen_v0_2_trio_unchanged": true,
+    "v0_3_schema_and_fixture_counts_unchanged": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "governance (secret scan + evidence lint + the TIM stdlib tests). The new pin test is stdlib-only and runs in the governance job alongside the existing v3 and cross-repo-lock tests; no research venv or third-party crypto is needed."
+  },
+  "commands": [
+    "python3 -m unittest discover -s tests -p 'test_tim_operational_key_pin.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_release_signing_v3.py' -v",
+    "python3 -m unittest discover -s tests -p 'test_tim_signing_cross_repo_lock.py' -v",
+    "python3 scripts/check_no_secrets.py",
+    "python3 scripts/check_evidence_manifests.py",
+    "make governance-check"
+  ],
+  "expected_results": [
+    "The PUBLIC identity pinned equals the packet-039 custody-verified identity recomputed from the public bytes: sha256(public_key) == public_key_fingerprint, and signing_key_id == 'ed25519-' + public_key_fingerprint[:32]; is_acceptable_public_key is True (canonical, full-order, non-small-order).",
+    "The committed operational trust store admits exactly one active entry (the reviewed identity) with the Sponsor-approved window [2026-11-26T01:06:48Z, 2027-11-26T01:06:48Z]; the merged loader resolves it and binds its fingerprint; mismatched metadata, duplicate ids, bad windows and bad status fail closed (TrustStoreIntegrityError).",
+    "Both validity boundaries are enforced by the verifier's actual comparison (entry.is_valid_at, nb <= t <= na): a release whose created_at equals not_before or not_after verifies; one second outside either bound fails closed with key_not_valid_at_created_at. Signature accept/reject is exercised with a SYNTHETIC ephemeral-key fixture only; empty-store rejection is retained in an isolated TS.empty() fixture.",
+    "The committed cross-repo lock agrees with the live store (pinned-key count = 1; operational_path_dark = false, i.e. operational VERIFICATION armed; private_key_in_this_repository = false). The signing-material digest (shared_material_sha256) is unchanged, so the cross-repo signing contract does not drift.",
+    "The byte-frozen v0.2 trio and the pinned v0.3 schema/fixture counts are unchanged; secret scan has no findings on the pinned public hex; evidence lint PASS; make governance-check green."
+  ],
+  "actual_results": [
+    "tests/test_tim_operational_key_pin.py: Ran 25 tests OK (identity derivation from public bytes; Ed25519 acceptability; admission + resolution; metadata/duplicate/window/status rejections; synthetic-key signature accept + tamper/manifest/revoked/empty-store reject; both window boundaries inclusive with one-second-outside rejection; committed store pins exactly the reviewed identity with the approved window; no signing/keygen primitive reachable).",
+    "tests/test_tim_release_signing_v3.py: Ran 56 tests OK (unchanged except the committed-store test, now asserting the store pins the reviewed identity and still fails closed for the fixture's unknown synthetic key id; empty-store rejection retained by test_unknown_key_when_store_lacks_it).",
+    "tests/test_tim_signing_cross_repo_lock.py: Ran 8 tests OK (material digest + verifier constants unchanged; store/lock custody-binding consistency: dark iff empty).",
+    "python3 scripts/check_no_secrets.py: no findings. make governance-check: green (exit 0); python3 scripts/check_evidence_manifests.py: EVIDENCE-LINT PASS. This manifest is authored at commit time; head_commit is null until the squash merge. The exact head SHA + CI run are recorded on the PR and in the TIM Notion master record."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Repository + CI through PR readiness only. The PR is opened auto-merge OFF and is NOT merged without a new Sponsor authorisation (HARD STOP). head_commit is null until the squash merge; the exact head SHA and CI run are carried on the PR and the TIM Notion master record.",
+    "No key generated or handled; the producer PRIVATE key stays off-repository in the producer host's custody and was NEVER opened, read or reconstructed by this packet; only the 64-hex PUBLIC key, its fingerprint and the derived key id are committed. Signatures are tested with a synthetic ephemeral-key fixture only. No signer-service start, no signing, no release build/sign/publish/consume, no NAS/SMB/producer/broker/MT5 contact, no deployment, no production or trading/execution change.",
+    "Amber (documented) decision: pinning the reviewed public key flips the GuvFX cross-repo lock's custody_binding.operational_path_dark from true to false and operational_trust_store_pinned_keys from 0 to 1. By ADR-0124 the operational VERIFICATION path is dark iff the trust store is empty, so a non-empty store makes verification armed for the pinned key. This arms VERIFICATION only; it starts no signing, release, consumption or service — those remain out of scope and not performed.",
+    "The producer repository (nunoamaral-hue/guvfx-windows-history-agent) holds an independent copy of the cross-repo lock. Its custody_binding counts are NOT updated by this GuvFX-only packet; the authoritative cross-repo contract (shared_material_sha256, the signing-material digest) is unchanged, so there is no signing-material drift. Reconciling the producer copy's custody_binding is a separate producer-repo step.",
+    "The validity window [2026-11-26T01:06:48Z, 2027-11-26T01:06:48Z] is the Sponsor-approved window (not_before = the custody-verified provisioning instant; 1-year duration). It is the authoritative pinned window; any release signed by this key verifies only when its created_at_utc lies within it.",
+    "check_evidence_manifests.py validates checksum FORMAT, not content; the recorded checksums are the sha256 of the files as written for this PR. Handoff docs (STATUS/HANDOFF/NEXT/KNOWN_ISSUES) were intentionally not edited to avoid conflicts with concurrent sessions; the handoff is carried by this manifest, ADR-0124, the runbook, and the TIM Notion master record."
+  ],
+  "artefact_locations": [
+    "research/market_data/trust_store/operational_public_keys.json (CHANGED; pins the single reviewed operational identity with the approved window — previously EMPTY)",
+    "research/market_data/trust_store/tim_signing_cross_repo_lock.json (CHANGED; custody_binding pinned-key count 0->1, operational_path_dark true->false; signing-material digest unchanged)",
+    "tests/test_tim_operational_key_pin.py (NEW; 25 stdlib tests — admission, both validity boundaries, rejections, synthetic-key signatures, committed-store pin guard)",
+    "tests/test_tim_release_signing_v3.py (CHANGED; committed-store test now asserts the pinned reviewed identity; empty-store rejection retained in an isolated fixture)",
+    "Makefile, .github/workflows/ci.yml (governance wiring for the new pin test)",
+    "evidence/manifests/GFX-EVD-TIM-GO2A-PUBLIC-KEY-PIN-040.json (this manifest)"
+  ],
+  "checksums": {
+    "research/market_data/trust_store/operational_public_keys.json": "sha256:19d8e727ffce1dfdca22d9be9355b3aef4d5c4bb1a154f093c8fc79e45baacde",
+    "research/market_data/trust_store/tim_signing_cross_repo_lock.json": "sha256:c499f45423d64586bc9bfbc978b7d587e6db24917196c64b0eb996e890138039",
+    "tests/test_tim_operational_key_pin.py": "sha256:236bae435ab518dd3d07beec5c2b1f2158a69bf36c160e8ef2ccc20c375e8247",
+    "tests/test_tim_release_signing_v3.py": "sha256:4f0bf42f1024dd4ae9714c249f7157c8fa0137afb4a269d53073baa1d9590bd7",
+    "Makefile": "sha256:8699a512fe470b260b794f622eea2e2e5e4ff7c01721a28087e14b7d95d122a6",
+    ".github/workflows/ci.yml": "sha256:8a1bc7b37fd725f83a819af9aaf774c5eb90fa4313e1e250117007b2063bc9ad"
+  },
+  "reviewer": "Author self-review against ADR-0124, the operational signing runbook (section 1 pin procedure), the admission checklist (item C), and the merged verifier. The pinned identity was recomputed from the public bytes (sha256(public_key) == fingerprint; derived key id matches) and admitted through the merged trust-store loader; is_acceptable_public_key is True (canonical, full-order, non-small-order). Both validity boundaries were exercised through the verifier's actual comparison. The private key was never opened, read or handled; signature tests use a synthetic ephemeral key only. Boundary: only the trust entry, the cross-repo lock custody-binding counts, the validity/admission tests, the governance wiring and this manifest changed; the byte-frozen v0.2 trio, the v0.3 schema/fixture counts and the signing-material digest are unchanged."
+}
