@@ -227,3 +227,7 @@ jobs:
       - name: GUVFX-TIM contract v0.3 unit tests (GFX-PKT-TIM-C2)
         run: |
           python -m unittest discover -s tests -p 'test_tim_contract_v0_3.py' -v
+
+      - name: GUVFX-TIM GO #2d operational-release proof (disposable key, real verifier; synthetic data)
+        run: |
+          python -m unittest discover -s tests -p 'test_tim_release_operational_proof.py' -v

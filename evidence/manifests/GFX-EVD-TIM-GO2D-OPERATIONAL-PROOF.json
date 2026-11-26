@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "handoff_id": "GFX-EVD-TIM-GO2D-OPERATIONAL-PROOF",
+  "packet_id": "GFX-TIM-GO2D-OPERATIONAL-RELEASE-PROOF",
+  "created_at_utc": "2026-11-26T00:00:00Z",
+  "branch": "feat/tim-operational-release-proof",
+  "base_commit": "9d2e95d53e54e77b35b8247ddf1cddefde52dc6e",
+  "head_commit": null,
+  "environment": {
+    "mode": "repository-only + CI; synthetic_test_only",
+    "authoritative_decision": "GO #2d build-and-test step. A scoped, reviewed operational release builder + proof that reuses the synthetic v0.3 generator, produces the EXACT fields the producer-host sign-release consumes, and proves the operational v3 flow locally with a DISPOSABLE Ed25519 key + the real verifier + an isolated test trust store. No operational key, live NAS, publication, consumer acceptance, deployment or real data.",
+    "additive": true,
+    "reuses_existing_synthetic_generator": true,
+    "real_operational_key_used": false,
+    "real_nas_or_network_or_mt5_or_broker_or_credential": false,
+    "live_publication_or_consumer_acceptance": false,
+    "private_key_in_repo_tests_fixtures": false,
+    "production_signing_primitive_added_to_research_modules": false,
+    "frozen_v0_2_v0_3_contracts_unchanged": true
+  },
+  "ci": {
+    "provider": "github-actions",
+    "workflow_name": "CI",
+    "lane": "market-data-foundation (Python 3.14 + DuckDB), alongside the existing v0.2/v0.3 release smokes. The new proof runs via `python -m unittest discover -s tests -p 'test_tim_release_operational_proof.py'`. The governance lane (stdlib) and the v0.3 verifier/contract tests are unchanged."
+  },
+  "commands": [
+    "python -m unittest discover -s tests -p 'test_tim_release_operational_proof.py' -v",
+    "make governance-check",
+    "python3 scripts/check_no_secrets.py"
+  ],
+  "expected_results": [
+    "A disposable ephemeral Ed25519 key (signed by a TEST-ONLY pure-python RFC-8032 signer reusing tim_ed25519's verified arithmetic) is accepted by the REAL verifier (ed25519_verify); tamper is rejected.",
+    "The operational v3 flow ACCEPTS end-to-end: one synthetic EURUSD M1 v0.3 release (reused generator) with all nine evidence references; the EXACT sign-release fields (release_id, manifest_digest, contract_bundle_digest, validator_bundle_digest, producer_identity, created_at_utc, key_validity, limitations); a dataset_release_signature_v3 (ed25519-v1, schema 3.0, synthetic=false) over the real signing_material_v3; verify_operational_release_signature_v3 against an ISOLATED test trust store returns ok; READY written LAST; every file SHA-256 matches; evidence identity verified; consumer ACCEPTS the published copy.",
+    "Failure checks all REJECT: a tampered file (file_hash_mismatch), a tampered manifest (ready_binding_mismatch), an invalid signature (signature_invalid), and a partial release without READY (missing_ready).",
+    "No real operational key, NAS, network, MT5, broker or credential; secret scan no findings; make governance-check green; the frozen v0.2/v0.3 contracts are unchanged."
+  ],
+  "actual_results": [
+    "tests/test_tim_release_operational_proof.py: Ran 7 tests OK (disposable-key sign+real-verify; full operational flow accepts with signature_algorithm=ed25519-v1 / schema=3.0 / synthetic=false, 9 evidence roles, the 8 sign-release field keys, pre-publish verify ok, READY written last, consumer accepted, all file hashes match, evidence identity verified; tampered-file -> file_hash_mismatch; tampered-manifest -> ready_binding_mismatch; invalid-signature -> signature_invalid; partial-release-without-READY -> missing_ready).",
+    "python3 scripts/check_no_secrets.py: no findings. make governance-check: green (exit 0); EVIDENCE-LINT PASS.",
+    "This manifest is authored at commit time; head_commit is null until the squash merge. The exact head SHA + CI run are recorded on the PR and in the TIM Notion master record."
+  ],
+  "status": "PASS",
+  "limitations": [
+    "Build-and-test ONLY. The real operational key, live NAS publication, and real consumer acceptance are OUTSIDE this step (GO #2d live execution, separately gated). The proof uses a DISPOSABLE ephemeral Ed25519 key with an ISOLATED test trust store; the committed operational trust store is untouched. The ephemeral seed is created in memory and never written.",
+    "The test-only pure-python RFC-8032 signer lives only in tests/test_tim_release_operational_proof.py. It is NOT a production signing primitive and is NOT added to the research modules, which remain verify-only (ADR-0070 / tim_ed25519 verify-only boundary). The real operational signature is produced on the producer host by scripts/tim_signing_provider.py sign-release over the IDENTICAL signing_material_v3.",
+    "The builder produces SYNTHETIC market data (fabricated EURUSD M1), clearly labelled synthetic; only the signature path is operational (v3 Ed25519). The manifest is synthetic (data) while the signature is operational (synthetic=false); the K-7 manifest<->signature cross-bind does not require synthetic equality, and both carry the same release_id / bundle digests / signing_key_id / producer_identity.",
+    "The proof runs in the market-data-foundation CI lane (needs DuckDB); it cannot run in the stdlib governance lane. The v0.3 verifier/contract tests and the committed v2/v3 fixtures are unchanged."
+  ],
+  "artefact_locations": [
+    "tools/tim_release_v3_operational_proof.py (NEW; reuses the synthetic generator; builds the v3 operational release, emits the exact sign-release fields, injected-provider seam, seal + consumer_accept)",
+    "tests/test_tim_release_operational_proof.py (NEW; disposable-key proof + four failure checks; test-only pure-python RFC-8032 signer)",
+    ".github/workflows/ci.yml (market-data-foundation lane: run the new proof test)",
+    "evidence/manifests/GFX-EVD-TIM-GO2D-OPERATIONAL-PROOF.json (this manifest)"
+  ],
+  "checksums": {
+    "tools/tim_release_v3_operational_proof.py": "sha256:368ef7c76ccf293bd360e127935e3d615985597b3989b84b94b7737442507f54",
+    "tests/test_tim_release_operational_proof.py": "sha256:f82b9feecb26cc62c5f49816a49517021b09061115585c50d3024591dd1f3a9a",
+    ".github/workflows/ci.yml": "sha256:6740cf2c44402be5304930a9e339721c75cf9850fc6a8cba62f3385a6bb651d0"
+  },
+  "reviewer": "Author self-review. Reuses the proven synthetic v0.3 generator; the v3 operational path is exercised with a disposable ephemeral key and the real verifier against an isolated test trust store. The producer K-7 cross-bind was confirmed not to require synthetic equality (manifest data synthetic, signature operational). Four fail-closed checks (tampered file / tampered manifest / invalid signature / partial release without READY) all reject with distinct reasons. No operational key, NAS, network or real data; the research modules stay verify-only; make governance-check green; secret scan clean."
+}
