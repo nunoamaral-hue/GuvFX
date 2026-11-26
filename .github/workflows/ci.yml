@@ -231,3 +231,7 @@ jobs:
       - name: GUVFX-TIM GO #2d operational-release proof (disposable key, real verifier; synthetic data)
         run: |
           python -m unittest discover -s tests -p 'test_tim_release_operational_proof.py' -v
+
+      - name: GUVFX-TIM GO #2d operational-release CLI workflow (build/assemble/publish/validate; disposable key, local mount substitute; synthetic data)
+        run: |
+          python -m unittest discover -s tests -p 'test_tim_release_cli.py' -v

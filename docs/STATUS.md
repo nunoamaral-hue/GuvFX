@@ -1,5 +1,26 @@
 # GuvFX — Project Status
 
+> **2026-11-26 — TIM first governed release: operational CLI workflow (GO #2d continuation;
+> GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW; ADR-0127; repository + CI only; DARK; governed PR; auto-merge OFF; STOP
+> before merge).** Off main `1878c881` (the merged builder/consumer proof) on `feat/tim-release-cli`. Turns
+> the in-process GO #2d proof into the real producer↔consumer handoff via four fail-closed, value-blind CLI
+> entry points in `tools/tim_release_cli.py` — **build** (one synthetic v0.3 release + `request.fields.json`,
+> UNSEALED), **assemble** (verify the returned `release.signature.json` vs the exact candidate manifest +
+> the PINNED trust store, then seal READY-last), **publish** (authenticated mount, verify identity/scope,
+> refuse overwrite, READY-last after every destination hash verifies, cleanup path on failure), **validate**
+> (standalone read-only consumer: READY binding + operational signature + all nine evidence references +
+> every file hash). It adds **NO signing primitive** (the producer signs; TIM verifies — ADR-0070); the
+> signature is produced out of band. **CI (market-data-foundation lane):** `tests/test_tim_release_cli.py`
+> drives the actual entry points end-to-end with a disposable pure-python Ed25519 key, an isolated test
+> trust store and a local mount substitute, covering the full handoff + interrupted publication, missing
+> READY, tampering, wrong key, expired window, altered files, overwrite, mount identity, and a write-free
+> consumer — 17 tests OK; the GO #2d proof (7) unchanged; `make governance-check` green; secret + evidence
+> linter clean. Live staging inventory + custodian handoff + Mac mini acceptance in
+> `docs/TIM_FIRST_RELEASE_CLI.md`. **DARK:** no operational signing, live task/rights change, NAS
+> publication, Mac mini acceptance, or real data — all the separately Sponsor-gated live execution packet.
+> Pins: builder/consumer `1878c881`, producer signer `836cfd3c`, op-key
+> `ed25519-ff37421d2467768a7cc8050932ef6833`.
+
 > **2026-11-25 — Owner-demo asymmetric window-open authorization + #48 admission probe
 > (GFX-COPIER-OWNER-DEMO-ASYM-VERIFIER-172; ADR-0129; repository-only; migration-free; DARK/contract-only; governed
 > PR; auto-merge OFF; STOP before merge).** Off main `834eb540` on `feat/owner-demo-asym-verifier`. Closes ADR-0128's

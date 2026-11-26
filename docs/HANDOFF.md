@@ -1,5 +1,54 @@
 # HANDOFF — live frontier pointer (2026-06-27)
 
+## 2026-11-26 — TIM first governed release: operational CLI workflow (GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW; ADR-0127; repository + CI; migration-free; DARK; PR; NOT merged)
+
+```
+PM HANDOFF
+
+Handoff ID: GFX-EVD-TIM-GO2D-RELEASE-CLI
+Packet ID: GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW (GO #2d continuation, deadline mode; ADR-0127, Notion TIM register)
+Status: PARTIAL (PR ready; auto-merge OFF; STOP before merge). Local acceptance green; required CI to be driven to
+  terminal at the full head and recorded on the PR + the TIM Notion master record.
+
+Base commit: 1878c8818bacde3aa15574c2f886c6c127714062 (current GuvFX main = the merged GO #2d builder/consumer proof,
+  PR #701). Interoperability pin: producer signer squash 836cfd3c32779d661159e5b848f234fc7d48793e. Operational key:
+  ed25519-ff37421d2467768a7cc8050932ef6833 (window 2026-11-26T01:06:48Z → 2027-11-26T01:06:48Z), pinned in the
+  committed trust store. Branch: feat/tim-release-cli. Resulting commit(s): one (squash on merge). Pushed: yes
+  (branch). NOT merged, NOT deployed.
+
+Verified fact (what is proven): tools/tim_release_cli.py provides four fail-closed, value-blind CLI entry points —
+  build (one synthetic v0.3 release under an approved local root + request.fields.json, the exact eight producer
+  sign-release fields; candidate UNSEALED), assemble (ingest release.signature.json, verify vs the exact candidate
+  manifest + the PINNED trust store, then seal manifest.sig.json then READY last), publish (authenticated mount,
+  verify identity/scope, refuse overwrite, READY last after every destination hash verifies, cleanup path on
+  failure), validate (standalone read-only consumer: READY binding + operational signature + all nine evidence
+  references + every file hash). It adds NO signing primitive (producer signs; TIM verifies — ADR-0070); the
+  signature is produced out of band. tests/test_tim_release_cli.py drives the ACTUAL entry points end-to-end with a
+  disposable pure-python Ed25519 key, an isolated test trust store and a local mount substitute: 17 tests OK, the
+  full handoff plus interrupted publication / missing READY / tampering / wrong key / expired window / altered files
+  / overwrite / mount identity / write-free consumer. The GO #2d proof (7 tests) is unchanged.
+
+Assumption / inference: the producer host import resolution and the one-shot task CLI argument order are proven in
+  the PRODUCER repo CI (run 45836824153) and referenced; this change proves the request.fields.json contract +
+  argument order from the controller side and relies on the cross-repo signing-material lock
+  (tests/test_tim_signing_cross_repo_lock.py).
+
+Deviation from packet: none. Scope is repository + CI through PR readiness; operational signing, live staging, task
+  or rights changes, and NAS publication are explicitly OUT (the separately Sponsor-gated live execution packet).
+
+Exact tests: `python -m unittest discover -s tests -p 'test_tim_release_cli.py' -v` (17 OK);
+  `python -m unittest discover -s tests -p 'test_tim_release_operational_proof.py' -v` (7 OK, unchanged);
+  `make governance-check` (green); `python3 scripts/check_no_secrets.py` (no findings);
+  `python3 scripts/check_evidence_manifests.py` (PASS, 117 manifests).
+
+Files: tools/tim_release_cli.py (NEW), tests/test_tim_release_cli.py (NEW), .github/workflows/ci.yml (CHANGED;
+  market-data-foundation lane), docs/TIM_FIRST_RELEASE_CLI.md (NEW), evidence/manifests/GFX-EVD-TIM-GO2D-RELEASE-CLI.json
+  (NEW). Plus STATUS / NEXT / KNOWN_ISSUES / ACTIVE handoff updates. Migration-free.
+
+One bounded next action: drive required CI to terminal at the full head and record it on the PR + the TIM Notion
+  master record; then Sponsor `GO — merge PR`. STOP before merge.
+```
+
 ## 2026-11-19 — Lifetime net P&L & portfolio metrics: unknown currency is never summed as USD (GFX-DASHBOARD-LIFETIME-PNL-CURRENCY-INTEGRITY-163; ADR-0122; repository-only; migration-free; DARK; PR; NOT merged)
 
 ```

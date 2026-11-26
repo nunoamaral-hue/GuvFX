@@ -1,5 +1,19 @@
 # NEXT — Priorities (keep this list short)
 
+## ★ TIM FIRST GOVERNED RELEASE — OPERATIONAL CLI WORKFLOW (2026-11-26; GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW; ADR-0127; repository + CI PR)
+GO #2d continuation (deadline mode). Four fail-closed, value-blind CLI entry points (`tools/tim_release_cli.py`:
+build / assemble / publish / validate) turn the merged in-process GO #2d proof into the real producer↔consumer
+release handoff, reusing the merged synthetic generator, signing-field builder and verifiers; **no signing primitive**
+added (producer signs; TIM verifies — ADR-0070). `tests/test_tim_release_cli.py` drives the actual entry points
+end-to-end (disposable key, isolated store, local mount substitute) with the full handoff + every packet-named failure
+check (interrupted publication, missing READY, tampering, wrong key, expired window, altered files, overwrite, mount
+identity, write-free consumer): 17 OK; GO #2d proof (7) unchanged; `make governance-check` green; secret + evidence
+clean. Live staging inventory + custodian handoff + Mac mini acceptance in `docs/TIM_FIRST_RELEASE_CLI.md`. Off main
+`1878c881` on `feat/tim-release-cli`; 5 files (2 new tools/tests + ci.yml + doc + evidence manifest); migration-free;
+DARK. **One bounded next action:** drive required CI to terminal at the full head, then Sponsor `GO — merge PR`. STOP
+before merge. Then the separately Sponsor-gated **GO #2d live execution** (operational signing, task/rights, NAS
+publication, Mac mini acceptance) runs on the pins already verified.
+
 ## ★ WITHDRAWAL CORRELATION: ACCOUNT-LESS REFERENCE COLLISION FAILS CLOSED (2026-11-24; GFX-WITHDRAWAL-REFCOLLISION-FAIL-CLOSED-169; ADR-0126; repository-only PR)
 Closes filed backlog item (c). One owner can legitimately hold two withdrawals sharing a `broker_reference_id` across
 different accounts (`uniq_withdrawal_account_reference` is per-account). `correlation._find_by_reference`'s account-LESS

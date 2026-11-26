@@ -13,6 +13,21 @@
   v0.52*) is authoritative** for the full lifecycle. See
   [`docs/PROGRAMME_STATE.md`](../docs/PROGRAMME_STATE.md).
 
+## Registered workstream — TIM first governed release CLI (DARK; GO #2d continuation)
+
+- **Packet:** `GFX-TIM-GO2D-RELEASE-CLI-WORKFLOW` (ADR-0127, Notion TIM register; Sponsor GO #2d
+  continuation, deadline mode, 2026‑11‑26). **Authority:** repository + CI through PR readiness **only**.
+- **Scope:** four fail-closed, value-blind CLI entry points (`tools/tim_release_cli.py`: build / assemble /
+  publish / validate) that turn the merged in-process GO #2d proof into the real producer↔consumer release
+  handoff, reusing the merged synthetic generator + signing-field builder + verifiers. **No signing
+  primitive** added (producer signs; TIM verifies — ADR-0070).
+- **Branch:** `feat/tim-release-cli` off main `1878c881` (the merged builder/consumer proof, PR #701).
+  Migration-free. 5 files + handoff/ACTIVE updates.
+- **Hard boundaries:** no operational signing, no real key handling, no live task/rights change, no NAS
+  publication, no Mac mini acceptance, no real data — all the separately Sponsor-gated GO #2d live
+  execution packet. Pins: producer signer `836cfd3c`, op-key `ed25519-ff37421d2467768a7cc8050932ef6833`.
+  DARK; auto-merge OFF; HARD STOP at PR readiness. See [`docs/TIM_FIRST_RELEASE_CLI.md`](../docs/TIM_FIRST_RELEASE_CLI.md).
+
 ## Registered workstream — MT5 Master/Follower Copier (DARK, observer‑first)
 
 - **Packet:** `GUVFX_MT5_LIVE_MASTER_FOLLOWER_COPY_TRADING` (P0, Programme Director,
