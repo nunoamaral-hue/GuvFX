@@ -67,6 +67,30 @@ def _parquet_minutes(path):
     return set(int(r[0]) // 60 for r in rows)
 
 
+def _parquet_bar_stats(path):
+    """Per-bar minute list (with duplicates, ordered) + OHLC-defect counts from the canonical Parquet. duckdb
+    imported lazily; None means the Parquet could not be read (consumer then fails closed)."""
+    try:
+        import duckdb
+    except Exception:
+        return None
+    try:
+        con = duckdb.connect(":memory:")
+        try:
+            mins = [int(r[0]) // 60 for r in con.execute(
+                "SELECT CAST(epoch(event_start_utc) AS BIGINT) FROM read_parquet('%s') ORDER BY event_start_utc"
+                % path).fetchall()]
+            viol = con.execute("SELECT SUM(CASE WHEN NOT (low <= least(\"open\", \"close\") AND "
+                               "greatest(\"open\", \"close\") <= high AND low <= high) THEN 1 ELSE 0 END) "
+                               "FROM read_parquet('%s')" % path).fetchone()
+        finally:
+            con.close()
+    except Exception:
+        return None
+    # The canonical schema is DECIMAL(38,18), which cannot hold NaN/Inf, so non_finite is structurally 0.
+    return {"minutes_list": mins, "ohlc_violation_count": int(viol[0] or 0), "non_finite_count": 0}
+
+
 def _recompute(calendar, observed, no_tick, range_start_utc, range_end_utc):
     s, e = CAL._epoch_min(range_start_utc), CAL._epoch_min(range_end_utc)
     obs = set(int(x) for x in observed)
@@ -152,6 +176,7 @@ def consumer_validate_v0_4(release_dir, store, calendar_store=None) -> dict:
         embedded_calendar = json.loads(_read(os.path.join(release_dir, "calendar.json")))
         coverage = V.strict_json_loads_v0_3(_read(os.path.join(release_dir, "quality_coverage.json")))
         gap_set = V.strict_json_loads_v0_3(_read(os.path.join(release_dir, "gap.json")))
+        quality = V.strict_json_loads_v0_3(_read(os.path.join(release_dir, "quality.json")))
         ndjson = _read(os.path.join(release_dir, "eurusd_m1.raw.ndjson"))
     except Exception:
         return reject("session_artifacts_unreadable")
@@ -169,8 +194,11 @@ def consumer_validate_v0_4(release_dir, store, calendar_store=None) -> dict:
         return reject("embedded_calendar_not_approved")
     try:
         V4.validate_session_quality_coverage_v2(coverage)
+        V4.validate_session_quality_report_v2(quality)
         V4.validate_gap_set_v1(gap_set)
         V4.validate_session_release_consistency(manifest, coverage, gap_set, calendar)
+        if quality["calendar_digest"] != approved_digest:
+            return reject("quality_report_calendar_not_approved")
     except Exception:
         return reject("session_contract_invalid")
 
@@ -228,11 +256,33 @@ def consumer_validate_v0_4(release_dir, store, calendar_store=None) -> dict:
                                        or coverage["completeness_status"] == "COMPLETE"):
         return reject("verdict_hides_unexplained")
 
+    # (5) Session quality_report successor: recompute in-session / OUT-OF-SESSION bar counts + defects from the
+    # actual Parquet + the approved calendar, and cross-check the report. Out-of-session quotes are counted
+    # separately (they neither inflate in-session coverage nor vanish), and a removed in-session bar surfaces.
+    stats = _parquet_bar_stats(os.path.join(release_dir, "eurusd_m1.parquet"))
+    if stats is None:
+        return reject("parquet_verification_unavailable")
+    mins = stats["minutes_list"]
+    out_of_session_bars = sum(1 for m in mins if not CAL.is_in_session(calendar, m))
+    recomputed_defects = {
+        "duplicate_count": len(mins) - len(set(mins)),
+        "out_of_order_count": sum(1 for i in range(1, len(mins)) if mins[i] < mins[i - 1]),
+        "overlap_count": sum(1 for i in range(1, len(mins)) if mins[i] < mins[i - 1] + 1),
+        "ohlc_violation_count": stats["ohlc_violation_count"], "non_finite_count": stats["non_finite_count"]}
+    if not (quality["expected_in_session_bars"] == rc["expected"]
+            and quality["observed_in_session_bars"] == rc["present"]
+            and quality["verified_no_tick_bars"] == rc["verified"]
+            and quality["unexplained_in_session_missing"] == len(rc["unexplained"])
+            and quality["out_of_session_bars"] == out_of_session_bars
+            and all(quality[k] == recomputed_defects[k] for k in recomputed_defects)):
+        return reject("quality_report_recompute_mismatch")
+
     return {**base, "accepted": True, "reason": None, "release_id": manifest["release_id"],
             "signing_key_id": sig["signing_key_id"], "quality_verdict": coverage["quality_verdict"],
             "expected_bar_count": rc["expected"], "observed_in_session": rc["present"],
             "scheduled_closure_minutes": rc["scheduled"], "verified_no_tick_minutes": rc["verified"],
-            "unexplained_missing_minutes": len(rc["unexplained"]), "calendar_id": cal_id,
+            "unexplained_missing_minutes": len(rc["unexplained"]), "out_of_session_bars": out_of_session_bars,
+            "quality_status": quality["quality_status"], "calendar_id": cal_id,
             "calendar_authority": "approved_pin", "parquet_matches_ndjson": True,
             "evidence_references_verified": len(V._EVIDENCE_ROLES), "files_verified": len(manifest["files"]),
             "recompute_matches_coverage": True, "synthetic_data": bool(manifest.get("synthetic", True))}
