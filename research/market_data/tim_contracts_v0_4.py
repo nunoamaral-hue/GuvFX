@@ -163,6 +163,62 @@ def validate_session_quality_coverage_v2(obj) -> None:
     _str_array(obj, "limitations", "session_coverage")
 
 
+SESSION_QUALITY_REPORT_FIELDS = (
+    "schema_version", "source_id", "canonical_symbol", "timeframe", "calendar_id", "calendar_digest",
+    "range_start_utc", "range_end_utc", "range_semantics", "expected_in_session_bars",
+    "observed_in_session_bars", "out_of_session_bars", "verified_no_tick_bars", "unexplained_in_session_missing",
+    "duplicate_count", "out_of_order_count", "overlap_count", "ohlc_violation_count", "non_finite_count",
+    "quality_status", "quarantine_reasons", "evaluated_at_utc", "synthetic", "limitations")
+_SQR_VIOLATIONS = ("duplicate_count", "out_of_order_count", "overlap_count", "ohlc_violation_count",
+                   "non_finite_count")
+
+
+def validate_session_quality_report_v2(obj) -> None:
+    """Session-aware successor to the legacy v0.2 quality_report (which required expected = full calendar
+    minutes and so could not represent a weekend-gapped release). Completeness is measured over the pinned
+    calendar's TRADING session (expected/observed-in-session), bar-level DEFECTS are counted over the observed
+    bars, and OUT-OF-SESSION quotes are reported as a SEPARATE count so they neither inflate in-session
+    coverage nor disappear from the deliverable. PASS iff zero defects AND zero unexplained in-session misses.
+    The v0.2 validator is untouched (v0.3 releases keep validating under it)."""
+    _exact_keys(obj, SESSION_QUALITY_REPORT_FIELDS, "session_quality")
+    _const(obj, "schema_version", "session_quality", "1.0")
+    _str(obj, "source_id", "session_quality", regex=SLUG_RE, max_len=64)
+    _str(obj, "canonical_symbol", "session_quality", max_len=64)
+    _str(obj, "timeframe", "session_quality", enum=("M1",))
+    _str(obj, "calendar_id", "session_quality", max_len=128)
+    _str(obj, "calendar_digest", "session_quality", regex=SHA256_RE, min_len=64, max_len=64)
+    rs = _minute_epoch(obj["range_start_utc"], "range_start_utc", "session_quality")
+    re_ = _minute_epoch(obj["range_end_utc"], "range_end_utc", "session_quality")
+    if re_ <= rs:
+        raise ContractError("session_quality: range end must be after start")
+    _const(obj, "range_semantics", "session_quality", "[start,end)")
+    for k in ("expected_in_session_bars", "observed_in_session_bars", "out_of_session_bars",
+              "verified_no_tick_bars", "unexplained_in_session_missing") + _SQR_VIOLATIONS:
+        v = obj[k]
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            raise ContractError("session_quality: %s must be a non-negative int" % k)
+    if obj["expected_in_session_bars"] != (obj["observed_in_session_bars"] + obj["verified_no_tick_bars"]
+                                           + obj["unexplained_in_session_missing"]):
+        raise ContractError("session_quality: expected_in_session = observed_in_session + verified_no_tick "
+                            "+ unexplained_in_session_missing")
+    status = _str(obj, "quality_status", "session_quality", enum=("PASS", "QUARANTINE", "FAIL"))
+    reasons = _str_array(obj, "quarantine_reasons", "session_quality")
+    _instant(obj["evaluated_at_utc"], "evaluated_at_utc", "session_quality")
+    _bool(obj, "synthetic", "session_quality")
+    _str_array(obj, "limitations", "session_quality")
+    clean = all(obj[f] == 0 for f in _SQR_VIOLATIONS) and obj["unexplained_in_session_missing"] == 0
+    if status == "PASS":
+        if not clean:
+            raise ContractError("session_quality: PASS requires zero defects AND zero unexplained in-session misses")
+        if reasons:
+            raise ContractError("session_quality: PASS must not carry quarantine_reasons")
+    else:
+        if clean:
+            raise ContractError("session_quality: %s requires a defect or an unexplained in-session miss" % status)
+        if not reasons:
+            raise ContractError("session_quality: %s requires at least one quarantine_reason" % status)
+
+
 def validate_release_manifest_v0_4(obj) -> None:
     """v0.4 manifest = the full v3 manifest + a bound ``session_calendar`` + versions 3.1/0.4. The shared
     fields are validated by the FROZEN v3 validator via a version-normalised view (so v0.3 rules are reused

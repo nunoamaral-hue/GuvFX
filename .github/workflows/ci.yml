@@ -239,3 +239,7 @@ jobs:
       - name: GUVFX-TIM v0.4 session-aware release contract (ADR-0130; calendar/coverage/gap, full build-sign-assemble-validate, hidden-bar detection, v0.3 back-compat; disposable key, synthetic data)
         run: |
           python -m unittest discover -s tests -p 'test_tim_session_aware.py' -v
+
+      - name: GUVFX-TIM v0.4 real-data builder + session quality_report successor (ADR-0130; from-Parquet build with out-of-session quotes, removed in-session bar, conflicting quality evidence; disposable key, synthetic data)
+        run: |
+          python -m unittest discover -s tests -p 'test_tim_session_realdata.py' -v
