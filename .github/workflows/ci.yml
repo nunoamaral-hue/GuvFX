@@ -235,3 +235,7 @@ jobs:
       - name: GUVFX-TIM GO #2d operational-release CLI workflow (build/assemble/publish/validate; disposable key, local mount substitute; synthetic data)
         run: |
           python -m unittest discover -s tests -p 'test_tim_release_cli.py' -v
+
+      - name: GUVFX-TIM v0.4 session-aware release contract (ADR-0130; calendar/coverage/gap, full build-sign-assemble-validate, hidden-bar detection, v0.3 back-compat; disposable key, synthetic data)
+        run: |
+          python -m unittest discover -s tests -p 'test_tim_session_aware.py' -v

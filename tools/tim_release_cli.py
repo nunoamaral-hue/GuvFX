@@ -43,6 +43,8 @@ for _p in (REPO_ROOT, os.path.join(REPO_ROOT, "tools")):
 # imported LAZILY inside ``cmd_build`` so ``assemble`` / ``publish`` / ``validate`` stay duckdb-free and the
 # consumer command is genuinely standalone.
 from research.market_data import tim_contracts_v0_3 as V  # noqa: E402
+from research.market_data import tim_contracts_v0_4 as V4  # noqa: E402  session-aware (ADR-0130)
+from research.market_data import tim_session_consumer as CON4  # noqa: E402  duckdb-free v0.4 consumer
 from research.market_data import tim_release_signing_v3 as S  # noqa: E402
 from research.market_data import tim_trust_store as TS  # noqa: E402
 from research.market_data.contracts import (  # noqa: E402
@@ -199,18 +201,20 @@ def cmd_build(args) -> int:
 
 # ---- assemble ------------------------------------------------------------------------------------
 def _seal(candidate: str, manifest_bytes: bytes, sig: dict, ready_created_at: str, *,
-          synthetic: bool, limitations: list) -> dict:
+          synthetic: bool, limitations: list, contract_version: str = V.CONTRACT_VERSION) -> dict:
     """Seal the candidate IN PLACE: write ``manifest.sig.json`` (canonical), then the READY marker LAST,
-    binding the manifest + signature-envelope digests. Returns the READY marker dict."""
+    binding the manifest + signature-envelope digests. The READY marker's contract_version mirrors the
+    manifest's (0.3 or the session-aware 0.4); the matching marker validator is dispatched. Returns the
+    READY marker dict."""
     sig_bytes = canonical_json_bytes(sig)
     _exclusive_write(os.path.join(candidate, "manifest.sig.json"), sig_bytes)
     ready = {
         "schema_version": "1.0", "release_id": sig["release_id"], "state": "READY",
         "manifest_digest": sha256_hex(manifest_bytes), "signature_envelope_digest": sha256_hex(sig_bytes),
-        "contract_version": "0.3", "synthetic": bool(synthetic), "created_at_utc": ready_created_at,
+        "contract_version": contract_version, "synthetic": bool(synthetic), "created_at_utc": ready_created_at,
         "limitations": list(limitations),
     }
-    V.validate_ready_marker(ready)
+    V4.validate_ready_marker(ready)  # dispatches the 0.3 (frozen) or 0.4 marker validator
     _exclusive_write(os.path.join(candidate, "READY"), canonical_json_bytes(ready))
     return ready
 
@@ -272,7 +276,8 @@ def cmd_assemble(args) -> int:
 
     ready = _seal(candidate, manifest_bytes, sig, args.ready_created_at,
                   synthetic=bool(manifest.get("synthetic", True)),
-                  limitations=list(manifest.get("limitations", [])))
+                  limitations=list(manifest.get("limitations", [])),
+                  contract_version=manifest.get("contract_version", V.CONTRACT_VERSION))
 
     receipt = {
         "receipt_type": "producer", "stage": "assemble", "state": "SEALED", "sealed": True,
@@ -456,7 +461,21 @@ def cmd_validate(args) -> int:
             raise CliError("validate_target_missing")
         release_dir = os.path.join(os.path.abspath(args.mount_root), *args.scope.strip("/").split("/"),
                                    args.release_id)
-    receipt = consumer_validate(release_dir, _load_trust_store(args.trust_store))
+    store = _load_trust_store(args.trust_store)
+    # Dispatch by the published manifest's contract_version: v0.4 uses the session-aware consumer (which
+    # independently recomputes bar counts + gap classes against the pinned calendar and the actual data);
+    # everything else stays on the frozen v0.3 consumer. Both are duckdb-free and read-only.
+    contract_version = None
+    mpath = os.path.join(release_dir, "manifest.json")
+    if os.path.isfile(mpath):
+        try:
+            contract_version = json.loads(_read_bytes(mpath)).get("contract_version")
+        except Exception:
+            contract_version = None
+    if contract_version == V4.CONTRACT_VERSION_V0_4:
+        receipt = CON4.consumer_validate_v0_4(release_dir, store)
+    else:
+        receipt = consumer_validate(release_dir, store)
     _emit(receipt, args.receipt)
     return 0 if receipt["accepted"] else 4
 
