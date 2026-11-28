@@ -40,11 +40,22 @@ Introduce a **v0.4 session-aware release contract**, additive over v0.3. v0.3 re
    verified-no-tick / unexplained kept as distinct counts; fail-closed arithmetic + verdict.
 5. **Calendar bound into the signed manifest** (`session_calendar.{calendar_id, calendar_digest, source_id}`)
    via a version-normalised reuse of the **frozen** v3 manifest validator (schema `3.1`, contract `0.4`).
-6. **Consumer independently recomputes** (`research/market_data/tim_session_consumer.py`, duckdb-free): it
-   re-derives the expected count, the observed-in-session count and the exact UNEXPLAINED set from the
-   **signed raw NDJSON** (the actual bars) and the **pinned calendar**, then checks them against the coverage
-   and gap evidence. A hidden dropped in-session bar — even with a re-hashed, re-signed manifest — is caught
-   by `coverage_recompute_mismatch`, beyond the file-hash/signature checks.
+6. **Consumer independently recomputes against authority the release cannot forge**
+   (`research/market_data/tim_session_consumer.py`). Three guarantees beyond the signature/hash checks:
+   - **Approved calendar, not the release's.** The calendar authority is an **approved pin store**
+     (`tim_calendar_pin_store.py`, the analogue of the signing trust store). The release's bound
+     calendar id/digest must match an approved pin, and coverage is recomputed against the **approved**
+     calendar — so a producer cannot relabel an unexplained gap a scheduled closure by shipping its own.
+   - **The actual research Parquet.** Observed bars are read from the canonical **Parquet** (what research
+     consumes; duckdb imported **lazily** so the v0.3 path stays duckdb-free), and the signed raw NDJSON must
+     match it bar-for-bar. A Parquet that drops or changes a bar while the NDJSON stays valid — even with a
+     re-hashed, re-signed manifest — fails (`parquet_ndjson_divergence`). Expected/observed/unexplained are
+     then recomputed from the Parquet and checked against the coverage and gap evidence.
+   - **Backed no-tick.** A `VERIFIED_NO_TICK` minute counts only when a signed **no-tick evidence** artifact
+     lists it (`validate_no_tick_evidence_v1`); the gap-set contract requires the reference and the consumer
+     verifies it covers the minute. A verdict cannot be laundered by relabelling an unexplained gap no-tick
+     without that evidence. (The evidence attests the minute; proving real tick ABSENCE needs real tick data
+     — a documented limitation, not something the verifier can derive here.)
 
 The producer builder (`tools/tim_session_release_builder.py`) emits v0.4 candidates; the GO #2d CLL
 (`assemble`/`publish`/`validate`) is wired to seal a v0.4 READY marker and dispatch the v0.4 consumer. The
@@ -61,9 +72,14 @@ producer-signs / TIM-verifies boundary (ADR-0070) is unchanged: this packet adds
   the **data-quality** verdict (gaps) is a distinct axis carried by the session coverage.
 - JSON Schema files for the v0.4 artifacts (`research/contracts/v0_4/`) are a follow-up; the Python validators
   are the authoritative, tested enforcement in this packet.
-- **Before the first real v0.4 signing**, a real, source-specific IS6FX session calendar (true trading hours,
-  holiday list, exceptional sessions, and the EET/EEST offset rules for the window) must be obtained and
-  pinned — this is the one piece of source-calendar evidence still outstanding for the #50 release.
+- A v0.4 release is validated against an **approved calendar pin store** (`--calendar-store`); without it the
+  release fails closed (`unapproved_calendar`), and a release whose calendar is not an approved pin is
+  rejected. Validating a v0.4 release also reads the canonical Parquet, so that consumer path needs duckdb
+  (the v0.3 consumer path does not).
+- **Before the first real v0.4 signing**, a real, source-specific IS6FX session calendar (true trading hours
+  incl. the daily server-rollover break, holiday list, exceptional sessions, and the EET/EEST offset rules for
+  the window) must be obtained and added to the approved pin store — this is the one piece of source-calendar
+  evidence still outstanding for the #50 release.
 
 ## Scope boundary
 

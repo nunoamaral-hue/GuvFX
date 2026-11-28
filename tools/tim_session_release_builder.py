@@ -121,21 +121,38 @@ def build_session_release(base, *, calendar, release_id, source_id, signing_key_
     no_tick_abs = set(start_m + int(r) for r in verified_no_tick)
     cov = CAL.classify_coverage(calendar, observed, range_start, range_end,
                                 verified_no_tick_minutes=no_tick_abs)
-    unexplained = cov["unexplained_missing_minutes"]
+    # FULL (not sampled) classification of in-session misses, for the gap set.
+    unexplained_full, verified_actual = set(), set()
+    for m in range(start_m, end_m):
+        if not CAL.is_in_session(calendar, m) or m in observed:
+            continue
+        (verified_actual if m in no_tick_abs else unexplained_full).add(m)
+    unexplained = len(unexplained_full)
     verdict = "PASS" if unexplained == 0 else "DEGRADED"
     completeness = "COMPLETE" if unexplained == 0 else "DEGRADED"
 
-    # gap SET from the classification (zero or many; no forced defect record).
+    # no-tick EVIDENCE artifact (only when minutes are attested no-tick); each VERIFIED_NO_TICK gap references it.
+    no_tick_ref = None
+    if verified_actual:
+        nte = {"schema_version": "1.0", "source_id": source_id, "calendar_id": calendar["calendar_id"],
+               "timeframe": "M1", "attested_minutes": [_min_iso(m) for m in sorted(verified_actual)],
+               "provenance": "synthetic_test_no_tick_scan", "synthetic": synthetic,
+               "limitations": [F.SYNTH] if synthetic else ["internal_research_only"]}
+        V4.validate_no_tick_evidence_v1(nte)
+        _nte_rel, nte_sha, _nte_size = SMOKE._write(rel_dir, "no_tick_evidence.json", nte)
+        no_tick_ref = {"relative_path": release_id + "/no_tick_evidence.json", "sha256": nte_sha}
+
+    # gap SET (zero or many; no forced defect record). UNEXPLAINED carries no evidence ref; VERIFIED_NO_TICK
+    # must reference the signed no-tick evidence above.
     gap_list = []
-    for m in sorted(set(CAL._epoch_min(_min_iso(x)) for x in cov["unexplained_sample_epoch_min"])):
+    for m in sorted(unexplained_full):
+        gap_list.append({"gap_start_utc": _min_iso(m), "gap_end_utc": _min_iso(m + 1), "gap_class": "UNEXPLAINED",
+                         "reason": "in-session bar missing, no no-tick evidence", "repair": None,
+                         "no_tick_evidence_ref": None})
+    for m in sorted(verified_actual):
         gap_list.append({"gap_start_utc": _min_iso(m), "gap_end_utc": _min_iso(m + 1),
-                         "gap_class": "UNEXPLAINED", "reason": "in-session bar missing with no no-tick evidence",
-                         "repair": None})
-    for m in sorted(no_tick_abs):
-        if CAL.is_in_session(calendar, m) and m not in observed:
-            gap_list.append({"gap_start_utc": _min_iso(m), "gap_end_utc": _min_iso(m + 1),
-                             "gap_class": "VERIFIED_NO_TICK", "reason": "attested no-tick interval",
-                             "repair": None})
+                         "gap_class": "VERIFIED_NO_TICK", "reason": "attested no-tick interval", "repair": None,
+                         "no_tick_evidence_ref": no_tick_ref})
     gap_list.sort(key=lambda g: g["gap_start_utc"])
     gap_set = {"schema_version": "1.0", "source_id": source_id, "canonical_symbol": SYMBOL, "timeframe": "M1",
                "calendar_id": calendar["calendar_id"], "calendar_digest": cal_sha, "gaps": gap_list,

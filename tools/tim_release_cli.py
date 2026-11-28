@@ -44,7 +44,8 @@ for _p in (REPO_ROOT, os.path.join(REPO_ROOT, "tools")):
 # consumer command is genuinely standalone.
 from research.market_data import tim_contracts_v0_3 as V  # noqa: E402
 from research.market_data import tim_contracts_v0_4 as V4  # noqa: E402  session-aware (ADR-0130)
-from research.market_data import tim_session_consumer as CON4  # noqa: E402  duckdb-free v0.4 consumer
+from research.market_data import tim_calendar_pin_store as PINS  # noqa: E402  approved calendar pins
+from research.market_data import tim_session_consumer as CON4  # noqa: E402  v0.4 session-aware consumer
 from research.market_data import tim_release_signing_v3 as S  # noqa: E402
 from research.market_data import tim_trust_store as TS  # noqa: E402
 from research.market_data.contracts import (  # noqa: E402
@@ -473,7 +474,8 @@ def cmd_validate(args) -> int:
         except Exception:
             contract_version = None
     if contract_version == V4.CONTRACT_VERSION_V0_4:
-        receipt = CON4.consumer_validate_v0_4(release_dir, store)
+        cal_store = PINS.load(args.calendar_store) if getattr(args, "calendar_store", None) else None
+        receipt = CON4.consumer_validate_v0_4(release_dir, store, cal_store)
     else:
         receipt = consumer_validate(release_dir, store)
     _emit(receipt, args.receipt)
@@ -523,6 +525,9 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--scope", default=DEFAULT_SCOPE)
     v.add_argument("--release-id", default=None)
     v.add_argument("--trust-store", default=None, help="explicit trust store (default: the pinned committed store)")
+    v.add_argument("--calendar-store", default=None,
+                   help="approved session-calendar pin store (required to validate a v0.4 release; without it "
+                        "a v0.4 release fails closed as unapproved_calendar)")
     v.add_argument("--receipt", default=None)
     v.set_defaults(func=cmd_validate)
     return parser

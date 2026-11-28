@@ -24,7 +24,7 @@ QUALITY_VERDICTS = ("PASS", "DEGRADED", "FAIL")
 
 GAP_SET_FIELDS = ("schema_version", "source_id", "canonical_symbol", "timeframe", "calendar_id",
                   "calendar_digest", "gaps", "unexplained_count", "synthetic", "limitations")
-GAP_FIELDS = ("gap_start_utc", "gap_end_utc", "gap_class", "reason", "repair")
+GAP_FIELDS = ("gap_start_utc", "gap_end_utc", "gap_class", "reason", "repair", "no_tick_evidence_ref")
 REPAIR_FIELDS = ("repaired_at_utc", "repair_raw_object_sha256", "repair_evidence_path", "supersedes_gap_id")
 SESSION_COVERAGE_FIELDS = ("schema_version", "release_id", "source_id", "canonical_symbol", "timeframe",
                            "calendar_id", "calendar_digest", "range_start_utc", "range_end_utc",
@@ -70,6 +70,14 @@ def validate_gap_set_v1(obj) -> None:
         _str(g, "reason", "gap_set.gap", max_len=512)
         if cls == "UNEXPLAINED":
             unexplained += 1
+        # A VERIFIED_NO_TICK classification cannot stand on the producer's word: it REQUIRES a reference to a
+        # signed no-tick evidence artifact (checked against the actual data by the consumer). Any other class
+        # must NOT carry one. This is what stops a release improving its verdict by relabelling a gap no-tick.
+        ntr = g["no_tick_evidence_ref"]
+        if cls == "VERIFIED_NO_TICK":
+            _ref(ntr, "gap_set.gap.no_tick_evidence_ref")
+        elif ntr is not None:
+            raise ContractError("gap_set.gap: only VERIFIED_NO_TICK may carry a no_tick_evidence_ref")
         if cls == "REPAIRED":
             rep = g["repair"]
             if not isinstance(rep, dict):
@@ -86,6 +94,32 @@ def validate_gap_set_v1(obj) -> None:
         raise ContractError("gap_set: unexplained_count must equal the number of UNEXPLAINED gaps")
     _bool(obj, "synthetic", "gap_set")
     _str_array(obj, "limitations", "gap_set")
+
+
+NO_TICK_EVIDENCE_FIELDS = ("schema_version", "source_id", "calendar_id", "timeframe", "attested_minutes",
+                           "provenance", "synthetic", "limitations")
+
+
+def validate_no_tick_evidence_v1(obj) -> None:
+    """Evidence that specific in-session minutes genuinely had no ticks (so they are not unexplained gaps).
+    ``attested_minutes`` is a sorted, de-duplicated list of canonical minute instants."""
+    _exact_keys(obj, NO_TICK_EVIDENCE_FIELDS, "no_tick_evidence")
+    _const(obj, "schema_version", "no_tick_evidence", "1.0")
+    _str(obj, "source_id", "no_tick_evidence", regex=SLUG_RE, max_len=64)
+    _str(obj, "calendar_id", "no_tick_evidence", max_len=128)
+    _str(obj, "timeframe", "no_tick_evidence", enum=("M1",))
+    mins = obj["attested_minutes"]
+    if not isinstance(mins, list):
+        raise ContractError("no_tick_evidence: attested_minutes must be a list")
+    prev = None
+    for m in mins:
+        e = _minute_epoch(m, "attested_minutes", "no_tick_evidence")
+        if prev is not None and e <= prev:
+            raise ContractError("no_tick_evidence: attested_minutes must be sorted and de-duplicated")
+        prev = e
+    _str(obj, "provenance", "no_tick_evidence", max_len=256)
+    _bool(obj, "synthetic", "no_tick_evidence")
+    _str_array(obj, "limitations", "no_tick_evidence")
 
 
 def validate_session_quality_coverage_v2(obj) -> None:

@@ -152,6 +152,20 @@ class TestSessionContracts(unittest.TestCase):
         with self.assertRaises(ContractError):
             V4.validate_session_release_consistency(manifest, coverage, gap_set, cal)  # digest mismatch
 
+    def test_verified_no_tick_gap_requires_evidence_ref(self):
+        D = "a" * 64
+
+        def gs(ref):
+            return {"schema_version": "1.0", "source_id": "src_x", "canonical_symbol": "EURUSD", "timeframe": "M1",
+                    "calendar_id": "c1", "calendar_digest": D,
+                    "gaps": [{"gap_start_utc": "2026-02-09T00:05:00Z", "gap_end_utc": "2026-02-09T00:06:00Z",
+                              "gap_class": "VERIFIED_NO_TICK", "reason": "x", "repair": None,
+                              "no_tick_evidence_ref": ref}],
+                    "unexplained_count": 0, "synthetic": True, "limitations": []}
+        V4.validate_gap_set_v1(gs({"relative_path": "r/no_tick.json", "sha256": D}))  # with evidence ref: ok
+        with self.assertRaises(ContractError):
+            V4.validate_gap_set_v1(gs(None))  # no_tick without an evidence ref is rejected
+
 
 try:
     import duckdb  # noqa: F401
@@ -195,6 +209,14 @@ def _rb(path):
         return fh.read()
 
 
+def _write_calendar_store(path, calendar, *, status="approved"):
+    store = {"schema_version": "1.0", "calendars": [
+        {"calendar_id": calendar["calendar_id"], "calendar_digest": CAL.calendar_digest(calendar),
+         "status": status, "calendar": calendar}]}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(store, fh)
+
+
 @unittest.skipUnless(_HAVE_DUCKDB, "duckdb required for the session-aware build path")
 class TestSessionFullPath(unittest.TestCase):
     def setUp(self):
@@ -203,6 +225,7 @@ class TestSessionFullPath(unittest.TestCase):
         self.prov = _Prov()
         self.kid = "ed25519-" + sha256_hex(bytes(self.prov.public_key_raw()))[:32]
         self.store = os.path.join(self.tmp, "store.json"); _write_store(self.store, self.prov)
+        self.cal_store = os.path.join(self.tmp, "calstore.json"); _write_calendar_store(self.cal_store, _cal())
 
     def _build(self, release_id, *, count=600, drop_minutes=(), verified_no_tick=()):
         return B.build_session_release(
@@ -222,8 +245,35 @@ class TestSessionFullPath(unittest.TestCase):
         rc, rec = _run(["publish", "--candidate", candidate, "--mount-root", mount])
         self.assertEqual((rc, rec["result"]), (0, "published"), rec)
         published = os.path.join(mount, "exchange", "releases", release_id)
-        rc, rec = _run(["validate", "--release-dir", published, "--trust-store", self.store])
+        rc, rec = _run(["validate", "--release-dir", published, "--trust-store", self.store,
+                        "--calendar-store", self.cal_store])
         return rc, rec, published
+
+    def _resign(self, published, built, mutate):
+        """Apply `mutate(published)` to the published files, then re-establish full internal consistency
+        (every files[] digest + evidence sha recomputed, manifest + READY re-signed with the disposable key)
+        so only the deeper semantic checks — not the hash/signature checks — can catch the tamper."""
+        mutate(published)
+        parent = os.path.dirname(published)
+        man = json.loads(_rb(os.path.join(published, "manifest.json")))
+        for f in man["files"]:
+            data = _rb(os.path.join(parent, f["relative_path"]))
+            f["digest"]["value"] = sha256_hex(data); f["byte_size"] = len(data)
+        for _role, ref in man["evidence"].items():
+            ref["sha256"] = sha256_hex(_rb(os.path.join(parent, ref["relative_path"])))
+        mb = canonical_json_bytes(man)
+        with open(os.path.join(published, "manifest.json"), "wb") as fh:
+            fh.write(mb)
+        fields = dict(built["fields"]); fields["manifest_digest"] = sha256_hex(mb)
+        env, _ = P.build_v3_envelope(self.prov, fields); sigb = canonical_json_bytes(env)
+        with open(os.path.join(published, "manifest.sig.json"), "wb") as fh:
+            fh.write(sigb)
+        ready = json.loads(_rb(os.path.join(published, "READY")))
+        ready["manifest_digest"] = sha256_hex(mb); ready["signature_envelope_digest"] = sha256_hex(sigb)
+        with open(os.path.join(published, "READY"), "wb") as fh:
+            fh.write(canonical_json_bytes(ready))
+        return _run(["validate", "--release-dir", published, "--trust-store", self.store,
+                     "--calendar-store", self.cal_store])
 
     def test_zero_defect_full_path(self):
         built = self._build("rel_sess_clean")
@@ -250,36 +300,99 @@ class TestSessionFullPath(unittest.TestCase):
         self.assertEqual(rec["verified_no_tick_minutes"], 2)
         self.assertEqual(rec["unexplained_missing_minutes"], 0)
 
-    def test_hidden_dropped_in_session_bar_detected(self):
-        built = self._build("rel_sess_tamper")
-        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_sess_tamper")
+    def test_ndjson_divergence_detected(self):
+        built = self._build("rel_div_nd")
+        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_div_nd")
         self.assertEqual((rc, rec["accepted"]), (0, True), rec)
-        # TAMPER: drop a bar from the published NDJSON and re-sign the manifest+READY consistently, leaving
-        # the coverage claiming a complete PASS. The file-hash + signature all re-verify; only the independent
-        # recompute against the pinned calendar catches the hidden missing bar.
-        nd = os.path.join(published, "eurusd_m1.raw.ndjson")
-        kept = [ln for ln in _rb(nd).split(b"\n") if ln.strip()][:-1]
-        newnd = b"\n".join(kept) + b"\n"
-        with open(nd, "wb") as fh:
-            fh.write(newnd)
-        man = json.loads(_rb(os.path.join(published, "manifest.json")))
-        for f in man["files"]:
-            if f["logical_role"] == "raw_ndjson":
-                f["digest"]["value"] = sha256_hex(newnd); f["byte_size"] = len(newnd); f["row_count"] = 599
-        mb = canonical_json_bytes(man)
-        with open(os.path.join(published, "manifest.json"), "wb") as fh:
-            fh.write(mb)
-        fields = dict(built["fields"]); fields["manifest_digest"] = sha256_hex(mb)
-        env, _ = P.build_v3_envelope(self.prov, fields); sigb = canonical_json_bytes(env)
-        with open(os.path.join(published, "manifest.sig.json"), "wb") as fh:
-            fh.write(sigb)
-        ready = json.loads(_rb(os.path.join(published, "READY")))
-        ready["manifest_digest"] = sha256_hex(mb); ready["signature_envelope_digest"] = sha256_hex(sigb)
-        with open(os.path.join(published, "READY"), "wb") as fh:
-            fh.write(canonical_json_bytes(ready))
-        rc, rec = _run(["validate", "--release-dir", published, "--trust-store", self.store])
+
+        def mutate(pub):  # drop one NDJSON row; the Parquet is left intact
+            nd = os.path.join(pub, "eurusd_m1.raw.ndjson")
+            kept = [ln for ln in _rb(nd).split(b"\n") if ln.strip()][:-1]
+            with open(nd, "wb") as fh:
+                fh.write(b"\n".join(kept) + b"\n")
+        rc, rec = self._resign(published, built, mutate)
         self.assertEqual((rc, rec["accepted"]), (4, False), rec)
-        self.assertEqual(rec["reason"], "coverage_recompute_mismatch")
+        self.assertEqual(rec["reason"], "parquet_ndjson_divergence")
+
+    def test_parquet_drops_bar_detected_even_when_raw_valid(self):
+        # The research artifact is the Parquet. A Parquet that drops a bar while the raw NDJSON stays valid —
+        # with hashes + signature all re-made consistent — must still fail (coverage is checked against the
+        # Parquet, proven to match the NDJSON).
+        built = self._build("rel_div_pq")
+        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_div_pq")
+        self.assertEqual((rc, rec["accepted"]), (0, True), rec)
+
+        def mutate(pub):
+            import duckdb
+            pq = os.path.join(pub, "eurusd_m1.parquet")
+            con = duckdb.connect(":memory:")
+            try:
+                con.execute("CREATE TABLE t AS SELECT * FROM read_parquet('%s')" % pq)
+                con.execute("DELETE FROM t WHERE event_start_utc = (SELECT MAX(event_start_utc) FROM t)")
+                os.remove(pq)
+                con.execute("COPY t TO '%s' (FORMAT PARQUET)" % pq)
+            finally:
+                con.close()
+        rc, rec = self._resign(published, built, mutate)
+        self.assertEqual((rc, rec["accepted"]), (4, False), rec)
+        self.assertEqual(rec["reason"], "parquet_ndjson_divergence")
+
+    def test_unapproved_calendar_rejected(self):
+        built = self._build("rel_unapproved")
+        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_unapproved")
+        self.assertEqual((rc, rec["accepted"]), (0, True), rec)
+        empty = os.path.join(self.tmp, "empty_calstore.json")
+        with open(empty, "w") as fh:
+            json.dump({"schema_version": "1.0", "calendars": []}, fh)
+        rc, rec = _run(["validate", "--release-dir", published, "--trust-store", self.store,
+                        "--calendar-store", empty])
+        self.assertEqual((rc, rec["accepted"]), (4, False), rec)
+        self.assertEqual(rec["reason"], "unapproved_calendar")
+
+    def test_calendar_not_matching_approved_pin_rejected(self):
+        # The release's bound calendar must match the APPROVED pin by digest — a producer cannot substitute
+        # its own calendar (e.g. to relabel an unexplained gap a scheduled closure).
+        built = self._build("rel_wrongcal")
+        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_wrongcal")
+        self.assertEqual((rc, rec["accepted"]), (0, True), rec)
+        other_store = os.path.join(self.tmp, "other_calstore.json")
+        _write_calendar_store(other_store, _cal(holidays=["2026-02-09"]))  # same id, different digest
+        rc, rec = _run(["validate", "--release-dir", published, "--trust-store", self.store,
+                        "--calendar-store", other_store])
+        self.assertEqual((rc, rec["accepted"]), (4, False), rec)
+        self.assertEqual(rec["reason"], "calendar_binding_not_approved")
+
+    def test_no_tick_without_covering_evidence_rejected(self):
+        # A DEGRADED release with one unexplained in-session miss cannot be laundered to PASS by relabelling
+        # the gap VERIFIED_NO_TICK with no-tick evidence that does NOT cover that minute.
+        built = self._build("rel_forged_notick", drop_minutes=(100,))
+        self.assertEqual(built["quality_verdict"], "DEGRADED")
+        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_forged_notick")
+        self.assertEqual((rc, rec["accepted"]), (0, True), rec)
+
+        def mutate(pub):
+            rid = os.path.basename(pub)
+            nte = {"schema_version": "1.0", "source_id": F.SOURCE_ID, "calendar_id": _cal()["calendar_id"],
+                   "timeframe": "M1", "attested_minutes": ["2026-02-09T00:00:00Z"],  # NOT the missing minute
+                   "provenance": "forged", "synthetic": True, "limitations": ["SYNTH"]}
+            nteb = canonical_json_bytes(nte)
+            with open(os.path.join(pub, "no_tick_evidence.json"), "wb") as fh:
+                fh.write(nteb)
+            gap = json.loads(_rb(os.path.join(pub, "gap.json")))
+            g = gap["gaps"][0]
+            g["gap_class"] = "VERIFIED_NO_TICK"; g["reason"] = "relabelled"
+            g["no_tick_evidence_ref"] = {"relative_path": rid + "/no_tick_evidence.json", "sha256": sha256_hex(nteb)}
+            gap["unexplained_count"] = 0
+            with open(os.path.join(pub, "gap.json"), "wb") as fh:
+                fh.write(canonical_json_bytes(gap))
+            cov = json.loads(_rb(os.path.join(pub, "quality_coverage.json")))
+            cov["unexplained_missing_minutes"] = 0; cov["verified_no_tick_minutes"] = 1
+            cov["quality_verdict"] = "PASS"; cov["completeness_status"] = "COMPLETE"
+            with open(os.path.join(pub, "quality_coverage.json"), "wb") as fh:
+                fh.write(canonical_json_bytes(cov))
+        rc, rec = self._resign(published, built, mutate)
+        self.assertEqual((rc, rec["accepted"]), (4, False), rec)
+        self.assertEqual(rec["reason"], "no_tick_evidence_does_not_cover_minute")
 
 
 @unittest.skipUnless(_HAVE_DUCKDB, "duckdb required")
