@@ -88,6 +88,8 @@ def validate_calendar(cal: dict) -> None:
         last = e
         if not isinstance(r["offset_seconds"], int) or isinstance(r["offset_seconds"], bool):
             raise CalendarError("calendar: offset_seconds must be int")
+        if r["offset_seconds"] % 60 != 0:
+            raise CalendarError("calendar: offset_seconds must be a whole number of minutes")
         if abs(r["offset_seconds"]) > 18 * 3600:
             raise CalendarError("calendar: offset_seconds out of range")
     ws = cal["weekly_sessions_local"]

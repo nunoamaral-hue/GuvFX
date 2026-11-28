@@ -199,10 +199,11 @@ def consumer_validate_v0_4(release_dir, store, calendar_store=None) -> dict:
             ev = V.strict_json_loads_v0_3(_read(fp))
             V4.validate_no_tick_evidence_v1(ev)
             ev_minutes = set(CAL._epoch_min(m) for m in ev["attested_minutes"])
-            gm = CAL._epoch_min(g["gap_start_utc"])
-            if gm not in ev_minutes:
-                return reject("no_tick_evidence_does_not_cover_minute")
-            attested.add(gm)
+            # A gap may span multiple minutes; every minute in [start, end) must be attested.
+            for m in range(CAL._epoch_min(g["gap_start_utc"]), CAL._epoch_min(g["gap_end_utc"])):
+                if m not in ev_minutes:
+                    return reject("no_tick_evidence_does_not_cover_minute")
+                attested.add(m)
     except (V.ContractError, V.QuarantineRequired):
         return reject("no_tick_evidence_invalid")
     except Exception:
@@ -216,8 +217,11 @@ def consumer_validate_v0_4(release_dir, store, calendar_store=None) -> dict:
             and rc["verified"] == coverage["verified_no_tick_minutes"]
             and len(rc["unexplained"]) == coverage["unexplained_missing_minutes"]):
         return reject("coverage_recompute_mismatch")
-    declared_unexplained = set(CAL._epoch_min(g["gap_start_utc"]) for g in gap_set["gaps"]
-                               if g["gap_class"] == "UNEXPLAINED")
+    declared_unexplained = set()
+    for g in gap_set["gaps"]:
+        if g["gap_class"] == "UNEXPLAINED":
+            declared_unexplained.update(range(CAL._epoch_min(g["gap_start_utc"]),
+                                              CAL._epoch_min(g["gap_end_utc"])))
     if declared_unexplained != rc["unexplained"]:
         return reject("unexplained_gap_set_mismatch")
     if len(rc["unexplained"]) > 0 and (coverage["quality_verdict"] == "PASS"

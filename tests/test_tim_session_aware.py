@@ -362,6 +362,28 @@ class TestSessionFullPath(unittest.TestCase):
         self.assertEqual((rc, rec["accepted"]), (4, False), rec)
         self.assertEqual(rec["reason"], "calendar_binding_not_approved")
 
+    def test_multi_minute_unexplained_gap_accepted(self):
+        # A gap record may span several minutes; the consumer must reconcile the FULL [start,end) span, not
+        # just the start minute. Merge three consecutive 1-minute UNEXPLAINED gaps into one 3-minute gap.
+        built = self._build("rel_multi_gap", drop_minutes=(100, 101, 102))
+        self.assertEqual(built["quality_verdict"], "DEGRADED")
+        rc, rec, published = self._seal_publish_validate(built["rel_dir"], "rel_multi_gap")
+        self.assertEqual((rc, rec["accepted"]), (0, True), rec)
+        self.assertEqual(rec["unexplained_missing_minutes"], 3)
+
+        def mutate(pub):
+            gap = json.loads(_rb(os.path.join(pub, "gap.json")))
+            spans = sorted(g["gap_start_utc"] for g in gap["gaps"] if g["gap_class"] == "UNEXPLAINED")
+            merged = {"gap_start_utc": spans[0],
+                      "gap_end_utc": gap["gaps"][-1]["gap_end_utc"], "gap_class": "UNEXPLAINED",
+                      "reason": "merged 3-minute span", "repair": None, "no_tick_evidence_ref": None}
+            gap["gaps"] = [merged]; gap["unexplained_count"] = 1
+            with open(os.path.join(pub, "gap.json"), "wb") as fh:
+                fh.write(canonical_json_bytes(gap))
+        rc, rec = self._resign(published, built, mutate)
+        self.assertEqual((rc, rec["accepted"]), (0, True), rec)  # multi-minute gap reconciles over the span
+        self.assertEqual(rec["unexplained_missing_minutes"], 3)
+
     def test_no_tick_without_covering_evidence_rejected(self):
         # A DEGRADED release with one unexplained in-session miss cannot be laundered to PASS by relabelling
         # the gap VERIFIED_NO_TICK with no-tick evidence that does NOT cover that minute.

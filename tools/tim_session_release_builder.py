@@ -280,8 +280,8 @@ def build_session_release(base, *, calendar, release_id, source_id, signing_key_
     fields = {"release_id": release_id, "manifest_digest": manifest_digest,
               "contract_bundle_digest": contract_bundle_digest, "validator_bundle_digest": validator_bundle_digest,
               "producer_identity": producer_identity, "created_at_utc": created_at_utc,
-              "key_validity": dict(key_validity), "limitations": list(key_validity.get("limitations", []))}
-    fields["limitations"] = [F.SYNTH] if synthetic else ["internal_research_only"]
+              "key_validity": dict(key_validity),
+              "limitations": [F.SYNTH] if synthetic else ["internal_research_only"]}
     SMOKE._write(rel_dir, "request.fields.json", canonical_json_bytes(fields))
     return {"rel_dir": rel_dir, "manifest": manifest, "manifest_bytes": manifest_bytes,
             "manifest_digest": manifest_digest, "contract_bundle_digest": contract_bundle_digest,

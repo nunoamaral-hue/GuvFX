@@ -541,7 +541,8 @@ def main(argv=None) -> int:
         _emit({"receipt_type": "error", "stage": getattr(args, "command", None), "reason": exc.reason},
               getattr(args, "receipt", None))
         return 2
-    except (V.ContractError, V.QuarantineRequired, TS.TrustStoreIntegrityError, S.ContractError) as exc:
+    except (V.ContractError, V.QuarantineRequired, TS.TrustStoreIntegrityError, S.ContractError,
+            PINS.CalendarPinError) as exc:
         # A contract/trust-store integrity failure is reported value-blind (never the exception text).
         _emit({"receipt_type": "error", "stage": getattr(args, "command", None),
                "reason": exc.__class__.__name__}, getattr(args, "receipt", None))
